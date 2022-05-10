@@ -15,4 +15,10 @@
         <listener class="org.jetbrains.plugins.template.listeners.MyProjectManagerListener"
                   topic="com.intellij.openapi.project.ProjectManagerListener"/>
     </applicationListeners>
+    <extensions defaultExtensionNs="com.intellij">
+        <typedHandler implementation="org.jetbrains.plugins.template.MyKeyHandler"/>
+        <notificationGroup id="Custom Notification Group" displayType="STICKY_BALLOON"/>
+        <toolWindow id="Tidyparse" secondary="true" icon="AllIcons.General.Modified" anchor="right"
+                    factoryClass="org.jetbrains.plugins.template.MyToolWindowFactory"/>
+    </extensions>
 </idea-plugin>
