@@ -1,0 +1,3 @@
+[submodule "galoisenne"]
+	path = galoisenne
+	url = git@github.com:breandan/galoisenne.git
