@@ -38,11 +38,10 @@ class MyKeyHandler : TypedHandlerDelegate() {
 
             if ("_" !in currentLine) {
                 val parse = cfg.parse(currentLine)
-                if(parse != null) MyToolWindow.textArea.text = ok + parse.prettyPrint()
+                if (parse != null) MyToolWindow.textArea.text = ok + parse.prettyPrint()
                 else MyToolWindow.textArea.text = no + MyToolWindow.textArea.text.drop(ok.length)
-            } else currentLine.synthesizeFromFPSolving(cfg).take(20).toList().shuffled().let {
-                if (it.isNotEmpty()) MyToolWindow.textArea.text = it.joinToString("\n")
-            }
+            } else currentLine.synthesizeFromFPSolving(cfg).take(20).toList().shuffled()
+                .let { if (it.isNotEmpty()) MyToolWindow.textArea.text = it.joinToString("\n") }
         }
 
         return CONTINUE
