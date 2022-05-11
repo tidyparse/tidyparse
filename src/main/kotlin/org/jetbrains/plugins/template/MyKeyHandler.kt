@@ -16,7 +16,7 @@ import org.jetbrains.concurrency.runAsync
 class MyKeyHandler : TypedHandlerDelegate() {
     lateinit var cfg: CFG
     var grammarLastModified = 0L
-    val ok = "✅ Current line parses\n"
+    val ok = "✅ Current line parses!\n"
     val no = "❌ Current line invalid\n"
 
     override fun charTyped(c: Char, project: Project, editor: Editor, file: PsiFile): Result {
@@ -36,9 +36,11 @@ class MyKeyHandler : TypedHandlerDelegate() {
             val (lineStart, lineEnd) = editor.caretModel.let { it.visualLineStart to it.visualLineEnd }
             val currentLine = editor.document.getText(TextRange.create(lineStart, lineEnd))
 
-            if ("_" !in currentLine)
-                cfg.parse(currentLine)?.let { MyToolWindow.textArea.text = ok + it.prettyPrint() }
-            else currentLine.synthesizeFromFPSolving(cfg).take(20).toList().shuffled().let {
+            if ("_" !in currentLine) {
+                val parse = cfg.parse(currentLine)
+                if(parse != null) MyToolWindow.textArea.text = ok + parse.prettyPrint()
+                else MyToolWindow.textArea.text = no + MyToolWindow.textArea.text.drop(ok.length)
+            } else currentLine.synthesizeFromFPSolving(cfg).take(20).toList().shuffled().let {
                 if (it.isNotEmpty()) MyToolWindow.textArea.text = it.joinToString("\n")
             }
         }
