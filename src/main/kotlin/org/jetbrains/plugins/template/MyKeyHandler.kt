@@ -13,9 +13,16 @@ import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiFile
 import org.jetbrains.concurrency.runAsync
 
+var grammarLastModified = 0L
+lateinit var cfg: CFG
+
+fun recomputeGrammar(grammarFile: PsiFile) =
+    if (grammarFile.modificationStamp != grammarLastModified || grammarLastModified == 0L) {
+        grammarLastModified = grammarFile.modificationStamp
+        ReadAction.compute<String, Exception> { grammarFile.text }.parseCFG()
+    } else cfg
+
 class MyKeyHandler : TypedHandlerDelegate() {
-    lateinit var cfg: CFG
-    var grammarLastModified = 0L
     val ok = "✅ Current line parses!\n"
     val no = "❌ Current line invalid\n"
 
@@ -25,13 +32,8 @@ class MyKeyHandler : TypedHandlerDelegate() {
             .firstOrNull { it.name.endsWith(".cfg") } ?: return CONTINUE
 
         runAsync {
-            if (grammarFile.modificationStamp != grammarLastModified || grammarLastModified == 0L) {
-                cfg = ReadAction.compute<String, Exception> { grammarFile.text }.parseCFG()
-                grammarLastModified = grammarFile.modificationStamp
-            }
-
-            val (lineStart, lineEnd) = editor.caretModel.let { it.visualLineStart to it.visualLineEnd }
-            val currentLine = editor.document.getText(TextRange.create(lineStart, lineEnd))
+            cfg = recomputeGrammar(grammarFile)
+            val currentLine = editor.currentLine()
 
             if ("_" !in currentLine) {
                 val parse = cfg.parse(currentLine)

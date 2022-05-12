@@ -19,5 +19,8 @@
         <typedHandler implementation="org.jetbrains.plugins.template.MyKeyHandler"/>
         <toolWindow id="Tidyparse" secondary="true" icon="AllIcons.General.Modified" anchor="right"
                     factoryClass="org.jetbrains.plugins.template.MyToolWindowFactory"/>
+        <completion.contributor
+                language="any"
+                implementationClass="org.jetbrains.plugins.template.TidyCompletionContributor"/>
     </extensions>
 </idea-plugin>
