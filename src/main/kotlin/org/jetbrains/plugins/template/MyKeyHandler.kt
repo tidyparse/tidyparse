@@ -37,7 +37,7 @@ class MyKeyHandler : TypedHandlerDelegate() {
                 val parse = cfg.parse(currentLine)
                 if (parse != null) MyToolWindow.textArea.text = ok + parse.prettyPrint()
                 else MyToolWindow.textArea.text = no + MyToolWindow.textArea.text.drop(ok.length)
-            } else currentLine.synthesizeFromFPSolving(cfg).take(20).toList().shuffled()
+            } else currentLine.synthesizeFromFPSolving(cfg, " ").take(20).toList().shuffled()
                 .let { if (it.isNotEmpty()) MyToolWindow.textArea.text = it.joinToString("\n") }
         }
 
