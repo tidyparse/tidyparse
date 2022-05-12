@@ -28,9 +28,7 @@ class MyKeyHandler : TypedHandlerDelegate() {
 
     override fun charTyped(c: Char, project: Project, editor: Editor, file: PsiFile): Result {
         if (!file.name.endsWith(".tidy")) return CONTINUE
-        val grammarFile = file.containingDirectory.files
-            .firstOrNull { it.name.endsWith(".cfg") } ?: return CONTINUE
-
+        val grammarFile = file.getGrammarFile() ?: return CONTINUE
         runAsync {
             cfg = recomputeGrammar(grammarFile)
             val currentLine = editor.currentLine()
