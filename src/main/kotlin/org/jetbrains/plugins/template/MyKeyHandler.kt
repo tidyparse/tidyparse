@@ -22,21 +22,13 @@ class MyKeyHandler : TypedHandlerDelegate() {
     override fun charTyped(c: Char, project: Project, editor: Editor, file: PsiFile): Result {
         if (!file.name.endsWith(".tidy")) return CONTINUE
         val grammarFile = file.containingDirectory.files
-            .firstOrNull {
-                it.name.endsWith(".cfg")
-            } ?: return CONTINUE
-
-            //NotificationGroupManager.getInstance()
-            //    .getNotificationGroup("Custom Notification Group")
-            //    .createNotification(file.text.ifEmpty { "ε" }, NotificationType.INFORMATION)
-            //    .notify(project)
+            .firstOrNull { it.name.endsWith(".cfg") } ?: return CONTINUE
 
         runAsync {
             if (grammarFile.modificationStamp != grammarLastModified || grammarLastModified == 0L) {
                 cfg = ReadAction.compute<String, Exception> { grammarFile.text }.parseCFG()
                 grammarLastModified = grammarFile.modificationStamp
             }
-
 
             val (lineStart, lineEnd) = editor.caretModel.let { it.visualLineStart to it.visualLineEnd }
             val currentLine = editor.document.getText(TextRange.create(lineStart, lineEnd))
