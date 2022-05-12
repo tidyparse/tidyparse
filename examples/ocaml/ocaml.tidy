@@ -1,5 +1,9 @@
-let rec map f l = match l with | [] -> [] | h::t -> ( f h ) :: ( map f t )
+let rec map f l = match l with | [] -> [] | h :: t -> ( f h ) :: ( map f t )
 
 let rec foldright f l b = match l with | [] -> b | h :: t -> f h ( foldright a b )
 
 let rec filter p l = match l with | [] -> []  | x :: l -> if p x then x :: filter p l else filter p l
+
+let curry f = ( fun x y -> f ( 1 , 2 ) )
+
+let uncurry f = ( fun ( y , x ) -> x )
