@@ -3,6 +3,7 @@ package org.jetbrains.plugins.template
 import ai.hypergraph.kaliningraph.parsing.CFG
 import ai.hypergraph.kaliningraph.parsing.parse
 import ai.hypergraph.kaliningraph.parsing.parseCFG
+import ai.hypergraph.kaliningraph.parsing.prettyPrint
 import ai.hypergraph.kaliningraph.sat.synthesizeFromFPSolving
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate.Result.CONTINUE
@@ -33,12 +34,17 @@ class MyKeyHandler : TypedHandlerDelegate() {
             cfg = recomputeGrammar(grammarFile)
             val currentLine = editor.currentLine()
 
+            var displayText = ""
             if ("_" !in currentLine) {
                 val parse = cfg.parse(currentLine)
-                if (parse != null) MyToolWindow.textArea.text = ok + parse.prettyPrint()
-                else MyToolWindow.textArea.text = no + MyToolWindow.textArea.text.drop(ok.length)
+                displayText = if (parse != null) ok + parse.prettyPrint()
+                else no + MyToolWindow.textArea.text.drop(ok.length)
             } else currentLine.synthesizeFromFPSolving(cfg, " ").take(20).toList().shuffled()
-                .let { if (it.isNotEmpty()) MyToolWindow.textArea.text = it.joinToString("\n") }
+                .let { if (it.isNotEmpty()) displayText = it.joinToString("\n") }
+
+            val delim = List(50) { "─" }.joinToString("", "\n", "\n")
+            displayText += delim + "Chomsky normal form:\n${cfg.prettyPrint(3)}"
+            MyToolWindow.textArea.text = displayText
         }
 
         return CONTINUE
