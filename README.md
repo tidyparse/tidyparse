@@ -85,3 +85,9 @@ To view the grammar, test case and parse tree all together, the development envi
 Tidyparse also accepts holes (`_`) in the test case. Providing such a test case will suggest candidates that are consistent with the provided CFG. 
 
 <img width="1524" alt="Screen Shot 2022-05-12 at 10 54 52 PM" src="https://user-images.githubusercontent.com/175716/168202639-fa1ec0e9-eac9-4979-a9d6-26351e259aa6.png">
+
+### Notes
+
+* Currently, rendering is done on-the-fly but may not reflect the current state of the editor. To refresh the display, type an extra whitespace character.
+* The grammar is sensitive to whitespace characters. Each nonterminal must be separated by at least one whitespace character.
+* There is currently no lexical analysis. Each terminal in the grammar corresponds to a single token in text. All names must be specified in the grammar.
