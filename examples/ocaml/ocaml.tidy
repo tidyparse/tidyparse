@@ -1,11 +1,8 @@
 1 + 1
 ( + ) 1 1
-true && true 
+true && true
 true || false
 if 1 then 2 else 3
-
-
-
 let rec map f l = match l with | [] -> [] | h :: t -> ( f h ) :: ( map f t )
 
 let rec foldright f l b = match l with | [] -> b | h :: t -> f h ( foldright a b )
@@ -16,5 +13,5 @@ let curry f = ( fun x y -> f ( 1 , 2 ) )
 
 let uncurry f = ( fun ( y , x ) -> x )
 
-let rec a = _ 
+let rec a = _  
 
