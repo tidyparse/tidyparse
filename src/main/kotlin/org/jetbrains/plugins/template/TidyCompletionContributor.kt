@@ -26,16 +26,14 @@ class TidyCompletionProvider: CompletionProvider<CompletionParameters>() {
         val grammarFile = parameters.originalFile.getGrammarFile() ?: return
         cfg = recomputeGrammar(grammarFile)
         var currentLine = parameters.editor.currentLine()
-        currentLine = if("_" in currentLine) currentLine else {
+        currentLine = if ("_" in currentLine) currentLine else {
             val colIdx = parameters.editor.caretModel.currentCaret.visualPosition.column
             currentLine.substring(0, colIdx) + "_" + currentLine.substring(colIdx, currentLine.length)
         }
-        println("Received completion event: $currentLine")
+
         try {
             currentLine.synthesizeFromFPSolving(cfg, " ").take(5).toList().shuffled()
                 .forEach { result.addElement(LookupElementBuilder.create(it)) }
-        } catch (exception: Exception) {
-            exception.printStackTrace()
-        }
+        } catch (exception: Exception) { exception.printStackTrace() }
     }
 }

@@ -80,8 +80,8 @@ I
 
 To view the grammar, test case and parse tree all together, the development environment may be configured as follows:
 
-<img width="1395" alt="Screen Shot 2022-05-10 at 8 16 33 PM" src="https://user-images.githubusercontent.com/175716/167747603-e2bed035-0232-4da7-95fd-f8909fc0eb9a.png">
+<img width="1526" alt="Screen Shot 2022-05-12 at 11 00 19 PM" src="https://user-images.githubusercontent.com/175716/168202771-4d71691d-585e-4224-a7f8-31dbef053e35.png">
 
 Tidyparse also accepts holes (`_`) in the test case. Providing such a test case will suggest candidates that are consistent with the provided CFG. 
 
-<img width="1398" alt="Screen Shot 2022-05-10 at 8 34 20 PM" src="https://user-images.githubusercontent.com/175716/167747605-9226f7de-5d92-43b7-bb3b-5300b5320b56.png">
+<img width="1524" alt="Screen Shot 2022-05-12 at 10 54 52 PM" src="https://user-images.githubusercontent.com/175716/168202639-fa1ec0e9-eac9-4979-a9d6-26351e259aa6.png">
