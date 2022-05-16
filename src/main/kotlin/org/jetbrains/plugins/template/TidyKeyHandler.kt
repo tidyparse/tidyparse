@@ -10,7 +10,6 @@ import com.intellij.codeInsight.editorActions.TypedHandlerDelegate.Result.CONTIN
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiFile
 import org.jetbrains.concurrency.runAsync
 
@@ -34,17 +33,17 @@ class MyKeyHandler : TypedHandlerDelegate() {
             cfg = recomputeGrammar(grammarFile)
             val currentLine = editor.currentLine()
 
-            var displayText = ""
+            var debugText = ""
             if ("_" !in currentLine) {
                 val parse = cfg.parse(currentLine)
-                displayText = if (parse != null) ok + parse.prettyPrint()
+                debugText = if (parse != null) ok + parse.prettyPrint()
                 else no + MyToolWindow.textArea.text.drop(ok.length)
             } else currentLine.synthesizeFromFPSolving(cfg, " ").take(20).toList().shuffled()
-                .let { if (it.isNotEmpty()) displayText = it.joinToString("\n") }
+                .let { if (it.isNotEmpty()) debugText = it.joinToString("\n") }
 
             val delim = List(50) { "─" }.joinToString("", "\n", "\n")
-            displayText += delim + "Chomsky normal form:\n${cfg.prettyPrint(3)}"
-            MyToolWindow.textArea.text = displayText
+            debugText += delim + "Chomsky normal form:\n${cfg.prettyPrint(3)}"
+            MyToolWindow.textArea.text = debugText
         }
 
         return CONTINUE

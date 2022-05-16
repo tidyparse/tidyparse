@@ -6,7 +6,6 @@ import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory.SERVICE
 import java.awt.Font
-import javax.swing.JScrollPane
 import javax.swing.JTextArea
 
 class MyToolWindowFactory: ToolWindowFactory {
