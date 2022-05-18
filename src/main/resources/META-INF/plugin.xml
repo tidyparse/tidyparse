@@ -7,20 +7,10 @@
     <depends>com.intellij.modules.platform</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <applicationService serviceImplementation="org.jetbrains.plugins.template.services.MyApplicationService"/>
-        <projectService serviceImplementation="org.jetbrains.plugins.template.services.MyProjectService"/>
-    </extensions>
-
-    <applicationListeners>
-        <listener class="org.jetbrains.plugins.template.listeners.MyProjectManagerListener"
-                  topic="com.intellij.openapi.project.ProjectManagerListener"/>
-    </applicationListeners>
-    <extensions defaultExtensionNs="com.intellij">
         <typedHandler implementation="org.jetbrains.plugins.template.MyKeyHandler"/>
         <toolWindow id="Tidyparse" secondary="true" icon="AllIcons.General.Modified" anchor="right"
                     factoryClass="org.jetbrains.plugins.template.MyToolWindowFactory"/>
-        <completion.contributor
-                language="any"
+        <completion.contributor language="any"
                 implementationClass="org.jetbrains.plugins.template.TidyCompletionContributor"/>
     </extensions>
 </idea-plugin>
