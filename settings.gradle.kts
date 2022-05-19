@@ -1,3 +1,3 @@
-rootProject.name = "IntelliJ Platform Plugin Template"
+rootProject.name = "Tidyparse"
 
 includeBuild("galoisenne")

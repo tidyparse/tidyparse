@@ -18,4 +18,6 @@ jobs:
         with:
           java-version: 17
       - name: Build with Gradle
-        run: ./gradlew buildPlugin --stacktrace
+        run: |
+        git submodule update --init --recursive
+        ./gradlew buildPlugin --stacktrace

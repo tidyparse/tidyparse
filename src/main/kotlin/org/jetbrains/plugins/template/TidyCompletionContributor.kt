@@ -31,9 +31,11 @@ class TidyCompletionProvider: CompletionProvider<CompletionParameters>() {
             currentLine.substring(0, colIdx) + "_" + currentLine.substring(colIdx, currentLine.length)
         }
 
-        try {
-            currentLine.synthesizeFromFPSolving(cfg, " ").take(5).toList().shuffled()
-                .forEach { result.addElement(LookupElementBuilder.create(it)) }
-        } catch (exception: Exception) { exception.printStackTrace() }
+        synchronized(cfg) {
+            try {
+                currentLine.synthesizeFromFPSolving(cfg, " ").take(5).toList().shuffled()
+                    .forEach { result.addElement(LookupElementBuilder.create(it)) }
+            } catch (exception: Exception) { exception.printStackTrace() }
+        }
     }
 }

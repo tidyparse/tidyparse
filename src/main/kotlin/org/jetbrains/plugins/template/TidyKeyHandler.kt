@@ -38,8 +38,10 @@ class MyKeyHandler : TypedHandlerDelegate() {
                 val parse = cfg.parse(currentLine)
                 debugText = if (parse != null) ok + parse.prettyPrint()
                 else no + TidyToolWindow.textArea.text.drop(ok.length)
-            } else currentLine.synthesizeFromFPSolving(cfg, " ").take(20).toList().shuffled()
-                .let { if (it.isNotEmpty()) debugText = it.joinToString("\n") }
+            } else synchronized(cfg) {
+                currentLine.synthesizeFromFPSolving(cfg, " ").take(20).toList().shuffled()
+                    .let { if (it.isNotEmpty()) debugText = it.joinToString("\n") }
+            }
 
             val delim = List(50) { "─" }.joinToString("", "\n", "\n")
             debugText += delim + "Chomsky normal form:\n${cfg.prettyPrint(3)}"
