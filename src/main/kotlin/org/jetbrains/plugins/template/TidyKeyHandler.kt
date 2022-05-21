@@ -4,7 +4,7 @@ import ai.hypergraph.kaliningraph.parsing.CFG
 import ai.hypergraph.kaliningraph.parsing.parse
 import ai.hypergraph.kaliningraph.parsing.parseCFG
 import ai.hypergraph.kaliningraph.parsing.prettyPrint
-import ai.hypergraph.kaliningraph.sat.synthesizeFromFPSolving
+import ai.hypergraph.kaliningraph.sat.synthesizeFrom
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate.Result.CONTINUE
 import com.intellij.openapi.application.ReadAction
@@ -39,7 +39,7 @@ class MyKeyHandler : TypedHandlerDelegate() {
                 debugText = if (parse != null) ok + parse.prettyPrint()
                 else no + TidyToolWindow.textArea.text.drop(ok.length)
             } else synchronized(cfg) {
-                currentLine.synthesizeFromFPSolving(cfg, " ").take(20).toList().shuffled()
+                currentLine.synthesizeFrom(cfg, " ").take(20).toList().shuffled()
                     .let { if (it.isNotEmpty()) debugText = it.joinToString("\n") }
             }
 

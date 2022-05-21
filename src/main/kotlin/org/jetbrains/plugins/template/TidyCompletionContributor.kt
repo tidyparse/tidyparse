@@ -1,6 +1,6 @@
 package org.jetbrains.plugins.template
 
-import ai.hypergraph.kaliningraph.sat.synthesizeFromFPSolving
+import ai.hypergraph.kaliningraph.sat.synthesizeFrom
 import com.intellij.codeInsight.completion.*
 import com.intellij.codeInsight.lookup.LookupElementBuilder
 import com.intellij.patterns.PlatformPatterns
@@ -33,7 +33,7 @@ class TidyCompletionProvider: CompletionProvider<CompletionParameters>() {
 
         synchronized(cfg) {
             try {
-                currentLine.synthesizeFromFPSolving(cfg, " ").take(5).toList().shuffled()
+                currentLine.synthesizeFrom(cfg, " ").take(5).toList().shuffled()
                     .forEach { result.addElement(LookupElementBuilder.create(it)) }
             } catch (exception: Exception) { exception.printStackTrace() }
         }
