@@ -13,13 +13,19 @@ import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
 import org.jetbrains.concurrency.runAsync
 
+var grammarFileCache: String? = ""
 var grammarLastModified = 0L
 lateinit var cfg: CFG
 
 fun recomputeGrammar(grammarFile: PsiFile) =
-    if (grammarFile.modificationStamp != grammarLastModified || grammarLastModified == 0L) {
+    if (
+        grammarFileCache != grammarFile.text ||
+        grammarFile.modificationStamp != grammarLastModified ||
+        grammarLastModified == 0L
+    ) {
+        grammarFileCache = grammarFile.text
         grammarLastModified = grammarFile.modificationStamp
-        ReadAction.compute<String, Exception> { grammarFile.text }.parseCFG()
+        ReadAction.compute<String, Exception> { grammarFileCache }.parseCFG()
     } else cfg
 
 class MyKeyHandler : TypedHandlerDelegate() {
