@@ -7,9 +7,9 @@
     <depends>com.intellij.modules.platform</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <typedHandler implementation="org.jetbrains.plugins.template.MyKeyHandler"/>
+        <typedHandler implementation="org.jetbrains.plugins.template.TidyKeyHandler"/>
         <toolWindow id="Tidyparse" secondary="true" icon="AllIcons.General.Modified" anchor="right"
-                    factoryClass="org.jetbrains.plugins.template.MyToolWindowFactory"/>
+                    factoryClass="org.jetbrains.plugins.template.TidyToolWindowFactory"/>
         <completion.contributor language="any"
                 implementationClass="org.jetbrains.plugins.template.TidyCompletionContributor"/>
     </extensions>
