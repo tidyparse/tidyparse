@@ -3,6 +3,7 @@ package org.jetbrains.plugins.template
 import ai.hypergraph.kaliningraph.sat.synthesizeFrom
 import com.intellij.codeInsight.completion.*
 import com.intellij.codeInsight.lookup.LookupElementBuilder
+import com.intellij.openapi.application.runReadAction
 import com.intellij.patterns.PlatformPatterns
 import com.intellij.psi.PlainTextTokenTypes
 import com.intellij.util.ProcessingContext

@@ -8,6 +8,8 @@ import ai.hypergraph.kaliningraph.sat.synthesizeFrom
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate.Result.CONTINUE
 import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.application.readAction
+import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
@@ -18,15 +20,17 @@ var grammarLastModified = 0L
 lateinit var cfg: CFG
 
 fun PsiFile.recomputeGrammar(): Set<Pair<String, List<String>>> =
-  if (
-    text != grammarFileCache ||
-    modificationStamp != grammarLastModified ||
-    grammarLastModified == 0L
-  ) {
-    grammarFileCache = text
-    grammarLastModified = modificationStamp
-    ReadAction.compute<String, Exception> { grammarFileCache }.parseCFG()
-  } else cfg
+  runReadAction {
+    if (
+      text != grammarFileCache ||
+      modificationStamp != grammarLastModified ||
+      grammarLastModified == 0L
+    ) {
+      grammarFileCache = text
+      grammarLastModified = modificationStamp
+      ReadAction.compute<String, Exception> { grammarFileCache }.parseCFG()
+    } else cfg
+  }
 
 class TidyKeyHandler : TypedHandlerDelegate() {
   val ok = "✅ Current line parses!\n"
