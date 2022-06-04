@@ -13,7 +13,6 @@ let rec filter p l = match l with | [] -> []  | x :: l -> if p x then x :: _ _ _
 
 let curry f = ( fun x y -> f ( 1 , 2 ) )
 
-let uncurry f = ( fun ( y , x ) -> x )
+let uncurry f = ( _ fun ( y , x ) -> x )
 
-let rec a = _
-
+let rec a = _ _ _ _ _
