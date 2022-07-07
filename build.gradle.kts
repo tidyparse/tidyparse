@@ -12,16 +12,8 @@ plugins {
   id("org.jetbrains.changelog") version "1.3.1"
   // Gradle Qodana Plugin
   id("org.jetbrains.qodana") version "0.1.13"
-  // Grammar Kit Plugin
-  id("org.jetbrains.grammarkit") version "2021.2.2"
 
   id("com.github.ben-manes.versions") version "0.42.0"
-}
-
-idea {
-  module {
-    generatedSourceDirs.add(file("src/main/java"))
-  }
 }
 
 group = properties("pluginGroup")
@@ -59,23 +51,7 @@ qodana {
 }
 
 tasks {
-  generateLexer {
-    source.set("src/main/grammars/CFGInterface.flex")
-    targetDir.set("src/main/java/")
-    targetClass.set("ROSInterfaceLexer")
-    purgeOldFiles.set(true)
-  }
-
-  generateParser {
-    source.set("src/main/grammars/CFGInterface.bnf")
-    targetRoot.set("src/main/java")
-    pathToParser.set("/ai/hypergraph/tidyparse/parser/CFGInterfaceParser.java")
-    pathToPsiRoot.set("/ai/hypergraph/tidyparse/psi")
-    purgeOldFiles.set(true)
-  }
-
   compileKotlin {
-//    dependsOn(generateLexer, generateParser)
     kotlinOptions {
       jvmTarget = JavaVersion.VERSION_1_8.toString()
       apiVersion = languageVersion

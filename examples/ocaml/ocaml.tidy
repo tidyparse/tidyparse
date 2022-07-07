@@ -1,3 +1,30 @@
+S -> X
+X -> A | V | ( X , X ) | X X | ( X )
+A -> FUN | F | LI | M | L
+FUN -> fun V `->` X
+F -> if X then X else X
+M -> match V with Branch
+Branch -> `|` X `->` X | Branch Branch
+L -> let V = X
+L -> let rec V = X
+LI -> L in X
+
+V -> Vexp | ( Vexp ) | List | Vexp Vexp
+Vexp -> Vname | FunName | Vexp VO Vexp | B
+Vexp -> ( Vname , Vname ) | Vexp Vexp | I
+List -> [] | V :: V
+Vname -> a | b | c | d | e | f | g | h | i
+Vname -> j | k | l | m | n | o | p | q | r
+Vname -> s | t | u | v | w | x | y | z
+FunName -> foldright | map | filter
+FunName -> curry | uncurry | ( VO )
+VO ->  + | - | * | / | >
+VO -> = | < | `||` | `&&`
+I -> 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
+B ->  true | false
+
+---
+
 1 + 1
 1 + 1 + 1
 ( + ) 1 1
@@ -9,10 +36,10 @@ let rec map f l = match l with | [] -> [] | h :: t -> ( f h ) :: ( map f t )
 
 let rec foldright f l b = match l with | [] -> b | h :: t -> f h ( foldright a b )
 
+let rec a = _ _ _ _ _
+
 let rec filter p l = match l with | [] -> []  | x :: l -> if p x then x :: _ _ _ else filter p l
 
-let curry f = ( fun x y -> f ( 1 , 2 ) )
+let curry f = ( fun x y -> f ( _ _ _ ) )
 
 let uncurry f = ( _ fun ( y , x ) -> x )
-
-let rec a = _ _ _ _ _

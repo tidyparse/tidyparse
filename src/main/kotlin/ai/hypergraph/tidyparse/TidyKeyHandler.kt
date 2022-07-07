@@ -1,4 +1,4 @@
-package ai.hypergraph.tidyparse.template
+package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.parsing.CFG
 import ai.hypergraph.kaliningraph.parsing.parse
@@ -15,18 +15,13 @@ import com.intellij.psi.PsiFile
 import org.jetbrains.concurrency.runAsync
 
 var grammarFileCache: String? = ""
-var grammarLastModified = 0L
 lateinit var cfg: CFG
 
 fun PsiFile.recomputeGrammar(): Set<Pair<String, List<String>>> =
   runReadAction {
-    if (
-      text != grammarFileCache ||
-      modificationStamp != grammarLastModified ||
-      grammarLastModified == 0L
-    ) {
-      grammarFileCache = text
-      grammarLastModified = modificationStamp
+    val grammar = text.substringBefore("---")
+    if (grammar != grammarFileCache) {
+      grammarFileCache = grammar
       ReadAction.compute<String, Exception> { grammarFileCache }.parseCFG()
     } else cfg
   }
@@ -37,16 +32,13 @@ class TidyKeyHandler : TypedHandlerDelegate() {
 
   override fun charTyped(c: Char, project: Project, editor: Editor, file: PsiFile) =
     CONTINUE.also {
-      if (file.name.endsWith(".tidy"))
-        reconcile(
-          grammarFile = file.getGrammarFile() ?: return@also,
-          currentLine = editor.currentLine()
-        )
+      if (file.name.endsWith(".tidy") && editor.caretModel.offset > editor.document.text.lastIndexOf("---"))
+        file.reconcile(editor.currentLine())
     }
 
-  private fun reconcile(grammarFile: PsiFile, currentLine: String) =
+  private fun PsiFile.reconcile(currentLine: String) =
     runAsync {
-      cfg = grammarFile.recomputeGrammar()
+      cfg = recomputeGrammar()
 
       var debugText = ""
       if ("_" !in currentLine && Regex("<[^\\s>]*>") !in currentLine) {

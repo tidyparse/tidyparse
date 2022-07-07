@@ -1,4 +1,4 @@
-package ai.hypergraph.tidyparse.template
+package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.sat.synthesizeFrom
 import com.intellij.codeInsight.completion.*
@@ -23,8 +23,7 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
     context: ProcessingContext,
     result: CompletionResultSet
   ) {
-    val grammarFile = parameters.originalFile.getGrammarFile() ?: return
-    cfg = grammarFile.recomputeGrammar()
+    cfg = parameters.originalFile.recomputeGrammar()
     var currentLine = parameters.editor.currentLine()
     currentLine = if ("_" in currentLine) currentLine else {
       val colIdx = parameters.editor.caretModel.currentCaret.visualPosition.column
@@ -35,9 +34,7 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
       try {
         currentLine.synthesizeFrom(cfg, " ").take(5).toList().shuffled()
           .forEach { result.addElement(LookupElementBuilder.create(it)) }
-      } catch (exception: Exception) {
-        exception.printStackTrace()
-      }
+      } catch (exception: Exception) { exception.printStackTrace() }
     }
   }
 }

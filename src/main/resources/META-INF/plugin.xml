@@ -1,22 +1,16 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <id>org.jetbrains.plugins.template</id>
-    <name>Template</name>
-    <vendor>JetBrains</vendor>
+    <id>ai.hypergraph.tidyparse</id>
+    <name>Tidyparse</name>
+    <vendor>Hypergraph.ai</vendor>
 
     <depends>com.intellij.modules.platform</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <typedHandler implementation="ai.hypergraph.tidyparse.template.TidyKeyHandler"/>
+        <typedHandler implementation="ai.hypergraph.tidyparse.TidyKeyHandler"/>
         <toolWindow id="Tidyparse" secondary="true" icon="AllIcons.General.Modified" anchor="right"
-                    factoryClass="ai.hypergraph.tidyparse.template.TidyToolWindowFactory"/>
+                    factoryClass="ai.hypergraph.tidyparse.TidyToolWindowFactory"/>
         <completion.contributor language="any"
-                implementationClass="ai.hypergraph.tidyparse.template.TidyCompletionContributor"/>
-        <fileTypeFactory implementation="ai.hypergraph.tidyparse.cfg.CfgInterfaceFileFactory"/>
-
-        <lang.parserDefinition language="CfgInterface"
-                               implementationClass="ai.hypergraph.tidyparse.cfg.CfgInterfaceParserDefinition"/>
-        <lang.syntaxHighlighterFactory language="CfgInterface"
-                                       implementationClass="ai.hypergraph.tidyparse.cfg.CfgInterfaceSyntaxHighlighterFactory"/>
+                implementationClass="ai.hypergraph.tidyparse.TidyCompletionContributor"/>
     </extensions>
 </idea-plugin>
