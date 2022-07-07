@@ -1,4 +1,4 @@
-package org.jetbrains.plugins.template
+package ai.hypergraph.tidyparse.template
 
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.util.TextRange

@@ -1,4 +1,4 @@
-package org.jetbrains.plugins.template
+package ai.hypergraph.tidyparse.template
 
 import ai.hypergraph.kaliningraph.parsing.CFG
 import ai.hypergraph.kaliningraph.parsing.parse
@@ -8,7 +8,6 @@ import ai.hypergraph.kaliningraph.sat.synthesizeFrom
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate.Result.CONTINUE
 import com.intellij.openapi.application.ReadAction
-import com.intellij.openapi.application.readAction
 import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.project.Project
@@ -44,7 +43,6 @@ class TidyKeyHandler : TypedHandlerDelegate() {
           currentLine = editor.currentLine()
         )
     }
-
 
   private fun reconcile(grammarFile: PsiFile, currentLine: String) =
     runAsync {

@@ -3,3 +3,5 @@
 .qodana
 build
 **/.DS_Store
+src/main/java
+out

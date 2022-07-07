@@ -7,10 +7,16 @@
     <depends>com.intellij.modules.platform</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <typedHandler implementation="org.jetbrains.plugins.template.TidyKeyHandler"/>
+        <typedHandler implementation="ai.hypergraph.tidyparse.template.TidyKeyHandler"/>
         <toolWindow id="Tidyparse" secondary="true" icon="AllIcons.General.Modified" anchor="right"
-                    factoryClass="org.jetbrains.plugins.template.TidyToolWindowFactory"/>
+                    factoryClass="ai.hypergraph.tidyparse.template.TidyToolWindowFactory"/>
         <completion.contributor language="any"
-                implementationClass="org.jetbrains.plugins.template.TidyCompletionContributor"/>
+                implementationClass="ai.hypergraph.tidyparse.template.TidyCompletionContributor"/>
+        <fileTypeFactory implementation="ai.hypergraph.tidyparse.cfg.CfgInterfaceFileFactory"/>
+
+        <lang.parserDefinition language="CfgInterface"
+                               implementationClass="ai.hypergraph.tidyparse.cfg.CfgInterfaceParserDefinition"/>
+        <lang.syntaxHighlighterFactory language="CfgInterface"
+                                       implementationClass="ai.hypergraph.tidyparse.cfg.CfgInterfaceSyntaxHighlighterFactory"/>
     </extensions>
 </idea-plugin>
