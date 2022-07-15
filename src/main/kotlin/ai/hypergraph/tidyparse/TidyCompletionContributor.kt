@@ -1,5 +1,7 @@
 package ai.hypergraph.tidyparse
 
+import ai.hypergraph.kaliningraph.cache.LRUCache
+import ai.hypergraph.kaliningraph.parsing.CFG
 import ai.hypergraph.kaliningraph.sat.synthesizeFrom
 import com.intellij.codeInsight.completion.*
 import com.intellij.codeInsight.lookup.LookupElementBuilder
@@ -17,6 +19,11 @@ class TidyCompletionContributor : CompletionContributor() {
   }
 }
 
+val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
+
+fun synth(str: String, cfg: CFG, trim: String = str.trim(), maxResults: Int = 20) =
+  synthCache.getOrPut(trim to cfg) { trim.synthesizeFrom(cfg, " ").take(maxResults).toList() }.shuffled()
+
 class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
   override fun addCompletions(
     parameters: CompletionParameters,
@@ -32,9 +39,8 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
 
     synchronized(cfg) {
       try {
-        currentLine.synthesizeFrom(cfg, " ").take(5).toList().shuffled()
-          .forEach { result.addElement(LookupElementBuilder.create(it)) }
-      } catch (exception: Exception) { exception.printStackTrace() }
+        synth(currentLine, cfg).forEach { result.addElement(LookupElementBuilder.create(it)) }
+      } catch (e: Exception) { e.printStackTrace() }
     }
   }
 }

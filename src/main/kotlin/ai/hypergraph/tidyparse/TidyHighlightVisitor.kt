@@ -19,13 +19,14 @@ import java.awt.Color
 import java.awt.Font
 import kotlin.reflect.KProperty
 
-class TidyHighlightVisitor: HighlightVisitor {
+class TidyHighlightVisitor : HighlightVisitor {
   private var highlightInfoHolder: HighlightInfoHolder? = null
 
   override fun suitableForFile(file: PsiFile) =
     file.fileType.defaultExtension == "tidy"
 
-  private fun createAttributes(function: TextAttributes.() -> Unit) = DOC_COMMENT.defaultAttributes.clone().apply { function() }
+  private fun createAttributes(function: TextAttributes.() -> Unit) =
+    DOC_COMMENT.defaultAttributes.clone().apply { function() }
 
   operator fun TextAttributes.getValue(tidyHighlightVisitor: TidyHighlightVisitor, property: KProperty<*>) =
     createTextAttributesKey(property.name, this)

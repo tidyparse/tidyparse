@@ -1,14 +1,12 @@
 package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.kaliningraph.sat.synthesizeFrom
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate.Result.CONTINUE
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.updateSettings.impl.Product
 import com.intellij.psi.PsiFile
 import org.jetbrains.concurrency.runAsync
 
@@ -51,8 +49,7 @@ class TidyKeyHandler : TypedHandlerDelegate() {
         debugText = if (parse != null) ok + parse.prettyPrint()
         else no + TidyToolWindow.textArea.text.drop(ok.length)
       } else synchronized(cfg) {
-        currentLine.synthesizeFrom(cfg, " ").take(20).toList().shuffled()
-          .let { if (it.isNotEmpty()) debugText = it.joinToString("\n") }
+        synth(currentLine, cfg).let { if (it.isNotEmpty()) debugText = it.joinToString("\n") }
       }
 
       val delim = List(50) { "─" }.joinToString("", "\n", "\n")
