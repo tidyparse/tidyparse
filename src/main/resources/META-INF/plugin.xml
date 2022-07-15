@@ -12,5 +12,10 @@
                     factoryClass="ai.hypergraph.tidyparse.TidyToolWindowFactory"/>
         <completion.contributor language="any"
                 implementationClass="ai.hypergraph.tidyparse.TidyCompletionContributor"/>
+        <highlightVisitor implementation="ai.hypergraph.tidyparse.TidyHighlightVisitor"/>
+        <fileType
+                name="Tidy File"
+                implementationClass="ai.hypergraph.tidyparse.TidyFileType"
+                extensions="tidy"/>
     </extensions>
 </idea-plugin>

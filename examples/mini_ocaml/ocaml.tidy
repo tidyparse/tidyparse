@@ -23,4 +23,4 @@ M -> match V with End
 
 ---
 
-let rec b a = _ _ _ _ _ _ _ _
+let rec b a = _ _ _ _ _ _ _ <B>
