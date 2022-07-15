@@ -41,7 +41,9 @@ class TidyHighlightVisitor : HighlightVisitor {
       val off = editor.document.text.indexOf("---")
       val highlighter = HighlightManager.getInstance(editor.project)
       // Highlight BNF syntax
-      Regex("(->|\\|)").findAll(editor.document.text).takeWhile { it.range.first < off }
+      Regex("(->| \\| )")
+        .findAll(editor.document.text)
+        .takeWhile { it.range.first < off }
         .forEach {
           highlighter.addRangeHighlight(
             editor, it.range.first, it.range.last + 1,
