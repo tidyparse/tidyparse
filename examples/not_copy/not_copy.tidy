@@ -1,0 +1,11 @@
+START -> A | B | A B | B A
+A -> a | a A a | a A b | b A b | b A a
+B -> b | a B a | a B b | b B b | b B a
+
+---
+
+a a a a
+
+Something is fishy!
+
+https://cs.stackexchange.com/a/19155/74308

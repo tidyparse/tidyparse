@@ -1,0 +1,5 @@
+a -> malloc() free() | malloc() a free() | a a
+
+---
+
+malloc() malloc() malloc() free() free() free() malloc() free()
