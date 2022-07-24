@@ -7,6 +7,7 @@ import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiFile
 import org.jetbrains.concurrency.runAsync
 
@@ -33,6 +34,9 @@ class TidyKeyHandler : TypedHandlerDelegate() {
           currentLine = editor.currentLine(),
           isInGrammar = editor.caretModel.offset < editor.document.text.lastIndexOf("---")
         )
+
+      ToolWindowManager.getInstance(project).getToolWindow("Tidyparse")
+        ?.let { if (!it.isVisible) it.show() }
     }
 
   private fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean) =
