@@ -100,7 +100,10 @@ tasks {
     })
   }
 
-  runIde { maxHeapSize = "4g" }
+  runIde {
+    maxHeapSize = "4g"
+    args = listOf(projectDir.absolutePath + "/examples")
+  }
 
   // Configure UI tests plugin
   // Read more: https://github.com/JetBrains/intellij-ui-test-robot
