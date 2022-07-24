@@ -3,10 +3,7 @@ package ai.hypergraph.tidyparse
 import com.intellij.codeInsight.daemon.impl.HighlightVisitor
 import com.intellij.codeInsight.daemon.impl.analysis.HighlightInfoHolder
 import com.intellij.codeInsight.highlighting.HighlightManager
-import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.application.invokeLater
-import com.intellij.openapi.command.WriteCommandAction
-import com.intellij.openapi.editor.DefaultLanguageHighlighterColors
 import com.intellij.openapi.editor.DefaultLanguageHighlighterColors.DOC_COMMENT
 import com.intellij.openapi.editor.colors.TextAttributesKey
 import com.intellij.openapi.editor.colors.TextAttributesKey.createTempTextAttributesKey
@@ -29,7 +26,7 @@ class TidyHighlightVisitor : HighlightVisitor {
     DOC_COMMENT.defaultAttributes.clone().apply { function() }
 
   operator fun TextAttributes.getValue(tidyHighlightVisitor: TidyHighlightVisitor, property: KProperty<*>) =
-    createTextAttributesKey(property.name, this)
+    createTextAttributesKey(property.name, createTempTextAttributesKey(property.name, this))
 
   val BOLD_FONT by createAttributes { fontType = Font.BOLD }
   val BLUE_FONT by createAttributes { foregroundColor = Color.BLUE }

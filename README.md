@@ -3,7 +3,7 @@
 <!-- Plugin description -->
 The main goal of this project is to speed up the process of learning a new language by suggesting ways to fix source code.
 
-Tidyparse expects two files in the same directory -- one ending in `*.tidy` which contains the string to parse (with optional holes) and one ending in `*.cfg` which contains the grammar. If you provide a string containing holes, it will provide some suggestions inside a tool window on the right hand side (can be opened by pressing `Shift` twice in rapid succession and searching for `Tidyparse`. If the string contains no holes, it will print out the parse tree in Chomsky normal form.
+Tidyparse expects a file ending in `*.tidy` which contains, first, the grammar, followed by three consecutive dashes (`---`), followed by the string to parse (with optional holes). If you provide a string containing holes, it will provide some suggestions inside a tool window on the right hand side. If the string contains no holes, it will print out the parse tree in Chomsky normal form.
 <!-- Plugin description end -->
 
 ## Getting Started
@@ -19,19 +19,7 @@ git submodule update --init --recursive && \
 
 To launch IntelliJ IDEA with the plugin installed, run: `./gradlew runIde` from the parent directory.
 
-Open a new project, then create a root directory to store the grammar (`*.cfg`) and test cases (`*.tidy`).
-
-To view the parse tree, press `Shift` twice in rapid succession and search for `🔍Tidyparse` to open the tool window.
-
-For example, create the following directory structure:
-
-```
-ocaml
-├─── ocaml.tidy
-└─── ocaml.cfg
-```
-
-The file `ocaml.cfg` can contain this grammar:
+The file `ocaml.tidy` can contain this grammar:
 
 ```
  S -> X
@@ -45,7 +33,7 @@ BF -> if B then B else B
  B -> true | false | B BO B | ( B ) | BF
 BO -> and | or
 ```
-The file `ocaml.tidy` can contain this test case:
+The file `ocaml.tidy` can also contain this test case:
 
 ```
 if true then if true then 1 else 2 else 3
