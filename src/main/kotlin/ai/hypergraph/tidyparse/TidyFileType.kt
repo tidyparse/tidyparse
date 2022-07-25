@@ -2,6 +2,7 @@ package ai.hypergraph.tidyparse
 
 import com.intellij.openapi.fileTypes.FileType
 import com.intellij.util.PlatformIcons
+import javax.swing.Icon
 
 object TidyFileType: FileType {
   override fun getName() = "Tidy File"
@@ -10,7 +11,7 @@ object TidyFileType: FileType {
 
   override fun getDefaultExtension() = "tidy"
 
-  override fun getIcon() = PlatformIcons.EDIT
+  override fun getIcon(): Icon = PlatformIcons.EDIT
 
   override fun isBinary() = false
 }
