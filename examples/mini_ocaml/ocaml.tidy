@@ -15,7 +15,7 @@ LI -> L in X
 V -> a | b | c | V V | r | e | rec
 O -> + | - | * | /
 I -> 0 | 1 | 2 | 3 | 4 | IF
-B -> true | false | B BO B | ( B ) | BF | (BF)
+B -> true | false | B BO B | ( B ) | BF | ( BF )
 BO -> and | or
 
 End -> `|` X `->` X | End End
