@@ -1,10 +1,12 @@
 START -> D P
-P -> W | ( ) | ( P ) | P P | { } | { P } | [ ] | [ P ]
+P -> W | ( P ) | ( P ) | { P } | [ P ] | P P
 D -> public | static | void | D D
-W -> w | . | ; | , | = | W W
+W -> ε | w | . | ; | , | = | W W
 
 ---
 
 public static void w ( w , w ) { w w = w . ( w ) }
 
 public static void w ( w w , w w ) { w w = w . ( w ) ; w w ; }
+
+public static void w ( )
