@@ -22,7 +22,7 @@ class TidyCompletionContributor : CompletionContributor() {
 val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
 
 fun synth(str: String, cfg: CFG, trim: String = str.trim(), maxResults: Int = 20) =
-  synthCache.getOrPut(trim to cfg) { trim.synthesizeFrom(cfg, " ").take(maxResults).toList() }.shuffled()
+  synthCache.getOrPut(trim to cfg) { trim.synthesizeFrom(cfg, " ").take(maxResults).toList() }
 
 class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
   override fun addCompletions(

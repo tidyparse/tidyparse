@@ -1,8 +1,9 @@
-START -> D P
-P -> W | ( P ) | ( P ) | { P } | [ P ] | P P
+START -> D T P
+P -> A | ( P ) | ( P ) | { P } | [ P ] | < P > | P P
 D -> public | static | void | D D
-W -> ε | w | . | ; | , | = | W W
-
+A -> ε | w | . | ; | , | = | A A
+W -> w
+T -> W | W < T >
 ---
 
 public static void w ( w , w ) { w w = w . ( w ) }
@@ -10,3 +11,5 @@ public static void w ( w , w ) { w w = w . ( w ) }
 public static void w ( w w , w w ) { w w = w . ( w ) ; w w ; }
 
 public static void w ( )
+
+public static w < w < w > > w ( _ , w ) _ _ _
