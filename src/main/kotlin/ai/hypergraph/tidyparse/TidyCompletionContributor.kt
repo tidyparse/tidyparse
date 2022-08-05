@@ -2,6 +2,8 @@ package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.parsing.CFG
+import ai.hypergraph.kaliningraph.sat.everySingleHoleConfig
+import ai.hypergraph.kaliningraph.sat.increasingLengthChunks
 import ai.hypergraph.kaliningraph.sat.synthesizeFrom
 import com.intellij.codeInsight.completion.*
 import com.intellij.codeInsight.lookup.LookupElementBuilder
@@ -22,7 +24,14 @@ class TidyCompletionContributor : CompletionContributor() {
 val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
 
 fun synth(str: String, cfg: CFG, trim: String = str.trim(), maxResults: Int = 20) =
-  synthCache.getOrPut(trim to cfg) { trim.synthesizeFrom(cfg, " ").take(maxResults).toList() }
+  synthCache.getOrPut(trim to cfg) {
+    trim.synthesizeFrom(cfg, " ",
+      variations = listOf(
+        { sequenceOf(trim) },
+        String::everySingleHoleConfig,
+        String::increasingLengthChunks)
+    ).take(maxResults).toList()
+  }
 
 class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
   override fun addCompletions(
