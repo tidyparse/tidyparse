@@ -27,8 +27,8 @@ fun PsiFile.recomputeGrammar(): CFG =
   }
 
 class TidyKeyHandler : TypedHandlerDelegate() {
-  val ok = "✅ Current line parses!\n"
-  val no = "❌ Current line invalid\n"
+  val ok = "<b>✅ Current line parses!</b>\n"
+  val no = "<b>❌ Current line invalid</b>\n"
 
   override fun charTyped(c: Char, project: Project, editor: Editor, file: PsiFile) =
     CONTINUE.also {
@@ -68,10 +68,16 @@ class TidyKeyHandler : TypedHandlerDelegate() {
       // Append the CFG only if parse succeeds
       if (!debugText.startsWith(no)) {
         val delim = List(50) { "─" }.joinToString("", "\n", "\n")
-        debugText += delim + "Chomsky normal form:\n${cfg.prettyPrint(3)}"
+        debugText += delim + "<b>Chomsky normal form:</b>\n${cfg.prettyPrint(3)}"
       }
 
-      TidyToolWindow.textArea.text = debugText
+      TidyToolWindow.textArea.text = """
+        <html>
+        <body style=\"font-family: JetBrains Mono\">
+        <pre>$debugText</pre>
+        </body>
+        </html>
+      """.trimIndent()
     }
 
   private fun String.containsHole(): Boolean =

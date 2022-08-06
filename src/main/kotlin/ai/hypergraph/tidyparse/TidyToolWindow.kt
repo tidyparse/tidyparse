@@ -7,6 +7,7 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory.SERVICE
 import java.awt.Font
 import javax.swing.JTextArea
+import javax.swing.JTextPane
 
 class TidyToolWindowFactory : ToolWindowFactory {
   override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) =
@@ -16,7 +17,8 @@ class TidyToolWindowFactory : ToolWindowFactory {
 }
 
 object TidyToolWindow {
-  val textArea = JTextArea().apply {
+  val textArea = JTextPane().apply {
+    contentType = "text/html"
     font = Font("JetBrains Mono", Font.PLAIN, 16)
     isEditable = false
   }
