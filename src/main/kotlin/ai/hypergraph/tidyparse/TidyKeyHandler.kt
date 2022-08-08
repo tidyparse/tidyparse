@@ -11,6 +11,7 @@ import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiFile
+import io.ktor.util.*
 import org.jetbrains.concurrency.runAsync
 
 var grammarFileCache: String? = ""
@@ -56,7 +57,7 @@ class TidyKeyHandler : TypedHandlerDelegate() {
       if (currentLine.containsHole()) {
         synchronized(cfg) {
           synth(currentLine, cfg).let {
-            if (it.isNotEmpty()) debugText = it.joinToString("\n")
+            if (it.isNotEmpty()) debugText = it.joinToString("\n").escapeHTML()
           }
         }
       } else {

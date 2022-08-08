@@ -10,6 +10,7 @@ import com.intellij.codeInsight.lookup.LookupElementBuilder
 import com.intellij.patterns.PlatformPatterns
 import com.intellij.psi.PlainTextTokenTypes
 import com.intellij.util.ProcessingContext
+import io.ktor.util.*
 
 class TidyCompletionContributor : CompletionContributor() {
   init {
@@ -30,7 +31,17 @@ fun synth(str: String, cfg: CFG, trim: String = str.trim(), maxResults: Int = 20
         { sequenceOf(trim) },
         String::everySingleHoleConfig,
         String::increasingLengthChunks)
-    ).take(maxResults).toList()
+    ).runningFold(listOf<String>()){ a, s -> a + s }
+      .map {
+      TidyToolWindow.textArea.text = """
+        <html>
+        <body style=\"font-family: JetBrains Mono\">
+        <pre>${it.joinToString("\n").escapeHTML()}</pre>
+        </body>
+        </html>
+      """.trimIndent()
+      it
+    }.take(maxResults).toList().last()
   }
 
 class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
