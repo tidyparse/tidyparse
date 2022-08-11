@@ -1,6 +1,6 @@
 package ai.hypergraph.tidyparse
 
-import ai.grazie.nlp.utils.takeNonWhitespaces
+import ai.hypergraph.kaliningraph.image.toHtmlTable
 import ai.hypergraph.kaliningraph.parsing.*
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate.Result.CONTINUE
@@ -69,11 +69,12 @@ class TidyKeyHandler : TypedHandlerDelegate() {
       // Append the CFG only if parse succeeds
       if (!debugText.startsWith(no)) {
         val delim = List(50) { "─" }.joinToString("", "\n", "\n")
-        debugText += delim + "<b>Chomsky normal form:</b>\n${cfg.prettyPrint(3)}"
+        debugText += delim + "<b>Chomsky normal form:</b>\n${cfg.formatAsGrid(3).toHtmlTable()}"
       }
 
       TidyToolWindow.textArea.text = """
         <html>
+        <head><style>td { padding: 15px; }</style></head>
         <body style=\"font-family: JetBrains Mono\">
         <pre>$debugText</pre>
         </body>
