@@ -46,6 +46,7 @@ class TidyKeyHandler : TypedHandlerDelegate() {
 
   private fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean) =
     runAsync {
+      if (currentLine.isBlank()) return@runAsync
       val cfg =
         if (isInGrammar)
           CFGCFG(names = currentLine.split(Regex("\\s+"))
@@ -69,12 +70,11 @@ class TidyKeyHandler : TypedHandlerDelegate() {
       // Append the CFG only if parse succeeds
       if (!debugText.startsWith(no)) {
         val delim = List(50) { "─" }.joinToString("", "\n", "\n")
-        debugText += delim + "<b>Chomsky normal form:</b>\n${cfg.formatAsGrid(3).toHtmlTable()}"
+        debugText += delim + "<b>Chomsky normal form:</b>\n${cfg.pretty.toHtmlTable()}"
       }
 
       TidyToolWindow.textArea.text = """
         <html>
-        <head><style>td { padding: 15px; }</style></head>
         <body style=\"font-family: JetBrains Mono\">
         <pre>$debugText</pre>
         </body>
