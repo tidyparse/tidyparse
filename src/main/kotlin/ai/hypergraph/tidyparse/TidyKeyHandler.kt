@@ -1,17 +1,18 @@
 package ai.hypergraph.tidyparse
 
+import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.image.toHtmlTable
 import ai.hypergraph.kaliningraph.parsing.*
+import ai.hypergraph.kaliningraph.tensor.FreeMatrix
+import ai.hypergraph.kaliningraph.types.isSubsetOf
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate.Result.CONTINUE
-import com.intellij.grazie.utils.dropPrefix
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiFile
-import io.ktor.util.*
 import org.jetbrains.concurrency.runAsync
 
 var grammarFileCache: String? = ""
@@ -28,8 +29,8 @@ fun PsiFile.recomputeGrammar(): CFG =
   }
 
 class TidyKeyHandler : TypedHandlerDelegate() {
-  val ok = "<b>✅ Current line parses!</b>\n"
-  val no = "<b>❌ Current line invalid</b>\n"
+  val ok = "<pre><b>✅ Current line parses! Tree:</b></pre>\n"
+  val no = "<pre><b>❌ Current line invalid, stubs:</b></pre>\n"
 
   override fun charTyped(c: Char, project: Project, editor: Editor, file: PsiFile) =
     CONTINUE.also {
@@ -58,29 +59,37 @@ class TidyKeyHandler : TypedHandlerDelegate() {
       if (currentLine.containsHole()) {
         synchronized(cfg) {
           synth(currentLine, cfg).let {
-            if (it.isNotEmpty()) debugText = it.joinToString("\n").escapeHTML()
+            if (it.isNotEmpty()) debugText = "<pre>" + it.joinToString("\n").escapeHTML() + "</pre>"
           }
         }
       } else {
-        val parse = cfg.parse(currentLine)
-        debugText = if (parse != null) ok + parse.prettyPrint()
-        else no + TidyToolWindow.textArea.text.dropPrefix(ok).dropPrefix(no)
+        val (parse, stubs) = cfg.parseWithStubs(currentLine)
+        debugText = if (parse != null) ok + "<pre>" + parse.prettyPrint() + "</pre>"
+        else no + stubs.renderStubs()
       }
 
       // Append the CFG only if parse succeeds
-      if (!debugText.startsWith(no)) {
-        val delim = List(50) { "─" }.joinToString("", "\n", "\n")
-        debugText += delim + "<b>Chomsky normal form:</b>\n${cfg.pretty.toHtmlTable()}"
-      }
+      val delim = List(50) { "─" }.joinToString("", "\n", "\n")
+      debugText += "<pre>$delim<b>Chomsky normal form:</b></pre>\n${cfg.pretty.map { it.escapeHTML() }.toHtmlTable()}"
 
       TidyToolWindow.textArea.text = """
         <html>
         <body style=\"font-family: JetBrains Mono\">
-        <pre>$debugText</pre>
+        $debugText
         </body>
         </html>
       """.trimIndent()
     }
+
+  fun Sequence<Tree>.renderStubs() =
+    runningFold(setOf<Tree>()) { acc, t -> if (acc.any { t.span isSubsetOf it.span }) acc else acc + t }
+      .last().map { it.prettyPrint() }.toList().partition { it.contains('─') }
+      .let { (trees, stubs) ->
+        stubs.distinct().joinToString("  ", "<pre>", "</pre>\n") { it.trim() } +
+        trees.let { asts -> if (asts.size % 2 == 1) asts + listOf("") else asts }
+        .let { asts -> FreeMatrix(asts.size / 2, 2) { r, c -> asts[r * 2 + c] } }
+        .toHtmlTable()
+      }
 
   private fun String.containsHole(): Boolean =
     "_" in this || Regex("<[^\\s>]*>") in this

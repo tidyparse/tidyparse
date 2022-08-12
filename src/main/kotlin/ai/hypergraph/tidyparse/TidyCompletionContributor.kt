@@ -1,6 +1,7 @@
 package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.cache.LRUCache
+import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.CFG
 import ai.hypergraph.kaliningraph.sat.everySingleHoleConfig
 import ai.hypergraph.kaliningraph.sat.increasingLengthChunks
@@ -10,7 +11,6 @@ import com.intellij.codeInsight.lookup.LookupElementBuilder
 import com.intellij.patterns.PlatformPatterns
 import com.intellij.psi.PlainTextTokenTypes
 import com.intellij.util.ProcessingContext
-import io.ktor.util.*
 
 class TidyCompletionContributor : CompletionContributor() {
   init {
