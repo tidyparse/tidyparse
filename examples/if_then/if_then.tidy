@@ -1,0 +1,22 @@
+ S -> X
+ X -> B | I | F | P
+ P -> I O I
+ F -> IF | BF
+IF -> if B then I else I
+BF -> if B then B else B
+ O -> + | - | * | /
+ I -> 1 | 2 | 3 | 4 | IF
+ B -> true | false | B BO B | ( B ) | BF
+BO -> and | or
+
+---
+
+if true then if true then 1 else 2 else 1
+
+if ( true and false ) then if true then 1 else 2 else false
+
+if ( true or false ) then true else 1
+
+if _ _ _ _ _ _ <BO> _ _ _ _ _
+
+_ _ _ _ _ _ _ _ _

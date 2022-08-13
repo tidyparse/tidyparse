@@ -81,14 +81,14 @@ class TidyKeyHandler : TypedHandlerDelegate() {
       """.trimIndent()
     }
 
-  fun Sequence<Tree>.renderStubs() =
+  fun Sequence<Tree>.renderStubs(): String =
     runningFold(setOf<Tree>()) { acc, t -> if (acc.any { t.span isSubsetOf it.span }) acc else acc + t }
-      .last().map { it.prettyPrint() }.toList().partition { it.contains('─') }
+      .last().map { it.prettyPrint() }.partition { it.contains('─') }
       .let { (trees, stubs) ->
         stubs.distinct().joinToString("  ", "<pre>", "</pre>\n") { it.trim() } +
         trees.let { asts -> if (asts.size % 2 == 1) asts + listOf("") else asts }
-        .let { asts -> FreeMatrix(asts.size / 2, 2) { r, c -> asts[r * 2 + c] } }
-        .toHtmlTable()
+          .let { asts -> FreeMatrix(asts.size / 2, 2) { r, c -> asts[r * 2 + c] } }
+          .toHtmlTable()
       }
 
   private fun String.containsHole(): Boolean =

@@ -3,7 +3,7 @@
 <!-- Plugin description -->
 The main goal of this project is to speed up the process of learning a new language by suggesting ways to fix source code.
 
-Tidyparse expects a file ending in `*.tidy` which contains, first, the grammar, followed by three consecutive dashes (`---`), followed by the string to parse (with optional holes). If you provide a string containing holes, it will provide some suggestions inside a tool window on the right hand side. If the string contains no holes, it will print out the parse tree in Chomsky normal form.
+Tidyparse expects a file ending in `*.tidy` which contains, first, the grammar, followed by three consecutive dashes (`---`), followed by the string to parse (with optional holes). If you provide a string containing holes, it will provide some suggestions inside a tool window on the right hand side. If the string contains no holes, it will print out the parse tree.
 <!-- Plugin description end -->
 
 ## Getting Started
@@ -39,40 +39,75 @@ The file `ocaml.tidy` can also contain this test case:
 if true then if true then 1 else 2 else 3
 ```
 
-This should produce the following output (in Chomsky normal form):
+This should produce the following output:
 
 ```
-✅ Current line parses!
-I
+✅ Current line parses! Tree:
+
+START [0..10]
 ├── if
-└── B.then.I.else.I
-    ├── true
-    └── then.I.else.I
-        ├── then
-        └── I.else.I
-            ├── I
-            │   ├── if
-            │   └── B.then.I.else.I
-            │       ├── true
-            │       └── then.I.else.I
-            │           ├── then
-            │           └── I.else.I
-            │               ├── 1
-            │               └── else.I
-            │                   ├── else
-            │                   └── 2
-            └── else.I
-                ├── else
-                └── 3
+├── true
+├── then
+├── I [3..8]
+│   ├── if
+│   ├── true
+│   ├── then
+│   ├── 1
+│   ├── else
+│   └── 2
+├── else
+└── 1
 ```
 
-To view the grammar, test case and parse tree all together, the development environment may be configured as follows:
+If the string does not parse, for example, as shown below: 
 
-<img width="1526" alt="Screen Shot 2022-05-12 at 11 00 19 PM" src="https://user-images.githubusercontent.com/175716/168202771-4d71691d-585e-4224-a7f8-31dbef053e35.png">
+`if ( true and false ) then if true then 1 else 2 else false` 
 
-Tidyparse also accepts holes (`_`) in the test case. Providing such a test case will suggest candidates that are consistent with the provided CFG. 
+Tidyparse will display branches for all syntactically valid substrings:
 
-<img width="1524" alt="Screen Shot 2022-05-12 at 10 54 52 PM" src="https://user-images.githubusercontent.com/175716/168202639-fa1ec0e9-eac9-4979-a9d6-26351e259aa6.png">
+```
+❌ Current line invalid, stubs:
+
+else  if  then  false
+
+I [7..12]   B [1..5]
+├── if      ├── (
+├── true    ├── B [2..4]
+├── then    │   ├── true
+├── 1       │   ├── and
+├── else    │   └── false
+└── 2       └── ) 
+```
+
+Tidyparse also accepts holes  in the test case. Holes can be `_`, or a nonterminal enclosed in angle brackets, such as:
+
+```
+if _ _ _ _ _ _ <BO> _ _ _ _ _
+```
+
+Providing such a test case will suggest candidates that are consistent with the provided CFG:
+
+```
+if <B> then if <B> then <B> <BO> <B> else <B> else <B>
+if <B> then <I> else if <B> <BO> <B> then <I> else <I>
+if <B> then ( <B> <BO> <B> <BO> <B> ) else <B>
+if <B> then ( ( <B> ) <BO> <B> ) else <B>
+if ( <B> ) then ( <B> <BO> <B> ) else <B>
+if if <B> then <B> else <B> <BO> <B> then <I> else <I>
+if if <B> then <B> else <B> <BO> <B> then <B> else <B>
+if <B> then <B> else if <B> <BO> <B> then <B> else <B>
+if <B> then <B> else ( <B> <BO> <B> <BO> <B> )
+if <B> then <B> else ( <B> <BO> <B> )
+if <B> <BO> <B> then ( <B> <BO> <B> ) else <B>
+if <B> then <B> <BO> ( <B> <BO> <B> ) else <B>
+if <B> then <B> else ( <B> <BO> ( <B> ) )
+if <B> then <B> else ( <B> <BO> <B> ) <BO> <B>
+if <B> then <B> <BO> <B> else <B>
+if <B> then ( <B> <BO> <B> ) else <B>
+if ( ( <B> ) ) <BO> <B> then <B> else <B>
+if ( ( <B> ) ) <BO> <B> then <I> else <I>
+if <B> then <B> else <B> <BO> ( <B> <BO> <B> )
+```
 
 ### Notes
 

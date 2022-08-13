@@ -31,16 +31,16 @@ fun synth(str: String, cfg: CFG, trim: String = str.trim(), maxResults: Int = 20
         { sequenceOf(trim) },
         String::everySingleHoleConfig,
         String::increasingLengthChunks)
-    ).runningFold(listOf<String>()){ a, s -> a + s }
+    ).runningFold(listOf<String>()) { a, s -> a + s }
       .map {
-      TidyToolWindow.textArea.text = """
-        <html>
-        <body style=\"font-family: JetBrains Mono\">
-        <pre>${it.joinToString("\n").escapeHTML()}</pre>
-        </body>
-        </html>
-      """.trimIndent()
-      it
+        TidyToolWindow.textArea.text = """
+          <html>
+          <body style=\"font-family: JetBrains Mono\">
+          <pre>${it.joinToString("\n").escapeHTML()}</pre>
+          </body>
+          </html>
+        """.trimIndent()
+        it
     }.take(maxResults).toList().last()
   }
 
@@ -59,7 +59,7 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
 
     synchronized(cfg) {
       try {
-        synth(currentLine, cfg).forEach { result.addElement(LookupElementBuilder.create(it)) }
+        synth(currentLine, cfg).forEach { result.addElement(LookupElementBuilder.create("\n" + it)) }
       } catch (e: Exception) { e.printStackTrace() }
     }
   }
