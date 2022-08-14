@@ -3,6 +3,7 @@ package ai.hypergraph.tidyparse
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.image.toHtmlTable
 import ai.hypergraph.kaliningraph.parsing.*
+import ai.hypergraph.kaliningraph.sat.multiCharSubstitutionsAndInsertions
 import ai.hypergraph.kaliningraph.sat.singleCharSubstitutionsAndInsertions
 import ai.hypergraph.kaliningraph.tensor.FreeMatrix
 import ai.hypergraph.kaliningraph.types.isSubsetOf
@@ -68,7 +69,7 @@ class TidyKeyHandler : TypedHandlerDelegate() {
       } else {
         val (parse, stubs) = cfg.parseWithStubs(currentLine)
         debugText = if (parse != null) ok + "<pre>" + parse.prettyPrint() + "</pre>"
-        else no + currentLine.repair(cfg) + stubs.renderStubs()
+        else no + currentLine.findRepairs(cfg) + stubs.renderStubs()
       }
 
       // Append the CFG only if parse succeeds
@@ -83,8 +84,8 @@ class TidyKeyHandler : TypedHandlerDelegate() {
       """.trimIndent()
     }
 
-  fun String.repair(cfg: CFG) =
-    synth(this, cfg, variations = listOf(String::singleCharSubstitutionsAndInsertions)).let {
+  private fun String.findRepairs(cfg: CFG): String =
+    synth(this, cfg, variations = listOf(String::multiCharSubstitutionsAndInsertions)).let {
       if (it.isNotEmpty()) "<pre>" + it.joinToString("\n", "", "\n${delim}Partial AST branches:").escapeHTML() + "</pre>" else ""
     }
 
