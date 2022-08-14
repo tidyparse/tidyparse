@@ -3,6 +3,7 @@ package ai.hypergraph.tidyparse
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.image.toHtmlTable
 import ai.hypergraph.kaliningraph.parsing.*
+import ai.hypergraph.kaliningraph.sat.singleCharSubstitutionsAndInsertions
 import ai.hypergraph.kaliningraph.tensor.FreeMatrix
 import ai.hypergraph.kaliningraph.types.isSubsetOf
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
@@ -18,6 +19,8 @@ import org.jetbrains.concurrency.runAsync
 var grammarFileCache: String? = ""
 lateinit var cfg: CFG
 
+val delim = List(50) { "─" }.joinToString("", "\n", "\n")
+
 fun PsiFile.recomputeGrammar(): CFG =
   runReadAction {
     val grammar = text.substringBefore("---")
@@ -30,7 +33,7 @@ fun PsiFile.recomputeGrammar(): CFG =
 
 class TidyKeyHandler : TypedHandlerDelegate() {
   val ok = "<pre><b>✅ Current line parses! Tree:</b></pre>\n"
-  val no = "<pre><b>❌ Current line invalid, stubs:</b></pre>\n"
+  val no = "<pre><b>❌ Current line invalid, possible fixes:</b></pre>\n"
 
   override fun charTyped(c: Char, project: Project, editor: Editor, file: PsiFile) =
     CONTINUE.also {
@@ -65,11 +68,10 @@ class TidyKeyHandler : TypedHandlerDelegate() {
       } else {
         val (parse, stubs) = cfg.parseWithStubs(currentLine)
         debugText = if (parse != null) ok + "<pre>" + parse.prettyPrint() + "</pre>"
-        else no + stubs.renderStubs()
+        else no + currentLine.repair(cfg) + stubs.renderStubs()
       }
 
       // Append the CFG only if parse succeeds
-      val delim = List(50) { "─" }.joinToString("", "\n", "\n")
       debugText += "<pre>$delim<b>Chomsky normal form:</b></pre>\n${cfg.pretty.map { it.escapeHTML() }.toHtmlTable()}"
 
       TidyToolWindow.textArea.text = """
@@ -79,6 +81,11 @@ class TidyKeyHandler : TypedHandlerDelegate() {
         </body>
         </html>
       """.trimIndent()
+    }
+
+  fun String.repair(cfg: CFG) =
+    synth(this, cfg, variations = listOf(String::singleCharSubstitutionsAndInsertions)).let {
+      if (it.isNotEmpty()) "<pre>" + it.joinToString("\n", "", "\n${delim}Partial AST branches:").escapeHTML() + "</pre>" else ""
     }
 
   fun Sequence<Tree>.renderStubs(): String =

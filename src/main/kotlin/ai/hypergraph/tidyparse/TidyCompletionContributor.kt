@@ -24,14 +24,17 @@ class TidyCompletionContributor : CompletionContributor() {
 
 val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
 
-fun synth(str: String, cfg: CFG, trim: String = str.trim(), maxResults: Int = 20) =
+fun synth(
+  str: String, cfg: CFG, trim: String = str.trim(), maxResults: Int = 20,
+  variations: List<(String) -> Sequence<String>> =
+    listOf(
+      String::everySingleHoleConfig,
+      String::increasingLengthChunks
+    )
+) =
   synthCache.getOrPut(trim to cfg) {
-    trim.synthesizeFrom(cfg, " ",
-      variations = listOf(
-        { sequenceOf(trim) },
-        String::everySingleHoleConfig,
-        String::increasingLengthChunks)
-    ).runningFold(listOf<String>()) { a, s -> a + s }
+    trim.synthesizeFrom(cfg, " ", variations = variations)
+      .runningFold(listOf<String>()) { a, s -> a + s }
       .map {
         TidyToolWindow.textArea.text = """
           <html>

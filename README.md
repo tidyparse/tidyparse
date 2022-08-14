@@ -61,22 +61,27 @@ START [0..10]
 
 If the string does not parse, for example, as shown below: 
 
-`if ( true and false ) then if true then 1 else 2 else false` 
+`if ( true or false ) then true else 1` 
 
-Tidyparse will display branches for all syntactically valid substrings:
+Tidyparse will display possible fixes and branches for all syntactically valid substrings:
 
 ```
-❌ Current line invalid, stubs:
+❌ Current line invalid, possible fixes:
 
-else  if  then  false
+if ( true or false ) then <I> else 1
+if ( true or false ) then true else <B>
 
-I [7..12]   B [1..5]
-├── if      ├── (
-├── true    ├── B [2..4]
-├── then    │   ├── true
-├── 1       │   ├── and
-├── else    │   └── false
-└── 2       └── ) 
+──────────────────────────────────────────────────
+Partial AST branches:
+
+else  if  then  true  1
+B [1..5]
+├── (
+├── B [2..4]
+│   ├── true
+│   ├── or
+│   └── false
+└── )
 ```
 
 Tidyparse also accepts holes  in the test case. Holes can be `_`, or a nonterminal enclosed in angle brackets, such as:
