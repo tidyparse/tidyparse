@@ -70,6 +70,14 @@ Tidyparse will display possible fixes and branches for all syntactically valid s
 
 if ( true or false ) then <I> else 1
 if ( true or false ) then true else <B>
+if ( <B> or false ) then <I> else 1
+if ( <B> or false ) then true else <B>
+if ( true <BO> false ) then <I> else 1
+if ( true <BO> false ) then true else <B>
+if ( true or <B> ) then <I> else 1
+if ( true or <B> ) then true else <B>
+if ( true or false ) then <I> else <I>
+if ( true or false ) then <B> else <B>
 
 ──────────────────────────────────────────────────
 Partial AST branches:
