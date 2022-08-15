@@ -4,7 +4,6 @@ import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.image.toHtmlTable
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.sat.multiCharSubstitutionsAndInsertions
-import ai.hypergraph.kaliningraph.sat.singleCharSubstitutionsAndInsertions
 import ai.hypergraph.kaliningraph.tensor.FreeMatrix
 import ai.hypergraph.kaliningraph.types.isSubsetOf
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
@@ -85,7 +84,7 @@ class TidyKeyHandler : TypedHandlerDelegate() {
     }
 
   private fun String.findRepairs(cfg: CFG): String =
-    synth(this, cfg, variations = listOf(String::multiCharSubstitutionsAndInsertions)).let {
+    synth(this, cfg, variations = listOf { it.multiCharSubstitutionsAndInsertions(numberOfEdits = 2) }).let {
       if (it.isNotEmpty()) "<pre>" + it.joinToString("\n", "", "\n${delim}Partial AST branches:").escapeHTML() + "</pre>" else ""
     }
 
