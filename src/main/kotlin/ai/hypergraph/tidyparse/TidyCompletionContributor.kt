@@ -6,7 +6,7 @@ import ai.hypergraph.kaliningraph.parsing.CFG
 import ai.hypergraph.kaliningraph.parsing.allTokensExceptHoles
 import ai.hypergraph.kaliningraph.parsing.everySingleHoleConfig
 import ai.hypergraph.kaliningraph.parsing.increasingLengthChunks
-import ai.hypergraph.kaliningraph.sat.synthesizeFrom
+import ai.hypergraph.kaliningraph.sat.synthesizeIncrementally
 import com.intellij.codeInsight.completion.*
 import com.intellij.codeInsight.lookup.LookupElementBuilder
 import com.intellij.patterns.PlatformPatterns
@@ -38,7 +38,13 @@ fun String.synthesizeCachingAndDisplayProgress(
   allowNTs: Boolean = true
 ) =
   synthCache.getOrPut(sanitized to cfg) {
-    sanitized.synthesizeFrom(cfg, " ", variations = variations, allowNTs = allowNTs,
+
+    sanitized.synthesizeIncrementally(
+      cfg = cfg,
+      join = " ",
+      variations = variations,
+      allowNTs = allowNTs,
+      cfgFilter = { TODO(); true },
       progress = {
         TidyToolWindow.textArea.text =
           TidyToolWindow.textArea.text.replace("Progress:.*\n".toRegex(), "Progress: ${it.escapeHTML()}\n")
