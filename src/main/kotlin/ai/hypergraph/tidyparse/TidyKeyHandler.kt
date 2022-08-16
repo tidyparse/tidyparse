@@ -90,7 +90,7 @@ class TidyKeyHandler : TypedHandlerDelegate() {
     }
 
   private fun String.findRepairs(cfg: CFG, exclusions: Set<Int>): String =
-    synth(this, cfg,
+    synth(this.also { println("Exclusions: ${allTokensExceptHoles().mapIndexed { i, it -> if(i in exclusions) "_" else it }.joinToString(" ")}") }, cfg,
       variations = listOf { it.multiTokenSubstitutionsAndInsertions(numberOfEdits = 2, exclusions = exclusions) },
       allowNTs = true
     ).let {
