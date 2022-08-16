@@ -41,7 +41,7 @@ fun String.synthesizeCachingAndDisplayProgress(
     sanitized.synthesizeFrom(cfg, " ", variations = variations, allowNTs = allowNTs,
       progress = {
         TidyToolWindow.textArea.text =
-          TidyToolWindow.textArea.text.replace("Progress:.*\n".toRegex(), "Progress: $it\n")
+          TidyToolWindow.textArea.text.replace("Progress:.*\n".toRegex(), "Progress: ${it.escapeHTML()}\n")
       }
     )
       .runningFold(listOf<String>()) { a, s -> a + s }
@@ -53,6 +53,7 @@ fun String.synthesizeCachingAndDisplayProgress(
           
 ${it.joinToString("\n").escapeHTML()}
 🔍 Progress:
+$delim
           </pre>
           </body>
           </html>
