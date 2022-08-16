@@ -3,7 +3,7 @@ package ai.hypergraph.tidyparse
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.image.toHtmlTable
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.kaliningraph.sat.multiCharSubstitutionsAndInsertions
+import ai.hypergraph.kaliningraph.parsing.multiTokenSubstitutionsAndInsertions
 import ai.hypergraph.kaliningraph.tensor.FreeMatrix
 import ai.hypergraph.kaliningraph.types.isSubsetOf
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
@@ -31,10 +31,11 @@ fun PsiFile.recomputeGrammar(): CFG =
     } else cfg
   }
 
-class TidyKeyHandler : TypedHandlerDelegate() {
-  val ok = "<pre><b>✅ Current line parses! Tree:</b></pre>\n"
-  val no = "<pre><b>❌ Current line invalid, possible fixes:</b></pre>\n"
+val ok = "<pre><b>✅ Current line parses! Tree:</b></pre>\n"
+val noMsg = "❌ Current line invalid, possible fixes:"
+val no = "<pre><b>$noMsg</b></pre>\n"
 
+class TidyKeyHandler : TypedHandlerDelegate() {
   override fun charTyped(c: Char, project: Project, editor: Editor, file: PsiFile) =
     CONTINUE.also {
       if (file.name.endsWith(".tidy")) {
@@ -48,6 +49,10 @@ class TidyKeyHandler : TypedHandlerDelegate() {
       }
     }
 
+  private fun Sequence<Tree>.allIndicesInsideParseableRegions(): Set<Int> =
+    map { it.span }.filter { 3 < it.last - it.first }
+      .flatMap { (it.first + 1) until it.last }.toSet()
+
   private fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean) =
     runAsync {
       if (currentLine.isBlank()) return@runAsync
@@ -59,6 +64,7 @@ class TidyKeyHandler : TypedHandlerDelegate() {
         else recomputeGrammar()
 
       var debugText = ""
+      val cnf = "<pre>$delim<b>Chomsky normal form:</b></pre>\n${cfg.pretty.map { it.escapeHTML() }.toHtmlTable()}"
       if (currentLine.containsHole()) {
         synchronized(cfg) {
           synth(currentLine, cfg).let {
@@ -68,11 +74,11 @@ class TidyKeyHandler : TypedHandlerDelegate() {
       } else {
         val (parse, stubs) = cfg.parseWithStubs(currentLine)
         debugText = if (parse != null) ok + "<pre>" + parse.prettyPrint() + "</pre>"
-        else no + currentLine.findRepairs(cfg) + stubs.renderStubs()
+        else no + currentLine.findRepairs(cfg, stubs.allIndicesInsideParseableRegions()) + stubs.renderStubs()
       }
 
       // Append the CFG only if parse succeeds
-      debugText += "<pre>$delim<b>Chomsky normal form:</b></pre>\n${cfg.pretty.map { it.escapeHTML() }.toHtmlTable()}"
+      debugText += cnf
 
       TidyToolWindow.textArea.text = """
         <html>
@@ -83,8 +89,11 @@ class TidyKeyHandler : TypedHandlerDelegate() {
       """.trimIndent()
     }
 
-  private fun String.findRepairs(cfg: CFG): String =
-    synth(this, cfg, variations = listOf { it.multiCharSubstitutionsAndInsertions(numberOfEdits = 2) }).let {
+  private fun String.findRepairs(cfg: CFG, exclusions: Set<Int>): String =
+    synth(this, cfg,
+      variations = listOf { it.multiTokenSubstitutionsAndInsertions(numberOfEdits = 2, exclusions = exclusions) },
+      allowNTs = true
+    ).let {
       if (it.isNotEmpty()) "<pre>" + it.joinToString("\n", "", "\n${delim}Partial AST branches:").escapeHTML() + "</pre>" else ""
     }
 

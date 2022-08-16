@@ -3,8 +3,8 @@ package ai.hypergraph.tidyparse
 import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.CFG
-import ai.hypergraph.kaliningraph.sat.everySingleHoleConfig
-import ai.hypergraph.kaliningraph.sat.increasingLengthChunks
+import ai.hypergraph.kaliningraph.parsing.everySingleHoleConfig
+import ai.hypergraph.kaliningraph.parsing.increasingLengthChunks
 import ai.hypergraph.kaliningraph.sat.synthesizeFrom
 import com.intellij.codeInsight.completion.*
 import com.intellij.codeInsight.lookup.LookupElementBuilder
@@ -30,16 +30,26 @@ fun synth(
     listOf(
       String::everySingleHoleConfig,
       String::increasingLengthChunks
-    )
+    ),
+  allowNTs: Boolean = true
 ) =
   synthCache.getOrPut(trim to cfg) {
-    trim.synthesizeFrom(cfg, " ", variations = variations)
+    trim.synthesizeFrom(cfg, " ", variations = variations, allowNTs = allowNTs,
+      progress = {
+        TidyToolWindow.textArea.text =
+          TidyToolWindow.textArea.text.replace("Progress:.*\n".toRegex(), "Progress: $it\n")
+      }
+    )
       .runningFold(listOf<String>()) { a, s -> a + s }
       .map {
         TidyToolWindow.textArea.text = """
           <html>
           <body style=\"font-family: JetBrains Mono\">
-          <pre>${it.joinToString("\n").escapeHTML()}</pre>
+          <pre>$noMsg
+          
+${it.joinToString("\n").escapeHTML()}
+🔍 Progress:
+          </pre>
           </body>
           </html>
         """.trimIndent()
