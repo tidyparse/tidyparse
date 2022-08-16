@@ -3,6 +3,7 @@ package ai.hypergraph.tidyparse
 import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.CFG
+import ai.hypergraph.kaliningraph.parsing.allTokensExceptHoles
 import ai.hypergraph.kaliningraph.parsing.everySingleHoleConfig
 import ai.hypergraph.kaliningraph.parsing.increasingLengthChunks
 import ai.hypergraph.kaliningraph.sat.synthesizeFrom
@@ -24,8 +25,11 @@ class TidyCompletionContributor : CompletionContributor() {
 
 val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
 
-fun synth(
-  str: String, cfg: CFG, trim: String = str.trim(), maxResults: Int = 20,
+fun String.synthesizeCachingAndDisplayProgress(
+  cfg: CFG,
+  tokens: List<String> = allTokensExceptHoles(),
+  sanitized: String = tokens.joinToString(" "),
+  maxResults: Int = 20,
   variations: List<(String) -> Sequence<String>> =
     listOf(
       String::everySingleHoleConfig,
@@ -33,8 +37,8 @@ fun synth(
     ),
   allowNTs: Boolean = true
 ) =
-  synthCache.getOrPut(trim to cfg) {
-    trim.synthesizeFrom(cfg, " ", variations = variations, allowNTs = allowNTs,
+  synthCache.getOrPut(sanitized to cfg) {
+    sanitized.synthesizeFrom(cfg, " ", variations = variations, allowNTs = allowNTs,
       progress = {
         TidyToolWindow.textArea.text =
           TidyToolWindow.textArea.text.replace("Progress:.*\n".toRegex(), "Progress: $it\n")
@@ -45,7 +49,7 @@ fun synth(
         TidyToolWindow.textArea.text = """
           <html>
           <body style=\"font-family: JetBrains Mono\">
-          <pre>$noMsg
+          <pre>Synthesizing...
           
 ${it.joinToString("\n").escapeHTML()}
 🔍 Progress:
@@ -72,7 +76,8 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
 
     synchronized(cfg) {
       try {
-        synth(currentLine, cfg).forEach { result.addElement(LookupElementBuilder.create("\n" + it)) }
+        currentLine.synthesizeCachingAndDisplayProgress(cfg)
+          .forEach { result.addElement(LookupElementBuilder.create("\n" + it)) }
       } catch (e: Exception) { e.printStackTrace() }
     }
   }

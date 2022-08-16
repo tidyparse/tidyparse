@@ -67,7 +67,7 @@ class TidyKeyHandler : TypedHandlerDelegate() {
       val cnf = "<pre>$delim<b>Chomsky normal form:</b></pre>\n${cfg.pretty.map { it.escapeHTML() }.toHtmlTable()}"
       if (currentLine.containsHole()) {
         synchronized(cfg) {
-          synth(currentLine, cfg).let {
+          currentLine.synthesizeCachingAndDisplayProgress(cfg).let {
             if (it.isNotEmpty()) debugText = "<pre>" + it.joinToString("\n").escapeHTML() + "</pre>"
           }
         }
@@ -89,8 +89,8 @@ class TidyKeyHandler : TypedHandlerDelegate() {
       """.trimIndent()
     }
 
-  private fun String.findRepairs(cfg: CFG, exclusions: Set<Int>): String =
-    synth(this.also { println("Exclusions: ${allTokensExceptHoles().mapIndexed { i, it -> if(i in exclusions) "_" else it }.joinToString(" ")}") }, cfg,
+  private fun String.findRepairs(cfg: CFG, exclusions: Set<Int>): String = this
+    .synthesizeCachingAndDisplayProgress(cfg,
       variations = listOf { it.multiTokenSubstitutionsAndInsertions(numberOfEdits = 2, exclusions = exclusions) },
       allowNTs = true
     ).let {
