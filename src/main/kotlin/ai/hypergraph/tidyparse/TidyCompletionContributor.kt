@@ -44,7 +44,7 @@ fun String.synthesizeCachingAndDisplayProgress(
       join = " ",
       variations = variations,
       allowNTs = allowNTs,
-      cfgFilter = { TODO(); true },
+      cfgFilter = { true },
       progress = {
         TidyToolWindow.textArea.text =
           TidyToolWindow.textArea.text.replace("Progress:.*\n".toRegex(), "Progress: ${it.escapeHTML()}\n")
