@@ -68,7 +68,7 @@ class TidyKeyHandler : TypedHandlerDelegate() {
       if (currentLine.containsHole()) {
         synchronized(cfg) {
           currentLine.synthesizeCachingAndDisplayProgress(cfg).let {
-            if (it.isNotEmpty()) debugText = "<pre>" + it.joinToString("\n").escapeHTML() + "</pre>"
+            if (it.isNotEmpty()) debugText = "<pre><b>🔍 Found ${it.size} admissible solutions!</b>\n\n" + it.joinToString("\n").escapeHTML() + "</pre>"
           }
         }
       } else {
@@ -89,9 +89,10 @@ class TidyKeyHandler : TypedHandlerDelegate() {
       """.trimIndent()
     }
 
-  private fun String.findRepairs(cfg: CFG, exclusions: Set<Int>): String = this
-    .synthesizeCachingAndDisplayProgress(cfg,
-      variations = listOf { it.multiTokenSubstitutionsAndInsertions(numberOfEdits = 2, exclusions = exclusions) },
+  private fun String.findRepairs(cfg: CFG, exclusions: Set<Int>): String =
+    synthesizeCachingAndDisplayProgress(
+      cfg = cfg,
+      variations = listOf { it.multiTokenSubstitutionsAndInsertions(numberOfEdits = 3, exclusions = exclusions) },
       allowNTs = true
     ).let {
       if (it.isNotEmpty()) "<pre>" + it.joinToString("\n", "", "\n${delim}Partial AST branches:").escapeHTML() + "</pre>" else ""
