@@ -1,7 +1,6 @@
-<p align="center"><a href="https://plugins.jetbrains.com/plugin/19570-tidyparse"><img src="src/main/resources/META-INF/pluginIcon.svg" alt="Tidyparse Logo" height="200"></a></p>
+<p align="center"><a href="https://plugins.jetbrains.com/plugin/19570-tidyparse"><img src="src/main/resources/META-INF/pluginIcon.svg" alt="Tidyparse Logo" height="160"></a></p>
 
-<p align="center">  <font size="+10">Tidyparse</font>
-</p>
+<h1 align="center">Tidyparse</h1>
 <p align="center">
  	<a href="https://plugins.jetbrains.com/plugin/19570-tidyparse" title="Tidyparse"><img src="https://img.shields.io/jetbrains/plugin/v/19570-tidyparse.svg"></a>
  	<a href="LICENSE" title="License"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"></a>
