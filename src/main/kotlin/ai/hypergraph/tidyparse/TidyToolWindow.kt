@@ -22,5 +22,9 @@ object TidyToolWindow {
     isEditable = false
   }
 
+  var text
+    get() = textArea.text
+    set(s) { textArea.text = s }
+
   val panel = JBScrollPane(textArea)
 }

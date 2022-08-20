@@ -36,7 +36,7 @@ class TidyHighlightVisitor : HighlightVisitor {
 
   fun RGB_FONT(color: Color, name: String = "${color.rgb}_font") =
     createTextAttributesKey(name, createTempTextAttributesKey(name,
-          DOC_COMMENT.defaultAttributes.clone().apply { foregroundColor = color }))
+      DOC_COMMENT.defaultAttributes.clone().apply { foregroundColor = color }))
 
   override fun visit(element: PsiElement) {
     invokeLater {
