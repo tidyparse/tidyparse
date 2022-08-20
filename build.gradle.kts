@@ -40,6 +40,7 @@ repositories { mavenCentral() }
 
 dependencies {
   implementation("ai.hypergraph:kaliningraph")
+  implementation("io.github.java-diff-utils:java-diff-utils:4.12")
 }
 
 // Configure Gradle IntelliJ Plugin - read more: https://github.com/JetBrains/gradle-intellij-plugin

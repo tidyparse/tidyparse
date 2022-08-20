@@ -95,7 +95,9 @@ class TidyKeyHandler : TypedHandlerDelegate() {
       variations = listOf { it.multiTokenSubstitutionsAndInsertions(numberOfEdits = 3, exclusions = exclusions) },
       allowNTs = true
     ).let {
-      if (it.isNotEmpty()) "<pre>" + it.joinToString("\n", "", "\n${delim}Partial AST branches:").escapeHTML() + "</pre>" else ""
+      if (it.isNotEmpty())
+        it.joinToString("\n", "<pre>", "\n") { diffAsHtml(this, it) } + "${delim}Partial AST branches:</pre>"
+      else ""
     }
 
   fun Sequence<Tree>.renderStubs(): String =
