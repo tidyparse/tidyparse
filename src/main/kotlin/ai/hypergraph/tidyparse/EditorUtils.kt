@@ -75,19 +75,23 @@ private fun CFG.preservesNTInvariance(newNT: String, oldTerminal: String) =
 fun String.treatAsNonterminal() = drop(1).dropLast(1)
 fun String.isNonterminal() = startsWith('<') && endsWith('>')
 
-fun render(solutions: List<String>) =
-    """
-        <html>
-        <body style=\"font-family: JetBrains Mono\">
-        <pre>Synthesizing...
+fun render(solutions: List<String>, prompt: String? = null): String {
+  val cnf = "<pre>$delim<b>Chomsky normal form:</b></pre>\n${cfg.pretty.map { it.escapeHTML() }.toHtmlTable()}"
+  return """
+    <html>
+    <body style=\"font-family: JetBrains Mono\">
+    <pre>Synthesizing...
     """.trimIndent() +
     solutions.joinToString("\n", "\n\n", "\n\n") +
-    """🔍 Progress:
-        $delim
+    """🔍 Solving: ${
+      prompt ?: TidyToolWindow.text.substringAfter("Solving: ").substringBefore("\n")
+    }
         </pre>
+        $cnf
         </body>
         </html>
     """.trimIndent()
+}
 
 val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
 
@@ -114,13 +118,12 @@ fun String.synthesizeCachingAndDisplayProgress(
       allowNTs = allowNTs,
       cfgFilter = { true },
       progress = {
-        TidyToolWindow.text =
-          if ("Progress:" in TidyToolWindow.text) updateProgress(it)
-          else {
-            val htmlEscaped =
-              solutions.map { diffAsHtml(tokens, it.tokenizeByWhitespace()) }
-            render(htmlEscaped)
-          }
+        if ("Solving:" in TidyToolWindow.text) updateProgress(it)
+        else {
+          val htmlEscaped =
+            solutions.map { diffAsHtml(tokens, it.tokenizeByWhitespace()) }
+          TidyToolWindow.text = render(htmlEscaped, it.escapeHTML())
+        }
       }
     ).map {
       updateSolutions(solutions, cfg, tokens, it)
@@ -141,11 +144,13 @@ private fun String.updateSolutions(
   if ("_" in this) solutions.add(it)
   else solutions.add(cfg.overrideInvariance(tokens, it.tokenizeByWhitespace()))
 
-fun updateProgress(it: String): String =
-  TidyToolWindow.text.replace(
-    "Progress:.*\n".toRegex(),
-    "Progress: $it\n"
-  )
+fun updateProgress(it: String) {
+  TidyToolWindow.text =
+    TidyToolWindow.text.replace(
+      "Solving:.*\n".toRegex(),
+      "Solving: ${it.escapeHTML()}\n"
+    )
+}
 
 fun Sequence<Tree>.allIndicesInsideParseableRegions(): Set<Int> =
   map { it.span }.filter { 3 < it.last - it.first }
@@ -166,12 +171,11 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean) =
         else recomputeGrammar()
 
       var debugText = ""
-      val cnf = "<pre>$delim<b>Chomsky normal form:</b></pre>\n${cfg.pretty.map { it.escapeHTML() }.toHtmlTable()}"
       if (currentLine.containsHole()) {
         synchronized(cfg) {
           currentLine.synthesizeCachingAndDisplayProgress(cfg).let {
             debugText = "<pre><b>🔍 Found ${it.size} admissible solutions!</b>\n\n" +
-                it.map { it.escapeHTML() }.joinToString("\n") + "</pre>"
+              it.joinToString("\n") { it.escapeHTML() } + "</pre>"
           }
         }
       } else {
@@ -181,6 +185,7 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean) =
       }
 
       // Append the CFG only if parse succeeds
+      val cnf = "<pre>$delim<b>Chomsky normal form:</b></pre>\n${cfg.pretty.map { it.escapeHTML() }.toHtmlTable()}"
       debugText += cnf
 
       TidyToolWindow.text = """

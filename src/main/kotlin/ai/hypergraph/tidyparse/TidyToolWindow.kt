@@ -22,7 +22,7 @@ object TidyToolWindow {
     isEditable = false
   }
 
-  var text
+  var text: String
     get() = textArea.text
     set(s) { textArea.text = s }
 
