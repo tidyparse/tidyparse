@@ -9,6 +9,8 @@ import ai.hypergraph.kaliningraph.sat.synthesizeIncrementally
 import ai.hypergraph.kaliningraph.tensor.FreeMatrix
 import ai.hypergraph.kaliningraph.types.isSubsetOf
 import com.github.difflib.text.DiffRow
+import com.github.difflib.text.DiffRow.Tag.CHANGE
+import com.github.difflib.text.DiffRow.Tag.INSERT
 import com.github.difflib.text.DiffRowGenerator
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
@@ -36,31 +38,50 @@ fun generateColors(n: Int): List<Color> =
 
 val generator =
   DiffRowGenerator.create()
-  .showInlineDiffs(true)
-  .inlineDiffByWord(true)
-  .newTag { f: Boolean? -> "</span>" }
-  .build()
-
-fun diffAsHtml(s1: String, s2: String): String =
-  diffAsHtml(s1.escapeHTML().tokenizeByWhitespace(), s2.escapeHTML().tokenizeByWhitespace())
+    .showInlineDiffs(true)
+    .inlineDiffByWord(true)
+    .newTag { f: Boolean? -> "</span>" }
+    .build()
 
 fun diffAsHtml(l1: List<String>, l2: List<String>): String =
   generator.generateDiffRows(l1, l2).joinToString(" ") {
     when(it.tag) {
-      DiffRow.Tag.INSERT -> it.newLine.replaceFirst("</span>", "<span style=\"background-color: #85FF7A\">")
-      DiffRow.Tag.CHANGE -> it.newLine.replaceFirst("</span>", "<span style=\"background-color: #FFC100\">")
+      INSERT -> it.newLine.replaceFirst("</span>", "<span style=\"background-color: #85FF7A\">")
+      CHANGE -> it.newLine.replaceFirst("</span>", "<span style=\"background-color: #FFC100\">")
       else -> it.newLine.replaceFirst("</span>", "<span style=\"background-color: #FFFF66\">")
     }
   }
 
-fun render(original: String, solutions: TreeSet<String>) =
+val generator2 =
+  DiffRowGenerator.create()
+    .showInlineDiffs(true)
+    .inlineDiffByWord(true)
+    .newTag { f: Boolean? -> "" }
+    .build()
+
+// TODO: maybe add a dedicated SAT constraint instead of filtering out NT invariants after?
+fun CFG.overrideInvariance(l1: List<String>, l2: List<String>): String =
+  generator2.generateDiffRows(l1, l2).joinToString(" ") { dr ->
+  val (old,new ) = dr.oldLine to dr.newLine
+  // If repair substitutes a terminal with the same NT that it belongs to, do not treat as a diff
+  if (new.isNonterminal() && preservesNTInvariance(new.treatAsNonterminal(), old)) old
+  else new
+}
+
+// Determines whether a substitution is invariant w.r.t. NT membership
+private fun CFG.preservesNTInvariance(newNT: String, oldTerminal: String) =
+  newNT in bimap[listOf(oldTerminal)]
+
+fun String.treatAsNonterminal() = drop(1).dropLast(1)
+fun String.isNonterminal() = startsWith('<') && endsWith('>')
+
+fun render(solutions: List<String>) =
     """
         <html>
         <body style=\"font-family: JetBrains Mono\">
         <pre>Synthesizing...
     """.trimIndent() +
-    if ("_" in original) solutions.joinToString("\n", "\n\n", "\n\n") { it.escapeHTML() }
-    else solutions.joinToString("\n", "\n\n", "\n\n") { diffAsHtml(original, it) } +
+    solutions.joinToString("\n", "\n\n", "\n\n") +
     """🔍 Progress:
         $delim
         </pre>
@@ -93,26 +114,37 @@ fun String.synthesizeCachingAndDisplayProgress(
       allowNTs = allowNTs,
       cfgFilter = { true },
       progress = {
-        if ("Progress:" in TidyToolWindow.text)
-          TidyToolWindow.text = updateProgress(it)
-        else
-          TidyToolWindow.text = render(this, solutions)
+        TidyToolWindow.text =
+          if ("Progress:" in TidyToolWindow.text) updateProgress(it)
+          else {
+            val htmlEscaped =
+              solutions.map { diffAsHtml(tokens, it.tokenizeByWhitespace()) }
+            render(htmlEscaped)
+          }
       }
-    ).runningFold(listOf<String>()) { a, s -> a + s }.map {
-      if (it.isNotEmpty()) {
-        solutions.add(it.last())
-        TidyToolWindow.text = render(this, solutions)
-      }
-      it
-    }.take(maxResults).toList().last()
+    ).map {
+      updateSolutions(solutions, cfg, tokens, it)
+      val htmlSolutions = if("_" in this) solutions.map { it.escapeHTML() }
+      else solutions.map { diffAsHtml(tokens, it.tokenizeByWhitespace()) }
+      TidyToolWindow.text = render(htmlSolutions)
+    }.takeWhile { solutions.size <= maxResults }.toList()
 
     solutions.toList()
   }
 
-fun updateProgress(it: String) =
+private fun String.updateSolutions(
+  solutions: TreeSet<String>,
+  cfg: CFG,
+  tokens: List<String>,
+  it: String
+) =
+  if ("_" in this) solutions.add(it)
+  else solutions.add(cfg.overrideInvariance(tokens, it.tokenizeByWhitespace()))
+
+fun updateProgress(it: String): String =
   TidyToolWindow.text.replace(
     "Progress:.*\n".toRegex(),
-    "Progress: ${it.escapeHTML()}\n"
+    "Progress: $it\n"
   )
 
 fun Sequence<Tree>.allIndicesInsideParseableRegions(): Set<Int> =
@@ -139,7 +171,7 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean) =
         synchronized(cfg) {
           currentLine.synthesizeCachingAndDisplayProgress(cfg).let {
             debugText = "<pre><b>🔍 Found ${it.size} admissible solutions!</b>\n\n" +
-                it.joinToString("\n").escapeHTML() + "</pre>"
+                it.map { it.escapeHTML() }.joinToString("\n") + "</pre>"
           }
         }
       } else {
@@ -168,7 +200,9 @@ fun String.findRepairs(cfg: CFG, exclusions: Set<Int>): String =
     allowNTs = true
   ).let {
     if (it.isNotEmpty())
-      it.joinToString("\n", "<pre>", "\n") { diffAsHtml(this, it) } + "${delim}Partial AST branches:</pre>"
+      it.joinToString("\n", "<pre>", "\n") {
+        diffAsHtml(tokenizeByWhitespace(), it.tokenizeByWhitespace())
+      } + "${delim}Partial AST branches:</pre>"
     else ""
   }
 
