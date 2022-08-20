@@ -11,7 +11,7 @@ import javax.swing.JTextPane
 class TidyToolWindowFactory : ToolWindowFactory {
   override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) =
     toolWindow.contentManager.addContent(
-      ContentFactory.getInstance().createContent(TidyToolWindow.panel, "", false)
+      ContentFactory.SERVICE.getInstance().createContent(TidyToolWindow.panel, "", false)
     )
 }
 
