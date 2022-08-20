@@ -1,14 +1,15 @@
 package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.cache.LRUCache
+import ai.hypergraph.kaliningraph.formatAsGrid
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.image.toHtmlTable
 import ai.hypergraph.kaliningraph.levenshtein
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.sat.synthesizeIncrementally
 import ai.hypergraph.kaliningraph.tensor.FreeMatrix
+import ai.hypergraph.kaliningraph.types.cache
 import ai.hypergraph.kaliningraph.types.isSubsetOf
-import com.github.difflib.text.DiffRow
 import com.github.difflib.text.DiffRow.Tag.CHANGE
 import com.github.difflib.text.DiffRow.Tag.INSERT
 import com.github.difflib.text.DiffRowGenerator
@@ -36,47 +37,51 @@ fun generateColors(n: Int): List<Color> =
     Color.getHSBColor(i.toFloat() / n.toFloat(), 0.85f, 1.0f)
   }
 
-val generator =
+private val htmlDiffGenerator: DiffRowGenerator =
   DiffRowGenerator.create()
     .showInlineDiffs(true)
     .inlineDiffByWord(true)
-    .newTag { f: Boolean? -> "</span>" }
+    .newTag { f: Boolean -> "<${if(f) "" else "/"}span>" }
     .build()
 
 fun diffAsHtml(l1: List<String>, l2: List<String>): String =
-  generator.generateDiffRows(l1, l2).joinToString(" ") {
+  htmlDiffGenerator.generateDiffRows(l1, l2).joinToString(" ") {
     when(it.tag) {
-      INSERT -> it.newLine.replaceFirst("</span>", "<span style=\"background-color: #85FF7A\">")
-      CHANGE -> it.newLine.replaceFirst("</span>", "<span style=\"background-color: #FFC100\">")
-      else -> it.newLine.replaceFirst("</span>", "<span style=\"background-color: #FFFF66\">")
+      INSERT -> it.newLine.replace("<span>", "<span style=\"background-color: #85FF7A\">")
+      CHANGE -> it.newLine.replace("<span>", "<span style=\"background-color: #FFC100\">")
+      else -> it.newLine.replace("<span>", "<span style=\"background-color: #FFFF66\">")
     }
   }
 
-val generator2 =
+private val plaintextDiffGenerator: DiffRowGenerator =
   DiffRowGenerator.create()
     .showInlineDiffs(true)
     .inlineDiffByWord(true)
-    .newTag { f: Boolean? -> "" }
+    .newTag { _ -> "" }
+    .oldTag { _ -> "" }
     .build()
 
 // TODO: maybe add a dedicated SAT constraint instead of filtering out NT invariants after?
 fun CFG.overrideInvariance(l1: List<String>, l2: List<String>): String =
-  generator2.generateDiffRows(l1, l2).joinToString(" ") { dr ->
+  plaintextDiffGenerator.generateDiffRows(l1, l2).joinToString(" ") { dr ->
   val (old,new ) = dr.oldLine to dr.newLine
   // If repair substitutes a terminal with the same NT that it belongs to, do not treat as a diff
-  if (new.isNonterminal() && preservesNTInvariance(new.treatAsNonterminal(), old)) old
-  else new
+  if (new.isNonterminal() && preservesNTInvariance(new.treatAsNonterminal(), old)) old else new
 }
 
 // Determines whether a substitution is invariant w.r.t. NT membership
 private fun CFG.preservesNTInvariance(newNT: String, oldTerminal: String) =
   newNT in bimap[listOf(oldTerminal)]
 
-fun String.treatAsNonterminal() = drop(1).dropLast(1)
-fun String.isNonterminal() = startsWith('<') && endsWith('>')
+private val la = "<".escapeHTML()
+private val ra = ">".escapeHTML()
+private fun String.treatAsNonterminal() = drop(la.length).dropLast(ra.length)
+private fun String.isNonterminal() = startsWith(la) && endsWith(ra)
+
+val CFG.prettyHTML by cache { pretty.toString().escapeHTML() }
 
 fun render(solutions: List<String>, prompt: String? = null): String {
-  val cnf = "<pre>$delim<b>Chomsky normal form:</b></pre>\n${cfg.pretty.map { it.escapeHTML() }.toHtmlTable()}"
+  val cnf = "<pre>$delim<b>Chomsky normal form:</b>\n${cfg.prettyHTML}</pre>"
   return """
     <html>
     <body style=\"font-family: JetBrains Mono\">
@@ -185,7 +190,7 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean) =
       }
 
       // Append the CFG only if parse succeeds
-      val cnf = "<pre>$delim<b>Chomsky normal form:</b></pre>\n${cfg.pretty.map { it.escapeHTML() }.toHtmlTable()}"
+      val cnf = "<pre>$delim<b>Chomsky normal form:</b>\n${cfg.prettyHTML}</pre>"
       debugText += cnf
 
       TidyToolWindow.text = """
