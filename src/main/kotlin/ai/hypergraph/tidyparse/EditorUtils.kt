@@ -121,6 +121,7 @@ fun String.synthesizeCachingAndDisplayProgress(
       allowNTs = allowNTs,
       cfgFilter = { true },
       updateProgress = { query ->
+        if (Thread.currentThread().isInterrupted) throw InterruptedException()
         if ("Solving:" in TidyToolWindow.text) updateProgress(query)
         else {
           val htmlEscaped =
