@@ -22,9 +22,13 @@ object TidyToolWindow {
     isEditable = false
   }
 
+  var lastUpdate = ""
   var text: String
     get() = textArea.text
-    set(s) { textArea.text = s }
+    set(s) {
+      if (s.length != lastUpdate.length || s != lastUpdate)
+        textArea.text = s.also { lastUpdate = it }
+    }
 
   val panel = JBScrollPane(textArea)
 }

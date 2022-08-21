@@ -1,7 +1,6 @@
 package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.cache.LRUCache
-import ai.hypergraph.kaliningraph.formatAsGrid
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.image.toHtmlTable
 import ai.hypergraph.kaliningraph.levenshtein
@@ -10,8 +9,7 @@ import ai.hypergraph.kaliningraph.sat.synthesizeIncrementally
 import ai.hypergraph.kaliningraph.tensor.FreeMatrix
 import ai.hypergraph.kaliningraph.types.cache
 import ai.hypergraph.kaliningraph.types.isSubsetOf
-import com.github.difflib.text.DiffRow.Tag.CHANGE
-import com.github.difflib.text.DiffRow.Tag.INSERT
+import com.github.difflib.text.DiffRow.Tag.*
 import com.github.difflib.text.DiffRowGenerator
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
@@ -122,7 +120,7 @@ fun String.synthesizeCachingAndDisplayProgress(
       variations = variations,
       allowNTs = allowNTs,
       cfgFilter = { true },
-      progress = {
+      updateProgress = {
         if ("Solving:" in TidyToolWindow.text) updateProgress(it)
         else {
           val htmlEscaped =
@@ -138,6 +136,22 @@ fun String.synthesizeCachingAndDisplayProgress(
     }.takeWhile { solutions.size <= maxResults }.toList()
 
     solutions.toList()
+  }
+
+fun List<String>.dittoSummarize() =
+  listOf("", *toTypedArray())
+    .windowed(2, 1).map { it[0] to it[1] }
+    .map { (a, b) -> ditto(a, b) }
+
+fun ditto(s1: String, s2: String): String =
+  plaintextDiffGenerator.generateDiffRows(
+    s1.tokenizeByWhitespace(),
+    s2.tokenizeByWhitespace()
+  ).joinToString("") {
+    when (it.tag) {
+      EQUAL -> ""
+      else -> it.newLine + " "
+    }
   }
 
 private fun String.updateSolutions(
@@ -218,12 +232,13 @@ fun String.findRepairs(cfg: CFG, exclusions: Set<Int>): String =
 
 fun Sequence<Tree>.renderStubs(): String =
   runningFold(setOf<Tree>()) { acc, t -> if (acc.any { t.span isSubsetOf it.span }) acc else acc + t }
-    .last().map { it.prettyPrint() }.partition { it.contains('─') }
+    .last().sortedBy { it.span.first }.map { it.prettyPrint() }
+    .partition { it.contains('─') }
     .let { (trees, stubs) ->
       stubs.distinct().joinToString("  ", "<pre>", "</pre>\n") { it.trim() } +
-          trees.let { asts -> if (asts.size % 2 == 1) asts + listOf("") else asts }
-            .let { asts -> FreeMatrix(asts.size / 2, 2) { r, c -> asts[r * 2 + c] } }
-            .toHtmlTable()
+        trees.let { asts -> if (asts.size % 2 == 1) asts + listOf("") else asts }
+          .let { asts -> FreeMatrix(asts.size / 2, 2) { r, c -> asts[r * 2 + c] } }
+          .toHtmlTable()
     }
 
 fun String.containsHole(): Boolean =
