@@ -109,7 +109,7 @@ fun String.synthesizeCachingAndDisplayProgress(
       String::increasingLengthChunks
     ),
   allowNTs: Boolean = true
-) =
+): List<String> =
   synthCache.getOrPut(sanitized to cfg) {
     val solutions = TreeSet(compareBy<String> {
       levenshtein(tokens.filterNot { "_" in it }, it.tokenizeByWhitespace())
@@ -120,12 +120,12 @@ fun String.synthesizeCachingAndDisplayProgress(
       variations = variations,
       allowNTs = allowNTs,
       cfgFilter = { true },
-      updateProgress = {
-        if ("Solving:" in TidyToolWindow.text) updateProgress(it)
+      updateProgress = { query ->
+        if ("Solving:" in TidyToolWindow.text) updateProgress(query)
         else {
           val htmlEscaped =
             solutions.map { diffAsHtml(tokens, it.tokenizeByWhitespace()) }
-          TidyToolWindow.text = render(htmlEscaped, it.escapeHTML())
+          TidyToolWindow.text = render(htmlEscaped, query.escapeHTML())
         }
       }
     ).map {
@@ -175,47 +175,43 @@ fun Sequence<Tree>.allIndicesInsideParseableRegions(): Set<Int> =
   map { it.span }.filter { 3 < it.last - it.first }
     .flatMap { (it.first + 1) until it.last }.toSet()
 
-var promise: Future<*>? = null
 
-fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean) =
-  promise?.cancel(true).also {
-    AppExecutorUtil.getAppExecutorService().submit {
-      if (currentLine.isBlank()) return@submit
-      val cfg =
-        if (isInGrammar)
-          CFGCFG(
-            names = currentLine.split(Regex("\\s+"))
-              .filter { it.isNotBlank() && it !in setOf("->", "|") }.toSet()
-          )
-        else recomputeGrammar()
+fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean) {
+  if (currentLine.isBlank()) return
+  val cfg =
+    if (isInGrammar)
+      CFGCFG(
+        names = currentLine.split(Regex("\\s+"))
+          .filter { it.isNotBlank() && it !in setOf("->", "|") }.toSet()
+      )
+    else recomputeGrammar()
 
-      var debugText = ""
-      if (currentLine.containsHole()) {
-        synchronized(cfg) {
-          currentLine.synthesizeCachingAndDisplayProgress(cfg).let {
-            debugText = "<pre><b>🔍 Found ${it.size} admissible solutions!</b>\n\n" +
-              it.joinToString("\n") { it.escapeHTML() } + "</pre>"
-          }
-        }
-      } else {
-        val (parse, stubs) = cfg.parseWithStubs(currentLine)
-        debugText = if (parse != null) ok + "<pre>" + parse.prettyPrint() + "</pre>"
-        else no + currentLine.findRepairs(cfg, stubs.allIndicesInsideParseableRegions()) + stubs.renderStubs()
+  var debugText = ""
+  if (currentLine.containsHole()) {
+    synchronized(cfg) {
+      currentLine.synthesizeCachingAndDisplayProgress(cfg).let {
+        debugText = "<pre><b>🔍 Found ${it.size} admissible solutions!</b>\n\n" +
+          it.joinToString("\n") { it.escapeHTML() } + "</pre>"
       }
+    }
+  } else {
+    val (parse, stubs) = cfg.parseWithStubs(currentLine)
+    debugText = if (parse != null) ok + "<pre>" + parse.prettyPrint() + "</pre>"
+    else no + currentLine.findRepairs(cfg, stubs.allIndicesInsideParseableRegions()) + stubs.renderStubs()
+  }
 
-      // Append the CFG only if parse succeeds
-      val cnf = "<pre>$delim<b>Chomsky normal form:</b>\n${cfg.prettyHTML}</pre>"
-      debugText += cnf
+  // Append the CFG only if parse succeeds
+  val cnf = "<pre>$delim<b>Chomsky normal form:</b>\n${cfg.prettyHTML}</pre>"
+  debugText += cnf
 
-      TidyToolWindow.text = """
+  TidyToolWindow.text = """
         <html>
         <body style=\"font-family: JetBrains Mono\">
         $debugText
         </body>
         </html>
       """.trimIndent()
-    }.also { promise = it }
-  }
+}
 
 fun String.findRepairs(cfg: CFG, exclusions: Set<Int>): String =
   synthesizeCachingAndDisplayProgress(

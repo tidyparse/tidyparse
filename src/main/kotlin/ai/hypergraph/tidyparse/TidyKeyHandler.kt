@@ -9,12 +9,15 @@ import ai.hypergraph.kaliningraph.types.isSubsetOf
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate.Result.CONTINUE
 import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.application.invokeLater
 import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiFile
+import com.intellij.util.concurrency.AppExecutorUtil
 import org.jetbrains.concurrency.runAsync
+import java.util.concurrent.Future
 
 var grammarFileCache: String? = ""
 lateinit var cfg: CFG
@@ -36,16 +39,23 @@ val noMsg = "❌ Current line invalid, possible fixes:"
 val no = "<pre><b>$noMsg</b></pre>\n"
 
 class TidyKeyHandler : TypedHandlerDelegate() {
+  var promise: Future<*>? = null
   override fun charTyped(c: Char, project: Project, editor: Editor, file: PsiFile) =
     CONTINUE.also {
-      if (file.name.endsWith(".tidy")) {
-        file.reconcile(
-          currentLine = editor.currentLine(),
-          isInGrammar = editor.caretModel.offset < editor.document.text.lastIndexOf("---")
-        )
+        val currentLine = runReadAction { editor.currentLine() }
+        val isInGrammar = runReadAction { editor.caretModel.offset < editor.document.text.lastIndexOf("---") }
+        if (file.name.endsWith(".tidy")) {
+          promise?.cancel(true)
+          TidyToolWindow.text = ""
+          AppExecutorUtil.getAppExecutorService().submit {
+            try {
+              file.reconcile(currentLine, isInGrammar)
+            } catch (_: InterruptedException) {
+            }
+          }.also { promise = it }
 
-        ToolWindowManager.getInstance(project).getToolWindow("Tidyparse")
-          ?.let { if (!it.isVisible) it.show() }
-      }
+          ToolWindowManager.getInstance(project).getToolWindow("Tidyparse")
+            ?.let { if (!it.isVisible) it.show() }
+        }
     }
 }
