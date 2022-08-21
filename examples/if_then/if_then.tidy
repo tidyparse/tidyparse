@@ -19,6 +19,8 @@ if ( true or false ) then true else +
 
 true or false or
 
+if ( true or false ) then true else false
+
 if ( true or false ) then true else 3 2 3
 
 if _ _ _ _ _ _ <BO> _ _ _ _ _

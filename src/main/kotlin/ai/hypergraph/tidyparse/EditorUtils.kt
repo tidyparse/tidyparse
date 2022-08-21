@@ -39,7 +39,7 @@ private val htmlDiffGenerator: DiffRowGenerator =
   DiffRowGenerator.create()
     .showInlineDiffs(true)
     .inlineDiffByWord(true)
-    .newTag { f: Boolean -> "<${if(f) "" else "/"}span>" }
+    .newTag { f: Boolean -> "<${if (f) "" else "/"}span>" }
     .build()
 
 fun diffAsHtml(l1: List<String>, l2: List<String>): String =
@@ -131,7 +131,7 @@ fun String.synthesizeCachingAndDisplayProgress(
       }
     ).map {
       updateSolutions(solutions, cfg, tokens, it)
-      val htmlSolutions = if("_" in this) solutions.map { it.escapeHTML() }
+      val htmlSolutions = if ("_" in this) solutions.map { it.escapeHTML() }
       else solutions.map { diffAsHtml(tokens, it.tokenizeByWhitespace()) }
       TidyToolWindow.text = render(htmlSolutions)
     }.takeWhile { solutions.size <= maxResults }.toList()
