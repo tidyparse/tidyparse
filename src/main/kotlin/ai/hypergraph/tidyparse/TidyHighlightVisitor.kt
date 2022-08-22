@@ -1,8 +1,5 @@
 package ai.hypergraph.tidyparse
 
-import ai.hypergraph.kaliningraph.parsing.RHS
-import ai.hypergraph.kaliningraph.parsing.terminalUnitProductions
-import ai.hypergraph.kaliningraph.parsing.terminals
 import com.intellij.codeInsight.daemon.impl.HighlightVisitor
 import com.intellij.codeInsight.daemon.impl.analysis.HighlightInfoHolder
 import com.intellij.codeInsight.highlighting.HighlightManager

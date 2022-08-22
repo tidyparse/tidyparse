@@ -16,10 +16,8 @@ import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiFile
-import com.intellij.util.concurrency.AppExecutorUtil
 import java.awt.Color
 import java.util.*
-import java.util.concurrent.Future
 
 fun Editor.currentLine(): String =
   caretModel.let { it.visualLineStart to it.visualLineEnd }
@@ -164,11 +162,12 @@ private fun String.updateSolutions(
   if ("_" in this) solutions.add(it)
   else solutions.add(cfg.overrideInvariance(tokens, it.tokenizeByWhitespace()))
 
-fun updateProgress(it: String) {
+fun updateProgress(query: String) {
+  val sanitized = query.escapeHTML()
   TidyToolWindow.text =
     TidyToolWindow.text.replace(
       "Solving:.*\n".toRegex(),
-      "Solving: ${it.escapeHTML()}\n"
+      "Solving: $sanitized\n"
     )
 }
 
@@ -176,6 +175,9 @@ fun Sequence<Tree>.allIndicesInsideParseableRegions(): Set<Int> =
   map { it.span }.filter { 3 < it.last - it.first }
     .flatMap { (it.first + 1) until it.last }.toSet()
 
+
+fun PsiFile.tryToReconcile(currentLine: String, isInGrammar: Boolean) =
+  try { reconcile(currentLine, isInGrammar) } catch (_: Exception) {}
 
 fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean) {
   if (currentLine.isBlank()) return

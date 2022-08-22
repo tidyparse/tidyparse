@@ -2,7 +2,6 @@ package ai.hypergraph.tidyparse
 
 import com.intellij.openapi.fileTypes.FileType
 import com.intellij.openapi.util.IconLoader
-import com.intellij.util.PlatformIcons
 import javax.swing.Icon
 
 object TidyFileType: FileType {
