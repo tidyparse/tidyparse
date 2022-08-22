@@ -76,23 +76,25 @@ private fun String.isNonterminal() = startsWith(la) && endsWith(ra)
 
 val CFG.prettyHTML by cache { pretty.toString().escapeHTML() }
 
-fun render(solutions: List<String>, prompt: String? = null): String {
-  val cnf = "<pre>$delim<b>Chomsky normal form:</b>\n${cfg.prettyHTML}</pre>"
-  return """
-    <html>
-    <body style=\"font-family: JetBrains Mono\">
-    <pre>Synthesizing...
-    """.trimIndent() +
-    solutions.joinToString("\n", "\n\n", "\n\n") +
-    """🔍 Solving: ${
-      prompt ?: TidyToolWindow.text.substringAfter("Solving: ").substringBefore("\n")
-    }
-        </pre>
-        $cnf
-        </body>
-        </html>
-    """.trimIndent()
-}
+fun render(
+  solutions: List<String>,
+  reason: String? = null,
+  prompt: String? = null,
+  stubs: String? = null
+): String = """
+  <html>
+  <body style=\"font-family: JetBrains Mono\">
+  <pre>${reason ?: "Synthesizing..."}
+  """.trimIndent() +
+  solutions.joinToString("\n", "\n", "\n\n") +
+  """🔍 Solving: ${
+    prompt ?: TidyToolWindow.text.substringAfter("Solving: ").substringBefore("\n")
+  }
+      </pre>${stubs ?: ""}
+      ${cfg.renderCNFToHtml()}
+      </body>
+      </html>
+  """.trimIndent()
 
 val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
 
@@ -109,6 +111,11 @@ fun String.synthesizeCachingAndDisplayProgress(
   allowNTs: Boolean = true
 ): List<String> =
   synthCache.getOrPut(sanitized to cfg) {
+    val renderedStubs =
+      if (containsHole()) null
+      else cfg.parseWithStubs(sanitized).second.renderStubs()
+    val reason = if (containsHole()) null else no
+    TidyToolWindow.text = render(emptyList(), stubs = renderedStubs, reason = reason)
     val solutions = TreeSet(compareBy<String> {
       levenshtein(tokens.filterNot { "_" in it }, it.tokenizeByWhitespace())
     }.thenBy { it.length })
@@ -124,14 +131,13 @@ fun String.synthesizeCachingAndDisplayProgress(
         else {
           val htmlEscaped =
             solutions.map { diffAsHtml(tokens, it.tokenizeByWhitespace()) }
-          TidyToolWindow.text = render(htmlEscaped, query.escapeHTML())
         }
       }
     ).map {
       updateSolutions(solutions, cfg, tokens, it)
       val htmlSolutions = if ("_" in this) solutions.map { it.escapeHTML() }
       else solutions.map { diffAsHtml(tokens, it.tokenizeByWhitespace()) }
-      TidyToolWindow.text = render(htmlSolutions)
+      TidyToolWindow.text = render(htmlSolutions, stubs = renderedStubs, reason = reason)
     }.takeWhile { solutions.size <= maxResults }.toList()
 
     solutions.toList()
@@ -199,13 +205,13 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean) {
     }
   } else {
     val (parse, stubs) = cfg.parseWithStubs(currentLine)
-    debugText = if (parse != null) ok + "<pre>" + parse.prettyPrint() + "</pre>"
-    else no + currentLine.findRepairs(cfg, stubs.allIndicesInsideParseableRegions()) + stubs.renderStubs()
+    val repairs = currentLine.findRepairs(cfg, stubs.allIndicesInsideParseableRegions())
+    debugText = if (parse != null) "<pre>$ok\n" + parse.prettyPrint() + "</pre>"
+    else "<pre>$no" + repairs + "</pre>" + stubs.renderStubs()
   }
 
   // Append the CFG only if parse succeeds
-  val cnf = "<pre>$delim<b>Chomsky normal form:</b>\n${cfg.prettyHTML}</pre>"
-  debugText += cnf
+  debugText += cfg.renderCNFToHtml()
 
   TidyToolWindow.text = """
         <html>
@@ -216,6 +222,8 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean) {
       """.trimIndent()
 }
 
+fun CFG.renderCNFToHtml(): String = "<pre>$delim<b>Chomsky normal form:</b>\n${prettyHTML}</pre>"
+
 fun String.findRepairs(cfg: CFG, exclusions: Set<Int>): String =
   synthesizeCachingAndDisplayProgress(
     cfg = cfg,
@@ -223,9 +231,9 @@ fun String.findRepairs(cfg: CFG, exclusions: Set<Int>): String =
     allowNTs = true
   ).let {
     if (it.isNotEmpty())
-      it.joinToString("\n", "<pre>", "\n") {
+      it.joinToString("\n", "\n", "\n") {
         diffAsHtml(tokenizeByWhitespace(), it.tokenizeByWhitespace())
-      } + "${delim}Partial AST branches:</pre>"
+      }
     else ""
   }
 
@@ -234,7 +242,7 @@ fun Sequence<Tree>.renderStubs(): String =
     .last().sortedBy { it.span.first }.map { it.prettyPrint() }
     .partition { it.contains('─') }
     .let { (trees, stubs) ->
-      stubs.distinct().joinToString("  ", "<pre>", "</pre>\n") { it.trim() } +
+      stubs.distinct().joinToString("  ", "<pre>${delim}Partial AST branches:\n\n", "</pre>\n") { it.trim() } +
         trees.let { asts -> if (asts.size % 2 == 1) asts + listOf("") else asts }
           .let { asts -> FreeMatrix(asts.size / 2, 2) { r, c -> asts[r * 2 + c] } }
           .toHtmlTable()

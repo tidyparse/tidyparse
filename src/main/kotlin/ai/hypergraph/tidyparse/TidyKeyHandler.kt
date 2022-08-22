@@ -28,9 +28,8 @@ fun PsiFile.recomputeGrammar(): CFG =
     } else cfg
   }
 
-val ok = "<pre><b>✅ Current line parses! Tree:</b></pre>\n"
-val noMsg = "❌ Current line invalid, possible fixes:"
-val no = "<pre><b>$noMsg</b></pre>\n"
+val ok = "<b>✅ Current line parses! Tree:</b>\n"
+val no = "<b>❌ Current line invalid, possible fixes:</b>\n"
 
 class TidyKeyHandler : TypedHandlerDelegate() {
   var promise: Future<*>? = null
