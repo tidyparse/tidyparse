@@ -9,7 +9,6 @@ import com.intellij.codeInsight.editorActions.TypedHandlerDelegate.Result.CONTIN
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.editor.Editor
-import com.intellij.openapi.fileTypes.FileType
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiFile
@@ -41,29 +40,29 @@ class TidyKeyHandler : TypedHandlerDelegate() {
 //      it.substring(0, index) + c + it.substring(index)
 //    }, project, editor, file)
 
-  override fun charTyped(c: Char, project: Project, editor: Editor, file: PsiFile) =
+  override fun charTyped(c: Char, project: Project, editor: Editor, file: PsiFile): Result =
     handle(runReadAction { editor.currentLine() }, project, editor, file)
 }
 
 class TidyBackspaceHandler : BackspaceHandlerDelegate() {
   override fun beforeCharDeleted(c: Char, file: PsiFile, editor: Editor) = Unit
 
-  override fun charDeleted(c: Char, file: PsiFile, editor: Editor) =
+  override fun charDeleted(c: Char, file: PsiFile, editor: Editor): Boolean =
     true.also { handle(runReadAction { editor.currentLine() }, editor.project!!, editor, file) }
 }
 
-var sanitizedString: String = ""
+var cached: String = ""
 var promise: Future<*>? = null
 
 private fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile) = CONTINUE.also {
   val isInGrammar = runReadAction { editor.caretModel.offset < editor.document.text.lastIndexOf("---") }
-  val sanitized = currentLine.tokenizeByWhitespace().joinToString(" ")
-  if (file.name.endsWith(".tidy") && sanitized != sanitizedString) {
-    sanitizedString = sanitized
+  val sanitized = currentLine.trim().tokenizeByWhitespace().joinToString(" ")
+  if (file.name.endsWith(".tidy") && sanitized != cached) {
+    cached = sanitized
     promise?.cancel(true)
     TidyToolWindow.text = ""
     promise = AppExecutorUtil.getAppExecutorService()
-      .submit { file.tryToReconcile(currentLine, isInGrammar) }
+      .submit { file.tryToReconcile(sanitized, isInGrammar) }
 
     ToolWindowManager.getInstance(project).getToolWindow("Tidyparse")
       ?.let { if (!it.isVisible) it.show() }

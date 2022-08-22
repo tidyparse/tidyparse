@@ -31,7 +31,7 @@ B ->  true | false
 
 true && true
 true || false
-if 1 then 2 else 3
+if 1 then 2 else true
 let rec map f l = match l with | [] -> [] | h :: t -> ( f h ) :: ( map f t )
 
 let rec foldright f l b = match l with | [] -> b | h :: t -> f h ( foldright a b )

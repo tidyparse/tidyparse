@@ -1,18 +1,22 @@
-START -> D T P
+START -> D T P | VA
 P -> A | ( P ) | ( P ) | { P } | [ P ] | < P > | P P
 D -> public | static | void | D D
-A -> ε | w | . | ; | , | = | A A
+A -> ε | w | . | ; | , | A A
 W -> w
 T -> W | W < T >
+VA -> TD W = P
+TD -> PT | T
 PT -> byte | short | int | long | float | double | char | String | null | boolean
 KW -> class | null | true | false | void | for | if
 KW -> new | return | private | String | this | public | import
 
 ---
 
+byte w = w . w ( ) ;
+
 public static void w ( w , w ) { w w = w . ( w ) }
 
-public static void w ( w w , w w ) { w w = w . ( w ) ; w w ; }
+public static void w ( w w , w w ) { w w = w . ( w ) ; w w ; } 
 
 public static void w ( w w , w w ) { w w = w . ( w ) ; w w ; ) }
 

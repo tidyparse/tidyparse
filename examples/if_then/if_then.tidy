@@ -19,6 +19,8 @@ if ( true or false ) then true else +
 
 true or false or
 
+if ( true and false ) then if true then 3 else 2 else 1
+
 if ( true or false ) then true else false
 
 if ( true or false ) then true else 3 2 3

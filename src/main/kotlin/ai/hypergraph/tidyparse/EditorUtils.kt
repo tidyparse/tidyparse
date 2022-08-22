@@ -128,10 +128,6 @@ fun String.synthesizeCachingAndDisplayProgress(
       updateProgress = { query ->
         if (Thread.currentThread().isInterrupted) throw InterruptedException()
         if ("Solving:" in TidyToolWindow.text) updateProgress(query)
-        else {
-          val htmlEscaped =
-            solutions.map { diffAsHtml(tokens, it.tokenizeByWhitespace()) }
-        }
       }
     ).map {
       updateSolutions(solutions, cfg, tokens, it)
@@ -249,5 +245,4 @@ fun Sequence<Tree>.renderStubs(): String =
           .toHtmlTable()
     }
 
-fun String.containsHole(): Boolean =
-  "_" in this || Regex("<[^\\s>]*>") in this
+fun String.containsHole(): Boolean = "_" in this || Regex("<[^\\s>]*>") in this
