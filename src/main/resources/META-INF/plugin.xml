@@ -8,6 +8,7 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <typedHandler implementation="ai.hypergraph.tidyparse.TidyKeyHandler"/>
+        <backspaceHandlerDelegate implementation="ai.hypergraph.tidyparse.TidyBackspaceHandler"/>
         <toolWindow id="Tidyparse" secondary="true" icon="AllIcons.General.Modified" anchor="right"
                     factoryClass="ai.hypergraph.tidyparse.TidyToolWindowFactory"/>
         <completion.contributor language="any"

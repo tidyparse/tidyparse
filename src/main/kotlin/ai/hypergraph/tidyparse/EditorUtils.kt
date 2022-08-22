@@ -205,9 +205,10 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean) {
     }
   } else {
     val (parse, stubs) = cfg.parseWithStubs(currentLine)
-    val repairs = currentLine.findRepairs(cfg, stubs.allIndicesInsideParseableRegions())
-    debugText = if (parse != null) "<pre>$ok\n" + parse.prettyPrint() + "</pre>"
-    else "<pre>$no" + repairs + "</pre>" + stubs.renderStubs()
+    debugText = if (parse != null) "<pre>$ok\n" + parse.prettyPrint() + "</pre>" else {
+      val repairs = currentLine.findRepairs(cfg, stubs.allIndicesInsideParseableRegions())
+      "<pre>$no" + repairs + "</pre>" + stubs.renderStubs()
+    }
   }
 
   // Append the CFG only if parse succeeds
