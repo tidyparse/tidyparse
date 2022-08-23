@@ -13,6 +13,7 @@ import com.github.difflib.text.DiffRow.Tag.*
 import com.github.difflib.text.DiffRowGenerator
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiFile
@@ -178,10 +179,10 @@ fun Sequence<Tree>.allIndicesInsideParseableRegions(): Set<Int> =
     .flatMap { (it.first + 1) until it.last }.toSet()
 
 
-fun PsiFile.tryToReconcile(currentLine: String, isInGrammar: Boolean) =
-  try { reconcile(currentLine, isInGrammar) } catch (_: Exception) {}
+fun PsiFile.tryToReconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) =
+  try { reconcile(currentLine, isInGrammar, caretPos) } catch (_: Exception) {}
 
-fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean) {
+fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) {
   if (currentLine.isBlank()) return
   val cfg =
     if (isInGrammar)
@@ -202,7 +203,8 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean) {
   } else {
     val (parse, stubs) = cfg.parseWithStubs(currentLine)
     debugText = if (parse != null) "<pre>$ok\n" + parse.prettyPrint() + "</pre>" else {
-      val repairs = currentLine.findRepairs(cfg, stubs.allIndicesInsideParseableRegions())
+      val exclude = stubs.allIndicesInsideParseableRegions()
+      val repairs = currentLine.findRepairs(cfg, exclude, caretPos)
       "<pre>$no" + repairs + "</pre>" + stubs.renderStubs()
     }
   }
@@ -224,10 +226,16 @@ fun CFG.renderCNFToHtml(): String =
     "(${nonterminals.size} nonterminals / ${terminals.size} terminals / $size productions)" +
     "\n${prettyHTML}</pre>"
 
-fun String.findRepairs(cfg: CFG, exclusions: Set<Int>): String =
+fun String.findRepairs(cfg: CFG, exclusions: Set<Int>, caretPos: Int): String =
   synthesizeCachingAndDisplayProgress(
     cfg = cfg,
-    variations = listOf { it.multiTokenSubstitutionsAndInsertions(numberOfEdits = 3, exclusions = exclusions) },
+    variations = listOf {
+      it.multiTokenSubstitutionsAndInsertions(
+        numberOfEdits = 3,
+        exclusions = exclusions,
+        caretPos = caretPos
+      )
+    },
     allowNTs = true
   ).let {
     if (it.isEmpty()) ""

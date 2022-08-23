@@ -1,12 +1,12 @@
 START -> VA
-A -> ε | w | . | ; | , | A A
+VA -> TD W = P ;
+A -> ε | w | . | , | A A
 P -> A | ( P ) | ( P ) | { P } | [ P ] | < P > | P P
 W -> w
-VA -> TD W = P
 TD -> PT | T
 
 PT -> byte | short | int | long | float | double | char | String | null | boolean
 
 ---
 
-byte w = w . w ( ) ;
+byte w = w . w (

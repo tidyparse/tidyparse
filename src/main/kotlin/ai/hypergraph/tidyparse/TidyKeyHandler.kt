@@ -55,14 +55,17 @@ var cached: String = ""
 var promise: Future<*>? = null
 
 private fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile) = CONTINUE.also {
-  val isInGrammar = runReadAction { editor.caretModel.offset < editor.document.text.lastIndexOf("---") }
+  val (caretPos, isInGrammar) = runReadAction {
+    editor.caretModel.logicalPosition.column to
+      (editor.caretModel.offset < editor.document.text.lastIndexOf("---"))
+  }
   val sanitized = currentLine.trim().tokenizeByWhitespace().joinToString(" ")
   if (file.name.endsWith(".tidy") && sanitized != cached) {
     cached = sanitized
     promise?.cancel(true)
     TidyToolWindow.text = ""
     promise = AppExecutorUtil.getAppExecutorService()
-      .submit { file.tryToReconcile(sanitized, isInGrammar) }
+      .submit { file.tryToReconcile(sanitized, isInGrammar, caretPos) }
 
     ToolWindowManager.getInstance(project).getToolWindow("Tidyparse")
       ?.let { if (!it.isVisible) it.show() }
