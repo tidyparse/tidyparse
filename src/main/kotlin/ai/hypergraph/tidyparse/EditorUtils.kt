@@ -13,7 +13,6 @@ import com.github.difflib.text.DiffRow.Tag.*
 import com.github.difflib.text.DiffRowGenerator
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
-import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiFile
@@ -178,6 +177,8 @@ fun Sequence<Tree>.allIndicesInsideParseableRegions(): Set<Int> =
   map { it.span }.filter { 3 < it.last - it.first }
     .flatMap { (it.first + 1) until it.last }.toSet()
 
+fun Sequence<Tree>.bordersOfParsable(): Set<Int> =
+  map { it.span }.flatMap { listOf(it.first, it.last) }.toSet()
 
 fun PsiFile.tryToReconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) =
   try { reconcile(currentLine, isInGrammar, caretPos) } catch (_: Exception) {}
@@ -204,7 +205,8 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) 
     val (parse, stubs) = cfg.parseWithStubs(currentLine)
     debugText = if (parse != null) "<pre>$ok\n" + parse.prettyPrint() + "</pre>" else {
       val exclude = stubs.allIndicesInsideParseableRegions()
-      val repairs = currentLine.findRepairs(cfg, exclude, caretPos)
+      val repairs = currentLine.findRepairs(cfg, exclude,
+        fishyLocations = listOf(caretPos) + stubs.bordersOfParsable())
       "<pre>$no" + repairs + "</pre>" + stubs.renderStubs()
     }
   }
@@ -226,14 +228,14 @@ fun CFG.renderCNFToHtml(): String =
     "(${nonterminals.size} nonterminals / ${terminals.size} terminals / $size productions)" +
     "\n${prettyHTML}</pre>"
 
-fun String.findRepairs(cfg: CFG, exclusions: Set<Int>, caretPos: Int): String =
+fun String.findRepairs(cfg: CFG, exclusions: Set<Int>, fishyLocations: List<Int>): String =
   synthesizeCachingAndDisplayProgress(
     cfg = cfg,
     variations = listOf {
       it.multiTokenSubstitutionsAndInsertions(
         numberOfEdits = 3,
         exclusions = exclusions,
-        caretPos = caretPos
+        fishyLocations = fishyLocations
       )
     },
     allowNTs = true
