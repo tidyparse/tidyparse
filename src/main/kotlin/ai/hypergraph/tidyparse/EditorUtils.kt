@@ -86,7 +86,7 @@ fun render(
   <body style=\"font-family: JetBrains Mono\">
   <pre>${reason ?: "Synthesizing..."}
   """.trimIndent() +
-  solutions.joinToString("\n", "\n", "\n\n") +
+  solutions.joinToString("\n", "\n\n", "\n\n") +
   """🔍 Solving: ${
     prompt ?: TidyToolWindow.text.substringAfter("Solving: ").substringBefore("\n")
   }
@@ -219,7 +219,10 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean) {
       """.trimIndent()
 }
 
-fun CFG.renderCNFToHtml(): String = "<pre>$delim<b>Chomsky normal form:</b>\n${prettyHTML}</pre>"
+fun CFG.renderCNFToHtml(): String =
+  "<pre>$delim<b>Chomsky normal form</b>: " +
+    "(${nonterminals.size} nonterminals / ${terminals.size} terminals / $size productions)" +
+    "\n${prettyHTML}</pre>"
 
 fun String.findRepairs(cfg: CFG, exclusions: Set<Int>): String =
   synthesizeCachingAndDisplayProgress(
@@ -227,11 +230,10 @@ fun String.findRepairs(cfg: CFG, exclusions: Set<Int>): String =
     variations = listOf { it.multiTokenSubstitutionsAndInsertions(numberOfEdits = 3, exclusions = exclusions) },
     allowNTs = true
   ).let {
-    if (it.isNotEmpty())
-      it.joinToString("\n", "\n", "\n") {
-        diffAsHtml(tokenizeByWhitespace(), it.tokenizeByWhitespace())
-      }
-    else ""
+    if (it.isEmpty()) ""
+    else it.joinToString("\n", "\n", "\n") {
+      diffAsHtml(tokenizeByWhitespace(), it.tokenizeByWhitespace())
+    }
   }
 
 fun Sequence<Tree>.renderStubs(): String =
