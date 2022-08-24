@@ -90,8 +90,7 @@ fun render(
   """🔍 Solving: ${
     prompt ?: TidyToolWindow.text.substringAfter("Solving: ").substringBefore("\n")
   }
-      </pre>${stubs ?: ""}
-      ${cfg.renderCNFToHtml()}
+      </pre>${stubs ?: ""}${cfg.renderCNFToHtml()}
       </body>
       </html>
   """.trimIndent()
@@ -202,11 +201,13 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) 
       }
     }
   } else {
-    val (parse, stubs) = cfg.parseWithStubs(currentLine)
-    debugText = if (parse != null) "<pre>$ok\n" + parse.prettyPrint() + "</pre>" else {
+    val (parseForest, stubs) = cfg.parseWithStubs(currentLine)
+    debugText = if (parseForest.isNotEmpty()) {
+      if (parseForest.size == 1) "<pre>$ok\n🌳" + parseForest.first().prettyPrint() + "</pre>"
+      else "<pre>$ambig\n🌳" + parseForest.joinToString("\n\n") { it.prettyPrint() } + "</pre>"
+    } else {
       val exclude = stubs.allIndicesInsideParseableRegions()
-      val repairs = currentLine.findRepairs(cfg, exclude,
-        fishyLocations = listOf(caretPos) + stubs.bordersOfParsable())
+      val repairs = currentLine.findRepairs(cfg, exclude, fishyLocations = listOf(caretPos))
       "<pre>$no" + repairs + "</pre>" + stubs.renderStubs()
     }
   }
@@ -246,15 +247,21 @@ fun String.findRepairs(cfg: CFG, exclusions: Set<Int>, fishyLocations: List<Int>
     }
   }
 
+
 fun Sequence<Tree>.renderStubs(): String =
   runningFold(setOf<Tree>()) { acc, t -> if (acc.any { t.span isSubsetOf it.span }) acc else acc + t }
     .last().sortedBy { it.span.first }.map { it.prettyPrint() }
     .partition { it.contains('─') }
     .let { (trees, stubs) ->
-      stubs.distinct().joinToString("  ", "<pre>${delim}Partial AST branches:\n\n", "</pre>\n") { it.trim() } +
+      "<pre>${delim}Partial AST branches:</pre>\n\n" +
+      stubs.distinct().mapIndexed { i, it -> "🌿" + it.trim() }
+        .let { asts -> FreeMatrix(asts.size / 3, 3) { r, c ->
+          asts[r * 3 + c].let { it.ifBlank { "" } } }
+        }.toHtmlTable() +
         trees.let { asts -> if (asts.size % 2 == 1) asts + listOf("") else asts }
-          .let { asts -> FreeMatrix(asts.size / 2, 2) { r, c -> asts[r * 2 + c] } }
-          .toHtmlTable()
+          .let { asts -> FreeMatrix(asts.size / 2, 2) { r, c ->
+            asts[r * 2 + c].let { if(it.isNotBlank()) "🌿$it" else "" } }
+          }.toHtmlTable()
     }
 
 fun String.containsHole(): Boolean = "_" in this || Regex("<[^\\s>]*>") in this

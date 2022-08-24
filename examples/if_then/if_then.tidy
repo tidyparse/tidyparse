@@ -11,15 +11,15 @@ BO -> and | or
 
 ---
 
-if true then if true then 1 else 3 else 2
+if true then if true then 1 else 3 else true
 
 if ( true and false ) then if true then true else 2 else 1
 
-if ( true or false ) then true else + +
+if ( true or false ) + + then true else
 
-true or false or
+true or false
 
-if ( true and false ) then if true then 3 else 2 else 1
+if ( true and false ) then if true then 3 else 2 else false
 
 if ( true or false ) then true else false
 

@@ -30,8 +30,9 @@ fun PsiFile.recomputeGrammar(): CFG =
     } else cfg
   }
 
-val ok = "<b>✅ Current line parses! Tree:</b>\n"
-val no = "<b>❌ Current line invalid, possible fixes:</b>\n"
+val ok = "<b>✅ Current line unambiguously parses! Parse tree:</b>\n"
+val ambig = "<b>⚠️ Current line parses, but is ambiguous:</b>\n"
+val no = "<b>❌ Current line is invalid, possible fixes:</b>\n"
 
 class TidyKeyHandler : TypedHandlerDelegate() {
 //  override fun beforeCharTyped(c: Char, project: Project, editor: Editor, file: PsiFile, fileType: FileType) =
