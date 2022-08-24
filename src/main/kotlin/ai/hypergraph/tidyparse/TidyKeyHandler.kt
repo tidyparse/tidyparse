@@ -18,7 +18,7 @@ import java.util.concurrent.Future
 var grammarFileCache: String? = ""
 lateinit var cfg: CFG
 
-val delim = List(50) { "─" }.joinToString("", "\n", "\n")
+val delim = List(120) { "─" }.joinToString("", "\n", "\n")
 
 fun PsiFile.recomputeGrammar(): CFG =
   runReadAction {
@@ -33,6 +33,10 @@ fun PsiFile.recomputeGrammar(): CFG =
 val ok = "<b>✅ Current line unambiguously parses! Parse tree:</b>\n"
 val ambig = "<b>⚠️ Current line parses, but is ambiguous:</b>\n"
 val no = "<b>❌ Current line is invalid, possible fixes:</b>\n"
+val legend =
+  "(<span style=\"background-color: #85FF7A\">  </span> = INSERTION, " +
+  "<span style=\"background-color: #FFC100\">  </span> = SUBSTITUTION, " +
+  "<span style=\"background-color: #FFCCCB\">  </span> = DELETION)"
 
 class TidyKeyHandler : TypedHandlerDelegate() {
 //  override fun beforeCharTyped(c: Char, project: Project, editor: Editor, file: PsiFile, fileType: FileType) =

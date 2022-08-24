@@ -38,13 +38,15 @@ private val htmlDiffGenerator: DiffRowGenerator =
     .showInlineDiffs(true)
     .inlineDiffByWord(true)
     .newTag { f: Boolean -> "<${if (f) "" else "/"}span>" }
+    .oldTag { _ -> "" }
     .build()
 
 fun diffAsHtml(l1: List<String>, l2: List<String>): String =
   htmlDiffGenerator.generateDiffRows(l1, l2).joinToString(" ") {
-    when(it.tag) {
+    when (it.tag) {
       INSERT -> it.newLine.replace("<span>", "<span style=\"background-color: #85FF7A\">")
       CHANGE -> it.newLine.replace("<span>", "<span style=\"background-color: #FFC100\">")
+      DELETE -> "<span style=\"background-color: #FFCCCB\">${List(it.oldLine.length) { " " }.joinToString("")}</span>"
       else -> it.newLine.replace("<span>", "<span style=\"background-color: #FFFF66\">")
     }
   }
@@ -86,11 +88,13 @@ fun render(
   <body style=\"font-family: JetBrains Mono\">
   <pre>${reason ?: "Synthesizing..."}
   """.trimIndent() +
-  solutions.joinToString("\n", "\n\n", "\n\n") +
+  // TODO: legend
+  solutions.joinToString("\n", "\n", "\n") +
   """🔍 Solving: ${
     prompt ?: TidyToolWindow.text.substringAfter("Solving: ").substringBefore("\n")
   }
-      </pre>${stubs ?: ""}${cfg.renderCNFToHtml()}
+  
+$legend</pre>${stubs ?: ""}${cfg.renderCNFToHtml()}
       </body>
       </html>
   """.trimIndent()
@@ -110,14 +114,11 @@ fun String.synthesizeCachingAndDisplayProgress(
   allowNTs: Boolean = true
 ): List<String> =
   synthCache.getOrPut(sanitized to cfg) {
-    val renderedStubs =
-      if (containsHole()) null
+    val renderedStubs = if (containsHole()) null
       else cfg.parseWithStubs(sanitized).second.renderStubs()
     val reason = if (containsHole()) null else no
-    TidyToolWindow.text = render(emptyList(), stubs = renderedStubs, reason = reason)
-    val solutions = TreeSet(compareBy<String> {
-      levenshtein(tokens.filterNot { "_" in it }, it.tokenizeByWhitespace())
-    }.thenBy { it.length })
+    TidyToolWindow.text = render(emptyList(), stubs = renderedStubs, reason = reason).also { println(it) }
+    val solutions = TreeSet(compareBy(tokenwiseEdits(tokens)).thenBy { it.length })
     sanitized.synthesizeIncrementally(
       cfg = cfg,
       join = " ",
@@ -137,6 +138,9 @@ fun String.synthesizeCachingAndDisplayProgress(
 
     solutions.toList()
   }
+
+private fun tokenwiseEdits(tokens: List<String>): (String) -> Comparable<*> =
+  { levenshtein(tokens.filterNot { "_" in it }, it.tokenizeByWhitespace()) }
 
 fun List<String>.dittoSummarize() =
   listOf("", *toTypedArray())
@@ -208,7 +212,7 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) 
     } else {
       val exclude = stubs.allIndicesInsideParseableRegions()
       val repairs = currentLine.findRepairs(cfg, exclude, fishyLocations = listOf(caretPos))
-      "<pre>$no" + repairs + "</pre>" + stubs.renderStubs()
+      "<pre>$no" + repairs + "\n$legend</pre>" + stubs.renderStubs()
     }
   }
 
@@ -225,7 +229,7 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) 
 }
 
 fun CFG.renderCNFToHtml(): String =
-  "<pre>$delim<b>Chomsky normal form</b>: " +
+  "<pre>$delim<b>Chomsky normal form</b>:\n" +
     "(${nonterminals.size} nonterminals / ${terminals.size} terminals / $size productions)" +
     "\n${prettyHTML}</pre>"
 
@@ -253,15 +257,15 @@ fun Sequence<Tree>.renderStubs(): String =
     .last().sortedBy { it.span.first }.map { it.prettyPrint() }
     .partition { it.contains('─') }
     .let { (trees, stubs) ->
-      "<pre>${delim}Partial AST branches:</pre>\n\n" +
-      stubs.distinct().mapIndexed { i, it -> "🌿" + it.trim() }
+      "<pre>$delim<b>Partial AST branches</b>:</pre>\n\n" +
+      stubs.distinct().mapIndexed { i, it -> "🌿── " + it.trim() }
         .let { asts -> FreeMatrix(asts.size / 3, 3) { r, c ->
           asts[r * 3 + c].let { it.ifBlank { "" } } }
         }.toHtmlTable() +
-        trees.let { asts -> if (asts.size % 2 == 1) asts + listOf("") else asts }
-          .let { asts -> FreeMatrix(asts.size / 2, 2) { r, c ->
-            asts[r * 2 + c].let { if(it.isNotBlank()) "🌿$it" else "" } }
-          }.toHtmlTable()
+      trees.let { asts -> if (asts.size % 2 == 1) asts + listOf("") else asts }
+        .let { asts -> FreeMatrix(asts.size / 2, 2) { r, c ->
+          asts[r * 2 + c].let { if(it.isNotBlank()) "🌿$it" else "" } }
+        }.toHtmlTable()
     }
 
 fun String.containsHole(): Boolean = "_" in this || Regex("<[^\\s>]*>") in this
