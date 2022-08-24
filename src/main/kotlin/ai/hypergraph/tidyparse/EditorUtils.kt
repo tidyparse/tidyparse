@@ -38,13 +38,15 @@ private val htmlDiffGenerator: DiffRowGenerator =
     .showInlineDiffs(true)
     .inlineDiffByWord(true)
     .newTag { f: Boolean -> "<${if (f) "" else "/"}span>" }
+    .oldTag { _ -> "" }
     .build()
 
 fun diffAsHtml(l1: List<String>, l2: List<String>): String =
   htmlDiffGenerator.generateDiffRows(l1, l2).joinToString(" ") {
-    when(it.tag) {
+    when (it.tag) {
       INSERT -> it.newLine.replace("<span>", "<span style=\"background-color: #85FF7A\">")
       CHANGE -> it.newLine.replace("<span>", "<span style=\"background-color: #FFC100\">")
+      DELETE -> "<span style=\"background-color: #FFCCCB\">${List(it.oldLine.length) { " " }.joinToString("")}</span>"
       else -> it.newLine.replace("<span>", "<span style=\"background-color: #FFFF66\">")
     }
   }
@@ -86,6 +88,10 @@ fun render(
   <body style=\"font-family: JetBrains Mono\">
   <pre>${reason ?: "Synthesizing..."}
   """.trimIndent() +
+  // TODO: legend
+//<span style=\"background-color: #85FF7A\">List(3) { " " }.joinToString("")</span> = INSERT
+//<span style=\"background-color: #FFC100\">List(3) { " " }.joinToString("")</span> = CHANGE
+//<span style=\"background-color: #FFCCCB\">List(3) { " " }.joinToString("")</span> = DELETE
   solutions.joinToString("\n", "\n\n", "\n\n") +
   """🔍 Solving: ${
     prompt ?: TidyToolWindow.text.substringAfter("Solving: ").substringBefore("\n")
@@ -254,14 +260,14 @@ fun Sequence<Tree>.renderStubs(): String =
     .partition { it.contains('─') }
     .let { (trees, stubs) ->
       "<pre>${delim}Partial AST branches:</pre>\n\n" +
-      stubs.distinct().mapIndexed { i, it -> "🌿" + it.trim() }
+      stubs.distinct().mapIndexed { i, it -> "🌿── " + it.trim() }
         .let { asts -> FreeMatrix(asts.size / 3, 3) { r, c ->
           asts[r * 3 + c].let { it.ifBlank { "" } } }
         }.toHtmlTable() +
-        trees.let { asts -> if (asts.size % 2 == 1) asts + listOf("") else asts }
-          .let { asts -> FreeMatrix(asts.size / 2, 2) { r, c ->
-            asts[r * 2 + c].let { if(it.isNotBlank()) "🌿$it" else "" } }
-          }.toHtmlTable()
+      trees.let { asts -> if (asts.size % 2 == 1) asts + listOf("") else asts }
+        .let { asts -> FreeMatrix(asts.size / 2, 2) { r, c ->
+          asts[r * 2 + c].let { if(it.isNotBlank()) "🌿$it" else "" } }
+        }.toHtmlTable()
     }
 
 fun String.containsHole(): Boolean = "_" in this || Regex("<[^\\s>]*>") in this
