@@ -96,7 +96,7 @@ fun render(
     prompt ?: TidyToolWindow.text.substringAfter("Solving: ").substringBefore("\n")
   }
   
-$legend</pre>${stubs ?: ""}${cfg.renderCNFToHtml()}
+${if (reason != null ) legend else ""}</pre>${stubs ?: ""}${cfg.renderCNFToHtml()}
       </body>
       </html>
   """.trimIndent()
