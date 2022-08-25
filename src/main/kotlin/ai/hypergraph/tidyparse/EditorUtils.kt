@@ -6,20 +6,48 @@ import ai.hypergraph.kaliningraph.image.toHtmlTable
 import ai.hypergraph.kaliningraph.levenshtein
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.carveSeams
+import ai.hypergraph.kaliningraph.containsHole
 import ai.hypergraph.kaliningraph.sat.synthesizeIncrementally
 import ai.hypergraph.kaliningraph.tensor.FreeMatrix
 import ai.hypergraph.kaliningraph.types.cache
 import ai.hypergraph.kaliningraph.types.isSubsetOf
 import com.github.difflib.text.DiffRow.Tag.*
 import com.github.difflib.text.DiffRowGenerator
+import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.TextRange
+import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiFile
+import com.intellij.util.concurrency.AppExecutorUtil
 import java.awt.Color
 import java.util.*
+import java.util.concurrent.Future
 import kotlin.math.ceil
+
+var cached: String = ""
+var promise: Future<*>? = null
+
+fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile) = TypedHandlerDelegate.Result.CONTINUE.also {
+  val (caretPos, isInGrammar) = runReadAction {
+    editor.caretModel.logicalPosition.column to
+      (editor.caretModel.offset < editor.document.text.lastIndexOf("---"))
+  }
+  val sanitized = currentLine.trim().tokenizeByWhitespace().joinToString(" ")
+  if (file.name.endsWith(".tidy") && sanitized != cached) {
+    cached = sanitized
+    promise?.cancel(true)
+    TidyToolWindow.text = ""
+    promise = AppExecutorUtil.getAppExecutorService()
+      .submit { file.tryToReconcile(sanitized, isInGrammar, caretPos) }
+
+    ToolWindowManager.getInstance(project).getToolWindow("Tidyparse")
+      ?.let { if (!it.isVisible) it.show() }
+  }
+}
 
 fun Editor.currentLine(): String =
   caretModel.let { it.visualLineStart to it.visualLineEnd }
@@ -113,7 +141,6 @@ fun String.synthesizeCachingAndDisplayProgress(
       String::everySingleHoleConfig,
       String::increasingLengthChunks
     ),
-  allowNTs: Boolean = true
 ): List<String> =
   synthCache.getOrPut(sanitized to cfg) {
     val renderedStubs = if (containsHole()) null
@@ -125,7 +152,6 @@ fun String.synthesizeCachingAndDisplayProgress(
       cfg = cfg,
       join = " ",
       variations = variations,
-      allowNTs = allowNTs,
       cfgFilter = { true },
       updateProgress = { query ->
         if (Thread.currentThread().isInterrupted) throw InterruptedException()
@@ -133,7 +159,7 @@ fun String.synthesizeCachingAndDisplayProgress(
       }
     ).map {
       updateSolutions(solutions, cfg, tokens, it)
-      val htmlSolutions = if ("_" in this) solutions.map { it.escapeHTML() }
+      val htmlSolutions = if (containsHole()) solutions.map { it.escapeHTML() }
       else solutions.map { diffAsHtml(tokens, it.tokenizeByWhitespace()) }
       TidyToolWindow.text = render(htmlSolutions, stubs = renderedStubs, reason = reason)
     }.takeWhile { solutions.size <= maxResults }.toList()
@@ -142,7 +168,7 @@ fun String.synthesizeCachingAndDisplayProgress(
   }
 
 private fun tokenwiseEdits(tokens: List<String>): (String) -> Comparable<*> =
-  { levenshtein(tokens.filterNot { "_" in it }, it.tokenizeByWhitespace()) }
+  { levenshtein(tokens.filterNot { it.containsHole() }, it.tokenizeByWhitespace()) }
 
 fun List<String>.dittoSummarize() =
   listOf("", *toTypedArray())
@@ -166,7 +192,7 @@ private fun String.updateSolutions(
   tokens: List<String>,
   it: String
 ) =
-  if ("_" in this) solutions.add(it)
+  if (containsHole()) solutions.add(it)
   else solutions.add(cfg.overrideInvariance(tokens, it.tokenizeByWhitespace()))
 
 fun updateProgress(query: String) {
@@ -240,21 +266,20 @@ fun CFG.renderCNFToHtml(): String =
 fun String.findRepairs(cfg: CFG, exclusions: Set<Int>, fishyLocations: List<Int>): String =
   synthesizeCachingAndDisplayProgress(
     cfg = cfg,
+    tokens = tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" },
     variations = listOf {
       it.multiTokenSubstitutionsAndInsertions(
         numberOfEdits = 3,
         exclusions = exclusions,
         fishyLocations = fishyLocations
       )
-    },
-    allowNTs = true
+    }
   ).let {
     if (it.isEmpty()) ""
     else it.joinToString("\n", "\n", "\n") {
       diffAsHtml(tokenizeByWhitespace(), it.tokenizeByWhitespace())
     }
   }
-
 
 fun Sequence<Tree>.renderStubs(): String =
   runningFold(setOf<Tree>()) { acc, t -> if (acc.any { t.span isSubsetOf it.span }) acc else acc + t }
@@ -275,5 +300,3 @@ fun Sequence<Tree>.renderStubs(): String =
         }
       }.toHtmlTable()
     }
-
-fun String.containsHole(): Boolean = "_" in this || Regex("<[^\\s>]*>") in this

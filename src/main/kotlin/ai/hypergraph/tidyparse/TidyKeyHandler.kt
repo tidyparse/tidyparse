@@ -58,24 +58,3 @@ class TidyBackspaceHandler : BackspaceHandlerDelegate() {
   override fun charDeleted(c: Char, file: PsiFile, editor: Editor): Boolean =
     true.also { handle(runReadAction { editor.currentLine() }, editor.project!!, editor, file) }
 }
-
-var cached: String = ""
-var promise: Future<*>? = null
-
-private fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile) = CONTINUE.also {
-  val (caretPos, isInGrammar) = runReadAction {
-    editor.caretModel.logicalPosition.column to
-      (editor.caretModel.offset < editor.document.text.lastIndexOf("---"))
-  }
-  val sanitized = currentLine.trim().tokenizeByWhitespace().joinToString(" ")
-  if (file.name.endsWith(".tidy") && sanitized != cached) {
-    cached = sanitized
-    promise?.cancel(true)
-    TidyToolWindow.text = ""
-    promise = AppExecutorUtil.getAppExecutorService()
-      .submit { file.tryToReconcile(sanitized, isInGrammar, caretPos) }
-
-    ToolWindowManager.getInstance(project).getToolWindow("Tidyparse")
-      ?.let { if (!it.isVisible) it.show() }
-  }
-}

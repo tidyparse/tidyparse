@@ -15,7 +15,7 @@ if true then if true then 1 else 3 else true
 
 if ( true and false ) then if true then true else 2 1 else 1
 
-if ( true or false ) + + then true else 1 
+if ( true or false ) + then true else 1 tru
 
 if ( true or false ) + + then true else
 
@@ -30,5 +30,6 @@ if ( true or false ) then true else false
 if ( true or false ) then true else 3 2 3
 
 if _ _ _ _ _ _ <BO> _ _ _ _ _ _
+if <B> then <B> else ( <B> <BO> <B> <BO> <B> <BO> <B> )
 
 _ _ _ _ _ _ _ _ _ _
