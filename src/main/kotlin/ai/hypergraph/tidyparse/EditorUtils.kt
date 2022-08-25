@@ -5,6 +5,7 @@ import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.image.toHtmlTable
 import ai.hypergraph.kaliningraph.levenshtein
 import ai.hypergraph.kaliningraph.parsing.*
+import ai.hypergraph.kaliningraph.carveSeams
 import ai.hypergraph.kaliningraph.sat.synthesizeIncrementally
 import ai.hypergraph.kaliningraph.tensor.FreeMatrix
 import ai.hypergraph.kaliningraph.types.cache
@@ -18,6 +19,7 @@ import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiFile
 import java.awt.Color
 import java.util.*
+import kotlin.math.ceil
 
 fun Editor.currentLine(): String =
   caretModel.let { it.visualLineStart to it.visualLineEnd }
@@ -44,9 +46,9 @@ private val htmlDiffGenerator: DiffRowGenerator =
 fun diffAsHtml(l1: List<String>, l2: List<String>): String =
   htmlDiffGenerator.generateDiffRows(l1, l2).joinToString(" ") {
     when (it.tag) {
-      INSERT -> it.newLine.replace("<span>", "<span style=\"background-color: #85FF7A\">")
-      CHANGE -> it.newLine.replace("<span>", "<span style=\"background-color: #FFC100\">")
-      DELETE -> "<span style=\"background-color: #FFCCCB\">${List(it.oldLine.length) { " " }.joinToString("")}</span>"
+      INSERT -> it.newLine.replace("<span>", "<span style=\"background-color: $insertColor\">")
+      CHANGE -> it.newLine.replace("<span>", "<span style=\"background-color: $changeColor\">")
+      DELETE -> "<span style=\"background-color: $deleteColor\">${List(it.oldLine.length) { " " }.joinToString("")}</span>"
       else -> it.newLine.replace("<span>", "<span style=\"background-color: #FFFF66\">")
     }
   }
@@ -76,7 +78,7 @@ private val ra = ">".escapeHTML()
 private fun String.treatAsNonterminal() = drop(la.length).dropLast(ra.length)
 private fun String.isNonterminal() = startsWith(la) && endsWith(ra)
 
-val CFG.prettyHTML by cache { pretty.toString().escapeHTML() }
+val CFG.prettyHTML by cache { pretty.toString().carveSeams().escapeHTML() }
 
 fun render(
   solutions: List<String>,
@@ -86,7 +88,7 @@ fun render(
 ): String = """
   <html>
   <body style=\"font-family: JetBrains Mono\">
-  <pre>${reason ?: "Synthesizing..."}
+  <pre>${reason ?: "Synthesizing...\n"}
   """.trimIndent() +
   // TODO: legend
   solutions.joinToString("\n", "\n", "\n") +
@@ -117,7 +119,7 @@ fun String.synthesizeCachingAndDisplayProgress(
     val renderedStubs = if (containsHole()) null
       else cfg.parseWithStubs(sanitized).second.renderStubs()
     val reason = if (containsHole()) null else no
-    TidyToolWindow.text = render(emptyList(), stubs = renderedStubs, reason = reason).also { println(it) }
+    TidyToolWindow.text = render(emptyList(), stubs = renderedStubs, reason = reason)
     val solutions = TreeSet(compareBy(tokenwiseEdits(tokens)).thenBy { it.length })
     sanitized.synthesizeIncrementally(
       cfg = cfg,
@@ -229,8 +231,10 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) 
 }
 
 fun CFG.renderCNFToHtml(): String =
-  "<pre>$delim<b>Chomsky normal form</b>:\n" +
-    "(${nonterminals.size} nonterminals / ${terminals.size} terminals / $size productions)" +
+  "<pre>$delim<b>Normal form</b> (" +
+    "${nonterminals.size} nonterminal${if (1 < nonterminals.size) "s" else ""} / " +
+    "${terminals.size} terminal${if (1 < terminals.size) "s" else ""} / " +
+    "$size production${if (1 < size) "s" else ""})" +
     "\n${prettyHTML}</pre>"
 
 fun String.findRepairs(cfg: CFG, exclusions: Set<Int>, fishyLocations: List<Int>): String =
@@ -256,16 +260,21 @@ fun Sequence<Tree>.renderStubs(): String =
   runningFold(setOf<Tree>()) { acc, t -> if (acc.any { t.span isSubsetOf it.span }) acc else acc + t }
     .last().sortedBy { it.span.first }.map { it.prettyPrint() }
     .partition { it.contains('─') }
-    .let { (trees, stubs) ->
-      "<pre>$delim<b>Partial AST branches</b>:</pre>\n\n" +
-      stubs.distinct().mapIndexed { i, it -> "🌿── " + it.trim() }
-        .let { asts -> FreeMatrix(asts.size / 3, 3) { r, c ->
-          asts[r * 3 + c].let { it.ifBlank { "" } } }
-        }.toHtmlTable() +
-      trees.let { asts -> if (asts.size % 2 == 1) asts + listOf("") else asts }
-        .let { asts -> FreeMatrix(asts.size / 2, 2) { r, c ->
-          asts[r * 2 + c].let { if(it.isNotBlank()) "🌿$it" else "" } }
-        }.toHtmlTable()
+    .let { (branches, leaves) ->
+      val (leafCols, branchCols) = 3 to 2
+      "<pre>$delim<b>Parseable subtrees</b> (" +
+        "${leaves.size} lea${if (leaves.size != 1) "ves" else "f"} / " +
+        "${branches.size} branch${if (branches.size != 1) "es" else ""})</pre>\n\n" +
+      leaves.mapIndexed { i, it -> "🌿── " + it.trim() }.let { asts ->
+        FreeMatrix(ceil(asts.size.toDouble() / leafCols).toInt(), leafCols) { r, c ->
+          if(r * leafCols + c < asts.size) asts[r * leafCols + c].ifBlank { "" } else ""
+        }
+      }.toHtmlTable() +
+      branches.let { asts ->
+        FreeMatrix(ceil(asts.size.toDouble() / branchCols).toInt(), branchCols) { r, c ->
+          if(r * branchCols + c < asts.size) asts[r * branchCols + c].let { if(it.isNotBlank()) "🌿$it" else "" } else ""
+        }
+      }.toHtmlTable()
     }
 
 fun String.containsHole(): Boolean = "_" in this || Regex("<[^\\s>]*>") in this

@@ -32,11 +32,14 @@ fun PsiFile.recomputeGrammar(): CFG =
 
 val ok = "<b>✅ Current line unambiguously parses! Parse tree:</b>\n"
 val ambig = "<b>⚠️ Current line parses, but is ambiguous:</b>\n"
-val no = "<b>❌ Current line is invalid, possible fixes:</b>\n"
+val no = "<b>❌ Current line invalid, possible fixes:</b>\n"
+val insertColor = "#85FF7A"
+val changeColor = "#FFC100"
+val deleteColor = "#FFCCCB"
 val legend =
-  "(<span style=\"background-color: #85FF7A\">  </span> = INSERTION, " +
-  "<span style=\"background-color: #FFC100\">  </span> = SUBSTITUTION, " +
-  "<span style=\"background-color: #FFCCCB\">  </span> = DELETION)"
+  "<span style=\"background-color: $insertColor\">  </span> : INSERTION   " +
+  "<span style=\"background-color: $changeColor\">  </span> : SUBSTITUTION   " +
+  "<span style=\"background-color: $deleteColor\">  </span> : DELETION"
 
 class TidyKeyHandler : TypedHandlerDelegate() {
 //  override fun beforeCharTyped(c: Char, project: Project, editor: Editor, file: PsiFile, fileType: FileType) =
