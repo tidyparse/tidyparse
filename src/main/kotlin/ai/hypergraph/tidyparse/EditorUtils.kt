@@ -258,8 +258,7 @@ fun String.findRepairs(cfg: CFG, exclusions: Set<Int>, fishyLocations: List<Int>
 
 fun Sequence<Tree>.renderStubs(): String =
   runningFold(setOf<Tree>()) { acc, t -> if (acc.any { t.span isSubsetOf it.span }) acc else acc + t }
-    .last().sortedBy { it.span.first }.map { it.prettyPrint() }
-    .partition { it.contains('─') }
+    .last().sortedBy { it.span.first }.map { it.prettyPrint() }.partition { it.contains('─') }
     .let { (branches, leaves) ->
       val (leafCols, branchCols) = 3 to 2
       "<pre>$delim<b>Parseable subtrees</b> (" +
@@ -267,12 +266,12 @@ fun Sequence<Tree>.renderStubs(): String =
         "${branches.size} branch${if (branches.size != 1) "es" else ""})</pre>\n\n" +
       leaves.mapIndexed { i, it -> "🌿── " + it.trim() }.let { asts ->
         FreeMatrix(ceil(asts.size.toDouble() / leafCols).toInt(), leafCols) { r, c ->
-          if(r * leafCols + c < asts.size) asts[r * leafCols + c].ifBlank { "" } else ""
+          if (r * leafCols + c < asts.size) asts[r * leafCols + c].ifBlank { "" } else ""
         }
       }.toHtmlTable() +
       branches.let { asts ->
         FreeMatrix(ceil(asts.size.toDouble() / branchCols).toInt(), branchCols) { r, c ->
-          if(r * branchCols + c < asts.size) asts[r * branchCols + c].let { if(it.isNotBlank()) "🌿$it" else "" } else ""
+          if (r * branchCols + c < asts.size) asts[r * branchCols + c].let { if (it.isNotBlank()) "🌿$it" else "" } else ""
         }
       }.toHtmlTable()
     }
