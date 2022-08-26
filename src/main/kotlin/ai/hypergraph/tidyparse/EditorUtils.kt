@@ -16,6 +16,7 @@ import com.github.difflib.text.DiffRowGenerator
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.project.Project
@@ -31,23 +32,24 @@ import kotlin.math.ceil
 var cached: String = ""
 var promise: Future<*>? = null
 
-fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile) = TypedHandlerDelegate.Result.CONTINUE.also {
-  val (caretPos, isInGrammar) = runReadAction {
-    editor.caretModel.logicalPosition.column to
-      (editor.caretModel.offset < editor.document.text.lastIndexOf("---"))
-  }
-  val sanitized = currentLine.trim().tokenizeByWhitespace().joinToString(" ")
-  if (file.name.endsWith(".tidy") && sanitized != cached) {
-    cached = sanitized
-    promise?.cancel(true)
-    TidyToolWindow.text = ""
-    promise = AppExecutorUtil.getAppExecutorService()
-      .submit { file.tryToReconcile(sanitized, isInGrammar, caretPos) }
+fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile) =
+  TypedHandlerDelegate.Result.CONTINUE.also {
+    val (caretPos, isInGrammar) = runReadAction {
+      editor.caretModel.logicalPosition.column to
+        (editor.caretModel.offset < editor.document.text.lastIndexOf("---"))
+    }
+    val sanitized = currentLine.trim().tokenizeByWhitespace().joinToString(" ")
+    if (file.name.endsWith(".tidy") && sanitized != cached) {
+      cached = sanitized
+      promise?.cancel(true)
+      TidyToolWindow.text = ""
+      promise = AppExecutorUtil.getAppExecutorService()
+        .submit { file.tryToReconcile(sanitized, isInGrammar, caretPos) }
 
-    ToolWindowManager.getInstance(project).getToolWindow("Tidyparse")
-      ?.let { if (!it.isVisible) it.show() }
+      ToolWindowManager.getInstance(project).getToolWindow("Tidyparse")
+        ?.let { if (!it.isVisible) it.show() }
+    }
   }
-}
 
 fun Editor.currentLine(): String =
   caretModel.let { it.visualLineStart to it.visualLineEnd }
@@ -300,3 +302,26 @@ fun Sequence<Tree>.renderStubs(): String =
         }
       }.toHtmlTable()
     }
+
+var grammarFileCache: String = ""
+lateinit var cfg: CFG
+val delim = List(120) { "─" }.joinToString("", "\n", "\n")
+
+fun PsiFile.recomputeGrammar(): CFG {
+  val grammar = runReadAction { text.substringBefore("---") }
+  return if (grammar != grammarFileCache || !::cfg.isInitialized) {
+    grammarFileCache = grammar
+    grammarFileCache.parseCFG().also { cfg = it }
+  } else cfg
+}
+
+val ok = "<b>✅ Current line unambiguously parses! Parse tree:</b>\n"
+val ambig = "<b>⚠️ Current line parses, but is ambiguous:</b>\n"
+val no = "<b>❌ Current line invalid, possible fixes:</b>\n"
+val insertColor = "#85FF7A"
+val changeColor = "#FFC100"
+val deleteColor = "#FFCCCB"
+val legend =
+  "<span style=\"background-color: $insertColor\">  </span> : INSERTION   " +
+    "<span style=\"background-color: $changeColor\">  </span> : SUBSTITUTION   " +
+    "<span style=\"background-color: $deleteColor\">  </span> : DELETION"

@@ -1,45 +1,11 @@
 package ai.hypergraph.tidyparse
 
-import ai.hypergraph.kaliningraph.parsing.CFG
-import ai.hypergraph.kaliningraph.parsing.parseCFG
-import ai.hypergraph.kaliningraph.parsing.tokenizeByWhitespace
 import com.intellij.codeInsight.editorActions.BackspaceHandlerDelegate
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
-import com.intellij.codeInsight.editorActions.TypedHandlerDelegate.Result.CONTINUE
-import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiFile
-import com.intellij.util.concurrency.AppExecutorUtil
-import java.util.concurrent.Future
-
-var grammarFileCache: String? = ""
-lateinit var cfg: CFG
-
-val delim = List(120) { "─" }.joinToString("", "\n", "\n")
-
-fun PsiFile.recomputeGrammar(): CFG =
-  runReadAction {
-    val grammar = text.substringBefore("---")
-    if (grammar != grammarFileCache) {
-      grammarFileCache = grammar
-      ReadAction.compute<String, Exception> { grammarFileCache }
-        .parseCFG().also { cfg = it }
-    } else cfg
-  }
-
-val ok = "<b>✅ Current line unambiguously parses! Parse tree:</b>\n"
-val ambig = "<b>⚠️ Current line parses, but is ambiguous:</b>\n"
-val no = "<b>❌ Current line invalid, possible fixes:</b>\n"
-val insertColor = "#85FF7A"
-val changeColor = "#FFC100"
-val deleteColor = "#FFCCCB"
-val legend =
-  "<span style=\"background-color: $insertColor\">  </span> : INSERTION   " +
-  "<span style=\"background-color: $changeColor\">  </span> : SUBSTITUTION   " +
-  "<span style=\"background-color: $deleteColor\">  </span> : DELETION"
 
 class TidyKeyHandler : TypedHandlerDelegate() {
 //  override fun beforeCharTyped(c: Char, project: Project, editor: Editor, file: PsiFile, fileType: FileType) =

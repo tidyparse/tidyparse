@@ -1,6 +1,7 @@
 package ai.hypergraph.tidyparse
 
-import ai.hypergraph.kaliningraph.containsHole
+import ai.hypergraph.kaliningraph.parsing.CFGCFG
+import ai.hypergraph.kaliningraph.parsing.bimap
 import ai.hypergraph.kaliningraph.parsing.tokenizeByWhitespace
 import com.intellij.codeInsight.completion.CompletionContributor
 import com.intellij.codeInsight.completion.CompletionParameters
@@ -29,9 +30,11 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
     context: ProcessingContext,
     result: CompletionResultSet
   ) {
-    parameters.run {
-      val currentLine = runReadAction { editor.currentLine() }
-      if (!currentLine.containsHole()) return@run
+    parameters.apply {
+      val (currentLine, isInGrammar) = runReadAction {
+        editor.currentLine() to
+          (editor.caretModel.offset < editor.document.text.lastIndexOf("---"))
+      }
       handle(
         currentLine,
         editor.project!!,
@@ -39,12 +42,24 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
         originalFile
       )
 
-      synchronized(cfg) {
-        try {
-          synthCache.get(currentLine.tokenizeByWhitespace().joinToString(" ") to cfg)
-            ?.forEach { result.addElement(LookupElementBuilder.create("\n" + it)) }
-        } catch (e: Exception) {
-          e.printStackTrace()
+      val selectedText = editor.caretModel.currentCaret.selectedText
+
+      if (selectedText != null && selectedText.matches(Regex("<[^\\s>]*>"))) {
+        val cfg = originalFile.recomputeGrammar()
+
+        val terminals =
+          cfg.bimap[selectedText.drop(1).dropLast(1)].filter {
+            it.joinToString().let { "." !in it && "ε" !in it && it != selectedText }
+          }.map { it.joinToString(" ") }
+        result.addAllElements(terminals.map { LookupElementBuilder.create(it) })
+      } else {
+        synchronized(cfg) {
+          try {
+            synthCache.get(currentLine.tokenizeByWhitespace().joinToString(" ") to cfg)
+              ?.forEach { result.addElement(LookupElementBuilder.create("\n" + it)) }
+          } catch (e: Exception) {
+            e.printStackTrace()
+          }
         }
       }
     }

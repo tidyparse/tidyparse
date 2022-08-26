@@ -55,16 +55,16 @@ class TidyHighlightVisitor : HighlightVisitor {
       highlighter.addRangeHighlight(editor, 0, divIdx + 3,
         BOLD_FONT, false, null)
 
-//      val colorMap = cfg.terminals.zip(generateColors(cfg.terminals.size)).toMap()
-//      colorMap.keys.forEach {
-//        Regex(Regex.escape(it)).findAll(editor.document.text).forEach {
-//            val font = colorMap[it.value]?.let { RGB_FONT(it) } ?: BOLD_FONT
+//    val colorMap = cfg.terminals.zip(generateColors(cfg.terminals.size)).toMap()
+//    colorMap.keys.forEach {
+//      Regex(Regex.escape(it)).findAll(editor.document.text).forEach {
+//        val font = colorMap[it.value]?.let { RGB_FONT(it) } ?: BOLD_FONT
 //
-//            // Highlight grammar
-//            highlighter.addRangeHighlight(editor, it.range.first, it.range.last,
-//              font, false, null)
-//          }
+//        // Highlight grammar
+//        highlighter.addRangeHighlight(editor, it.range.first, it.range.last,
+//          font, false, null)
 //      }
+//    }
 
       // Highlight delimiter
       highlighter.addRangeHighlight(editor, divIdx, divIdx + 3,
