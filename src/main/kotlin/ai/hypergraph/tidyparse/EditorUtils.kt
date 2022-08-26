@@ -152,7 +152,6 @@ fun String.synthesizeCachingAndDisplayProgress(
     val solutions = TreeSet(compareBy(tokenwiseEdits(tokens)).thenBy { it.length })
     sanitized.synthesizeIncrementally(
       cfg = cfg,
-      join = " ",
       variations = variations,
       cfgFilter = { true },
       updateProgress = { query ->
