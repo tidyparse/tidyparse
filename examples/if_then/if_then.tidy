@@ -6,8 +6,9 @@ IF -> if B then I else I
 BF -> if B then B else B
  O -> + | - | * | /
  I -> 1 | 2 | 3 | 4 | IF
- B -> true | false | B BO B | ( B ) | BF
+ B -> true | false | B BO B | ( B ) | BF | N B
 BO -> and | or
+ N -> !
 
 ---
 
@@ -17,11 +18,18 @@ if ( true and false ) then if true then true else 2 1 else 1
 
 if ( true or false ) + then true else 1 tru
 
+_ true
+
+_ true _
+
+_ true _ _
+
 if ( true or false ) + + then true else
 
 true 1 or false 1
 
 true 1 or false 2
+true <BO> <B> or false <BO> <N> <B>
 
 if ( true and false ) then if true then 3 else 2 else false
 

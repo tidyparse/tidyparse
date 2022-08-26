@@ -11,7 +11,7 @@
         <backspaceHandlerDelegate implementation="ai.hypergraph.tidyparse.TidyBackspaceHandler"/>
         <toolWindow id="Tidyparse" secondary="true" icon="AllIcons.Actions.EditSource" anchor="right"
                     factoryClass="ai.hypergraph.tidyparse.TidyToolWindowFactory"/>
-        <completion.contributor language="any"
+        <completion.contributor language="any" order="first"
                 implementationClass="ai.hypergraph.tidyparse.TidyCompletionContributor"/>
         <highlightVisitor implementation="ai.hypergraph.tidyparse.TidyHighlightVisitor"/>
         <fileType

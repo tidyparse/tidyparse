@@ -47,7 +47,7 @@ fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile)
         .submit { file.tryToReconcile(sanitized, isInGrammar, caretPos) }
 
       ToolWindowManager.getInstance(project).getToolWindow("Tidyparse")
-        ?.let { if (!it.isVisible) it.show() }
+        ?.let { runReadAction { if (!it.isVisible) it.show() } }
     }
   }
 
@@ -325,3 +325,7 @@ val legend =
   "<span style=\"background-color: $insertColor\">  </span> : INSERTION   " +
     "<span style=\"background-color: $changeColor\">  </span> : SUBSTITUTION   " +
     "<span style=\"background-color: $deleteColor\">  </span> : DELETION"
+
+
+fun String.dehtmlify() =
+  replace("&lt;", "<").replace("&gt;", ">")
