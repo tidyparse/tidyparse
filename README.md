@@ -9,7 +9,9 @@
 <!-- Plugin description -->
 The main goal of this project is to speed up the process of learning a new language by suggesting ways to fix source code.
 
-Tidyparse expects a file ending in `*.tidy` which contains, first, the grammar, followed by three consecutive dashes (`---`), followed by the string to parse (with optional holes). If you provide a string containing holes, it will provide some suggestions inside a tool window on the right hand side. If the string contains no holes, it will print out the parse tree.
+Tidyparse expects a file ending in `*.tidy` which contains, first, the grammar, followed by three consecutive dashes (`---`), followed by the string to parse (with optional holes). If you provide a line containing holes, it will provide some suggestions inside a tool window on the right hand side. If the line contains no holes, it will either print out the parse tree if the line is valid, or if the line contains errors, it will print out some suggestions as to for how the string in question can be fixed, alongside the fragments which can be parsed.
+
+
 <!-- Plugin description end -->
 
 ## Getting Started

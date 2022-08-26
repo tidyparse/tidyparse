@@ -23,6 +23,9 @@ version = properties("pluginVersion")
 repositories { mavenCentral() }
 
 configurations.all {
+//  exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")
+  exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-common")
+//  exclude(group = "org.jetbrains.kotlin", module = "kotlin-reflect")
   exclude(group = "guru.nidi", module = "graphviz-kotlin")
   exclude(group = "org.graalvm.js", module = "js")
   exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
@@ -102,9 +105,8 @@ tasks {
         val start = "<!-- Plugin description -->"
         val end = "<!-- Plugin description end -->"
 
-        if (!containsAll(listOf(start, end))) {
+        if (!containsAll(listOf(start, end)))
           throw GradleException("Plugin description section not found in README.md:\n$start ... $end")
-        }
         subList(indexOf(start) + 1, indexOf(end))
       }.joinToString("\n").run { markdownToHTML(this) }
     )
