@@ -153,7 +153,6 @@ fun String.synthesizeCachingAndDisplayProgress(
     sanitized.synthesizeIncrementally(
       cfg = cfg,
       variations = variations,
-      cfgFilter = { true },
       updateProgress = { query ->
         if (Thread.currentThread().isInterrupted) throw InterruptedException()
         if ("Solving:" in TidyToolWindow.text) updateProgress(query)
@@ -284,20 +283,23 @@ fun String.findRepairs(cfg: CFG, exclusions: Set<Int>, fishyLocations: List<Int>
 
 fun Sequence<Tree>.renderStubs(): String =
   runningFold(setOf<Tree>()) { acc, t -> if (acc.any { t.span isSubsetOf it.span }) acc else acc + t }
-    .last().sortedBy { it.span.first }.map { it.prettyPrint() }.partition { it.contains('─') }
+    .last().sortedBy { it.span.first }
+    .partition { it.terminal == null }
     .let { (branches, leaves) ->
       val (leafCols, branchCols) = 3 to 2
       "<pre>$delim<b>Parseable subtrees</b> (" +
         "${leaves.size} lea${if (leaves.size != 1) "ves" else "f"} / " +
         "${branches.size} branch${if (branches.size != 1) "es" else ""})</pre>\n\n" +
-      leaves.mapIndexed { i, it -> "🌿── " + it.trim() }.let { asts ->
+      leaves.mapIndexed { i, it -> "🌿\n└── " + it.prettyPrint().trim() }.let { asts ->
         FreeMatrix(ceil(asts.size.toDouble() / leafCols).toInt(), leafCols) { r, c ->
           if (r * leafCols + c < asts.size) asts[r * leafCols + c].ifBlank { "" } else ""
         }
       }.toHtmlTable() +
       branches.let { asts ->
         FreeMatrix(ceil(asts.size.toDouble() / branchCols).toInt(), branchCols) { r, c ->
-          if (r * branchCols + c < asts.size) asts[r * branchCols + c].let { if (it.isNotBlank()) "🌿$it" else "" } else ""
+          if (r * branchCols + c < asts.size)
+            Tree("🌿", null, asts[r * branchCols + c], span = -1..-1)
+              .prettyPrint().ifBlank { "" } else ""
         }
       }.toHtmlTable()
     }
