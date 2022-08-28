@@ -24,7 +24,7 @@ repositories { mavenCentral() }
 
 configurations.all {
 //  exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")
-  exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-common")
+//  exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-common")
 //  exclude(group = "org.jetbrains.kotlin", module = "kotlin-reflect")
   exclude(group = "guru.nidi", module = "graphviz-kotlin")
   exclude(group = "org.graalvm.js", module = "js")
@@ -44,6 +44,7 @@ configurations.all {
 dependencies {
   implementation("ai.hypergraph:kaliningraph")
   implementation("io.github.java-diff-utils:java-diff-utils:4.12")
+  implementation("net.nextencia:rrdiagram:0.9.4")
 }
 
 // Configure Gradle IntelliJ Plugin - read more: https://github.com/JetBrains/gradle-intellij-plugin

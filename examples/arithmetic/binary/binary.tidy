@@ -1,0 +1,11 @@
+S -> S and S | S or S | ( S ) | true | false | ! S
+
+---
+
+true and ( false or and true false
+
+true and ( false or <S> and true )    
+
+true and ( false or ! true )
+
+false or ! true or <S>    

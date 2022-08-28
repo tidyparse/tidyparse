@@ -9,8 +9,11 @@ import ai.hypergraph.kaliningraph.carveSeams
 import ai.hypergraph.kaliningraph.containsHole
 import ai.hypergraph.kaliningraph.sat.synthesizeIncrementally
 import ai.hypergraph.kaliningraph.tensor.FreeMatrix
+import ai.hypergraph.kaliningraph.types.A
 import ai.hypergraph.kaliningraph.types.cache
 import ai.hypergraph.kaliningraph.types.isSubsetOf
+import ai.hypergraph.kaliningraph.visualization.alsoCopy
+import ai.hypergraph.kaliningraph.visualization.show
 import com.github.difflib.text.DiffRow.Tag.*
 import com.github.difflib.text.DiffRowGenerator
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
@@ -24,6 +27,12 @@ import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiFile
 import com.intellij.util.concurrency.AppExecutorUtil
+import net.nextencia.rrdiagram.grammar.model.BNFToGrammar
+import net.nextencia.rrdiagram.grammar.model.Grammar
+import net.nextencia.rrdiagram.grammar.model.GrammarToBNF
+import net.nextencia.rrdiagram.grammar.model.GrammarToRRDiagram
+import net.nextencia.rrdiagram.grammar.rrdiagram.RRDiagram
+import net.nextencia.rrdiagram.grammar.rrdiagram.RRDiagramToSVG
 import java.awt.Color
 import java.util.*
 import java.util.concurrent.Future
@@ -64,6 +73,24 @@ fun generateColors(n: Int): List<Color> =
   (0 until n).map { i ->
     Color.getHSBColor(i.toFloat() / n.toFloat(), 0.85f, 1.0f)
   }
+
+private val latexDiffGenerator: DiffRowGenerator =
+  DiffRowGenerator.create()
+  .showInlineDiffs(true)
+  .inlineDiffByWord(true)
+  .newTag { f: Boolean -> if(f) "(*@\\hl{" else "}@*)" }
+  .oldTag { _ -> "" }
+  .build()
+
+fun diffAsLatex(l1: List<String>, l2: List<String>): String =
+  latexDiffGenerator.generateDiffRows(l1, l2).joinToString(" ") {
+    when (it.tag) {
+      INSERT -> it.newLine.replace("\\hl", "\\hlgreen")
+      CHANGE -> it.newLine.replace("\\hl", "\\hlorange")
+      DELETE -> "(*@\\hlred{${it.oldLine}} @*)"
+      else -> it.newLine
+    }
+  }.replace("&gt;", ">").replace("&lt;", "<")
 
 private val htmlDiffGenerator: DiffRowGenerator =
   DiffRowGenerator.create()
@@ -160,7 +187,7 @@ fun String.synthesizeCachingAndDisplayProgress(
     ).map {
       updateSolutions(solutions, cfg, tokens, it)
       val htmlSolutions = if (containsHole()) solutions.map { it.escapeHTML() }
-      else solutions.map { diffAsHtml(tokens, it.tokenizeByWhitespace()) }
+      else solutions.also { it.map { println(diffAsLatex(tokens, it.tokenizeByWhitespace())) }; println() }.map { diffAsHtml(tokens, it.tokenizeByWhitespace()) }
       TidyToolWindow.text = render(htmlSolutions, stubs = renderedStubs, reason = reason)
     }.takeWhile { solutions.size <= maxResults }.toList()
 
@@ -235,7 +262,10 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) 
   } else {
     val (parseForest, stubs) = cfg.parseWithStubs(currentLine)
     debugText = if (parseForest.isNotEmpty()) {
-      if (parseForest.size == 1) "<pre>$ok\n🌳" + parseForest.first().prettyPrint() + "</pre>"
+      if (parseForest.size == 1) "<pre>$ok\n🌳" + parseForest
+        .first()
+//        .also { println(it.latexify()) }
+        .prettyPrint() + "</pre>"
       else "<pre>$ambig\n🌳" + parseForest.joinToString("\n\n") { it.prettyPrint() } + "</pre>"
     } else {
       val exclude = stubs.allIndicesInsideParseableRegions()
@@ -247,6 +277,11 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) 
   // Append the CFG only if parse succeeds
   debugText += cfg.renderCNFToHtml()
 
+//  println(cfg.original.graph.toString())
+//  println(cfg.original.graph.toDot())
+//  println(cfg.graph.toDot().alsoCopy())
+  cfg.graph.A.show()
+
   TidyToolWindow.text = """
         <html>
         <body style=\"font-family: JetBrains Mono\">
@@ -254,6 +289,7 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) 
         </body>
         </html>
       """.trimIndent()
+//    .also { it.show() }
 }
 
 fun CFG.renderCNFToHtml(): String =
@@ -262,6 +298,23 @@ fun CFG.renderCNFToHtml(): String =
     "${terminals.size} terminal${if (1 < terminals.size) "s" else ""} / " +
     "$size production${if (1 < size) "s" else ""})" +
     "\n${prettyHTML}</pre>"
+//    "$delim</pre>\n" +
+//    GrammarToRRDiagram().run {
+//      val grammar = BNFToGrammar().convert(
+//        """
+//        H2_SELECT =
+//        'SELECT' [ 'TOP' term ] [ 'DISTINCT' | 'ALL' ] selectExpression {',' selectExpression} \
+//        'FROM' tableExpression {',' tableExpression} [ 'WHERE' expression ] \
+//        [ 'GROUP BY' expression {',' expression} ] [ 'HAVING' expression ] \
+//        [ ( 'UNION' [ 'ALL' ] | 'MINUS' | 'EXCEPT' | 'INTERSECT' ) select ] [ 'ORDER BY' order {',' order} ] \
+//        [ 'LIMIT' expression [ 'OFFSET' expression ] [ 'SAMPLE_SIZE' rowCountInt ] ] \
+//        [ 'FOR UPDATE' ];
+//        """.trimIndent()
+//      )
+//      RRDiagramToSVG().convert(grammar.rules.map { convert(it) }.last())
+//    }
+
+//fun CFG.toGrammar() = Grammar()
 
 fun String.findRepairs(cfg: CFG, exclusions: Set<Int>, fishyLocations: List<Int>): String =
   synthesizeCachingAndDisplayProgress(
