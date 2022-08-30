@@ -280,7 +280,7 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) 
 //  println(cfg.original.graph.toString())
 //  println(cfg.original.graph.toDot())
 //  println(cfg.graph.toDot().alsoCopy())
-  cfg.graph.A.show()
+//  cfg.graph.A.show()
 
   TidyToolWindow.text = """
         <html>
