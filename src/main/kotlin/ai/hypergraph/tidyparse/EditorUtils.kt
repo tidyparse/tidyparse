@@ -231,7 +231,7 @@ fun updateProgress(query: String) {
     )
 }
 
-fun Sequence<Tree>.allIndicesInsideParseableRegions(): Set<Int> =
+fun List<Tree>.allIndicesInsideParseableRegions(): Set<Int> =
   map { it.span }.filter { 3 < it.last - it.first }
     .flatMap { (it.first + 1) until it.last }.toSet()
 
@@ -262,10 +262,7 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) 
   } else {
     val (parseForest, stubs) = cfg.parseWithStubs(currentLine)
     debugText = if (parseForest.isNotEmpty()) {
-      if (parseForest.size == 1) "<pre>$ok\n🌳" + parseForest
-        .first()
-//        .also { println(it.latexify()) }
-        .prettyPrint() + "</pre>"
+      if (parseForest.size == 1) "<pre>$ok\n🌳" + parseForest.first().prettyPrint() + "</pre>"
       else "<pre>$ambig\n🌳" + parseForest.joinToString("\n\n") { it.prettyPrint() } + "</pre>"
     } else {
       val exclude = stubs.allIndicesInsideParseableRegions()
@@ -334,7 +331,7 @@ fun String.findRepairs(cfg: CFG, exclusions: Set<Int>, fishyLocations: List<Int>
     }
   }
 
-fun Sequence<Tree>.renderStubs(): String =
+fun List<Tree>.renderStubs(): String =
   runningFold(setOf<Tree>()) { acc, t -> if (acc.any { t.span isSubsetOf it.span }) acc else acc + t }
     .last().sortedBy { it.span.first }
     .partition { it.terminal == null }
