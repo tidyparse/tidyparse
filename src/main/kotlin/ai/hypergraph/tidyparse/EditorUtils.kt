@@ -231,10 +231,6 @@ fun updateProgress(query: String) {
     )
 }
 
-fun List<Tree>.allIndicesInsideParseableRegions(): Set<Int> =
-  map { it.span }.filter { 3 < it.last - it.first }
-    .flatMap { (it.first + 1) until it.last }.toSet()
-
 fun Sequence<Tree>.bordersOfParsable(): Set<Int> =
   map { it.span }.flatMap { listOf(it.first, it.last) }.toSet()
 
