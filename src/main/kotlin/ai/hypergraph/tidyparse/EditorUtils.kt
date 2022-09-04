@@ -187,7 +187,9 @@ fun String.synthesizeCachingAndDisplayProgress(
     ).map {
       updateSolutions(solutions, cfg, tokens, it)
       val htmlSolutions = if (containsHole()) solutions.map { it.escapeHTML() }
-      else solutions.also { it.map { println(diffAsLatex(tokens, it.tokenizeByWhitespace())) }; println() }.map { diffAsHtml(tokens, it.tokenizeByWhitespace()) }
+      else solutions
+//        .also { it.map { println(diffAsLatex(tokens, it.tokenizeByWhitespace())) }; println() }
+        .map { diffAsHtml(tokens, it.tokenizeByWhitespace()) }
       TidyToolWindow.text = render(htmlSolutions, stubs = renderedStubs, reason = reason)
     }.takeWhile { solutions.size <= maxResults }.toList()
 

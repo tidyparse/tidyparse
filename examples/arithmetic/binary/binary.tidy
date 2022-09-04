@@ -1,19 +1,17 @@
-S -> S and S | S or S | ( S ) | true | false | ! S
+START -> E<X>
+op -> + | *
+E<X> -> E<X> op E<X>
+X -> Int | Bool
+E<Int> -> 1 | 2 | 3
+E<Bool> -> T | F
 
 ---
 
-true and ( false or and true false
+T + F
+1 + 2
+1 * 2
+T * F
 
-true and ( false or <S> and true )    
-
-true and ( false or ! true )
-
-false or ! true or <S>
-
-true and ( false _ _ _ _ _ _ _
-
-true _ ( false _ ( _ ! _ _ _ _
-
-true _ _ _ ( false _ ( _ _ _ _ ! _ _ ) _ _ _ _
-
-true and true ! and false or true ! true and false
+1 + F
+F + F
+2 * T
