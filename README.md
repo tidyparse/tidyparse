@@ -130,6 +130,8 @@ if ( ( <B> ) ) <BO> <B> then <I> else <I>
 if <B> then <B> else <B> <BO> ( <B> <BO> <B> )
 ```
 
+For further examples, please refer to the [`examples`](/examples) subdirectory.
+
 ### Notes
 
 * Currently, rendering is done on-the-fly but may not reflect the current state of the editor. To refresh the display, type an extra whitespace character.
