@@ -147,7 +147,7 @@ val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
 
 fun String.synthesizeCachingAndDisplayProgress(
   cfg: CFG,
-  tokens: List<String> = tokenizeByWhitespace(),
+  tokens: List<String> = tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" },
   sanitized: String = tokens.joinToString(" "),
   maxResults: Int = 20,
   variations: List<(String) -> Sequence<String>> =
@@ -229,8 +229,8 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) 
   val cfg =
     if (isInGrammar)
       CFGCFG(
-        names = currentLine.split(Regex("\\s+"))
-          .filter { it.isNotBlank() && it !in setOf("->", "|") }.toSet()
+        names = currentLine.tokenizeByWhitespace()
+          .filter { it !in setOf("->", "|") }.toSet()
       )
     else recomputeGrammar()
 
