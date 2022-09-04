@@ -9,17 +9,11 @@ import ai.hypergraph.kaliningraph.carveSeams
 import ai.hypergraph.kaliningraph.containsHole
 import ai.hypergraph.kaliningraph.sat.synthesizeIncrementally
 import ai.hypergraph.kaliningraph.tensor.FreeMatrix
-import ai.hypergraph.kaliningraph.types.A
 import ai.hypergraph.kaliningraph.types.cache
 import ai.hypergraph.kaliningraph.types.isSubsetOf
-import ai.hypergraph.kaliningraph.visualization.alsoCopy
-import ai.hypergraph.kaliningraph.visualization.show
 import com.github.difflib.text.DiffRow.Tag.*
 import com.github.difflib.text.DiffRowGenerator
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
-import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.actionSystem.CommonDataKeys
-import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.project.Project
@@ -27,12 +21,6 @@ import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiFile
 import com.intellij.util.concurrency.AppExecutorUtil
-import net.nextencia.rrdiagram.grammar.model.BNFToGrammar
-import net.nextencia.rrdiagram.grammar.model.Grammar
-import net.nextencia.rrdiagram.grammar.model.GrammarToBNF
-import net.nextencia.rrdiagram.grammar.model.GrammarToRRDiagram
-import net.nextencia.rrdiagram.grammar.rrdiagram.RRDiagram
-import net.nextencia.rrdiagram.grammar.rrdiagram.RRDiagramToSVG
 import java.awt.Color
 import java.util.*
 import java.util.concurrent.Future
@@ -65,9 +53,6 @@ fun Editor.currentLine(): String =
     .let { (lineStart, lineEnd) ->
       document.getText(TextRange.create(lineStart, lineEnd))
     }
-
-val AnActionEvent.editor: Editor get() =
-  CommonDataKeys.EDITOR.getData(dataContext)!!
 
 fun generateColors(n: Int): List<Color> =
   (0 until n).map { i ->
@@ -153,7 +138,7 @@ fun render(
     prompt ?: TidyToolWindow.text.substringAfter("Solving: ").substringBefore("\n")
   }
   
-${if (reason != null ) legend else ""}</pre>${stubs ?: ""}${cfg.renderCNFToHtml()}
+${if (reason != null ) legend else ""}</pre>${stubs ?: ""}${cfg.renderCFGToHTML()}
       </body>
       </html>
   """.trimIndent()
@@ -270,7 +255,7 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) 
   }
 
   // Append the CFG only if parse succeeds
-  debugText += cfg.renderCNFToHtml()
+  debugText += cfg.renderCFGToHTML()
 
 //  println(cfg.original.graph.toString())
 //  println(cfg.original.graph.toDot())
@@ -287,12 +272,22 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) 
 //    .also { it.show() }
 }
 
-fun CFG.renderCNFToHtml(): String =
-  "<pre>$delim<b>Normal form</b> (" +
+fun CFG.renderCFGToHTML(): String =
+  (listOf(originalForm.summarize("Original form")) +
+    (if (originalForm == nonparametricForm) listOf()
+    else listOf(nonparametricForm.summarize("Nonparametric form"))) +
+    listOf(summarize("Normal form"))
+  ).let { rewriteSummary ->
+    val maxLen = rewriteSummary.joinToString("\n").lines().maxOf { it.length }
+    rewriteSummary.joinToString(delim(maxLen), "<pre>${delim(maxLen)}", "</pre>")
+  }
+
+fun CFG.summarize(name: String) = "<b>$name</b> (" +
     "${nonterminals.size} nonterminal${if (1 < nonterminals.size) "s" else ""} / " +
     "${terminals.size} terminal${if (1 < terminals.size) "s" else ""} / " +
     "$size production${if (1 < size) "s" else ""})" +
-    "\n${prettyHTML}</pre>"
+    "\n${prettyHTML}"
+
 //    "$delim</pre>\n" +
 //    GrammarToRRDiagram().run {
 //      val grammar = BNFToGrammar().convert(
@@ -335,7 +330,7 @@ fun List<Tree>.renderStubs(): String =
     .partition { it.terminal == null }
     .let { (branches, leaves) ->
       val (leafCols, branchCols) = 3 to 2
-      "<pre>$delim<b>Parseable subtrees</b> (" +
+      "<pre>${delim()}<b>Parseable subtrees</b> (" +
         "${leaves.size} lea${if (leaves.size != 1) "ves" else "f"} / " +
         "${branches.size} branch${if (branches.size != 1) "es" else ""})</pre>\n\n" +
       leaves.mapIndexed { i, it -> "🌿\n└── " + it.prettyPrint().trim() }.let { asts ->
@@ -354,7 +349,7 @@ fun List<Tree>.renderStubs(): String =
 
 var grammarFileCache: String = ""
 lateinit var cfg: CFG
-val delim = List(120) { "─" }.joinToString("", "\n", "\n")
+fun delim(len: Int = 120) = List(len) { "─" }.joinToString("", "\n", "\n")
 
 fun PsiFile.recomputeGrammar(): CFG {
   val grammar = runReadAction { text.substringBefore("---") }

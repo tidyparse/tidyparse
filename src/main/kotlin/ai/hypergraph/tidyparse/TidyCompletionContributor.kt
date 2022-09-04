@@ -44,8 +44,8 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
         val cfg = originalFile.recomputeGrammar()
 
         val completions =
-          cfg.original.bimap[selectedText.drop(1).dropLast(1)]
-            .map { it.joinToString(" ") { if (it in cfg.original.terminals) it else "<$it>" } }
+          cfg.originalForm.bimap[selectedText.drop(1).dropLast(1)]
+            .map { it.joinToString(" ") { if (it in cfg.originalForm.terminals) it else "<$it>" } }
             .sortedWith(compareBy<String> { !it.matches(ntRegex) }.thenBy { it.count { ' ' == it } })
 
         completions.forEachIndexed { i, it ->

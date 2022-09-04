@@ -1,0 +1,17 @@
+START -> E<X>
+op -> + | *
+E<X> -> E<X> op E<X>
+X -> Int | Bool
+E<Int> -> 1 | 2 | 3
+E<Bool> -> T | F
+
+---
+
+T + F 
+1 + 2
+1 * 2
+T * F
+
+1 + F
+F + F
+2 * T 
