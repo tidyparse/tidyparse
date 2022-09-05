@@ -114,10 +114,12 @@ tasks {
 
     // Get the latest available change notes from the changelog file
     changeNotes.set(provider {
-      changelog.run {
-        getOrNull(properties("pluginVersion")) ?: getLatest()
-      }.toHTML()
+      changelog.getAll().values.first().toHTML()
     })
+  }
+
+  runPluginVerifier {
+    ideVersions.set(listOf("2022.2"))
   }
 
   runIde {

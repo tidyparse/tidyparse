@@ -1,17 +1,10 @@
-<!-- Keep a Changelog guide -> https://keepachangelog.com -->
+# Changelog
 
-# Tidyparse Changelog
+## 0.12.0
 
-## [Unreleased]
-
-## [0.12]
-
-### Added
 - Support for program repair
 - Colorful diffs
 - Added limited support for parametricity
 - Improved grammar rewriting
 - More examples
-
-### Changed
 - Fixed tokenization issue
