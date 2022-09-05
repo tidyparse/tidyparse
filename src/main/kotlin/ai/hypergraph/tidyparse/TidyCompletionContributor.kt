@@ -6,7 +6,9 @@ import com.intellij.codeInsight.completion.CompletionType.BASIC
 import com.intellij.codeInsight.lookup.LookupElement
 import com.intellij.codeInsight.lookup.LookupElementBuilder
 import com.intellij.codeInsight.lookup.LookupElementDecorator
+import com.intellij.openapi.application.invokeAndWaitIfNeeded
 import com.intellij.openapi.application.runReadAction
+import com.intellij.openapi.application.runWriteAction
 import com.intellij.patterns.PlatformPatterns
 import com.intellij.psi.PlainTextTokenTypes.PLAIN_TEXT
 import com.intellij.util.ProcessingContext
@@ -28,10 +30,7 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
     result: CompletionResultSet
   ) {
     parameters.apply {
-      val (currentLine, isInGrammar) = runReadAction {
-        editor.currentLine() to
-          (editor.caretModel.offset < editor.document.text.lastIndexOf("---"))
-      }
+      val currentLine = runReadAction { editor.currentLine() }.trim()
       handle(
         currentLine,
         editor.project!!,
@@ -40,19 +39,19 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
       )
 
       originalFile.recomputeGrammar()
-      val selection =
-        currentLine.getSurroundingNonterminal(editor.caretModel.logicalPosition.column)?.value
+      val selection: MatchResult? =
+        currentLine.getSurroundingNonterminal(editor.caretModel.logicalPosition.column)
 
       val ntRegex = Regex("<[^\\s>]*>")
-      if (selection != null)
-        cfg.originalForm.bimap[selection.drop(1).dropLast(1)]
+      if (selection != null) {
+        cfg.originalForm.bimap[selection.value.drop(1).dropLast(1)]
           .map { it.joinToString(" ") { if (it in cfg.originalForm.terminals) it else "<$it>" } }
           .sortedWith(compareBy<String> { !it.matches(ntRegex) }.thenBy { it.count { ' ' == it } })
-          .forEachIndexed { i, it -> result.addElement(createLookupElement(it, i)) }
-      else synchronized(cfg) {
+          .forEachIndexed { i, it -> result.addElement(createLookupElement(it, i, selection)) }
+      } else synchronized(cfg) {
         try {
-          synthCache.get(currentLine.tokenizeByWhitespace().joinToString(" ") to cfg)?.map { it.dehtmlify() }
-            ?.forEachIndexed { i, it -> result.addElement(createLookupElement(it, i)) }
+          synthCache.get(currentLine.sanitized() to cfg)?.map { it.dehtmlify() }
+            ?.forEachIndexed { i, it -> result.addElement(createLookupElement(it, i, selection)) }
         } catch (e: Exception) {
           e.printStackTrace()
         }
@@ -63,18 +62,23 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
   private fun String.getSurroundingNonterminal(i: Int): MatchResult? =
     Regex("<[^\\s>]*>").findAll(this).firstOrNull { i in it.range }
 
-  private fun createLookupElement(it: String, i: Int): LookupElementDecorator<LookupElement> =
-    LookupElementDecorator.withDelegateInsertHandler(
+  private fun createLookupElement(it: String, i: Int, selection: MatchResult?): LookupElementDecorator<LookupElement> =
+    LookupElementDecorator.withInsertHandler(
       PrioritizedLookupElement.withPriority(LookupElementBuilder.create(it), -i.toDouble())
     ) { context, item ->
-      val selection = context.editor.currentLine()
-        .getSurroundingNonterminal(context.editor.caretModel.logicalPosition.column)
-
-      val (startReplace, endReplace) =
-        context.editor.caretModel.run {
-          selection?.range?.run { first to last } ?: (visualLineStart to visualLineEnd - 1)
+      context.editor.caretModel.run {
+        if (selection == null)
+          context.document.replaceString(visualLineStart, visualLineEnd - 1, item.lookupString)
+        else {
+          val preDelete = (visualLineStart + selection.range.first)..context.startOffset
+          val preDeleteLen= preDelete.last - preDelete.first
+          val postDelete =
+            context.selectionEndOffset.let {
+              (it-preDeleteLen)..(it + (visualLineStart + selection.range.last - context.startOffset - preDeleteLen + 1))
+            }
+          context.document.deleteString(preDelete.first, preDelete.last)
+          context.document.deleteString(postDelete.first, postDelete.last)
         }
-
-      context.document.replaceString(startReplace, endReplace, item.lookupString)
+      }
     }
 }

@@ -1,5 +1,5 @@
  S -> X
- X -> B | I | F | P
+ X -> I | F | P
  P -> I O I
  F -> IF | BF
 IF -> if B then I else I

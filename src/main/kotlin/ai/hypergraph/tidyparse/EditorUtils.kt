@@ -145,6 +145,9 @@ ${if (reason != null ) legend else ""}</pre>${stubs ?: ""}${cfg.renderCFGToHTML(
 
 val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
 
+fun String.sanitized(): String =
+  tokenizeByWhitespace().joinToString(" ") { if (it in cfg.terminals) it else "_" }
+
 fun String.synthesizeCachingAndDisplayProgress(
   cfg: CFG,
   tokens: List<String> = tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" },
@@ -156,7 +159,7 @@ fun String.synthesizeCachingAndDisplayProgress(
       String::increasingLengthChunks
     ),
 ): List<String> =
-  synthCache.getOrPut(sanitized to cfg) {
+  synthCache.getOrPut((sanitized to cfg).also { println("Putting: ${it.first.hashCode()} to ${it.second.hashCode()}") }) {
     val renderedStubs = if (containsHole()) null
       else cfg.parseWithStubs(sanitized).second.renderStubs()
     val reason = if (containsHole()) null else no
@@ -285,8 +288,7 @@ fun CFG.renderCFGToHTML(): String =
 fun CFG.summarize(name: String) = "<b>$name</b> (" +
     "${nonterminals.size} nonterminal${if (1 < nonterminals.size) "s" else ""} / " +
     "${terminals.size} terminal${if (1 < terminals.size) "s" else ""} / " +
-    "$size production${if (1 < size) "s" else ""})" +
-    "\n${prettyHTML}"
+    "$size production${if (1 < size) "s" else ""})\n${prettyHTML}"
 
 //    "$delim</pre>\n" +
 //    GrammarToRRDiagram().run {
