@@ -61,11 +61,11 @@ fun generateColors(n: Int): List<Color> =
 
 private val latexDiffGenerator: DiffRowGenerator =
   DiffRowGenerator.create()
-  .showInlineDiffs(true)
-  .inlineDiffByWord(true)
-  .newTag { f: Boolean -> if(f) "(*@\\hl{" else "}@*)" }
-  .oldTag { _ -> "" }
-  .build()
+    .showInlineDiffs(true)
+    .inlineDiffByWord(true)
+    .newTag { f: Boolean -> if (f) "(*@\\hl{" else "}@*)" }
+    .oldTag { _ -> "" }
+    .build()
 
 fun diffAsLatex(l1: List<String>, l2: List<String>): String =
   latexDiffGenerator.generateDiffRows(l1, l2).joinToString(" ") {
