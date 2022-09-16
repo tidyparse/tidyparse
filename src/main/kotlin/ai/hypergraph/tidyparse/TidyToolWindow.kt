@@ -6,6 +6,7 @@ import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
+import org.jetbrains.plugins.notebooks.visualization.saveScrollingPosition
 import java.awt.Font
 import javax.swing.JTextPane
 import javax.swing.text.DefaultCaret
@@ -36,5 +37,5 @@ object TidyToolWindow {
       }
     }
 
-  val panel = JBScrollPane(textArea)
+  val panel = JBScrollPane(textArea).apply { autoscrolls = false }
 }
