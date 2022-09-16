@@ -12,17 +12,21 @@ BO -> and | or
 
 ---
 
-if true then if true then 1 else 3 else true 
+if true or <B> then 1 else 2
+
+if true then if true then 1 else 3 else true
 
 if ( true and false ) then if true then true else 2 1 else 1
+if ( true and false ) then if true <BO> true then <I> else  1 else 1
 
-if ( true or false ) + then true else 1 tru
+if ( true or false ) + then true else 1 true
+if ( true or false ) then true else ! false
 
 _ true
 
-_ true _
+_ true _ _ _ _ _
 
-_ true _ _
+_ true _ _ _ _
 
 if ( true or false ) + + then true else
 

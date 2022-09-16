@@ -159,7 +159,7 @@ fun String.synthesizeCachingAndDisplayProgress(
       String::increasingLengthChunks
     ),
 ): List<String> =
-  synthCache.getOrPut((sanitized to cfg).also { println("Putting: ${it.first.hashCode()} to ${it.second.hashCode()}") }) {
+  synthCache.getOrPut(sanitized to cfg) {
     val renderedStubs = if (containsHole()) null
       else cfg.parseWithStubs(sanitized).second.renderStubs()
     val reason = if (containsHole()) null else no
@@ -354,7 +354,7 @@ lateinit var cfg: CFG
 fun delim(len: Int = 120) = List(len) { "─" }.joinToString("", "\n", "\n")
 
 fun PsiFile.recomputeGrammar(): CFG {
-  val grammar = runReadAction { text.substringBefore("---") }
+  val grammar: String = runReadAction { text.substringBefore("---") }
   return if (grammar != grammarFileCache || !::cfg.isInitialized) {
     grammarFileCache = grammar
     grammarFileCache.parseCFG().also { cfg = it }
@@ -371,7 +371,6 @@ val legend =
   "<span style=\"background-color: $insertColor\">  </span> : INSERTION   " +
     "<span style=\"background-color: $changeColor\">  </span> : SUBSTITUTION   " +
     "<span style=\"background-color: $deleteColor\">  </span> : DELETION"
-
 
 fun String.dehtmlify() =
   replace("&lt;", "<").replace("&gt;", ">")

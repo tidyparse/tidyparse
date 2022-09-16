@@ -5,7 +5,7 @@ fun properties(key: String) = project.findProperty(key).toString()
 
 plugins {
   // Kotlin support
-  id("org.jetbrains.kotlin.jvm") version "1.7.20-Beta"
+  kotlin("jvm") version "1.7.20-RC"
   // Gradle IntelliJ Plugin
   id("org.jetbrains.intellij") version "1.9.0"
   // Gradle Changelog Plugin
@@ -20,7 +20,7 @@ group = properties("pluginGroup")
 version = properties("pluginVersion")
 
 // Configure project's dependencies
-repositories { mavenCentral() }
+repositories.mavenCentral()
 
 configurations.all {
 //  exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")

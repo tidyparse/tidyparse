@@ -1,5 +1,6 @@
 package ai.hypergraph.tidyparse
 
+import ai.hypergraph.kaliningraph.containsHole
 import ai.hypergraph.kaliningraph.parsing.*
 import com.intellij.codeInsight.completion.*
 import com.intellij.codeInsight.completion.CompletionType.BASIC
@@ -30,7 +31,12 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
     result: CompletionResultSet
   ) {
     parameters.apply {
-      val currentLine = runReadAction { editor.currentLine() }.trim()
+      var currentLine = runReadAction { editor.currentLine() }.trim()
+      currentLine = if (!currentLine.containsHole() && cfg.parse(currentLine) != null &&
+        currentLine.getSurroundingNonterminal(editor.caretModel.logicalPosition.column) == null)
+        currentLine.getSurroundingToken(editor.caretModel.logicalPosition.column)
+          .let { currentLine.replaceRange(it.range, "_") } else currentLine
+
       handle(
         currentLine,
         editor.project!!,
@@ -59,8 +65,11 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
     }
   }
 
+  private fun String.getSurroundingToken(i: Int): MatchResult =
+    Regex("\\S+").findAll(this).first { i in it.range.let { it.first..it.last + 1 } }
+
   private fun String.getSurroundingNonterminal(i: Int): MatchResult? =
-    Regex("<[^\\s>]*>").findAll(this).firstOrNull { i in it.range }
+    Regex("<[^\\s>]*>").findAll(this).firstOrNull { i in it.range.let { it.first..it.last + 1 } }
 
   private fun createLookupElement(it: String, i: Int, selection: MatchResult?): LookupElementDecorator<LookupElement> =
     LookupElementDecorator.withInsertHandler(
