@@ -13,7 +13,6 @@ import ai.hypergraph.kaliningraph.types.cache
 import ai.hypergraph.kaliningraph.types.isSubsetOf
 import com.github.difflib.text.DiffRow.Tag.*
 import com.github.difflib.text.DiffRowGenerator
-import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
 import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.project.Project
@@ -26,18 +25,17 @@ import java.util.*
 import java.util.concurrent.Future
 import kotlin.math.ceil
 
-var cached: String = ""
+var mostRecentQuery: String = ""
 var promise: Future<*>? = null
 
-fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile) =
-  TypedHandlerDelegate.Result.CONTINUE.also {
+fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile): Future<*>? {
     val (caretPos, isInGrammar) = runReadAction {
       editor.caretModel.logicalPosition.column to
         (editor.caretModel.offset < editor.document.text.lastIndexOf("---"))
     }
     val sanitized = currentLine.trim().tokenizeByWhitespace().joinToString(" ")
-    if (file.name.endsWith(".tidy") && sanitized != cached) {
-      cached = sanitized
+    if (file.name.endsWith(".tidy") && sanitized != mostRecentQuery) {
+      mostRecentQuery = sanitized
       promise?.cancel(true)
       TidyToolWindow.text = ""
       promise = AppExecutorUtil.getAppExecutorService()
@@ -46,6 +44,7 @@ fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile)
       ToolWindowManager.getInstance(project).getToolWindow("Tidyparse")
         ?.let { runReadAction { if (!it.isVisible) it.show() } }
     }
+    return promise
   }
 
 fun Editor.currentLine(): String =

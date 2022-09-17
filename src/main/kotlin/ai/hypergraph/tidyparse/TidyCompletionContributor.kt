@@ -2,6 +2,7 @@ package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.containsHole
 import ai.hypergraph.kaliningraph.parsing.*
+import ai.hypergraph.kaliningraph.tensor.seekFixpoint
 import com.intellij.codeInsight.completion.*
 import com.intellij.codeInsight.completion.CompletionType.BASIC
 import com.intellij.codeInsight.lookup.LookupElement
@@ -32,17 +33,18 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
   ) {
     parameters.apply {
       var currentLine = runReadAction { editor.currentLine() }.trim()
-      currentLine = if (!currentLine.containsHole() && cfg.parse(currentLine) != null &&
-        currentLine.getSurroundingNonterminal(editor.caretModel.logicalPosition.column) == null)
-        currentLine.getSurroundingToken(editor.caretModel.logicalPosition.column)
-          .let { currentLine.replaceRange(it.range, "_") } else currentLine
 
       handle(
         currentLine,
         editor.project!!,
         editor,
         originalFile
-      )
+      )?.get()
+
+      currentLine = if (!currentLine.containsHole() && cfg.parse(currentLine) != null &&
+        currentLine.getSurroundingNonterminal(editor.caretModel.logicalPosition.column) == null)
+        currentLine.getSurroundingToken(editor.caretModel.logicalPosition.column)
+          .let { currentLine.replaceRange(it.range, "_") } else currentLine
 
       originalFile.recomputeGrammar()
       val selection: MatchResult? =
@@ -57,7 +59,7 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
       } else synchronized(cfg) {
         try {
           synthCache.get(currentLine.sanitized() to cfg)?.map { it.dehtmlify() }
-            ?.forEachIndexed { i, it -> result.addElement(createLookupElement(it, i, selection)) }
+            ?.forEachIndexed { i, it -> result.addElement(createLookupElement(it, i, null)) }
         } catch (e: Exception) {
           e.printStackTrace()
         }
@@ -69,7 +71,7 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
     Regex("\\S+").findAll(this).first { i in it.range.let { it.first..it.last + 1 } }
 
   private fun String.getSurroundingNonterminal(i: Int): MatchResult? =
-    Regex("<[^\\s>]*>").findAll(this).firstOrNull { i in it.range.let { it.first..it.last + 1 } }
+    Regex("<[^\\s>]+>").findAll(this).firstOrNull { i in it.range.let { it.first..it.last + 1 } }
 
   private fun createLookupElement(it: String, i: Int, selection: MatchResult?): LookupElementDecorator<LookupElement> =
     LookupElementDecorator.withInsertHandler(

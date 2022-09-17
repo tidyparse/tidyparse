@@ -15,7 +15,9 @@ class TidyKeyHandler : TypedHandlerDelegate() {
 //    }, project, editor, file)
 
   override fun charTyped(c: Char, project: Project, editor: Editor, file: PsiFile): Result =
-    handle(runReadAction { editor.currentLine() }, project, editor, file)
+    TypedHandlerDelegate.Result.CONTINUE.also {
+      handle(runReadAction { editor.currentLine() }, project, editor, file)
+    }
 }
 
 class TidyBackspaceHandler : BackspaceHandlerDelegate() {
