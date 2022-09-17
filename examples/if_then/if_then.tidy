@@ -45,3 +45,6 @@ if _ _ _ _ _ _ <BO> _ _ _ _ _ _
 if <B> then <B> else ( <B> <BO> <B> <BO> <B> <BO> <B> )
 
 _ _ _ _ _ _ _ _ _ _ _
+
+if ( true or false ) then true else 1
+if true then if true then 1 else 2 else 3

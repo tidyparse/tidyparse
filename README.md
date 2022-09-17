@@ -78,26 +78,36 @@ Tidyparse will display possible fixes and branches for all syntactically valid s
 
 if ( true or false ) then <I> else 1
 if ( true or false ) then true else <B>
-if ( <B> or false ) then <I> else 1
-if ( <B> or false ) then true else <B>
-if ( true <BO> false ) then <I> else 1
-if ( true <BO> false ) then true else <B>
-if ( true or <B> ) then <I> else 1
-if ( true or <B> ) then true else <B>
-if ( true or false ) then <I> else <I>
-if ( true or false ) then <B> else <B>
+if ( true or false ) then true else ! <B>
+if ( true or false ) then true else <N> <B>
+if ( true or false ) then true else ! ! <B>
+if ( true or false ) then true else ! <N> <B>
+if ( true or false ) then true else <N> <N> <B>
+if ( true or false ) then true else <B> <BO> <B>
+if ( true or false ) then true else ( ! <B> )
+if ( true or false ) then true else <N> ! ! <B>
+if ( true or false ) then true else <N> ! <N> <B>
+if ( true or false ) then true else ! <B> <BO> <B>
+if ( true or false ) then true else <N> <N> <N> <B>
+if ( true or false ) then true else <N> <B> <BO> <B>
 
 ──────────────────────────────────────────────────
-Partial AST branches:
+Parseable subtrees (5 leaves / 1 branch)
 
-else  if  then  true  1
-B [1..5]
-├── (
-├── B [2..4]
-│   ├── true
-│   ├── or
-│   └── false
-└── )
+🌿            🌿            🌿
+└── if [0]    └── then [6]  └── true [7]
+
+🌿            🌿
+└── else [8]  └── 1 [9]
+
+🌿
+└── B [1..5]
+    ├── ( [1]
+    ├── B [2..4]
+    │   ├── true [2]
+    │   ├── or [3]
+    │   └── false [4]
+    └── ) [5]
 ```
 
 Tidyparse also accepts holes  in the test case. Holes can be `_`, or a nonterminal enclosed in angle brackets, such as:
@@ -106,28 +116,78 @@ Tidyparse also accepts holes  in the test case. Holes can be `_`, or a nontermin
 if _ _ _ _ _ _ <BO> _ _ _ _ _
 ```
 
-Providing such a test case will suggest candidates that are consistent with the provided CFG:
+Providing such a test case will suggest candidates that are consistent with the provided CFG, ranked by length:
 
 ```
-if <B> then if <B> then <B> <BO> <B> else <B> else <B>
-if <B> then <I> else if <B> <BO> <B> then <I> else <I>
-if <B> then ( <B> <BO> <B> <BO> <B> ) else <B>
-if <B> then ( ( <B> ) <BO> <B> ) else <B>
-if ( <B> ) then ( <B> <BO> <B> ) else <B>
-if if <B> then <B> else <B> <BO> <B> then <I> else <I>
-if if <B> then <B> else <B> <BO> <B> then <B> else <B>
-if <B> then <B> else if <B> <BO> <B> then <B> else <B>
-if <B> then <B> else ( <B> <BO> <B> <BO> <B> )
-if <B> then <B> else ( <B> <BO> <B> )
-if <B> <BO> <B> then ( <B> <BO> <B> ) else <B>
-if <B> then <B> <BO> ( <B> <BO> <B> ) else <B>
-if <B> then <B> else ( <B> <BO> ( <B> ) )
-if <B> then <B> else ( <B> <BO> <B> ) <BO> <B>
-if <B> then <B> <BO> <B> else <B>
-if <B> then ( <B> <BO> <B> ) else <B>
-if ( ( <B> ) ) <BO> <B> then <B> else <B>
-if ( ( <B> ) ) <BO> <B> then <I> else <I>
-if <B> then <B> else <B> <BO> ( <B> <BO> <B> )
+if <B> then <I> <BO> else <I>
+if <N> <B> then <I> <BO> else <I>
+if ( <B> ) then <I> <BO> else <I>
+if <N> ! <B> then <I> <BO> else <I>
+if <N> <N> <B> then <I> <BO> else <I>
+if <B> <BO> <N> <BO> <B> then <I> else
+if <N> ( <B> ) then <I> <BO> else <I>
+if ! <B> then <I> else <I> <BO> <O> <I>
+if <B> <BO> ! <N> <BO> <B> then <I> else
+if <N> <N> <N> <B> then <I> <BO> else <I>
+if <B> <BO> <N> <N> <BO> <B> then <I> else
+if ( <B> ) then <I> <BO> else <I> <O> <I>
+if <N> <N> <N> <B> then <I> <BO> else <I> <O>
+if <B> <BO> <N> <BO> <B> then <I> else <I> <O>
+if ( ! <B> ) then <I> <BO> else <I> <O> <I>
+if ( <N> <B> ) then <I> <BO> else <I> <O> <I>
+if ! <B> then <I> <BO> else if <B> then <I> else
+if <N> <B> then <I> <BO> else if <B> then <I> else
+if ( <B> ) then <I> <BO> else if <B> then <I> else
+if <N> <N> <B> then <I> <BO> else if <B> then <I> else
+if <B> <BO> <B> <BO> <N> <BO> <B> then <I> else <I> <O>
+```
+
+For diagnostic purposes, Tidyparse will also display the rewritten and normalized CFG, e.g.:
+
+```
+─────────────────────────────────────────────────────────────────────────────
+Original form (12 nonterminals / 18 terminals / 38 productions)
+
+O → +       I → IF   START → N                 
+O → -       F → IF   START → IF                
+O → *       F → BF   START → BF                
+O → /      BO → or   START → BO                
+X → I      BO → and      B → BF                
+X → F       P → I O I    B → N B               
+X → P   START → S        B → true              
+N → !   START → X        B → false             
+S → X   START → P        B → ( B )             
+I → 1   START → F        B → B BO B            
+I → 2   START → O       BF → if B then B else B
+I → 3   START → I       IF → if B then I else I
+I → 4   START → B                              
+─────────────────────────────────────────────────────────────────────────────
+Normal form (24 nonterminals / 24 terminals / 72 productions)
+
+   F.( → (      else.B → F.else B               START → 2                    
+   F.) → )      else.I → F.else I               START → 3                    
+   F.ε → ε    B.else.B → B else.B               START → 4                    
+     O → *    I.else.I → I else.I               START → !                    
+     O → +           B → N B                    START → or                   
+     O → -           B → <B>                    START → N B                  
+     O → /           B → true                   START → and                  
+     O → <O>         B → B ε+                   START → O ε+                 
+     O → O ε+        B → false                  START → N ε+                 
+     N → !           B → B BO.B                 START → B ε+                 
+     N → <N>         B → F.( B.)                START → true                 
+     N → N ε+        B → F.if B.then.B.else.B   START → I ε+                 
+  F.if → if          I → 1                      START → BO ε+                
+   O.I → O I         I → 2                      START → I O.I                
+    BO → or          I → 3                      START → false                
+    BO → and         I → 4                      START → B BO.B               
+    BO → <BO>        I → <I>                    START → F.( B.)              
+    BO → BO ε+       I → I ε+                   START → START F.ε            
+    ε+ → ε           I → F.if B.then.I.else.I   START → F.if B.then.I.else.I 
+    ε+ → ε+ ε+   START → *                      START → F.if B.then.B.else.B 
+   B.) → B F.)   START → +              then.B.else.B → F.then B.else.B      
+  BO.B → BO B    START → -              then.I.else.I → F.then I.else.I      
+F.else → else    START → /            B.then.B.else.B → B then.B.else.B      
+F.then → then    START → 1            B.then.I.else.I → B then.I.else.I   
 ```
 
 For further examples, please refer to the [`examples`](/examples) subdirectory.
