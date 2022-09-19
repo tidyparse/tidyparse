@@ -9,8 +9,7 @@
 <!-- Plugin description -->
 The main goal of this project is to speed up the process of learning a new language by suggesting ways to fix source code.
 
-Tidyparse expects a file ending in `*.tidy` which contains, first, the grammar, followed by three consecutive dashes (`---`), followed by the string to parse (with optional holes). If you provide a line containing holes, it will provide some suggestions inside a tool window on the right hand side. If the line contains no holes, it will either print out the parse tree if the line is valid, or if the line contains errors, it will print out some suggestions as to for how the string in question can be fixed, alongside the fragments which can be parsed.
-
+Tidyparse expects a file ending in `*.tidy` which contains a context free grammar, followed by three consecutive dashes (`---`), followed by the string to parse (with optional holes). If the string is valid according to the CFG, it will print out the parse tree, otherwise if the line contains errors, it will print out suggestions how the string in question can be fixed, alongside the fragments which can be parsed.
 
 <!-- Plugin description end -->
 
@@ -27,7 +26,9 @@ git submodule update --init --recursive && \
 
 To launch IntelliJ IDEA with the plugin installed, run: `./gradlew runIde` from the parent directory.
 
-The file `ocaml.tidy` can contain this grammar:
+## Usage
+
+Create a new file, `if_lang.tidy`, containing the following context free grammar:
 
 ```
  S -> X
@@ -40,14 +41,16 @@ BF -> if B then B else B
  I -> 1 | 2 | 3 | 4 | IF
  B -> true | false | B BO B | ( B ) | BF
 BO -> and | or
+---
 ```
-The file `ocaml.tidy` can also contain this test case:
+
+The same file may also contain a test case, for example:
 
 ```
 if true then if true then 1 else 2 else 3
 ```
 
-This should produce the following output:
+If the string is valid, as shown above, Tidyparse should display the following output:
 
 ```
 ✅ Current line parses! Tree:
@@ -67,11 +70,11 @@ START [0..10]
 └── 1
 ```
 
-If the string does not parse, for example, as shown below: 
+If Tidyparse is unable to parse the string, for example, as shown below: 
 
 `if ( true or false ) then true else 1` 
 
-Tidyparse will display possible fixes and branches for all syntactically valid substrings:
+It will instead display possible fixes sorted by edit distance and partial AST branches for all syntactically valid substrings:
 
 ```
 ❌ Current line invalid, possible fixes:
@@ -194,6 +197,8 @@ For further examples, please refer to the [`examples`](/examples) subdirectory.
 
 ### Notes
 
+* Nonterminals are surrounded by angle brackets, e.g., `<F>`. If the autocompletion dialog is invoked while the editor caret is above a nonterminal, Tidyparse will display a list of possible expansions.
 * Currently, rendering is done on-the-fly but may not reflect the current state of the editor. To refresh the display, type an extra whitespace character.
 * The grammar is sensitive to whitespace characters. Each nonterminal must be separated by at least one whitespace character.
-* There is currently no lexical analysis. Each terminal in the grammar corresponds to a single token in text. All names must be specified in the grammar.
+* There is currently no lexical analysis. Each terminal in the grammar corresponds to a single token in text, separated by a whitespace. All names must be specified in the grammar.
+* Tidyparse adds ε-productions and terminal literals for each nonterminal in the CFG. For further details about these transformations and the repair procedure, please refer to our [whitepaper](https://github.com/breandan/galoisenne/blob/master/latex/live/acmart.pdf).
