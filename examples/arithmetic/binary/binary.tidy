@@ -1,4 +1,5 @@
 S -> S and S | S or S | ( S ) | true | false | ! S
+B -> true |
 
 ---
 
