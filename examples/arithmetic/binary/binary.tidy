@@ -1,5 +1,4 @@
 S -> S and S | S or S | ( S ) | true | false | ! S
-B -> true |
 
 ---
 
@@ -15,6 +14,6 @@ true and ( false _ _ _ _ _ _ _
 
 true _ ( false _ ( _ ! _ _ _ a
 
-true _ _ _ ( false _ ( _ _ _ _ ! _ _ ) _ _ _ _
+true or ! ( false and ( <S> ) or ( ! ! false ) )
 
 true and true ! and false or true ! true and false

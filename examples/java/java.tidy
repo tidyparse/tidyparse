@@ -1,7 +1,7 @@
 START -> D T P
-P -> A | ( P ) | ( P ) | { P } | [ P ] | < P > | P P
+P -> A | ( P ) | ( ) | { P } | [ P ] | < P > | P P
 D -> public | static | void | D D
-A -> ε | w | . | ; | , | A A
+A -> w | . | ; | A , A | A A
 W -> w
 T -> W | W < T >
 PT -> byte | short | int | long | float | double | char | String | null | boolean
@@ -20,6 +20,6 @@ public static void w ( w w , w w ) { w w = w . ( w ) ; w w ; ) }
 
 public static void w ( )
 
-public static w < w < w > > w ( _ , w ) _ _ _
+public static w < w < w > > w ( _ , w ) _ _ _ _
 
-public static void w ( ) { _ w _ w _ = _ w _ w _
+public static void w ( ) _ w _ w _ _ w _ w _ _ 
