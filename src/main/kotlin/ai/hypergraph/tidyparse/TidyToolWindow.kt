@@ -37,5 +37,5 @@ object TidyToolWindow {
       }
     }
 
-  val panel = JBScrollPane(textArea).apply { autoscrolls = false }
+  val panel = JBScrollPane(textArea)//.apply { autoscrolls = false }
 }

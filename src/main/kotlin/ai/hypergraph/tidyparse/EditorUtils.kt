@@ -28,6 +28,7 @@ import kotlin.math.ceil
 var mostRecentQuery: String = ""
 var promise: Future<*>? = null
 
+// TODO: Do not re-compute all work on each keystroke, cache prior results
 fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile): Future<*>? {
     val (caretPos, isInGrammar) = runReadAction {
       editor.caretModel.logicalPosition.column to

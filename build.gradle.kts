@@ -83,7 +83,7 @@ tasks {
   // Set the JVM compatibility versions
   properties("javaVersion").let {
     withType<JavaCompile> {
-      sourceCompatibility = it
+      sourceCompatibility = "17"
       targetCompatibility = it
     }
     withType<KotlinCompile> {
