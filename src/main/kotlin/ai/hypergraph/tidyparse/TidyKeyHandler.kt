@@ -4,8 +4,11 @@ import com.intellij.codeInsight.editorActions.BackspaceHandlerDelegate
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
 import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.colors.EditorFontType.PLAIN
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
+
+var fontScalingRatio = 1.0
 
 class TidyKeyHandler : TypedHandlerDelegate() {
 //  override fun beforeCharTyped(c: Char, project: Project, editor: Editor, file: PsiFile, fileType: FileType) =
@@ -16,6 +19,7 @@ class TidyKeyHandler : TypedHandlerDelegate() {
 
   override fun charTyped(c: Char, project: Project, editor: Editor, file: PsiFile): Result =
     TypedHandlerDelegate.Result.CONTINUE.also {
+      fontScalingRatio = (editor.colorsScheme.editorFontSize / 16.0).coerceAtLeast(1.0)
       handle(runReadAction { editor.currentLine() }, project, editor, file)
     }
 }

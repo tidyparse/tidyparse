@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.0
+
+- Scale diagnostics to match editor font size
+
 ## 0.13.0
 
 - Syntax repair optimizations

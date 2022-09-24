@@ -6,22 +6,34 @@ import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
-import org.jetbrains.plugins.notebooks.visualization.saveScrollingPosition
-import java.awt.Font
+import java.awt.Dimension
+import java.awt.Graphics
+import java.awt.Graphics2D
 import javax.swing.JTextPane
 import javax.swing.text.DefaultCaret
 
 class TidyToolWindowFactory : ToolWindowFactory {
   override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) =
     toolWindow.contentManager.addContent(
-      ContentFactory.SERVICE.getInstance().createContent(TidyToolWindow.panel, "", false)
+      ContentFactory.getInstance().createContent(TidyToolWindow.panel, "", false)
     )
 }
 
 object TidyToolWindow {
-  private val textArea = JTextPane().apply {
+  private val textArea =
+    object: JTextPane() {
+      override fun getPreferredSize(): Dimension {
+        val (w, h) = super.getPreferredSize().let { it.width to it.height }
+        return Dimension(w * fontScalingRatio.toInt(), h * fontScalingRatio.toInt())
+      }
+
+      override fun paint(g: Graphics?) {
+        (g as? Graphics2D)?.scale(fontScalingRatio, fontScalingRatio)
+        super.paintComponent(g)
+        (g as? Graphics2D)?.scale(1.0, 1.0)
+      }
+    }.apply {
     contentType = "text/html"
-    font = Font("JetBrains Mono", Font.PLAIN, 16)
     isEditable = false
     (caret as DefaultCaret).updatePolicy = DefaultCaret.NEVER_UPDATE
   }

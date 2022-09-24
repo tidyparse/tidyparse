@@ -24,11 +24,11 @@ if ( true or false ) then true else ! false
 
 _ true
 
-_ true _ _ _ _ _
+( true or true )
 
 _ true _ _ _ _
 
-if ( true or false ) + + then true else 2 
+if ( true or false ) + + then true else 2
 
 true 1 or false 3
 

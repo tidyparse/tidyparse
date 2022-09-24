@@ -1,12 +1,12 @@
 package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.cache.LRUCache
+import ai.hypergraph.kaliningraph.carveSeams
+import ai.hypergraph.kaliningraph.containsHole
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.image.toHtmlTable
 import ai.hypergraph.kaliningraph.levenshtein
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.kaliningraph.carveSeams
-import ai.hypergraph.kaliningraph.containsHole
 import ai.hypergraph.kaliningraph.sat.synthesizeIncrementally
 import ai.hypergraph.kaliningraph.tensor.FreeMatrix
 import ai.hypergraph.kaliningraph.types.cache
@@ -129,7 +129,7 @@ fun render(
   stubs: String? = null
 ): String = """
   <html>
-  <body style=\"font-family: JetBrains Mono\">
+  <body>
   <pre>${reason ?: "Synthesizing...\n"}
   """.trimIndent() +
   // TODO: legend
@@ -267,7 +267,7 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) 
 
   TidyToolWindow.text = """
         <html>
-        <body style=\"font-family: JetBrains Mono\">
+        <body>
         $debugText
         </body>
         </html>

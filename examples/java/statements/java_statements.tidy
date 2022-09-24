@@ -9,4 +9,4 @@ PT -> byte | short | int | long | float | double | char | String | null | boolea
 
 ---
 
-byte w = w . w (
+byte w = w . w ( ) 
