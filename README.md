@@ -202,3 +202,16 @@ For further examples, please refer to the [`examples`](/examples) subdirectory.
 * The grammar is sensitive to whitespace characters. Each nonterminal must be separated by at least one whitespace character.
 * There is currently no lexical analysis. Each terminal in the grammar corresponds to a single token in text, separated by a whitespace. All names must be specified in the grammar.
 * Tidyparse adds ε-productions and terminal literals for each nonterminal in the CFG. For further details about these transformations and the repair procedure, please refer to our [whitepaper](https://github.com/breandan/galoisenne/blob/master/latex/live/acmart.pdf).
+
+## Acknowledgements
+
+The following individuals have helped shape this project through their enthusiasm and thoughtful feedback. Please check out their work.
+
+* [Jin Guo](https://www.cs.mcgill.ca/~jguo/lab.html)
+* [Xujie Si](https://www.cs.mcgill.ca/~xsi/)
+* [Brigitte Pientka](https://www.cs.mcgill.ca/~bpientka/)
+* [Ori Roth](https://tscholak.github.io)
+* [Younesse Kaddar](https://younesse.net)
+* [Michael Schröder](https://mcschroeder.github.io)
+* [Jürgen Cito](https://people.csail.mit.edu/jcito/)
+* [‪Torsten Scholak‬](https://tscholak.github.io)
