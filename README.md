@@ -210,7 +210,7 @@ The following individuals have helped shape this project through their enthusias
 * [Jin Guo](https://www.cs.mcgill.ca/~jguo/lab.html)
 * [Xujie Si](https://www.cs.mcgill.ca/~xsi/)
 * [Brigitte Pientka](https://www.cs.mcgill.ca/~bpientka/)
-* [Ori Roth](https://tscholak.github.io)
+* [Ori Roth](https://scholar.google.co.il/citations?user=aaBmQ9MAAAAJ)
 * [Younesse Kaddar](https://younesse.net)
 * [Michael Schröder](https://mcschroeder.github.io)
 * [Jürgen Cito](https://people.csail.mit.edu/jcito/)
