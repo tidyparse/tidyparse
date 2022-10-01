@@ -122,27 +122,27 @@ if _ _ _ _ _ _ <BO> _ _ _ _ _
 Providing such a test case will suggest candidates that are consistent with the provided CFG, ranked by length:
 
 ```
-if <B> then <I> <BO> else <I>
-if <N> <B> then <I> <BO> else <I>
-if ( <B> ) then <I> <BO> else <I>
-if <N> ! <B> then <I> <BO> else <I>
-if <N> <N> <B> then <I> <BO> else <I>
-if <B> <BO> <N> <BO> <B> then <I> else
-if <N> ( <B> ) then <I> <BO> else <I>
-if ! <B> then <I> else <I> <BO> <O> <I>
-if <B> <BO> ! <N> <BO> <B> then <I> else
-if <N> <N> <N> <B> then <I> <BO> else <I>
-if <B> <BO> <N> <N> <BO> <B> then <I> else
-if ( <B> ) then <I> <BO> else <I> <O> <I>
-if <N> <N> <N> <B> then <I> <BO> else <I> <O>
-if <B> <BO> <N> <BO> <B> then <I> else <I> <O>
-if ( ! <B> ) then <I> <BO> else <I> <O> <I>
-if ( <N> <B> ) then <I> <BO> else <I> <O> <I>
-if ! <B> then <I> <BO> else if <B> then <I> else
-if <N> <B> then <I> <BO> else if <B> then <I> else
-if ( <B> ) then <I> <BO> else if <B> then <I> else
-if <N> <N> <B> then <I> <BO> else if <B> then <I> else
-if <B> <BO> <B> <BO> <N> <BO> <B> then <I> else <I> <O>
+if <B> then <B> else <B> <BO> <B>
+if <B> then <B> else ! <B> <BO> <B>
+if <B> then <B> else <N> <B> <BO> <B>
+if <B> then <B> else ( <B> <BO> <B> )
+if <B> then <B> else <N> <B> <BO> ! <B>
+if <B> then <B> else <N> <B> <BO> <N> <B>
+if <B> then <B> else <B> <BO> <B> <BO> <B>
+if <B> then <B> else ( <B> <BO> <N> <B> )
+if <B> then <B> else <N> <B> <BO> ! <N> <B>
+if <B> then <B> else ! <B> <BO> <B> <BO> <B>
+if <B> then <B> else <N> <B> <BO> <N> <N> <B>
+if <B> then <B> else <N> <B> <BO> <B> <BO> <B>
+if ( <B> ) then <N> <B> <BO> <N> <B> else <B>
+if <B> then <B> else ( <B> <BO> <B> ) <BO> <B>
+if <N> <N> ! <B> then <B> <BO> <N> <B> else <B>
+if <B> then <B> else ! <B> <BO> <B> <BO> <N> <B>
+if <N> <B> then <B> else <B> <BO> <N> <N> <N> <B>
+if <B> then <B> else <N> <B> <BO> <B> <BO> <N> <B>
+if <B> then <B> else ( <B> <BO> <B> ) <BO> ! <B>
+if <B> then <B> else ( <B> <BO> <B> ) <BO> <N> <B>
+if <B> then <B> else <N> <B> <BO> <N> <B> <BO> <N> <B>
 ```
 
 For diagnostic purposes, Tidyparse will also display the rewritten and normalized CFG, e.g.:

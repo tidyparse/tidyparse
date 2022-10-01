@@ -2,6 +2,7 @@
 
 ## 0.14.0
 
+- Fix synthesis issue with nonterminal stubs
 - Scale diagnostics to match editor font size
 
 ## 0.13.0
