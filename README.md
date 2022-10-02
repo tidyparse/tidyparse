@@ -145,7 +145,7 @@ if <B> then <B> else ( <B> <BO> <B> ) <BO> <N> <B>
 if <B> then <B> else <N> <B> <BO> <N> <B> <BO> <N> <B>
 ```
 
-For diagnostic purposes, Tidyparse will also display the rewritten and normalized CFG, e.g.:
+Note how repairs may not use the entire sketch template: this is because Tidyparse adds an invisible `ε` (representing the empty character) to every nonterminal in the original CFG. For diagnostic purposes, Tidyparse will display the CFG at various stages during the rewrite process, e.g.:
 
 ```
 ─────────────────────────────────────────────────────────────────────────────

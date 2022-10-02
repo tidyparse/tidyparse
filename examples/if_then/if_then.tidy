@@ -39,7 +39,7 @@ if ( true and false ) then if true then 3 else 2 else false
 
 if ( true or false ) then true else false
 
-if ( true or false ) then true else 3 2 3 2 
+if ( true or false ) then true else 3 2 3 2
 
 if _ _ _ _ _ _ <BO> _ _ _ _ _ _
 if <B> then <B> else ( <B> <BO> <B> <BO> <B> <BO> <B> )
