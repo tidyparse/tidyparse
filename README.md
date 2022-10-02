@@ -9,7 +9,7 @@
 <!-- Plugin description -->
 The main goal of this project is to speed up the process of learning a new language by suggesting ways to fix source code.
 
-Tidyparse expects a file ending in `*.tidy` which contains a context free grammar, followed by three consecutive dashes (`---`), followed by the string to parse (with optional holes). If the string is valid according to the CFG, it will print out the parse tree, otherwise if the line contains errors, it will print out suggestions how the string in question can be fixed, alongside the fragments which can be parsed.
+Tidyparse recognizes files ending in `*.tidy` which contain a context free grammar, followed by three consecutive dashes (`---`), followed by the string to parse (with optional holes). If the string is valid according to the CFG, it will print out the parse tree, otherwise if the line contains errors, it will print out suggestions how the string in question can be fixed, alongside the fragments which can be parsed.
 
 <!-- Plugin description end -->
 
@@ -74,7 +74,7 @@ If Tidyparse is unable to parse the string, for example, as shown below:
 
 `if ( true or false ) then true else 1` 
 
-It will instead display possible fixes sorted by edit distance and partial AST branches for all syntactically valid substrings:
+It will instead display admissible fixes ranked by edit distance and partial AST branches for all syntactically valid substrings:
 
 ```
 ❌ Current line invalid, possible fixes:
@@ -113,7 +113,7 @@ Parseable subtrees (5 leaves / 1 branch)
     └── ) [5]
 ```
 
-Tidyparse also accepts holes  in the test case. Holes can be `_`, or a nonterminal enclosed in angle brackets, such as:
+Tidyparse also accepts holes in the test case. Holes may either be `_`, or a nonterminal enclosed in angle brackets such as `<BO>`:
 
 ```
 if _ _ _ _ _ _ <BO> _ _ _ _ _
@@ -145,7 +145,7 @@ if <B> then <B> else ( <B> <BO> <B> ) <BO> <N> <B>
 if <B> then <B> else <N> <B> <BO> <N> <B> <BO> <N> <B>
 ```
 
-Note how repairs may not use the entire sketch template: this is because Tidyparse adds an invisible `ε` (representing the empty character) to every nonterminal in the original CFG. For diagnostic purposes, Tidyparse will display the CFG at various stages during the rewrite process, e.g.:
+Note how synthesized repairs need not necessarily use the entire sketch template: this is because Tidyparse adds an invisible `ε` (representing the empty token) to every production in the original CFG, in addition to various other cosmetic transformations. For diagnostic purposes, Tidyparse will display the CFG at various stages during the rewrite process, e.g.:
 
 ```
 ─────────────────────────────────────────────────────────────────────────────
@@ -197,10 +197,9 @@ For further examples, please refer to the [`examples`](/examples) subdirectory.
 
 ### Notes
 
-* Nonterminals are surrounded by angle brackets, e.g., `<F>`. If the autocompletion dialog is invoked while the editor caret is above a nonterminal, Tidyparse will display a list of possible expansions.
-* Currently, rendering is done on-the-fly but may not reflect the current state of the editor. To refresh the display, type an extra whitespace character.
-* The grammar is sensitive to whitespace characters. Each nonterminal must be separated by at least one whitespace character.
-* There is currently no lexical analysis. Each terminal in the grammar corresponds to a single token in text, separated by a whitespace. All names must be specified in the grammar.
+* Tidyparse treats contiguous non-whitespace characters as a single token and makes no distinction between lexical and syntactic analysis: tokens must be separated by one or more whitespace characters, and each terminal in the grammar corresponds to exactly one token.
+* Nonterminal stubs are surrounded by angle brackets, e.g., `<F>`. If the autocompletion dialog is invoked while the caret is surrounded by a nonterminal, Tidyparse will display a list of possible expansions.
+* Rendering is done on-the-fly but may not reflect the current state of the editor. To refresh the display, type an extra whitespace character.
 * Tidyparse adds ε-productions and terminal literals for each nonterminal in the CFG. For further details about these transformations and the repair procedure, please refer to our [whitepaper](https://github.com/breandan/galoisenne/blob/master/latex/live/acmart.pdf).
 
 ## Acknowledgements
@@ -214,4 +213,4 @@ The following individuals have helped shape this project through their enthusias
 * [Younesse Kaddar](https://younesse.net)
 * [Michael Schröder](https://mcschroeder.github.io)
 * [Jürgen Cito](https://people.csail.mit.edu/jcito/)
-* [‪Torsten Scholak‬](https://tscholak.github.io)
+* [Torsten Scholak](https://tscholak.github.io)
