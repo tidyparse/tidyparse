@@ -5,4 +5,4 @@ B -> b | a B a | a B b | b B b | b B a
 ---
 
 a a a a a a
-a a a a a a b _ _ _
+a a a a a a b _ _ _ _ _ _

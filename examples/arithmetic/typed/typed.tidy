@@ -14,4 +14,5 @@ T * F
 
 <E<Bool>> + F
 F + F
-2 * T
+2 + F
+<E<Bool>> * <E<Bool>> <op> T <op> <E<Bool>>>

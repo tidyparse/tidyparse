@@ -10,7 +10,7 @@ KW -> new | return | private | String | this | public | import
 
 ---
 
-public static void w ( w , w ) { w w = w . ( w ) }   
+public static void w ( w , w ) { w w = w . ( w ) }
 
 public static void w ( w w , w w ) { w w = w . ( w ) ; w w ; }
 
