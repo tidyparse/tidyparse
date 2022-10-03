@@ -20,4 +20,4 @@ jobs:
       - name: Build with Gradle
         run: |
           git submodule update --init --recursive
-          ./gradlew buildPlugin --stacktrace
+          ./gradlew test buildPlugin --stacktrace

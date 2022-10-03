@@ -1,5 +1,7 @@
-import org.jetbrains.changelog.markdownToHTML
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+import org.gradle.api.tasks.testing.logging.TestLogEvent.*
+import org.jetbrains.changelog.markdownToHTML
 
 fun properties(key: String) = project.findProperty(key).toString()
 
@@ -77,6 +79,25 @@ tasks {
       jvmTarget = JavaVersion.VERSION_1_8.toString()
       apiVersion = languageVersion
       freeCompilerArgs = listOf("-progressive")
+    }
+  }
+
+  withType<Test> {
+    minHeapSize = "1g"
+    maxHeapSize = "3g"
+
+    testLogging {
+      events = setOf(
+        FAILED,
+        PASSED,
+        SKIPPED,
+        STANDARD_OUT
+      )
+      exceptionFormat = FULL
+      showExceptions = true
+      showCauses = true
+      showStackTraces = true
+      showStandardStreams = true
     }
   }
 

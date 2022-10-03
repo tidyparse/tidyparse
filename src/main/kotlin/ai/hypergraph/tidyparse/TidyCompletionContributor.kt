@@ -32,6 +32,8 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
     result: CompletionResultSet
   ) {
     parameters.apply {
+      if (originalFile.fileType.defaultExtension != "tidy") return
+
       var currentLine = runReadAction { editor.currentLine() }.trim()
 
       handle(
@@ -46,7 +48,8 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
         currentLine.getSurroundingToken(editor.caretModel.logicalPosition.column)
           .let { currentLine.replaceRange(it.range, "_") } else currentLine
 
-      originalFile.recomputeGrammar()
+      try { originalFile.recomputeGrammar() } catch (e: Exception) { return }
+
       val selection: MatchResult? =
         currentLine.getSurroundingNonterminal(editor.caretModel.logicalPosition.column)
 
