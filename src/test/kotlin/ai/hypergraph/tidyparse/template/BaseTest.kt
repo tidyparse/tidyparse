@@ -1,13 +1,19 @@
 package ai.hypergraph.tidyparse.template
 
+import ai.hypergraph.kaliningraph.parsing.parse
+import ai.hypergraph.kaliningraph.parsing.parseCFG
+import ai.hypergraph.kaliningraph.types.π2
 import ai.hypergraph.tidyparse.TidyFileType
 import ai.hypergraph.tidyparse.promise
+import ai.hypergraph.tidyparse.sanitized
+import ai.hypergraph.tidyparse.synthCache
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.IdeActions
 import com.intellij.openapi.fileTypes.PlainTextFileType
 import com.intellij.psi.PsiFile
 import com.intellij.testFramework.FileEditorManagerTestCase
 import com.intellij.util.ui.UIUtil
+import com.jetbrains.rd.util.measureTimeMillis
 
 abstract class BaseTest: FileEditorManagerTestCase() {
   companion object {
@@ -45,13 +51,21 @@ abstract class BaseTest: FileEditorManagerTestCase() {
   }
 
   fun String.executeQuery() = myFixture.run {
-    makeEditor(this@executeQuery)
+    makeEditor(this@executeQuery + "<caret>")
     typeAndWaitForResults(" ")
+    val key = (
+      this@executeQuery.lines().last().sanitized() to
+        substringBefore("---").parseCFG()
+    )
+    synthCache[key]?.forEach { assertNotNull(key.π2.parse(it)) }
   }
 
   fun String.testAllLines() {
-    lines().fold("") { acc, s -> "$acc\n$s"
-      .also { if("---" in it) "$it<caret>".executeQuery() }
-    }
+    measureTimeMillis {
+      lines().fold("") { acc, s ->
+        "$acc\n$s"
+          .also { if ("---" in it) it.executeQuery() }
+      }
+    }.also { println("Round trip latency: $it") }
   }
 }

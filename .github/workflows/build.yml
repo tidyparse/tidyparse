@@ -5,6 +5,7 @@ on:
     paths:
       - '**.kt'
       - '**.kts'
+      - '**.tidy'
 
 jobs:
   build:
