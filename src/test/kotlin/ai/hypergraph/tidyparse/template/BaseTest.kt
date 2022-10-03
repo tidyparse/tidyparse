@@ -50,6 +50,8 @@ abstract class BaseTest: FileEditorManagerTestCase() {
   }
 
   fun String.testAllLines() {
-    lines().fold("") { acc, s -> "$acc\n$s".also { "$it<caret>".executeQuery() } }
+    lines().fold("") { acc, s -> "$acc\n$s"
+      .also { if("---" in it) "$it<caret>".executeQuery() }
+    }
   }
 }
