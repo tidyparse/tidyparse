@@ -25,7 +25,8 @@ B ->  true | false
 
 ---
 
-1 + 1
+1 + <I>
+<I> + <I> + <I>
 1 + 1 + 1
 ( + ) 1 1
 
@@ -38,8 +39,8 @@ let rec foldright f l b = match l with | [] -> b | h :: t -> f h ( foldright a b
 
 let rec a = _ _ _ _ _ _ _
 
-let rec filter p l = match l with | [] -> []  | x :: l -> if p x then x :: _ _ _ else filter p l
-
 let curry f = ( fun x y -> f ( _ _ _ ) )
+
+let curry f = ( fun x y -> f ( _ ) )
 
 let uncurry f = ( _ fun ( y , x ) -> x )

@@ -3,10 +3,7 @@ package ai.hypergraph.tidyparse.template
 import ai.hypergraph.kaliningraph.parsing.parse
 import ai.hypergraph.kaliningraph.parsing.parseCFG
 import ai.hypergraph.kaliningraph.types.π2
-import ai.hypergraph.tidyparse.TidyFileType
-import ai.hypergraph.tidyparse.promise
-import ai.hypergraph.tidyparse.sanitized
-import ai.hypergraph.tidyparse.synthCache
+import ai.hypergraph.tidyparse.*
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.IdeActions
 import com.intellij.openapi.fileTypes.PlainTextFileType
@@ -57,14 +54,14 @@ abstract class BaseTest: FileEditorManagerTestCase() {
       this@executeQuery.lines().last().sanitized() to
         substringBefore("---").parseCFG()
     )
-    synthCache[key]?.forEach { assertNotNull(key.π2.parse(it)) }
+    synthCache[key]?.forEach { assertNotNull(it.dehtmlify(), key.π2.parse(it.dehtmlify())) }
   }
 
   fun String.testAllLines() {
     measureTimeMillis {
       lines().fold("") { acc, s ->
         "$acc\n$s"
-          .also { if ("---" in it) it.executeQuery() }
+          .also { if ("---\n" in it) it.executeQuery() }
       }
     }.also { println("Round trip latency: $it") }
   }
