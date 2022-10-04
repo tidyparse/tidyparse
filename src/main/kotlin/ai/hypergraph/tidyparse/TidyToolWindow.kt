@@ -11,6 +11,7 @@ import java.awt.Graphics
 import java.awt.Graphics2D
 import javax.swing.JTextPane
 import javax.swing.text.DefaultCaret
+import javax.swing.text.DefaultCaret.NEVER_UPDATE
 
 class TidyToolWindowFactory : ToolWindowFactory {
   override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) =
@@ -35,7 +36,7 @@ object TidyToolWindow {
     }.apply {
     contentType = "text/html"
     isEditable = false
-    (caret as DefaultCaret).updatePolicy = DefaultCaret.NEVER_UPDATE
+    (caret as DefaultCaret).updatePolicy = NEVER_UPDATE
   }
 
   @Volatile
