@@ -3,7 +3,7 @@ package ai.hypergraph.tidyparse.template
 import org.junit.Test
 import java.io.File
 
-class MyPluginTest : BaseTest() {
+class ExamplesTest : BaseTest() {
   @Test
   fun testAllExamplesWork() {
     File("examples/").walkTopDown()
