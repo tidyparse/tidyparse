@@ -2,6 +2,8 @@
 
 ## 0.14.0
 
+- Add support for comments in grammar
+- Fix parsing issue with nonterminal stubs
 - Fix synthesis issue with nonterminal stubs
 - Scale diagnostics to match editor font size
 

@@ -6,7 +6,6 @@ import ai.hypergraph.kaliningraph.types.π2
 import ai.hypergraph.tidyparse.*
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.IdeActions
-import com.intellij.openapi.fileTypes.PlainTextFileType
 import com.intellij.psi.PsiFile
 import com.intellij.testFramework.FileEditorManagerTestCase
 import com.intellij.util.ui.UIUtil
@@ -41,27 +40,31 @@ abstract class BaseTest: FileEditorManagerTestCase() {
     myManager.closeAllFiles()
   }
 
-  fun typeAndWaitForResults(string: String) {
+  fun typeAndAwaitResults(string: String) {
     myFixture.type(string)
     UIUtil.dispatchAllInvocationEvents()
     promise?.get()
   }
 
-  fun String.executeQuery() = myFixture.run {
-    makeEditor(this@executeQuery + "<caret>")
-    typeAndWaitForResults(" ")
+  fun String.simulateKeystroke() = myFixture.run {
+    makeEditor(this@simulateKeystroke + "<caret>")
+    typeAndAwaitResults(" ")
+    checkCachedResultParses()
+  }
+
+  private fun String.checkCachedResultParses(): Unit? {
     val key = (
-      this@executeQuery.lines().last().sanitized() to
+      this.lines().last().sanitized() to
         substringBefore("---").parseCFG()
-    )
-    synthCache[key]?.forEach { assertNotNull(it.dehtmlify(), key.π2.parse(it.dehtmlify())) }
+      )
+    return synthCache[key]?.forEach { assertNotNull(it.dehtmlify(), key.π2.parse(it.dehtmlify())) }
   }
 
   fun String.testAllLines() {
     measureTimeMillis {
       lines().fold("") { acc, s ->
         "$acc\n$s"
-          .also { if ("---\n" in it) it.executeQuery() }
+          .also { if ("---\n" in it) it.simulateKeystroke() }
       }
     }.also { println("Round trip latency: $it") }
   }

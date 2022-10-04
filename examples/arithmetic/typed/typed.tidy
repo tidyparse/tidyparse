@@ -2,8 +2,12 @@ START -> E<X>
 op -> + | *
 E<X> -> E<X> op E<X>
 X -> Int | Bool | Float
-E<Int> -> 1 | 2 | 3
+E<Int> -> 0 | 1 | 2 | 3
 E<Bool> -> T | F
+E<Float> -> E<Int> . E<Int>
+
+Upcasting (e.g., 1.0 + 2 ⊢ E<Float>):
+E<Float> -> E<Int> op E<Float> | E<Float> op E<Int>
 
 ---
 
@@ -12,6 +16,8 @@ T + F
 1 * 2
 T * F
 
+2 . 0 + 1 + 2 + 2 . 0
+<E<Float>> + <E<Int>> + <E<Float>>
 <E<Bool>> + F
 F + F
 2 + F
