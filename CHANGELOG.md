@@ -2,6 +2,7 @@
 
 ## 0.14.0
 
+- Prune well-formed subexpressions
 - Add support for comments in grammar
 - Fix parsing issue with nonterminal stubs
 - Fix synthesis issue with nonterminal stubs

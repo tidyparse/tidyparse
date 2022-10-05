@@ -50,6 +50,8 @@ abstract class BaseTest: FileEditorManagerTestCase() {
     makeEditor(this@simulateKeystroke + "<caret>")
     typeAndAwaitResults(" ")
     checkCachedResultParses()
+//    typeAndAwaitResults("p")
+//    checkCachedResultParses()
   }
 
   private fun String.checkCachedResultParses(): Unit? {

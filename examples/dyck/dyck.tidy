@@ -1,4 +1,4 @@
-S -> ( ) | [ ] | { } | ( S ) | [ S ] | { S } | S S
+S -> w | ( ) | [ ] | { } | ( S ) | [ S ] | { S } | S S
 
 ---
 
@@ -10,4 +10,11 @@ S -> ( ) | [ ] | { } | ( S ) | [ S ] | { S } | S S
 ( ) { [ ( ) ( ) } ] )
 { }
 ( ( ) { [ ] ( ) } { } )
-( <S> { [ ] ( ) } { } ) 
+( <S> { [ ] ( ) } { } )
+
+w ( w ) w ( w ( w ( w ) w ( w ) w ( w ) ) )
+
+<START> ( <START> ( w ( w ) _ w ( w ) w ( ) ) w ( ) w
+w ( w ) w ( w ( w ( w ) w ( w ) w ( w ) ) ) w ( <START> ( w ( w ) _ w ( w ) w ( ) ) w ( ) w
+w ( w ) w ( w ( w ( w ) w ( w ) w ( w ) ) ) w ( w ( w ) w ( w ) w ( w ) w ( w ) w ( w ( w ) ) w ( ( w ( w ( w ) ) w ) w ) w ( w ( ) w ( w ) ) w ( w ( w ) _ w ( w ) w ( ) ) w ( ) w
+w ( w ) w ( w ) w ( w ) w ( w ) w ( w ( w ) ) w ( ( w ( w ( w ) ) w ) w ) w ( w ( ) w ( w ) ) w
