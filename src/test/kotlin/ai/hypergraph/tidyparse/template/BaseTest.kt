@@ -49,25 +49,19 @@ abstract class BaseTest: FileEditorManagerTestCase() {
   fun String.simulateKeystroke() = myFixture.run {
     makeEditor(this@simulateKeystroke + "<caret>")
     typeAndAwaitResults(" ")
-    checkCachedResultParses()
+    if ("---\n" in this@simulateKeystroke) checkCachedResultParses()
 //    typeAndAwaitResults("p")
 //    checkCachedResultParses()
   }
 
-  private fun String.checkCachedResultParses(): Unit? {
-    val key = (
-      this.lines().last().sanitized() to
-        substringBefore("---").parseCFG()
-      )
-    return synthCache[key]?.forEach { assertNotNull(it.dehtmlify(), key.π2.parse(it.dehtmlify())) }
+  private fun String.checkCachedResultParses() {
+    val key = this.lines().last().sanitized() to substringBefore("---").parseCFG()
+    synthCache[key]?.forEach { assertNotNull(it.dehtmlify(), key.π2.parse(it.dehtmlify())) }
   }
 
   fun String.testAllLines() {
     measureTimeMillis {
-      lines().fold("") { acc, s ->
-        "$acc\n$s"
-          .also { if ("---\n" in it) it.simulateKeystroke() }
-      }
+      lines().fold("") { acc, s -> "$acc\n$s" .also { it.simulateKeystroke() } }
     }.also { println("Round trip latency: $it") }
   }
 }
