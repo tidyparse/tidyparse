@@ -153,7 +153,7 @@ fun String.synthesizeCachingAndDisplayProgress(
   tokens: List<String> = tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" },
   sanitized: String = tokens.joinToString(" "),
   maxResults: Int = 20,
-  // TODO: think about whether really want to solve for variations in every case
+  // TODO: think about whether we really want to solve for variations in every case
   variations: List<(String) -> Sequence<String>> =
     listOf(
       String::everySingleHoleConfig,
