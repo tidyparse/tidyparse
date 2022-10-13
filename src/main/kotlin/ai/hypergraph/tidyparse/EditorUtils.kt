@@ -362,13 +362,13 @@ fun PsiFile.recomputeGrammar(): CFG {
   } else cfg
 }
 
-val ok = "<b>✅ Current line unambiguously parses! Parse tree:</b>\n"
-val ambig = "<b>⚠️ Current line parses, but is ambiguous:</b>\n"
-val no = "<b>❌ Current line invalid, possible fixes:</b>\n"
-val insertColor = "#85FF7A"
-val changeColor = "#FFC100"
-val deleteColor = "#FFCCCB"
-val legend =
+const val ok = "<b>✅ Current line unambiguously parses! Parse tree:</b>\n"
+const val ambig = "<b>⚠️ Current line parses, but is ambiguous:</b>\n"
+const val no = "<b>❌ Current line invalid, possible fixes:</b>\n"
+const val insertColor = "#85FF7A"
+const val changeColor = "#FFC100"
+const val deleteColor = "#FFCCCB"
+const val legend =
   "<span style=\"background-color: $insertColor\">  </span> : INSERTION   " +
     "<span style=\"background-color: $changeColor\">  </span> : SUBSTITUTION   " +
     "<span style=\"background-color: $deleteColor\">  </span> : DELETION"
