@@ -32,7 +32,9 @@ var promise: Future<*>? = null
 fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile): Future<*>? {
     val (caretPos, isInGrammar) = runReadAction {
       editor.caretModel.logicalPosition.column to
-        (editor.caretModel.offset < editor.document.text.lastIndexOf("---"))
+        editor.document.text.lastIndexOf("---").let { separator ->
+          if (separator == -1) true else editor.caretModel.offset < separator
+        }
     }
     val sanitized = currentLine.trim().tokenizeByWhitespace().joinToString(" ")
     if (file.name.endsWith(".tidy") && sanitized != mostRecentQuery) {
@@ -154,10 +156,10 @@ fun String.synthesizeCachingAndDisplayProgress(
   sanitized: String = tokens.joinToString(" "),
   maxResults: Int = 20,
   // TODO: think about whether we really want to solve for variations in every case
-  variations: List<(String) -> Sequence<String>> =
+  variations: List<Mutator> =
     listOf(
-      String::everySingleHoleConfig,
-      String::increasingLengthChunks
+        { a, b -> a.everySingleHoleConfig() },
+        { a, b -> a.increasingLengthChunks() }
     ),
 ): List<String> =
   synthCache.getOrPut(sanitized to cfg) {
@@ -313,10 +315,10 @@ fun String.findRepairs(cfg: CFG, exclusions: Set<Int>, fishyLocations: List<Int>
   synthesizeCachingAndDisplayProgress(
     cfg = cfg,
     tokens = tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" },
-    variations = listOf {
-      it.multiTokenSubstitutionsAndInsertions(
+    variations = listOf { a, b ->
+      a.multiTokenSubstitutionsAndInsertions(
         numberOfEdits = 3,
-        exclusions = exclusions,
+        exclusions = b,
         fishyLocations = fishyLocations
       )
     }

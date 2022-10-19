@@ -55,13 +55,13 @@ abstract class BaseTest: FileEditorManagerTestCase() {
   }
 
   private fun String.checkCachedResultParses() {
-    val key = this.lines().last().sanitized() to substringBefore("---").parseCFG()
+    val key = lines().last().sanitized() to substringBefore("---").parseCFG()
     synthCache[key]?.forEach { assertNotNull(it.dehtmlify(), key.π2.parse(it.dehtmlify())) }
   }
 
   fun String.testAllLines() {
     measureTimeMillis {
-      lines().fold("") { acc, s -> "$acc\n$s" .also { it.simulateKeystroke() } }
+      lines().fold("") { acc, s -> "$acc\n$s".also { it.simulateKeystroke() } }
     }.also { println("Round trip latency: $it") }
   }
 }

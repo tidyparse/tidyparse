@@ -8,6 +8,6 @@ class ExamplesTest : BaseTest() {
   fun testAllExamplesWork() {
     File("examples/").walkTopDown()
       .filter { it.isFile && it.extension == "tidy" }
-      .forEach { it.readText().testAllLines() }
+      .forEach { println("Testing: ${it.path}"); it.readText().testAllLines() }
   }
 }
