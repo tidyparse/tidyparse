@@ -20,6 +20,7 @@ import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiFile
 import com.intellij.util.concurrency.AppExecutorUtil
+import prettyPrint
 import java.awt.Color
 import java.util.*
 import java.util.concurrent.Future
@@ -122,7 +123,7 @@ private val ra = ">".escapeHTML()
 private fun String.treatAsNonterminal() = drop(la.length).dropLast(ra.length)
 private fun String.isNonterminal() = startsWith(la) && endsWith(ra)
 
-val CFG.prettyHTML by cache { pretty.toString().carveSeams().escapeHTML() }
+val CFG.prettyHTML by cache { prettyPrint().toString().carveSeams().escapeHTML() }
 
 fun render(
   solutions: List<String>,
