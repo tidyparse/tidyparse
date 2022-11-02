@@ -4,7 +4,6 @@ import com.intellij.codeInsight.editorActions.BackspaceHandlerDelegate
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
 import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.editor.Editor
-import com.intellij.openapi.editor.colors.EditorFontType.PLAIN
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
 

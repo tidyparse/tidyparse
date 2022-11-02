@@ -1,16 +1,12 @@
 package ai.hypergraph.tidyparse
 
-import ai.hypergraph.kaliningraph.containsHole
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.kaliningraph.tensor.seekFixpoint
 import com.intellij.codeInsight.completion.*
 import com.intellij.codeInsight.completion.CompletionType.BASIC
 import com.intellij.codeInsight.lookup.LookupElement
 import com.intellij.codeInsight.lookup.LookupElementBuilder
 import com.intellij.codeInsight.lookup.LookupElementDecorator
-import com.intellij.openapi.application.invokeAndWaitIfNeeded
 import com.intellij.openapi.application.runReadAction
-import com.intellij.openapi.application.runWriteAction
 import com.intellij.patterns.PlatformPatterns
 import com.intellij.psi.PlainTextTokenTypes.PLAIN_TEXT
 import com.intellij.util.ProcessingContext
