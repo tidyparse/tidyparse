@@ -7,6 +7,7 @@
 - Fix parsing issue with nonterminal stubs
 - Fix synthesis issue with nonterminal stubs
 - Scale diagnostics to match editor font size
+- Performance improvements
 
 ## 0.13.0
 

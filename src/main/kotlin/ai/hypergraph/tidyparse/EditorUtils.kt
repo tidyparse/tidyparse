@@ -7,6 +7,7 @@ import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.image.toHtmlTable
 import ai.hypergraph.kaliningraph.levenshtein
 import ai.hypergraph.kaliningraph.parsing.*
+import ai.hypergraph.kaliningraph.sat.synthesize
 import ai.hypergraph.kaliningraph.sat.synthesizeIncrementally
 import ai.hypergraph.kaliningraph.tensor.FreeMatrix
 import ai.hypergraph.kaliningraph.types.cache
@@ -159,8 +160,8 @@ fun String.synthesizeCachingAndDisplayProgress(
   // TODO: think about whether we really want to solve for variations in every case
   variations: List<Mutator> =
     listOf(
-        { a, b -> a.everySingleHoleConfig() },
-        { a, b -> a.increasingLengthChunks() }
+      { a, b -> a.everySingleHoleConfig() },
+      { a, b -> a.increasingLengthChunks() }
     ),
 ): List<String> =
   synthCache.getOrPut(sanitized to cfg) {
@@ -173,7 +174,7 @@ fun String.synthesizeCachingAndDisplayProgress(
       cfg = cfg,
       variations = variations,
       updateProgress = { query ->
-        if (Thread.currentThread().isInterrupted) throw InterruptedException()
+        if (Thread.currentThread().isInterrupted) throw InterruptedException("Thread was interrupted!")
         if ("Solving:" in TidyToolWindow.text) updateProgress(query)
       }
     ).map {
