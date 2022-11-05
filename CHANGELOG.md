@@ -3,6 +3,7 @@
 ## 0.15.0
 
 - Always use the fastest solver for a sketch
+- Reduce the amount of UI jitter while typing
 
 ## 0.14.0
 
