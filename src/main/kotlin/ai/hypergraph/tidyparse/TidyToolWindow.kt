@@ -46,7 +46,8 @@ object TidyToolWindow {
     set(s) {
       if (s.length != lastUpdate.length || s != lastUpdate) {
         lastUpdate = s
-        invokeLater { textArea.text = s }
+        val t = Thread.currentThread()
+        invokeLater { if(!t.isInterrupted) textArea.text = s }
       }
     }
 

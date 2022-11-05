@@ -42,7 +42,7 @@ fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile)
       promise?.cancel(true)
       TidyToolWindow.text = ""
       promise = AppExecutorUtil.getAppExecutorService()
-        .submit { file.tryToReconcile(sanitized, isInGrammar, caretPos) }
+         .submit { file.tryToReconcile(sanitized, isInGrammar, caretPos) }
 
       ToolWindowManager.getInstance(project).getToolWindow("Tidyparse")
         ?.let { runReadAction { if (!it.isVisible) it.show() } }
@@ -155,7 +155,8 @@ fun String.synthesizeCachingAndDisplayProgress(
   tokens: List<String> = tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" },
   sanitized: String = tokens.joinToString(" "),
   maxResults: Int = 20,
-  // TODO: think about whether we really want to solve for variations in every case
+  checkInterrupted: () -> Unit = { if (Thread.currentThread().isInterrupted) throw InterruptedException() },
+    // TODO: think about whether we really want to solve for variations in every case
   variations: List<Mutator> =
     listOf(
       { a, b -> a.everySingleHoleConfig() },
@@ -171,9 +172,9 @@ fun String.synthesizeCachingAndDisplayProgress(
     sanitized.synthesizeIncrementally(
       cfg = cfg,
       variations = variations,
+      checkInterrupted = checkInterrupted,
       updateProgress = { query ->
-        if (Thread.currentThread().isInterrupted) throw InterruptedException("Thread was interrupted!")
-        if ("Solving:" in TidyToolWindow.text) updateProgress(query)
+        checkInterrupted().also { if ("Solving:" in TidyToolWindow.text) updateProgress(query) }
       }
     ).map {
       updateSolutions(solutions, cfg, tokens, it)
@@ -228,7 +229,7 @@ fun Sequence<Tree>.bordersOfParsable(): Set<Int> =
   map { it.span }.flatMap { listOf(it.first, it.last) }.toSet()
 
 fun PsiFile.tryToReconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) =
-  try { reconcile(currentLine, isInGrammar, caretPos) } catch (_: Exception) {}
+  try { reconcile(currentLine, isInGrammar, caretPos) } catch (_: Exception) { }
 
 fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) {
   if (currentLine.isBlank()) return
