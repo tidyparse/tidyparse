@@ -135,14 +135,15 @@ fun render(
   <pre>${reason ?: "Synthesizing...\n"}
   """.trimIndent() +
   // TODO: legend
-  solutions.joinToString("\n", "\n", "\n") +
-  """🔍 Solving: ${
+  solutions.joinToString("\n", "\n") +
+  """
+  🔍 Solving: ${
     prompt ?: TidyToolWindow.text.substringAfter("Solving: ").substringBefore("\n")
   }
   
-${if (reason != null ) legend else ""}</pre>${stubs ?: ""}${cfg.renderCFGToHTML()}
-      </body>
-      </html>
+  ${if (reason != null ) legend else ""}</pre>${stubs ?: ""}${cfg.renderCFGToHTML()}
+  </body>
+  </html>
   """.trimIndent()
 
 val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
