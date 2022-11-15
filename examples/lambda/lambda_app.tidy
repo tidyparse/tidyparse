@@ -1,0 +1,13 @@
+expr -> λ binders . expr | app_expr
+app_expr -> simple_expr | app_expr simple_expr
+simple_expr -> name | ( expr )
+binders -> a | b | c
+name -> a | b | c | 0 | 1
+
+---
+
+( λ a . a )
+( λ b . b ) 1
+a ( λ a . b )
+( λ a . ( λ a . a ) )
+( λ a . 1 ) )

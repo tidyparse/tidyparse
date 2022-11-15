@@ -1,0 +1,9 @@
+sexp -> λ var . sexp | sexp sexp | var | ( sexp ) | const
+const -> 1 | 2 | 3 | 4 | 5 | 6
+var -> a | b | c | d | e | f
+---
+
+( λ b . b ) 1
+( λ a . b )
+( λ a . ( λ a . a ) )
+( λ a . 1 )
