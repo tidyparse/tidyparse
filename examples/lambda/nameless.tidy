@@ -1,0 +1,7 @@
+START -> λ v . START | START START | v | ( START ) | c
+
+---
+
+λ v . v
+
+_ _ _ _ ( _ _ ( _ _ _ _ _ _ _ ) _ _ _ _

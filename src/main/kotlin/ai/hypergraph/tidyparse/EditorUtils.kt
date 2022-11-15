@@ -135,9 +135,7 @@ fun render(
   <pre>${reason ?: "Synthesizing...\n"}
   """.trimIndent() +
   // TODO: legend
-  solutions.joinToString("\n", "\n") +
-  """
-  🔍 Solving: ${
+  solutions.joinToString("\n", "\n", "\n") + """🔍 Solving: ${
     prompt ?: TidyToolWindow.text.substringAfter("Solving: ").substringBefore("\n")
   }
   
