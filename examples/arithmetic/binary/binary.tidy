@@ -11,6 +11,13 @@ true and ( false or <S> and true )
 true and ( false or ! true )
 
 false or ! true or <S>
+false or ! true or true
+false or ! true or false
+false or ! true or ! <S>
+false or ! true or <S> and <S>
+false or ! true or <S> or <S>
+false or ! true or ( <S> )
+
 
 true and ( false _ _ _ _ _ _ _
 
@@ -19,3 +26,5 @@ true _ ( false _ ( _ ! _ _ _ a
 true or ! ( false and ( <S> ) or ( ! ! false ) )
 
 true and true ! and false or true ! true and false
+
+_ _ _ <S> _ _ _
