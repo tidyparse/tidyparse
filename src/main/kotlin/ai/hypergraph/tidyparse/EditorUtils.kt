@@ -106,7 +106,7 @@ private val plaintextDiffGenerator: DiffRowGenerator =
     .build()
 
 // TODO: maybe add a dedicated SAT constraint instead of filtering out NT invariants after?
-fun CFG.overrideInvariance(l1: List<String>, l2: List<String>): String =
+private fun CFG.overrideInvariance(l1: List<String>, l2: List<String>): String =
   plaintextDiffGenerator.generateDiffRows(l1, l2).joinToString(" ") { dr ->
   val (old,new ) = dr.oldLine to dr.newLine
   // If repair substitutes a terminal with the same NT that it belongs to, do not treat as a diff
@@ -163,11 +163,22 @@ fun String.synthesizeCachingAndDisplayProgress(
     ),
 ): List<String> =
   synthCache.getOrPut(sanitized to cfg) {
+    val t = System.currentTimeMillis()
     val renderedStubs = if (containsHole()) null
       else cfg.parseWithStubs(sanitized).second.renderStubs()
     val reason = if (containsHole()) null else no
     TidyToolWindow.text = render(emptyList(), stubs = renderedStubs, reason = reason)
     val solutions = TreeSet(compareBy(tokenwiseEdits(tokens)).thenBy { it.length })
+
+    fun String.updateSolutions(
+      solutions: TreeSet<String>,
+      cfg: CFG,
+      tokens: List<String>,
+      it: String
+    ) =
+      if (containsHole()) solutions.add(it)
+      else solutions.add(cfg.overrideInvariance(tokens, it.tokenizeByWhitespace()))
+
     sanitized.synthesizeIncrementally(
       cfg = cfg,
       variations = variations,
@@ -176,13 +187,14 @@ fun String.synthesizeCachingAndDisplayProgress(
         checkInterrupted().also { if ("Solving:" in TidyToolWindow.text) updateProgress(query) }
       }
     ).map {
-      updateSolutions(solutions, cfg, tokens, it)
+//      updateSolutions(solutions, cfg, tokens, it)
+      solutions.add(it)
       val htmlSolutions = if (containsHole()) solutions.map { it.escapeHTML() }
       else solutions
 //        .also { it.map { println(diffAsLatex(tokens, it.tokenizeByWhitespace())) }; println() }
         .map { diffAsHtml(tokens, it.tokenizeByWhitespace()) }
       TidyToolWindow.text = render(htmlSolutions, stubs = renderedStubs, reason = reason)
-    }.takeWhile { solutions.size <= maxResults }.toList()
+    }.takeWhile { solutions.size <= maxResults && System.currentTimeMillis() - t < TIMEOUT_MS }.toList()
 
     solutions.toList()
   }
@@ -206,15 +218,6 @@ fun ditto(s1: String, s2: String): String =
     }
   }
 
-private fun String.updateSolutions(
-  solutions: TreeSet<String>,
-  cfg: CFG,
-  tokens: List<String>,
-  it: String
-) =
-  if (containsHole()) solutions.add(it)
-  else solutions.add(cfg.overrideInvariance(tokens, it.tokenizeByWhitespace()))
-
 fun updateProgress(query: String) {
   val sanitized = query.escapeHTML()
   TidyToolWindow.text =
@@ -230,10 +233,10 @@ fun Sequence<Tree>.bordersOfParsable(): Set<Int> =
 fun PsiFile.tryToReconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) =
   try { reconcile(currentLine, isInGrammar, caretPos) } catch (_: Exception) { }
 
-fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) {
+fun PsiFile.reconcile(currentLine: String, caretInGrammar: Boolean, caretPos: Int) {
   if (currentLine.isBlank()) return
   val cfg =
-    if (isInGrammar)
+    if (caretInGrammar)
       CFGCFG(
         names = currentLine.tokenizeByWhitespace()
           .filter { it !in setOf("->", "|") }.toSet()
@@ -249,6 +252,7 @@ fun PsiFile.reconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) 
       }
     }
   } else {
+    println("Parsing ${currentLine} with stubs!")
     val (parseForest, stubs) = cfg.parseWithStubs(currentLine)
     debugText = if (parseForest.isNotEmpty()) {
       if (parseForest.size == 1) "<pre>$ok\n🌳" + parseForest.first().prettyPrint() + "</pre>"

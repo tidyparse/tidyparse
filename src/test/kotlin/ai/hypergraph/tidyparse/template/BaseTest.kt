@@ -56,7 +56,10 @@ abstract class BaseTest: FileEditorManagerTestCase() {
 
   private fun String.checkCachedResultParses() {
     val key = lines().last().sanitized() to substringBefore("---").parseCFG()
-    synthCache[key]?.forEach { assertNotNull(it.dehtmlify(), key.π2.parse(it.dehtmlify())) }
+    synthCache[key]?.forEach {
+//      println("Checking: ${it} (${synthCache[key]?.joinToString(",")})")
+      assertNotNull(it.dehtmlify(), key.π2.parse(it.dehtmlify()))
+    }
   }
 
   fun String.testAllLines() {
