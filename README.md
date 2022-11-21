@@ -9,7 +9,7 @@
 <!-- Plugin description -->
 The main goal of this project is to speed up the process of learning a new language by suggesting ways to fix source code.
 
-Tidyparse recognizes files ending in `*.tidy` which contain a context free grammar, followed by three consecutive dashes (`---`), followed by the string to parse (with optional holes). If the string is valid according to the CFG, it will print out the parse tree, otherwise if the line contains errors, it will print out suggestions how the string in question can be fixed, alongside the fragments which can be parsed.
+Tidyparse recognizes files ending in `*.tidy` which contain a context-free grammar, followed by three consecutive dashes (`---`), followed by the string to parse (with optional holes). If the string is valid according to the CFG, it will print out the parse tree, otherwise if the line contains errors, it will print out suggestions how the string in question can be fixed, alongside the fragments which can be parsed.
 
 <!-- Plugin description end -->
 
@@ -28,7 +28,7 @@ To launch IntelliJ IDEA with the plugin installed, run: `./gradlew runIde` from 
 
 ## Usage
 
-Create a new file, `if_lang.tidy`, containing the following context free grammar:
+Create a new file, `if_lang.tidy`, containing the following context-free grammar:
 
 ```
  S -> X
