@@ -122,7 +122,7 @@ private val ra = ">".escapeHTML()
 private fun String.treatAsNonterminal() = drop(la.length).dropLast(ra.length)
 private fun String.isNonterminal() = startsWith(la) && endsWith(ra)
 
-val CFG.prettyHTML by cache { prettyPrint().toString().carveSeams().escapeHTML() }
+val CFG.prettyHTML by cache { prettyPrint().carveSeams().escapeHTML() }
 
 fun render(
   solutions: List<String>,
