@@ -11,8 +11,8 @@ import com.intellij.openapi.editor.markup.TextAttributes
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.util.PsiEditorUtil
-import java.awt.Color
-import java.awt.Font
+import com.intellij.ui.JBColor
+import com.intellij.util.ui.JBFont
 import kotlin.reflect.KProperty
 
 class TidyHighlightVisitor : HighlightVisitor {
@@ -27,11 +27,11 @@ class TidyHighlightVisitor : HighlightVisitor {
   operator fun TextAttributes.getValue(tidyHighlightVisitor: TidyHighlightVisitor, property: KProperty<*>) =
     createTextAttributesKey(property.name, createTempTextAttributesKey(property.name, this))
 
-  val BOLD_FONT by createAttributes { fontType = Font.BOLD }
-  val BLUE_FONT by createAttributes { foregroundColor = Color.BLUE }
-  val RED_FONT by createAttributes { foregroundColor = Color.RED }
+  val BOLD_FONT by createAttributes { fontType = JBFont.BOLD }
+  val BLUE_FONT by createAttributes { foregroundColor = JBColor.BLUE }
+  val RED_FONT by createAttributes { foregroundColor = JBColor.RED }
 
-  fun RGB_FONT(color: Color, name: String = "${color.rgb}_font") =
+  fun RGB_FONT(color: JBColor, name: String = "${color.rgb}_font") =
     createTextAttributesKey(name, createTempTextAttributesKey(name,
       DOC_COMMENT.defaultAttributes.clone().apply { foregroundColor = color }))
 
