@@ -9,9 +9,9 @@ plugins {
   // Kotlin support
   kotlin("jvm") version "1.8.0-Beta"
   // Gradle IntelliJ Plugin
-  id("org.jetbrains.intellij") version "1.9.0"
+  id("org.jetbrains.intellij") version "1.10.0"
   // Gradle Changelog Plugin
-  id("org.jetbrains.changelog") version "1.3.1"
+  id("org.jetbrains.changelog") version "2.0.0"
   // Gradle Qodana Plugin
   id("org.jetbrains.qodana") version "0.1.13"
 
@@ -71,6 +71,12 @@ qodana {
   reportPath.set(projectDir.resolve("build/reports/inspections").canonicalPath)
   saveReport.set(true)
   showReport.set(System.getenv("QODANA_SHOW_REPORT")?.toBoolean() ?: false)
+}
+
+kotlin.jvmToolchain {
+  run {
+    languageVersion.set(JavaLanguageVersion.of(17))
+  }
 }
 
 tasks {
@@ -139,9 +145,9 @@ tasks {
     })
   }
 
-  runPluginVerifier {
-    ideVersions.set(listOf("2022.2"))
-  }
+//  runPluginVerifier {
+//    ideVersions.set(listOf("2022.3"))
+//  }
 
   runIde {
     maxHeapSize = "4g"
