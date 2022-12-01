@@ -1,6 +1,7 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
 import org.gradle.api.tasks.testing.logging.TestLogEvent.*
+import org.jetbrains.changelog.Changelog.OutputType.HTML
 import org.jetbrains.changelog.markdownToHTML
 
 fun properties(key: String) = project.findProperty(key).toString()
@@ -141,13 +142,13 @@ tasks {
 
     // Get the latest available change notes from the changelog file
     changeNotes.set(provider {
-      changelog.getAll().values.first().toHTML()
+      changelog.renderItem(changelog.getAll().values.first(), HTML)
     })
   }
 
-//  runPluginVerifier {
-//    ideVersions.set(listOf("2022.3"))
-//  }
+  runPluginVerifier {
+    ideVersions.set(listOf("2022.3"))
+  }
 
   runIde {
     maxHeapSize = "4g"

@@ -4,6 +4,7 @@
 
 - Always use the fastest solver for a sketch
 - Reduce the amount of UI jitter while typing
+- Update to support IntelliJ Platform 2022.3
 
 ## 0.14.0
 
