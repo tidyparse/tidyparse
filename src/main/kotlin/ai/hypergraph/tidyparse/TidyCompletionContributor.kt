@@ -32,29 +32,24 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
 
       var currentLine = runReadAction { editor.currentLine() }.trim()
 
-      handle(
-        currentLine,
-        editor.project!!,
-        editor,
-        originalFile
-      )?.get()
+      handle(currentLine, editor.project!!, editor, originalFile)?.get()
+
+      val column = editor.caretModel.logicalPosition.column
 
       currentLine = if (!currentLine.containsHole() && cfg.parse(currentLine) != null &&
-        currentLine.getSurroundingNonterminal(editor.caretModel.logicalPosition.column) == null)
-        currentLine.getSurroundingToken(editor.caretModel.logicalPosition.column)
+        currentLine.getSurroundingNonterminal(column) == null)
+        currentLine.getSurroundingToken(column)
           .let { currentLine.replaceRange(it.range, "_") } else currentLine
 
       try { originalFile.recomputeGrammar() } catch (e: Exception) { return }
 
-      val selection: MatchResult? =
-        currentLine.getSurroundingNonterminal(editor.caretModel.logicalPosition.column)
+      val surroundingNonterminal: MatchResult? = currentLine.getSurroundingNonterminal(column)
 
-      val ntRegex = Regex("<[^\\s>]*>")
-      if (selection != null) {
-        cfg.originalForm.bimap[selection.value.drop(1).dropLast(1)]
+      if (surroundingNonterminal != null) {
+        cfg.originalForm.bimap[surroundingNonterminal.value.drop(1).dropLast(1)]
           .map { it.joinToString(" ") { if (it in cfg.originalForm.terminals) it else "<$it>" } }
-          .sortedWith(compareBy<String> { !it.matches(ntRegex) }.thenBy { it.count { ' ' == it } })
-          .forEachIndexed { i, it -> result.addElement(createLookupElement(it, i, selection)) }
+          .sortedWith(compareBy<String> { !it.isNonterminalStub() }.thenBy { it.count { ' ' == it } })
+          .forEachIndexed { i, it -> result.addElement(createLookupElement(it, i, surroundingNonterminal)) }
       } else synchronized(cfg) {
         try {
           synthCache[currentLine.sanitized() to cfg]?.map { it.dehtmlify() }
@@ -84,7 +79,7 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
           val preDeleteLen= preDelete.last - preDelete.first
           val postDelete =
             context.selectionEndOffset.let {
-              (it-preDeleteLen)..(it + (visualLineStart + selection.range.last - context.startOffset - preDeleteLen + 1))
+              (it - preDeleteLen)..(it + visualLineStart + selection.range.last - context.startOffset - preDeleteLen + 1)
             }
           context.document.deleteString(preDelete.first, preDelete.last)
           context.document.deleteString(postDelete.first, postDelete.last)

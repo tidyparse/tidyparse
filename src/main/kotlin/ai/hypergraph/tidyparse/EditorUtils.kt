@@ -202,7 +202,7 @@ fun String.synthesizeCachingAndDisplayProgress(
 private fun tokenwiseEdits(tokens: List<String>): (String) -> Comparable<*> =
   { levenshtein(tokens.filterNot { it.containsHole() }, it.tokenizeByWhitespace()) }
 
-fun List<String>.dittoSummarize() =
+fun List<String>.dittoSummarize(): List<String> =
   listOf("", *toTypedArray())
     .windowed(2, 1).map { it[0] to it[1] }
     .map { (a, b) -> ditto(a, b) }
@@ -252,7 +252,7 @@ fun PsiFile.reconcile(currentLine: String, caretInGrammar: Boolean, caretPos: In
       }
     }
   } else {
-    println("Parsing ${currentLine} with stubs!")
+    println("Parsing `$currentLine` with stubs!")
     val (parseForest, stubs) = cfg.parseWithStubs(currentLine)
     debugText = if (parseForest.isNotEmpty()) {
       if (parseForest.size == 1) "<pre>$ok\n🌳" + parseForest.first().prettyPrint() + "</pre>"
@@ -292,7 +292,7 @@ fun CFG.renderCFGToHTML(): String =
     rewriteSummary.joinToString(delim(maxLen), "<pre>${delim(maxLen)}", "</pre>")
   }
 
-fun CFG.summarize(name: String) = "<b>$name</b> (" +
+fun CFG.summarize(name: String): String = "<b>$name</b> (" +
     "${nonterminals.size} nonterminal${if (1 < nonterminals.size) "s" else ""} / " +
     "${terminals.size} terminal${if (1 < terminals.size) "s" else ""} / " +
     "$size production${if (1 < size) "s" else ""})\n${prettyHTML}"
@@ -379,5 +379,5 @@ const val legend =
     "<span style=\"background-color: $changeColor\">  </span> : SUBSTITUTION   " +
     "<span style=\"background-color: $deleteColor\">  </span> : DELETION"
 
-fun String.dehtmlify() =
+fun String.dehtmlify(): String =
   replace("&lt;", "<").replace("&gt;", ">")
