@@ -200,7 +200,7 @@ For further examples, please refer to the [`examples`](/examples) subdirectory.
 * Tidyparse treats contiguous non-whitespace characters as a single token and makes no distinction between lexical and syntactic analysis: tokens must be separated by one or more whitespace characters, and each terminal in the grammar corresponds to exactly one token.
 * Nonterminal stubs are surrounded by angle brackets, e.g., `<F>`. If the autocompletion dialog is invoked while the caret is surrounded by a nonterminal, Tidyparse will display a list of possible expansions.
 * Rendering is done on-the-fly but may not reflect the current state of the editor. To refresh the display, type an extra whitespace character.
-* Tidyparse adds ε-productions and terminal literals for each nonterminal in the CFG. For further details about these transformations and the repair procedure, please refer to our [whitepaper](https://github.com/breandan/galoisenne/blob/master/latex/live/acmart.pdf).
+* Tidyparse adds ε-productions and terminal literals for each nonterminal in the CFG. For further details about these transformations and the repair procedure, please refer to our [whitepaper](https://github.com/breandan/galoisenne/blob/master/latex/splash2022/acmart.pdf).
 
 ## Acknowledgements
 
