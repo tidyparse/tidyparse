@@ -154,7 +154,7 @@ fun String.synthesizeCachingAndDisplayProgress(
   tokens: List<String> = tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" },
   sanitized: String = tokens.joinToString(" "),
   maxResults: Int = 20,
-  checkInterrupted: () -> Unit = { if (Thread.currentThread().isInterrupted) throw InterruptedException() },
+  checkInterrupted: () -> Boolean = { !Thread.currentThread().isInterrupted },
     // TODO: think about whether we really want to solve for variations in every case
   variations: List<Mutator> =
     listOf(
