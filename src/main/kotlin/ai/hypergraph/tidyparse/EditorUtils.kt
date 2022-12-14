@@ -154,7 +154,6 @@ fun String.synthesizeCachingAndDisplayProgress(
   tokens: List<String> = tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" },
   sanitized: String = tokens.joinToString(" "),
   maxResults: Int = 20,
-  checkInterrupted: () -> Boolean = { !Thread.currentThread().isInterrupted },
     // TODO: think about whether we really want to solve for variations in every case
   variations: List<Mutator> =
     listOf(
@@ -182,9 +181,8 @@ fun String.synthesizeCachingAndDisplayProgress(
     sanitized.synthesizeIncrementally(
       cfg = cfg,
       variations = variations,
-      checkInterrupted = checkInterrupted,
       updateProgress = { query ->
-        checkInterrupted().also { if ("Solving:" in TidyToolWindow.text) updateProgress(query) }
+        if ("Solving:" in TidyToolWindow.text) updateProgress(query)
       }
     ).map {
 //      updateSolutions(solutions, cfg, tokens, it)
