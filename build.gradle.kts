@@ -7,15 +7,9 @@ import org.jetbrains.changelog.markdownToHTML
 fun properties(key: String) = project.findProperty(key).toString()
 
 plugins {
-  // Kotlin support
-  kotlin("jvm") version "1.8.0-RC"
-  // Gradle IntelliJ Plugin
-  id("org.jetbrains.intellij") version "1.10.1"
-  // Gradle Changelog Plugin
+  kotlin("multiplatform") version "1.8.0-RC"
+  id("org.jetbrains.intellij") version "1.11.0"
   id("org.jetbrains.changelog") version "2.0.0"
-  // Gradle Qodana Plugin
-  id("org.jetbrains.qodana") version "0.1.13"
-
   id("com.github.ben-manes.versions") version "0.44.0"
 }
 
@@ -23,7 +17,10 @@ group = properties("pluginGroup")
 version = properties("pluginVersion")
 
 // Configure project's dependencies
-repositories.mavenCentral()
+repositories {
+  mavenCentral()
+  maven("https://maven.pkg.jetbrains.space/public/p/kotlinx-html/maven")
+}
 
 configurations.all {
 //  exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")
@@ -44,12 +41,6 @@ configurations.all {
   exclude(group = "org.sosy-lab", module = "javasmt-solver-mathsat5")
 }
 
-dependencies {
-  implementation("ai.hypergraph:kaliningraph")
-  implementation("io.github.java-diff-utils:java-diff-utils:4.12")
-  implementation("net.nextencia:rrdiagram:0.9.4")
-}
-
 // Configure Gradle IntelliJ Plugin - read more: https://github.com/JetBrains/gradle-intellij-plugin
 intellij {
   pluginName.set(properties("pluginName"))
@@ -66,22 +57,58 @@ changelog {
   groups.set(emptyList())
 }
 
-// Configure Gradle Qodana Plugin - read more: https://github.com/JetBrains/gradle-qodana-plugin
-qodana {
-  cachePath.set(projectDir.resolve(".qodana").canonicalPath)
-  reportPath.set(projectDir.resolve("build/reports/inspections").canonicalPath)
-  saveReport.set(true)
-  showReport.set(System.getenv("QODANA_SHOW_REPORT")?.toBoolean() ?: false)
-}
+kotlin {
+  jvm {
+    compilations.all {
+      kotlinOptions.jvmTarget = "1.8"
+    }
+    withJava()
+    testRuns["test"].executionTask.configure {
+      useJUnitPlatform()
+    }
+  }
 
-kotlin.jvmToolchain {
-  run {
-    languageVersion.set(JavaLanguageVersion.of(17))
+  js(IR) {
+    binaries.executable()
+    browser()
+  }
+
+  jvmToolchain {
+    run {
+      languageVersion.set(JavaLanguageVersion.of(17))
+    }
+  }
+
+  sourceSets {
+    val commonMain by getting {
+      dependencies {
+        implementation("ai.hypergraph:kaliningraph")
+      }
+    }
+    val commonTest by getting {
+      dependencies {
+        implementation(kotlin("test"))
+      }
+    }
+    val jvmMain by getting {
+      dependencies {
+        implementation("io.github.java-diff-utils:java-diff-utils:4.12")
+      }
+    }
+    val jvmTest by getting
+    val jsMain by getting {
+      dependencies {
+        implementation("org.jetbrains.kotlinx:kotlinx-html:0.8.1")
+        implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.4")
+        implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core-js:1.6.4")
+      }
+    }
+    val jsTest by getting
   }
 }
 
 tasks {
-  compileKotlin {
+  withType<KotlinCompile> {
     kotlinOptions {
       jvmTarget = JavaVersion.VERSION_1_8.toString()
       apiVersion = languageVersion

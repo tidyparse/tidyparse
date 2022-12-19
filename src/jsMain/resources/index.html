@@ -1,3 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" type="text/css" href="index.css">
+    <title>Tidyparse demonstration</title>
+</head>
+<body>
+<h1>Tidyparse demonstration</h1>
+<div id="content">
+    <textarea id="tidyparse-input" class="panel" spellcheck="false">
 S -> X
 X -> A | V | ( X , X ) | X X | ( X )
 A -> FUN | F | LI | M | L
@@ -22,25 +33,22 @@ VO -> + | - | * | / | >
 VO -> = | < | `||` | `&&`
 I -> 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
 B ->  true | false
-
 ---
-
 1 + <I>
 <I> + <I> + <I>
-1 + 1 + 1 )
+1 + 1 + 1
 ( + ) 1 1
-
 true && true
 true || false
 if 1 then 2 else true
 let rec map f l = match l with | [] -> [] | h :: t -> ( f h ) :: ( map f t )
-
 let rec foldright f l b = match l with | [] -> b | h :: t -> f h ( foldright a b )
-
-let rec a = _ _ _ _ _ _ _
-
-let curry f = ( fun x y -> f ( _ _ _ ) )
-
-let curry f = ( fun x y -> f ( _ ) )
-
-let uncurry f = ( _ fun ( y , x ) -> x )
+</textarea>
+    <div id="tidyparse-output" class="panel"></div>
+</div>
+<br/>
+<p>The code is available <a href="https://github.com/tidyparse/tidyparse">on GitHub</a>.</p>
+<br/>
+<script src="tidyparse-web-demo.js"></script>
+</body>
+</html>
