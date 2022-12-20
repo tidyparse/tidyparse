@@ -214,3 +214,5 @@ The following individuals have helped shape this project through their enthusias
 * [Michael Schröder](https://mcschroeder.github.io)
 * [Jürgen Cito](https://people.csail.mit.edu/jcito/)
 * [Torsten Scholak](https://tscholak.github.io)
+* [Matthew Sotoudeh](https://masot.net)
+* [Paul Zhu](https://paulz.me)
