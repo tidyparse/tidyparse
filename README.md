@@ -20,11 +20,10 @@ To use this plugin, first clone the parent repository and initialize the submodu
 ```bash
 git clone https://github.com/breandan/tidyparse && \
 cd tidyparse && \
-git submodule update --init --recursive && \
-./gradlew runIde
+git submodule update --init --recursive
 ```
 
-To launch IntelliJ IDEA with the plugin installed, run: `./gradlew runIde` from the parent directory.
+Then, depending on whether you want to run the IntelliJ Plugin or browser demo, run `./gradlew runIde` or `./gradlew browserDevelopmentRun --continuous`.
 
 ## Usage
 

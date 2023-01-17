@@ -21,6 +21,9 @@
           <set>
             <option value="$PROJECT_DIR$" />
             <option value="$PROJECT_DIR$/galoisenne" />
+            <option value="$PROJECT_DIR$/tidyparse-core" />
+            <option value="$PROJECT_DIR$/tidyparse-intellij" />
+            <option value="$PROJECT_DIR$/tidyparse-web" />
           </set>
         </option>
       </GradleProjectSettings>
