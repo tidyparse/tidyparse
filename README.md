@@ -1,4 +1,4 @@
-<p align="center"><a href="https://plugins.jetbrains.com/plugin/19570-tidyparse"><img src="src/jvmMain/resources/META-INF/pluginIcon.svg" alt="Tidyparse Logo" height="160"></a></p>
+<p align="center"><a href="https://plugins.jetbrains.com/plugin/19570-tidyparse"><img src="tidyparse-intellij/src/main/resources/META-INF/pluginIcon.svg" alt="Tidyparse Logo" height="160"></a></p>
 
 <h1 align="center">Tidyparse</h1>
 <p align="center">
