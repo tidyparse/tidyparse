@@ -37,7 +37,7 @@ abstract class BaseTest: FileEditorManagerTestCase() {
       takeAction(IdeActions.ACTION_EDITOR_ESCAPE)
       UIUtil.dispatchAllInvocationEvents()
     }
-    myManager.closeAllFiles()
+    manager?.closeAllFiles()
   }
 
   fun typeAndAwaitResults(string: String) {

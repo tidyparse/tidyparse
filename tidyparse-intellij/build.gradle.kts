@@ -36,7 +36,10 @@ changelog {
   groups.set(emptyList())
 }
 
-dependencies.api(project(":tidyparse-core"))
+dependencies{
+  api(project(":tidyparse-core"))
+  testImplementation(kotlin("test"))
+}
 
 tasks {
   test {
