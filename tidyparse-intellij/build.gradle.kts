@@ -1,17 +1,15 @@
-import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
 import org.gradle.api.tasks.testing.logging.TestLogEvent.*
 import org.jetbrains.changelog.Changelog.OutputType.HTML
 import org.jetbrains.changelog.markdownToHTML
 
-fun properties(key: String) = project.findProperty(key).toString()
-
 plugins {
-  kotlin("jvm") version "1.8.0"
-  id("org.jetbrains.intellij") version "1.10.1"
+  kotlin("jvm")
+  id("org.jetbrains.intellij") version "1.12.0"
   id("org.jetbrains.changelog") version "2.0.0"
-  id("com.github.ben-manes.versions") version "0.44.0"
 }
+
+fun properties(key: String) = project.findProperty(key).toString()
 
 group = properties("pluginGroup")
 version = properties("pluginVersion")
@@ -38,31 +36,10 @@ changelog {
   groups.set(emptyList())
 }
 
-dependencies {
-  implementation(project(":tidyparse-core"))
-  implementation("ai.hypergraph:kaliningraph") {
-//  exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")
-//  exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-common")
-//  exclude(group = "org.jetbrains.kotlin", module = "kotlin-reflect")
-    exclude(group = "guru.nidi", module = "graphviz-kotlin")
-    exclude(group = "org.graalvm.js", module = "js")
-    exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
-    exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-html-jvm")
-//          exclude(group = "org.jetbrains.kotlinx", module = "multik-core")
-//          exclude(group = "org.jetbrains.kotlinx", module = "multik-default")
-    exclude(group = "org.jetbrains.lets-plot", module = "lets-plot-kotlin-jvm")
-    exclude(group = "org.apache.datasketches", module = "datasketches")
-    exclude(group = "org.apache.datasketches", module = "datasketches-java")
-    exclude(group = "ca.umontreal.iro.simul", module = "ssj")
-    exclude(group = "org.sosy-lab", module = "common")
-    exclude(group = "org.sosy-lab", module = "java-smt")
-    exclude(group = "org.sosy-lab", module = "javasmt-solver-mathsat5")
-  }
-  implementation("io.github.java-diff-utils:java-diff-utils:4.12")
-}
+dependencies.api(project(":tidyparse-core"))
 
 tasks {
-  withType<Test> {
+  test {
     minHeapSize = "1g"
     maxHeapSize = "3g"
 
@@ -82,16 +59,16 @@ tasks {
   }
 
 // Set the JVM compatibility versions
-  properties("javaVersion").let {
-    withType<JavaCompile> {
-      sourceCompatibility = "17"
-      targetCompatibility = it
-    }
-    withType<KotlinCompile> {
-      kotlinOptions {
-        jvmTarget = it
-        apiVersion = languageVersion
-      }
+  val javaVersion = properties("javaVersion")
+  compileJava {
+    sourceCompatibility = javaVersion
+    targetCompatibility = javaVersion
+  }
+
+  compileKotlin {
+    kotlinOptions {
+      jvmTarget = javaVersion
+      apiVersion = languageVersion
     }
   }
 
