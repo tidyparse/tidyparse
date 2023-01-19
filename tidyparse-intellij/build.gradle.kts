@@ -14,12 +14,6 @@ fun properties(key: String) = project.findProperty(key).toString()
 group = properties("pluginGroup")
 version = properties("pluginVersion")
 
-// Configure project's dependencies
-repositories {
-  mavenCentral()
-  maven("https://maven.pkg.jetbrains.space/public/p/kotlinx-html/maven")
-}
-
 // Configure Gradle IntelliJ Plugin - read more: https://github.com/JetBrains/gradle-intellij-plugin
 intellij {
   pluginName.set(properties("pluginName"))
@@ -36,7 +30,7 @@ changelog {
   groups.set(emptyList())
 }
 
-dependencies{
+dependencies {
   api(project(":tidyparse-core"))
   testImplementation(kotlin("test"))
 }
