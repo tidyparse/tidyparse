@@ -22,9 +22,9 @@ kotlin {
   }
 
   sourceSets {
-    val commonMain by getting {
+    commonMain {
       dependencies {
-        api("ai.hypergraph:kaliningraph") {
+        api("ai.hypergraph:kaliningraph:0.2.1") {
 //  exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")
 //  exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-common")
 //  exclude(group = "org.jetbrains.kotlin", module = "kotlin-reflect")
@@ -44,7 +44,7 @@ kotlin {
         }
       }
     }
-    val commonTest by getting {
+    commonTest {
       dependencies {
         implementation(kotlin("test"))
       }
