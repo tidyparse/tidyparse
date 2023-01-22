@@ -44,6 +44,7 @@ fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile)
       promise = AppExecutorUtil.getAppExecutorService()
          .submit { file.tryToReconcile(sanitized, isInGrammar, caretPos) }
 
+      println(helper())
       ToolWindowManager.getInstance(project).getToolWindow("Tidyparse")
         ?.let { runReadAction { if (!it.isVisible) it.show() } }
     }
@@ -113,16 +114,6 @@ private fun CFG.overrideInvariance(l1: List<String>, l2: List<String>): String =
   if (new.isNonterminal() && preservesNTInvariance(new.treatAsNonterminal(), old)) old else new
 }
 
-// Determines whether a substitution is invariant w.r.t. NT membership
-private fun CFG.preservesNTInvariance(newNT: String, oldTerminal: String) =
-  newNT in bimap[listOf(oldTerminal)]
-
-private val la = "<".escapeHTML()
-private val ra = ">".escapeHTML()
-private fun String.treatAsNonterminal() = drop(la.length).dropLast(ra.length)
-private fun String.isNonterminal() = startsWith(la) && endsWith(ra)
-
-val CFG.prettyHTML by cache { prettyPrint().carveSeams().escapeHTML() }
 
 fun render(
   solutions: List<String>,
@@ -145,9 +136,6 @@ fun render(
   """.trimIndent()
 
 val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
-
-fun String.sanitized(): String =
-  tokenizeByWhitespace().joinToString(" ") { if (it in cfg.terminals) it else "_" }
 
 fun String.synthesizeCachingAndDisplayProgress(
   cfg: CFG,
@@ -225,9 +213,6 @@ fun updateProgress(query: String) {
     )
 }
 
-fun Sequence<Tree>.bordersOfParsable(): Set<Int> =
-  map { it.span }.flatMap { listOf(it.first, it.last) }.toSet()
-
 fun PsiFile.tryToReconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) =
   try { reconcile(currentLine, isInGrammar, caretPos) } catch (_: Exception) { }
 
@@ -279,21 +264,6 @@ fun PsiFile.reconcile(currentLine: String, caretInGrammar: Boolean, caretPos: In
       """.trimIndent()
 //    .also { it.show() }
 }
-
-fun CFG.renderCFGToHTML(): String =
-  (listOf(originalForm.summarize("Original form")) +
-    (if (originalForm == nonparametricForm) listOf()
-    else listOf(nonparametricForm.summarize("Nonparametric form"))) +
-    listOf(summarize("Normal form"))
-  ).let { rewriteSummary ->
-    val maxLen = rewriteSummary.joinToString("\n").lines().maxOf { it.length }
-    rewriteSummary.joinToString(delim(maxLen), "<pre>${delim(maxLen)}", "</pre>")
-  }
-
-fun CFG.summarize(name: String): String = "<b>$name</b> (" +
-    "${nonterminals.size} nonterminal${if (1 < nonterminals.size) "s" else ""} / " +
-    "${terminals.size} terminal${if (1 < terminals.size) "s" else ""} / " +
-    "$size production${if (1 < size) "s" else ""})\n${prettyHTML}"
 
 //    "$delim</pre>\n" +
 //    GrammarToRRDiagram().run {
@@ -356,7 +326,9 @@ fun List<Tree>.renderStubs(): String =
 
 var grammarFileCache: String = ""
 lateinit var cfg: CFG
-fun delim(len: Int = 120) = List(len) { "─" }.joinToString("", "\n", "\n")
+
+fun String.sanitized(): String =
+  tokenizeByWhitespace().joinToString(" ") { if (it in cfg.terminals) it else "_" }
 
 fun PsiFile.recomputeGrammar(): CFG {
   val grammar: String = runReadAction { text.substringBefore("---") }
@@ -376,6 +348,3 @@ const val legend =
   "<span style=\"background-color: $insertColor\">  </span> : INSERTION   " +
     "<span style=\"background-color: $changeColor\">  </span> : SUBSTITUTION   " +
     "<span style=\"background-color: $deleteColor\">  </span> : DELETION"
-
-fun String.dehtmlify(): String =
-  replace("&lt;", "<").replace("&gt;", ">")

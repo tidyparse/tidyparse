@@ -24,7 +24,8 @@ kotlin {
   sourceSets {
     commonMain {
       dependencies {
-        api("ai.hypergraph:kaliningraph:0.2.1") {
+        api(kotlin("stdlib"))
+        api("ai.hypergraph:kaliningraph") {
 //  exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")
 //  exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-common")
 //  exclude(group = "org.jetbrains.kotlin", module = "kotlin-reflect")
