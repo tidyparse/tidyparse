@@ -3,8 +3,8 @@
 plugins {
   idea
   // https://youtrack.jetbrains.com/issue/KT-52172/Multiplatform-Support-composite-builds
-  kotlin("multiplatform") version "1.9.0-dev-359" apply false
-//  id("com.github.ben-manes.versions") version "0.44.0"
+  kotlin("multiplatform") version "1.9.0-dev-1108" apply false
+//  id("com.github.ben-manes.versions") version "0.45.0"
 }
 
 allprojects {
