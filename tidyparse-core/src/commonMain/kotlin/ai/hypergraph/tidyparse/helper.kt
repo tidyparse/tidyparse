@@ -12,8 +12,7 @@ fun CFG.renderCFGToHTML(): String =
   (listOf(originalForm.summarize("Original form")) +
       (if (originalForm == nonparametricForm) listOf()
       else listOf(nonparametricForm.summarize("Nonparametric form"))) +
-      listOf(summarize("Normal form"))
-      ).let { rewriteSummary ->
+      listOf(summarize("Normal form"))).let { rewriteSummary ->
       val maxLen = rewriteSummary.joinToString("\n").lines().maxOf { it.length }
       rewriteSummary.joinToString(delim(maxLen), "<pre>${delim(maxLen)}", "</pre>")
     }
