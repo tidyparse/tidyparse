@@ -3,13 +3,12 @@
 plugins {
   idea
   // https://youtrack.jetbrains.com/issue/KT-52172/Multiplatform-Support-composite-builds
-  kotlin("multiplatform") version "1.9.0-dev-1191" apply false
+  kotlin("multiplatform") version "1.8.20-Beta" apply false
 //  id("com.github.ben-manes.versions") version "0.45.0"
 }
 
 allprojects {
   repositories {
-    maven(url = "https://maven.pkg.jetbrains.space/kotlin/p/kotlin/dev")
     mavenCentral()
     maven("https://maven.pkg.jetbrains.space/public/p/kotlinx-html/maven")
   }
