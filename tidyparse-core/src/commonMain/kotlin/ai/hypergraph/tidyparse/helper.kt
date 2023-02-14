@@ -1,10 +1,11 @@
 package ai.hypergraph.tidyparse
 
-import ai.hypergraph.kaliningraph.carveSeams
+import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.* // TODO: Why is this not available?
+import ai.hypergraph.kaliningraph.tensor.FreeMatrix
 import ai.hypergraph.kaliningraph.types.cache
-import prettyPrint
+import ai.hypergraph.kaliningraph.parsing.prettyPrint
 
 fun helper() = "helper"
 

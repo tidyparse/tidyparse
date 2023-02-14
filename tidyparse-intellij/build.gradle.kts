@@ -35,6 +35,16 @@ dependencies {
   testImplementation(kotlin("test"))
 }
 
+//kotlin {
+//  sourceSets {
+//    all {
+//      languageSettings.apply {
+//        languageVersion = "2.0"
+//      }
+//    }
+//  }
+//}
+
 tasks {
   test {
     minHeapSize = "1g"

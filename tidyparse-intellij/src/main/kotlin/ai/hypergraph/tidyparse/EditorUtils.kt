@@ -19,7 +19,6 @@ import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiFile
 import com.intellij.util.concurrency.AppExecutorUtil
-import prettyPrint
 import java.awt.Color
 import java.util.*
 import java.util.concurrent.Future
