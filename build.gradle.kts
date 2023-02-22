@@ -1,7 +1,7 @@
 plugins {
   idea
   kotlin("multiplatform") version "1.8.20-Beta" apply false
-  id("com.github.ben-manes.versions") version "0.45.0"
+  id("com.github.ben-manes.versions") version "0.46.0"
 }
 
 allprojects {

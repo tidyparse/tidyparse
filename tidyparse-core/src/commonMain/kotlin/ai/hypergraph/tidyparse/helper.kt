@@ -1,6 +1,7 @@
 package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.*
+import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.* // TODO: Why is this not available?
 import ai.hypergraph.kaliningraph.tensor.FreeMatrix
@@ -38,3 +39,5 @@ fun String.isNonterminal() = startsWith(la) && endsWith(ra)
 
 fun String.dehtmlify(): String =
   replace("&lt;", "<").replace("&gt;", ">")
+
+val synthCache = LRUCache<Pair<String, CFG>, List<String>>()

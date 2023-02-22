@@ -113,7 +113,6 @@ private fun CFG.overrideInvariance(l1: List<String>, l2: List<String>): String =
   if (new.isNonterminal() && preservesNTInvariance(new.treatAsNonterminal(), old)) old else new
 }
 
-
 fun render(
   solutions: List<String>,
   reason: String? = null,
@@ -133,8 +132,6 @@ fun render(
   </body>
   </html>
   """.trimIndent()
-
-val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
 
 fun String.synthesizeCachingAndDisplayProgress(
   cfg: CFG,
