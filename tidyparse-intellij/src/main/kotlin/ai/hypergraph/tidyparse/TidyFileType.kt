@@ -4,7 +4,7 @@ import com.intellij.openapi.fileTypes.FileType
 import com.intellij.openapi.util.IconLoader
 import javax.swing.Icon
 
-object TidyFileType: FileType {
+class TidyFileType: FileType {
   override fun getName() = "Tidy File"
 
   override fun getDescription() = "Tidy description"

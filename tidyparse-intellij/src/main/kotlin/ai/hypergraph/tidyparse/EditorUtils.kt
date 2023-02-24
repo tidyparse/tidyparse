@@ -1,15 +1,7 @@
 package ai.hypergraph.tidyparse
 
-import ai.hypergraph.kaliningraph.cache.LRUCache
-import ai.hypergraph.kaliningraph.carveSeams
-import ai.hypergraph.kaliningraph.image.escapeHTML
-import ai.hypergraph.kaliningraph.image.toHtmlTable
-import ai.hypergraph.kaliningraph.levenshtein
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.sat.synthesizeIncrementally
-import ai.hypergraph.kaliningraph.tensor.FreeMatrix
-import ai.hypergraph.kaliningraph.types.cache
-import ai.hypergraph.kaliningraph.types.isSubsetOf
 import com.github.difflib.text.DiffRow.Tag.*
 import com.github.difflib.text.DiffRowGenerator
 import com.intellij.openapi.application.runReadAction
@@ -20,15 +12,46 @@ import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiFile
 import com.intellij.util.concurrency.AppExecutorUtil
 import java.awt.Color
-import java.util.*
 import java.util.concurrent.Future
-import kotlin.math.ceil
 
 var mostRecentQuery: String = ""
 var promise: Future<*>? = null
 
+class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
+  override fun readDisplayText(): Σᐩ = TidyToolWindow.text
+
+  override fun writeDisplayText(s: Σᐩ) { TidyToolWindow.text = s }
+  override fun writeDisplayText(s: (Σᐩ) -> Σᐩ) = writeDisplayText(s(readDisplayText()))
+
+  override fun readEditorText(): Σᐩ = editor.document.text
+
+  override fun getCaretPosition(): Int = editor.caretModel.offset
+
+  override fun getLatestCFG(): CFG = psiFile.recomputeGrammar()
+
+  override fun getOptimalSynthesizer(sanitized: Σᐩ, variations: List<Mutator>): Sequence<Σᐩ> =
+    sanitized.synthesizeIncrementally(
+      cfg = cfg,
+      variations = variations,
+      updateProgress = { query ->
+        if ("Solving:" in readDisplayText()) updateProgress(query, this)
+      }
+    )
+
+  override fun diffAsHtml(l1: List<Σᐩ>, l2: List<Σᐩ>): Σᐩ =
+    htmlDiffGenerator.generateDiffRows(l1, l2).joinToString(" ") {
+      when (it.tag) {
+        INSERT -> it.newLine.replace("<span>", "<span style=\"background-color: $insertColor\">")
+        CHANGE -> it.newLine.replace("<span>", "<span style=\"background-color: $changeColor\">")
+        DELETE -> "<span style=\"background-color: $deleteColor\">${List(it.oldLine.length) { " " }.joinToString("")}</span>"
+        else -> it.newLine.replace("<span>", "<span style=\"background-color: #FFFF66\">")
+      }
+    }
+}
+
 // TODO: Do not re-compute all work on each keystroke, cache prior results
 fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile): Future<*>? {
+    val tidyEditor = IJTidyEditor(editor, file)
     val (caretPos, isInGrammar) = runReadAction {
       editor.caretModel.logicalPosition.column to
         editor.document.text.lastIndexOf("---").let { separator ->
@@ -41,7 +64,7 @@ fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile)
       promise?.cancel(true)
       TidyToolWindow.text = ""
       promise = AppExecutorUtil.getAppExecutorService()
-         .submit { file.tryToReconcile(sanitized, isInGrammar, caretPos) }
+         .submit { tidyEditor.tryToReconcile(sanitized, isInGrammar, caretPos) }
 
       println(helper())
       ToolWindowManager.getInstance(project).getToolWindow("Tidyparse")
@@ -87,16 +110,6 @@ private val htmlDiffGenerator: DiffRowGenerator =
     .oldTag { _ -> "" }
     .build()
 
-fun diffAsHtml(l1: List<String>, l2: List<String>): String =
-  htmlDiffGenerator.generateDiffRows(l1, l2).joinToString(" ") {
-    when (it.tag) {
-      INSERT -> it.newLine.replace("<span>", "<span style=\"background-color: $insertColor\">")
-      CHANGE -> it.newLine.replace("<span>", "<span style=\"background-color: $changeColor\">")
-      DELETE -> "<span style=\"background-color: $deleteColor\">${List(it.oldLine.length) { " " }.joinToString("")}</span>"
-      else -> it.newLine.replace("<span>", "<span style=\"background-color: #FFFF66\">")
-    }
-  }
-
 private val plaintextDiffGenerator: DiffRowGenerator =
   DiffRowGenerator.create()
     .showInlineDiffs(true)
@@ -112,77 +125,6 @@ private fun CFG.overrideInvariance(l1: List<String>, l2: List<String>): String =
   // If repair substitutes a terminal with the same NT that it belongs to, do not treat as a diff
   if (new.isNonterminal() && preservesNTInvariance(new.treatAsNonterminal(), old)) old else new
 }
-
-fun render(
-  solutions: List<String>,
-  reason: String? = null,
-  prompt: String? = null,
-  stubs: String? = null
-): String = """
-  <html>
-  <body>
-  <pre>${reason ?: "Synthesizing...\n"}
-  """.trimIndent() +
-  // TODO: legend
-  solutions.joinToString("\n", "\n", "\n") + """🔍 Solving: ${
-    prompt ?: TidyToolWindow.text.substringAfter("Solving: ").substringBefore("\n")
-  }
-  
-  ${if (reason != null ) legend else ""}</pre>${stubs ?: ""}${cfg.renderCFGToHTML()}
-  </body>
-  </html>
-  """.trimIndent()
-
-fun String.synthesizeCachingAndDisplayProgress(
-  cfg: CFG,
-  tokens: List<String> = tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" },
-  sanitized: String = tokens.joinToString(" "),
-  maxResults: Int = 20,
-    // TODO: think about whether we really want to solve for variations in every case
-  variations: List<Mutator> =
-    listOf(
-      { a, b -> a.everySingleHoleConfig() },
-      { a, b -> a.increasingLengthChunks() }
-    ),
-): List<String> =
-  synthCache.getOrPut(sanitized to cfg) {
-    val t = System.currentTimeMillis()
-    val renderedStubs = if (containsHole()) null
-      else cfg.parseWithStubs(sanitized).second.renderStubs()
-    val reason = if (containsHole()) null else no
-    TidyToolWindow.text = render(emptyList(), stubs = renderedStubs, reason = reason)
-    val solutions = TreeSet(compareBy(tokenwiseEdits(tokens)).thenBy { it.length })
-
-    fun String.updateSolutions(
-      solutions: TreeSet<String>,
-      cfg: CFG,
-      tokens: List<String>,
-      it: String
-    ) =
-      if (containsHole()) solutions.add(it)
-      else solutions.add(cfg.overrideInvariance(tokens, it.tokenizeByWhitespace()))
-
-    sanitized.synthesizeIncrementally(
-      cfg = cfg,
-      variations = variations,
-      updateProgress = { query ->
-        if ("Solving:" in TidyToolWindow.text) updateProgress(query)
-      }
-    ).map {
-//      updateSolutions(solutions, cfg, tokens, it)
-      solutions.add(it)
-      val htmlSolutions = if (containsHole()) solutions.map { it.escapeHTML() }
-      else solutions
-//        .also { it.map { println(diffAsLatex(tokens, it.tokenizeByWhitespace())) }; println() }
-        .map { diffAsHtml(tokens, it.tokenizeByWhitespace()) }
-      TidyToolWindow.text = render(htmlSolutions, stubs = renderedStubs, reason = reason)
-    }.takeWhile { solutions.size <= maxResults && System.currentTimeMillis() - t < TIMEOUT_MS }.toList()
-
-    solutions.toList()
-  }
-
-private fun tokenwiseEdits(tokens: List<String>): (String) -> Comparable<*> =
-  { levenshtein(tokens.filterNot { it.containsHole() }, it.tokenizeByWhitespace()) }
 
 fun List<String>.dittoSummarize(): List<String> =
   listOf("", *toTypedArray())
@@ -200,147 +142,11 @@ fun ditto(s1: String, s2: String): String =
     }
   }
 
-fun updateProgress(query: String) {
-  val sanitized = query.escapeHTML()
-  TidyToolWindow.text =
-    TidyToolWindow.text.replace(
-      "Solving:.*\n".toRegex(),
-      "Solving: $sanitized\n"
-    )
-}
-
-fun PsiFile.tryToReconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) =
-  try { reconcile(currentLine, isInGrammar, caretPos) } catch (_: Exception) { }
-
-fun PsiFile.reconcile(currentLine: String, caretInGrammar: Boolean, caretPos: Int) {
-  if (currentLine.isBlank()) return
-  val cfg =
-    if (caretInGrammar)
-      CFGCFG(
-        names = currentLine.tokenizeByWhitespace()
-          .filter { it !in setOf("->", "|") }.toSet()
-      )
-    else recomputeGrammar()
-
-  var debugText = ""
-  if (currentLine.containsHole()) {
-    synchronized(cfg) {
-      currentLine.synthesizeCachingAndDisplayProgress(cfg).let {
-        debugText = "<pre><b>🔍 Found ${it.size} admissible solutions!</b>\n\n" +
-          it.joinToString("\n") { it.escapeHTML() } + "</pre>"
-      }
-    }
-  } else {
-    println("Parsing `$currentLine` with stubs!")
-    val (parseForest, stubs) = cfg.parseWithStubs(currentLine)
-    debugText = if (parseForest.isNotEmpty()) {
-      if (parseForest.size == 1) "<pre>$ok\n🌳" + parseForest.first().prettyPrint() + "</pre>"
-      else "<pre>$ambig\n🌳" + parseForest.joinToString("\n\n") { it.prettyPrint() } + "</pre>"
-    } else {
-      val exclude = stubs.allIndicesInsideParseableRegions()
-      val repairs = currentLine.findRepairs(cfg, exclude, fishyLocations = listOf(caretPos))
-      "<pre>$no" + repairs + "\n$legend</pre>" + stubs.renderStubs()
-    }
-  }
-
-  // Append the CFG only if parse succeeds
-  debugText += cfg.renderCFGToHTML()
-
-//  println(cfg.original.graph.toString())
-//  println(cfg.original.graph.toDot())
-//  println(cfg.graph.toDot().alsoCopy())
-//  cfg.graph.A.show()
-
-  TidyToolWindow.text = """
-        <html>
-        <body>
-        $debugText
-        </body>
-        </html>
-      """.trimIndent()
-//    .also { it.show() }
-}
-
-//    "$delim</pre>\n" +
-//    GrammarToRRDiagram().run {
-//      val grammar = BNFToGrammar().convert(
-//        """
-//        H2_SELECT =
-//        'SELECT' [ 'TOP' term ] [ 'DISTINCT' | 'ALL' ] selectExpression {',' selectExpression} \
-//        'FROM' tableExpression {',' tableExpression} [ 'WHERE' expression ] \
-//        [ 'GROUP BY' expression {',' expression} ] [ 'HAVING' expression ] \
-//        [ ( 'UNION' [ 'ALL' ] | 'MINUS' | 'EXCEPT' | 'INTERSECT' ) select ] [ 'ORDER BY' order {',' order} ] \
-//        [ 'LIMIT' expression [ 'OFFSET' expression ] [ 'SAMPLE_SIZE' rowCountInt ] ] \
-//        [ 'FOR UPDATE' ];
-//        """.trimIndent()
-//      )
-//      RRDiagramToSVG().convert(grammar.rules.map { convert(it) }.last())
-//    }
-
-//fun CFG.toGrammar() = Grammar()
-
-fun String.findRepairs(cfg: CFG, exclusions: Set<Int>, fishyLocations: List<Int>): String =
-  synthesizeCachingAndDisplayProgress(
-    cfg = cfg,
-    tokens = tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" },
-    variations = listOf { a, b ->
-      a.multiTokenSubstitutionsAndInsertions(
-        numberOfEdits = 3,
-        exclusions = b,
-        fishyLocations = fishyLocations
-      )
-    }
-  ).let {
-    if (it.isEmpty()) ""
-    else it.joinToString("\n", "\n", "\n") {
-      diffAsHtml(tokenizeByWhitespace(), it.tokenizeByWhitespace())
-    }
-  }
-
-fun List<Tree>.renderStubs(): String =
-  runningFold(setOf<Tree>()) { acc, t -> if (acc.any { t.span isSubsetOf it.span }) acc else acc + t }
-    .last().sortedBy { it.span.first }
-    .partition { it.terminal == null }
-    .let { (branches, leaves) ->
-      val (leafCols, branchCols) = 3 to 2
-      "<pre>${delim()}<b>Parseable subtrees</b> (" +
-        "${leaves.size} lea${if (leaves.size != 1) "ves" else "f"} / " +
-        "${branches.size} branch${if (branches.size != 1) "es" else ""})</pre>\n\n" +
-      leaves.mapIndexed { i, it -> "🌿\n└── " + it.prettyPrint().trim() }.let { asts ->
-        FreeMatrix(ceil(asts.size.toDouble() / leafCols).toInt(), leafCols) { r, c ->
-          if (r * leafCols + c < asts.size) asts[r * leafCols + c].ifBlank { "" } else ""
-        }
-      }.toHtmlTable() +
-      branches.let { asts ->
-        FreeMatrix(ceil(asts.size.toDouble() / branchCols).toInt(), branchCols) { r, c ->
-          if (r * branchCols + c < asts.size)
-            Tree("🌿", null, asts[r * branchCols + c], span = -1..-1)
-              .prettyPrint().ifBlank { "" } else ""
-        }
-      }.toHtmlTable()
-    }
-
-var grammarFileCache: String = ""
-lateinit var cfg: CFG
-
-fun String.sanitized(): String =
-  tokenizeByWhitespace().joinToString(" ") { if (it in cfg.terminals) it else "_" }
-
 fun PsiFile.recomputeGrammar(): CFG {
   val grammar: String = runReadAction { text.substringBefore("---") }
-  return if (grammar != grammarFileCache || !::cfg.isInitialized) {
+  return if (grammar != grammarFileCache || cfg.isNotEmpty()) {
     grammarFileCache = grammar
     grammarFileCache.parseCFG().also { cfg = it }
   } else cfg
 }
 
-const val ok = "<b>✅ Current line unambiguously parses! Parse tree:</b>\n"
-const val ambig = "<b>⚠️ Current line parses, but is ambiguous:</b>\n"
-const val no = "<b>❌ Current line invalid, possible fixes:</b>\n"
-const val insertColor = "#85FF7A"
-const val changeColor = "#FFC100"
-const val deleteColor = "#FFCCCB"
-const val legend =
-  "<span style=\"background-color: $insertColor\">  </span> : INSERTION   " +
-    "<span style=\"background-color: $changeColor\">  </span> : SUBSTITUTION   " +
-    "<span style=\"background-color: $deleteColor\">  </span> : DELETION"
