@@ -21,6 +21,7 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
   override fun readDisplayText(): Σᐩ = TidyToolWindow.text
 
   override fun writeDisplayText(s: Σᐩ) { TidyToolWindow.text = s }
+
   override fun writeDisplayText(s: (Σᐩ) -> Σᐩ) = writeDisplayText(s(readDisplayText()))
 
   override fun readEditorText(): Σᐩ = editor.document.text
