@@ -1,0 +1,13 @@
+S -> w | w ( S ) | ( ) | w = S | w . S | S S  | ( S )
+S -> S , S | S ; S | S : S
+S -> S + S | S - S | S * S | S / S | S % S
+S -> S < S | S > S | S <= S | S >= S | S == S | S != S
+S -> S and S | S or S | S not S | S in S | S not in S | S is S | S not is S
+S -> S if S else S | S for S in S | S while S | S with S | S as S
+S -> S [ S ] | S [ S : S ] | S [ S : S : S ] | S [ S , S ] | S [ S , S , S ]
+---
+
+w . w ( w . w ( ) )
+w ( w ( ) )
+
+w < w + ( w )
