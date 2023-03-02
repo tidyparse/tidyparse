@@ -90,7 +90,7 @@ fun render(
     // TODO: legend
     solutions.joinToString("\n", "\n", "\n") + """🔍 Solving: $template
   
-  ${if (reason != null ) legend else ""}</pre>${stubs ?: ""}${cfg.renderCFGToHTML()}
+  ${if (reason != null) legend else ""}</pre>${stubs ?: ""}${cfg.renderCFGToHTML()}
   </body>
   </html>
   """.trimIndent()
@@ -145,6 +145,7 @@ fun updateProgress(query: String, editor: TidyEditor) {
     )
   }
 }
+
 fun TidyEditor.reconcile(
   currentLine: String,
   caretInGrammar: Boolean,
@@ -159,7 +160,7 @@ fun TidyEditor.reconcile(
       )
     else getLatestCFG()
 
-  if (cfg == null) return
+  if (cfg.isEmpty()) return
 
   var debugText = ""
   if (currentLine.containsHole()) {
@@ -234,7 +235,6 @@ fun String.findRepairs(editor: TidyEditor, cfg: CFG, exclusions: Set<Int>, fishy
       editor.diffAsHtml(tokenizeByWhitespace(), it.tokenizeByWhitespace())
     }
   }
-
 
 var cfg: CFG = setOf()
 

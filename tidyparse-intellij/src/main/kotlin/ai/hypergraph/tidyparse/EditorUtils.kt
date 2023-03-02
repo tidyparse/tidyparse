@@ -85,24 +85,6 @@ fun generateColors(n: Int): List<Color> =
     Color.getHSBColor(i.toFloat() / n.toFloat(), 0.85f, 1.0f)
   }
 
-private val latexDiffGenerator: DiffRowGenerator =
-  DiffRowGenerator.create()
-    .showInlineDiffs(true)
-    .inlineDiffByWord(true)
-    .newTag { f: Boolean -> if (f) "(*@\\hl{" else "}@*)" }
-    .oldTag { _ -> "" }
-    .build()
-
-fun diffAsLatex(l1: List<String>, l2: List<String>): String =
-  latexDiffGenerator.generateDiffRows(l1, l2).joinToString(" ") {
-    when (it.tag) {
-      INSERT -> it.newLine.replace("\\hl", "\\hlgreen")
-      CHANGE -> it.newLine.replace("\\hl", "\\hlorange")
-      DELETE -> "(*@\\hlred{${it.oldLine}} @*)"
-      else -> it.newLine
-    }
-  }.replace("&gt;", ">").replace("&lt;", "<")
-
 private val htmlDiffGenerator: DiffRowGenerator =
   DiffRowGenerator.create()
     .showInlineDiffs(true)

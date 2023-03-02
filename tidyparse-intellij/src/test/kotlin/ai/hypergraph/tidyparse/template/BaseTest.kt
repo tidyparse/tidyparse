@@ -30,7 +30,7 @@ abstract class BaseTest: FileEditorManagerTestCase() {
   fun takeAction(action: AnAction) = myFixture.testAction(action)
 
   fun makeEditor(contents: String): PsiFile =
-    myFixture.configureByText(TidyFileType, contents)
+    myFixture.configureByText(TidyFileType(), contents)
 
   fun resetEditor() {
     myFixture.editor?.let {

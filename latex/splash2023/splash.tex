@@ -65,7 +65,6 @@ In our work, we argue these two compromises are not mutually exclusive, but comp
 
 Furthermore, we argue it is possible to improve the efficiency of human programmers without sacrificing expressiveness by considering latency to synthesize an acceptable completion. In contrast with program synthesizers that require intermediate programs to be well-formed, our synthesizer is provably sound and complete up to a Levenshtein distance bound, and attempts to minimize total edits, but does not impose any constraints on the code itself being written.
 
-
 \section{Toy Example}
 
 Suppose we are given the following context-free grammar:
@@ -135,6 +134,133 @@ true and ( false or and true false(*@\caret{ }@*)
 \end{tcolorbox}
 
 \noindent In the following paper, we will describe how we built it.
+
+\section{Python Correction}
+
+Given an invalid string, the tool will first map the string to a coarsened version and generate edits:
+
+\hspace{-0.3cm}\begin{minipage}[t]{0.5\textwidth}
+\begin{tcolorbox}[left skip=0.7cm,
+top=0.1cm,
+middle=0mm,
+boxsep=0mm,
+underlay unbroken and first={%
+  \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+}]
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+v = [float(n for n in l.split(':')]
+\end{lstlisting}
+\tcblower
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+v = [float(*@\hlred{(}@*)n for n in l.split(':')]
+v = [float((*@\hlgreen{)}@*)n for n in l.split(':')]
+v = [float((*@\hlorange{)}@*) for n in l.split(':')]
+v = [float(n(*@\hlgreen{)}@*) for n in l.split(':')]
+\end{lstlisting}
+\end{tcolorbox}
+\end{minipage}
+\begin{minipage}[t]{0.5\textwidth}
+\begin{tcolorbox}[left skip=0.7cm,
+top=0.1cm,
+middle=0mm,
+boxsep=0mm,
+underlay unbroken and first={%
+  \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+}]
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+w = [ w ( w w w w w . w ( w ) ]
+\end{lstlisting}
+\tcblower
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+w = [ w (*@\hlred{(}@*) w w w w w . w ( w ) ]
+w = [ w ( (*@\hlgreen{)}@*) w w w w w . w ( w ) ]
+w = [ w ( (*@\hlorange{)}@*) w w w w . w ( w ) ]
+w = [ w ( w (*@\hlgreen{)}@*) w w w w . w ( w ) ]
+\end{lstlisting}
+\end{tcolorbox}
+\end{minipage}
+
+This coarsening is done to reduce the number of possible corrections, and is admissible because CFLs are closed under homomorphisms. (If we wanted to provide a lexical expansion, this would be possible.) These candidates then reranked using a probability metric.
+
+\hspace{-0.3cm}\begin{minipage}[t]{0.5\textwidth}
+                 \begin{tcolorbox}[left skip=0.7cm,
+                 top=0.1cm,
+                 middle=0mm,
+                 boxsep=0mm,
+                 underlay unbroken and first={%
+                   \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+                 }]
+                 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+v = [float(n for n in l.split(':')]
+                 \end{lstlisting}
+                 \tcblower
+                 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+v = [float(n(*@\hlgreen{)}@*) for n in l.split(':')]
+v = [float(*@\hlred{(}@*)n for n in l.split(':')]
+v = [float((*@\hlgreen{)}@*)n for n in l.split(':')]
+v = [float((*@\hlorange{)}@*) for n in l.split(':')]
+                 \end{lstlisting}
+                 \end{tcolorbox}
+\end{minipage}
+\begin{minipage}[t]{0.5\textwidth}
+  \begin{tcolorbox}[left skip=0.7cm,
+  top=0.1cm,
+  middle=0mm,
+  boxsep=0mm,
+  underlay unbroken and first={%
+    \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+  }]
+  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+w = [ w ( w w w w w . w ( w ) ]
+  \end{lstlisting}
+  \tcblower
+  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+w = [ w ( w (*@\hlgreen{)}@*) w w w w . w ( w ) ]
+w = [ w (*@\hlred{(}@*) w w w w w . w ( w ) ]
+w = [ w ( (*@\hlgreen{)}@*) w w w w w . w ( w ) ]
+w = [ w ( (*@\hlorange{)}@*) w w w w . w ( w ) ]
+  \end{lstlisting}
+  \end{tcolorbox}
+\end{minipage}
+
+Finally, we eliminate everything which is not parsed by the official Python parser.
+
+\hspace{-0.3cm}\begin{minipage}[t]{0.5\textwidth}
+                 \begin{tcolorbox}[left skip=0.7cm,
+                 top=0.1cm,
+                 middle=0mm,
+                 boxsep=0mm,
+                 underlay unbroken and first={%
+                   \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+                 }]
+                 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+v = [float(n for n in l.split(':')]
+                 \end{lstlisting}
+                 \tcblower
+                 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+v = [float(n(*@\hlgreen{)}@*) for n in l.split(':')]
+v = [float((*@\hlorange{)}@*) for n in l.split(':')]
+                 \end{lstlisting}
+                 \end{tcolorbox}
+\end{minipage}
+\begin{minipage}[t]{0.5\textwidth}
+  \begin{tcolorbox}[left skip=0.7cm,
+  top=0.1cm,
+  middle=0mm,
+  boxsep=0mm,
+  underlay unbroken and first={%
+    \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+  }]
+  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+w = [ w ( w w w w w . w ( w ) ]
+  \end{lstlisting}
+  \tcblower
+  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+w = [ w ( w (*@\hlgreen{)}@*) w w w w . w ( w ) ]
+w = [ w ( (*@\hlorange{)}@*) w w w w . w ( w ) ]
+  \end{lstlisting}
+  \end{tcolorbox}
+\end{minipage}
 
 \section{Matrix Theory}\label{sec:matrix}
 
@@ -623,7 +749,7 @@ More specifically, we employ a pair of [un]tupling functions $\kappa, \rho: \mat
 
 Although $\langle\kappa, \rho\rangle$ could be used directly to exhaustively search the Levenshtein hypersphere, they are temporally biased samplers. Rather, we would prefer a path that uniformly visits every fertile subspace of the Levenshtein hypersphere over time regardless of the grammar or string in question: subsequences of $\langle\kappa, \rho\rangle$ should discover valid repairs with frequency roughly proportional to the ratio of admissible edits over all possible edits within a fixed distance of the original string. These additional constraints give rise to two more criteria: (1) ergodicity and (2) periodicity.
 
-To achieve ergodicity, we permute the elements of $\stirlingii{n}{k}\times\Sigma^k$ using a finite field with a characteristic polynomial $C$ of degree $m:=\lceil \log_p {n \choose k}|\Sigma|^k \rceil$. By choosing $C$ to be some irreducible polynomial, one ensures the path is fully periodic while guaranteeing the mixing properties we desire, i.e., suppose $U: \mathbb{Z}_2^{m\times m}$ is a matrix whose structure is shown in Eq.~\ref{eq:lfsr}, wherein $C$ is a primitive polynomial over $\mathbb{Z}_2^m$ with coefficients $C_{1\ldots m}$ and semiring operators $\oplus := \veebar, \otimes := \land, \top := 1, \circ:=0$.\vspace{-5pt}
+To achieve ergodicity, we permute the elements of $\stirlingii{n}{k}\times\Sigma^k$ using a finite field with a characteristic polynomial $C$ of degree $m:=\lceil \log_p {n \choose k}|\Sigma|^k \rceil$. By choosing $C$ to be some irreducible polynomial, one ensures the path is fully periodic while guaranteeing the mixing properties we desire, i.e., suppose $U: \mathbb{Z}_2^{m\times m}$ is a matrix whose structure is shown in Eq.~\ref{eq:lfsr}, wherein $C$ is a primitive polynomial over $\mathbb{Z}_2^m$ with coefficients $C_{1\ldots m}$ and semiring operators $\oplus := + \pmod 2, \otimes := \land, \top := 1, \circ:=0$.\vspace{-5pt}
 
 \begin{align}
     U^tV = \begin{pNiceMatrix}[nullify-dots,xdots/line-style=loosely dotted]
