@@ -1,6 +1,5 @@
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.tidyparse.helper
 import org.w3c.dom.Node
 import kotlinx.browser.document
 import kotlinx.coroutines.*
@@ -51,7 +50,6 @@ suspend fun CoroutineScope.handleInput() {
   preprocessGrammar()
   if (!inputField.isCursorInsideGrammar()) return
   val line = inputField.getCurrentLine()
-  println(helper())
   val tree= cfg!!.parse(line)?.prettyPrint()
   if (tree != null) outputField.textContent = "Parsing: $line\n\n$tree"
   else {

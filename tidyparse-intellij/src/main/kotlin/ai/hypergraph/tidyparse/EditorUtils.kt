@@ -67,7 +67,6 @@ fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile)
       promise = AppExecutorUtil.getAppExecutorService()
          .submit { tidyEditor.tryToReconcile(sanitized, isInGrammar, caretPos) }
 
-      println(helper())
       ToolWindowManager.getInstance(project).getToolWindow("Tidyparse")
         ?.let { runReadAction { if (!it.isVisible) it.show() } }
     }

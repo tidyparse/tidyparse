@@ -10,8 +10,6 @@ import ai.hypergraph.kaliningraph.types.*
 import kotlin.math.*
 import kotlin.time.*
 
-fun helper() = "helper"
-
 fun CFG.renderCFGToHTML(): String =
   (listOf(originalForm.summarize("Original form")) +
       (if (originalForm == nonparametricForm) listOf()
