@@ -93,6 +93,23 @@ Although CFLs generally are quite expressive, they have known limitations, both 
 
 A natural extension is to consider the family of languages closed under intersection. This leads us to conjunctive languages.
 
+\section{Overview}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.9\linewidth]{../figures/architecture_overview.png}
+  \caption{Overview of the framework.}
+  \label{fig:overview}
+\end{figure}
+
+Our architecture accepts a grammar and a string, which can contain any arbitrary characters. Given an input string, we first attempt to parse using Valiant's algorithm~\cite{valiant1979completeness}. If the string is syntactically correct, we return the parse forest, otherwise, we return the partial parse forest and set of edits that would make the string syntactically correct. This is always guaranteed to exist, as the trivial solution is to delete the entire string and replace it with the shorest string in the langauge.
+
+If the string is invalid, we first form a bijection between edits and the Levenshtein hypersphere using a combinatorial number system, sample without replacement using an LFSR with leapfrog partitioning to distribute the work across cores, and decode the resulting bitvectors to enumerate edit templates. This sequence can be viewed as a permutation of a space-filling curve over the space of strings within a fixed edit distance of the original, invalid, string.
+
+We then use each edit template, in conjunction with the grammar to search for admissible repairs. This is done by encoding the template and grammar as a matrix equivalence relation and solving for the least fixpoint using a linear system of equations over a finite field. We describe this process in more detail in Section~\ref{sec:matrix}. The resulting samples will all be syntactically valid according to the grammar. These are reranked according to a statistical distance metric, and we output the most likely samples to the user. This whole process is illustrated in Figure~\ref{fig:overview}.
+
+%A number of important details are omitted from this overview. For example, we do not discuss the details of the combinatorial number system, the LFSR, or the statistical distance metric. We also do not discuss the details of the matrix equivalence relation, the linear system of equations, or the least fixpoint. We defer these details to the rest of the paper.
+
 \section{Toy Example}
 
 Suppose we are given the following context-free grammar:

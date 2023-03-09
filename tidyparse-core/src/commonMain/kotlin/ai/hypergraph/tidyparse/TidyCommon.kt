@@ -162,10 +162,10 @@ fun TidyEditor.reconcile(
 
   var debugText = ""
   if (currentLine.containsHole()) {
-      currentLine.synthesizeCachingAndDisplayProgress(this, cfg).let {
-        debugText = "<pre><b>🔍 Found ${it.size} admissible solutions!</b>\n\n" +
-            it.joinToString("\n") { it.escapeHTML() } + "</pre>"
-      }
+    currentLine.synthesizeCachingAndDisplayProgress(this, cfg).let {
+      debugText = "<pre><b>🔍 Found ${it.size} admissible solutions!</b>\n\n" +
+          it.joinToString("\n") { it.escapeHTML() } + "</pre>"
+    }
   } else {
     println("Parsing `$currentLine` with stubs!")
     val (parseForest, stubs) = cfg.parseWithStubs(currentLine)
