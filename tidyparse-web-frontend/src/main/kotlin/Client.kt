@@ -1,9 +1,8 @@
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.*
-import org.w3c.dom.Node
 import kotlinx.browser.document
 import kotlinx.coroutines.*
-import org.w3c.dom.HTMLTextAreaElement
+import org.w3c.dom.*
 
 var cfg: CFG? = null
 var cachedGrammar: String? = null
@@ -32,6 +31,7 @@ fun HTMLTextAreaElement.isCursorInsideGrammar() = "---" in value.substring(0, in
 fun processEditorContents() {
   ongoingWork?.cancel()
   ongoingWork = updateRecommendations()
+//  workerPool()
 }
 
 fun updateRecommendations() =

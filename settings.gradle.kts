@@ -18,4 +18,5 @@ includeBuild("galoisenne") {
 //includeBuild("galoisenne")
 include("tidyparse-core")
 include("tidyparse-intellij")
-include("tidyparse-web")
+include("tidyparse-web-frontend")
+include("tidyparse-web-worker")

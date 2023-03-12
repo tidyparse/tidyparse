@@ -21,6 +21,7 @@ kotlin {
     browser()
     binaries.executable()
   }
+
 //  sourceSets {
 //    all {
 //      languageSettings.apply {
@@ -29,3 +30,5 @@ kotlin {
 //    }
 //  }
 }
+
+tasks["processResources"].dependsOn.add(":tidyparse-web-worker:browserDistribution")
