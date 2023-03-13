@@ -1,0 +1,13 @@
+program -> statement
+statement -> if paren_expr statement
+statement -> if paren_expr statement else statement
+statement -> while paren_expr statement
+statement -> do statement while paren_expr ;
+statement -> { statement }
+statement -> expr ;
+statement -> ;
+paren_expr -> ( expr )
+expr -> test | id = expr
+test -> sum | sum  sum
+sum -> term | sum + term | sum - term
+term -> id | int | paren_expr
