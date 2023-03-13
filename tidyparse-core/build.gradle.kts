@@ -1,6 +1,7 @@
 fun property(key: String) = project.findProperty(key).toString()
 
 plugins {
+  kotlin("plugin.serialization")
   kotlin("multiplatform")
 }
 
@@ -49,7 +50,7 @@ kotlin {
           exclude(group = "org.sosy-lab", module = "javasmt-solver-mathsat5")
         }
 
-        api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.3.2")
+        api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.5.0")
       }
     }
     commonTest {

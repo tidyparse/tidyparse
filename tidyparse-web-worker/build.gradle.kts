@@ -21,10 +21,10 @@ kotlin {
     binaries.executable()
     browser {
       webpackTask {
-        outputFileName = "worker.js"
+        outputFileName = "tidyparse-web-worker.js"
       }
       distribution {
-        name = "worker"
+        name = "tidyparse-web-worker"
       }
     }
   }
@@ -36,4 +36,15 @@ kotlin {
 //    }
 //  }
 }
+
+tasks.register<Copy>("copyJsTask") {
+//  dependsOn("browserDistribution")
+  mustRunAfter("browserDistribution")
+  val worker = "tidyparse-web-worker"
+  from("$rootDir/$worker/build/$worker/$worker.js".also { assert(File(it).exists())})
+  into("$rootDir/tidyparse-web-frontend/build/processedResources/js/main/")
+}
+
+tasks["copyJsTask"].dependsOn.add("browserDistribution")
 tasks["developmentExecutableCompileSync"].dependsOn.add("browserProductionWebpack")
+//tasks["browserDevelopmentRun"].mustRunAfter(":tidyparse-web-frontend:developmentExecutableCompileSync")

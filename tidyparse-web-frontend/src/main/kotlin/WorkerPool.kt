@@ -33,10 +33,8 @@ suspend fun <R : RequestResult> Worker.request(request: Request<R>): R {
   return response.result as R
 }
 
-
-external val self: DedicatedWorkerGlobalScope
 fun workerPool() {
-  val pool = WorkerPool(10, "./worker.js")
+  val pool = WorkerPool(10, "./tidyparse-web-worker.js")
   repeat(20) { i ->
     GlobalScope.launch {
       when {
@@ -47,9 +45,7 @@ fun workerPool() {
   }
 }
 
-
 class WorkerPool(size: Int, private val workerScript: String) {
-
   data class Job(val data: String, val continuation: Continuation<String>) {
     suspend fun execute(worker: Worker) {
       try {

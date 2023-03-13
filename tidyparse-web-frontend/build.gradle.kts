@@ -18,8 +18,20 @@ dependencies {
 
 kotlin {
   js(IR) {
-    browser()
     binaries.executable()
+    browser {
+      runTask {
+        outputFileName = "tidyparse-web-frontend.js"
+      }
+
+      webpackTask {
+        outputFileName = "tidyparse-web-frontend.js"
+      }
+
+      distribution {
+        name = "tidyparse-web-frontend"
+      }
+    }
   }
 
 //  sourceSets {
@@ -31,4 +43,26 @@ kotlin {
 //  }
 }
 
-tasks["processResources"].dependsOn.add(":tidyparse-web-worker:browserDistribution")
+//tasks.register<Copy>("copyJsTask") {
+////  dependsOn("browserDistribution")
+//  val worker = "tidyparse-web-worker"
+//  from("$rootDir/$worker/build/$worker/$worker.js")
+//  into("$rootDir/tidyparse-web-frontend/build/processedResources/js/main/")
+//}
+//
+//tasks["processResources"].dependsOn.add(":tidyparse-web-worker:browserDistribution")
+//tasks["browserDevelopmentRun"].dependsOn.add("copyJsTask")
+/*
+No clue how Gradle actually works.
+
+First run:
+
+./gradlew :tidyparse-web-backend:browserDevelopmentRun --continuous
+
+Ensure tidyparse-web-worker/build/tidyparse-web-worker/tidyparse-web-worker.js exists
+
+Then run:
+
+./gradlew :tidyparse-web-frontend:browserDevelopmentRun --continuous
+ */
+tasks["processResources"].dependsOn.add(":tidyparse-web-worker:copyJsTask")
