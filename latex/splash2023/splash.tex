@@ -47,55 +47,63 @@ In this work, we illustrate how to lower context-free language recognition onto 
 
 \section{Introduction}
 
-Syntax correction is one of the first problems that novice programmers encounter when learning to write code and a perennial issue in computer programming. Put simply, it is the problem of editing a syntactically incorrect program so that it parses. This problem is challenging not only because well-formed programs have many constraints, increasing the search complexity, but also because of the under-determined problem structure: repairs must align with the surrounding code context, and the correct repair is seldom unique, even assuming minimality.
+Syntax correction is one of the first problems that novice programmers encounter when learning to write code and a perennial issue in computer programming. Put simply, it is the problem of repairing a syntactically incorrect program so that it parses. This problem is challenging because well-formed programs have many extra-syntactic constraints, increasing the complexity of repair, but also because the problem is highly under-determined: repairs must align with the surrounding code context, and the correct repair is seldom unique, even assuming minimality.
 
-Much prior work in syntax correction is a combination of two approaches: (1) \textit{pattern matching}, which uses hand-crafted rules to identify and correct common syntax errors, and (2) \textit{machine learning}, i.e., training a model to edit code using supervised or semi-supervised methods. The former approach is effective but requires language-specific rules, while the latter generates more natural edits, but requires training a language model on a large dataset, generalizes poorly under distributional shift, and is difficult to incorporate new constraints without retraining.
+The majority of prior work on syntax correction can be separated into one of two high-level categories: (1) \textit{pattern matching}, which uses hand-crafted rules to identify and correct common syntax errors, and (2) \textit{machine learning}, i.e., which uses a statistical language model to repair code via a set of learned heuristics. The former approach is effective but requires language-specific rules, while the latter generates more natural edits, but is costly to train, generalizes poorly, has high sample complexity, and is difficult to incorporate new constraints without retraining.
 
 In the following paper, we present a broadly different approach to robust parsing and syntax correction. Rather than manipulating strings or trees directly, our basic idea is to reframe the problem in terms of multilinear algebra, thereby gaining access to a multitude of powerful analysis techniques. This approach shares connections to language reachability, array programming and tensor completion: we show how to recast the syntax correction problem as a special case of tensor completion, integrating smoothly into both machine learning and logic programming.
 
-Traditionally, parsers do not even consider developer tools like code completion, far to their detriment. The approach we propose offers a compelling alternative to its textbook presentation in the parsing literature, not only because it unifies parsing, code completion and error correction under a simple algebraic framework, but also because it is composable using ordinary logical primitives, which are highly flexible to additional constraints and well-suited for SAT-based implementation.
+Traditionally, parsers have ignored developer tools like code completion, to their detriment. The approach we propose offers a compelling alternative to its textbook presentation in the parsing literature, not only because it unifies parsing, code completion and error correction under a simple algebraic framework, but also because it is composable using ordinary logical primitives, which are highly flexible to additional constraints and well-suited for SAT-based implementation.
 
-More specifically, our paper is structured as follows: we present two high-level approaches to syntax correction: one that samples random edits and accepts only those which parse (Theory 1, probabilistic correction), and another that uses equational reasoning to find the satisfying assignments to a system of multilinear equations over finite fields (Theory 2, model-theoretic). Furthermore, we show how these two approaches can be combined to attain state-of-the-art performance (Theory 1.5), and validate it on a variety of real-world program repair scenarios. Finally implement our entire framework in a real-time editor called Tidyparse.
+More specifically, our paper is structured as follows: we present two high-level approaches to syntax correction: one that samples random edits and accepts only those which parse (Theory 1, probabilistic correction), and another that uses equational reasoning to find the satisfying assignments to a system of multilinear equations over finite fields (Theory 2, model-theoretic). Finally, we show how these two approaches can be combined to attain state-of-the-art performance (Theory 1.5), and validate it on a variety of real-world program repair scenarios.
 
 \section{Background}
 
-The great compromise in program synthesis is one of efficiency versus expressiveness: the more expressive a language, the more concise and varied the programs it can represent, but the harder those programs are to synthesize without resorting to domain-specific heuristics. Likewise, the simpler a language is to synthesize, the weaker its concision and expressive power.
+%\begin{itemize}
+%  \item CFL Parsing
+%  \item Notation (where to put?)
+%  \item Valiant's Matrix Multiplication Algorithm
+%  \item Levenshtein Edits (insert, delete, substitution)
+%  \item Problem definition (independent section?)
+%\end{itemize}
 
-Most existing work on program synthesis focus on general $\lambda$-calculi, or very narrow languages such as finite automata or regular expressions. The former are too expressive to be synthesized or verified, whilst the latter are too restrictive to be useful. In our work, we focus on context-free and mildly context-sensitive grammars, which are expressive enough to capture a variety of useful programming language features, but not so expressive as to be unsynthesizable.
-
-The second great compromise in program synthesis is that of reusability versus specialization. In programming, as in human affairs, there is a vast constellation of languages, each requiring specialized generators and interpreters. Are these languages truly irreconcilable? Or, as Noam Chomsky argues, are these merely dialects of a universal language? \textit{Synthesis} then, might be a misnomer, and more aptly called \textit{recognition}, in the analytic tradition.
-
-In our work, we argue these two compromises are not mutually exclusive, but complementary and reciprocal. Programs and the languages they inhabit are indeed synthetic, but can be analyzed and reused in the metalanguage of context-free grammars closed under conjunction. Not only does this admit an efficient synthesis algorithm, but allows users to introduce additional constraints without breaking compositionality, one of the most sacred tenets in programming language design.
-
-Furthermore, we argue it is possible to improve the efficiency of human programmers without sacrificing expressiveness by considering latency to synthesize an acceptable completion. In contrast with program synthesizers that require intermediate programs to be well-formed, our synthesizer is provably sound and complete up to a Levenshtein distance bound, and attempts to minimize total edits, but does not impose any constraints on the code itself being written.
-
-We now survey some techniques that will be used in this paper.
+Three important questions arise when repairing any sort of program: (1) is the program broken in the first place? (2) if so, where are the errors located? (3) how should those locations then be altered? In the case of syntax correction, those questions are addressed in three related research areas, (1) parsing, (2) language equations and (3) repair. We survey each of those areas in turn.
 
 \subsection{CFL Parsing}
 
-Context-free language (CFL) parsing is a well-studied problem in computer science, with many different algorithms and implementations (e.g., shift-reduce, recursive-descent, LR). Many of those algorithms expect grammars to be specified in a particular form (e.g., left- or right- recursive) or optimized for a particular class of grammars (e.g., regular, linear).
+Context-free language (CFL) parsing is the well-studied problem of how to turn a string into a unique tree, with many different algorithms and implementations (e.g., shift-reduce, recursive-descent, LR). Many of those algorithms expect grammars to be expressed in a certain form (e.g., left- or right- recursive) or are optimized for a narrow class of grammars (e.g., regular, linear).
 
-General CFL recognition and parsing can be formulated as a dynamic programming problem, as shown by Cocke-Younger-Kasami (CYK)~\cite{sakai1961syntax}, Earley~\cite{earley1970efficient} and others, whose parsers have roughly cubic time complexity with respect to the length of the input string.
+General CFL parsing allows ambiguity (non-unique trees) and be formulated as a dynamic programming problem, as shown by Cocke-Younger-Kasami (CYK)~\cite{sakai1961syntax}, Earley~\cite{earley1970efficient} and others, whose parsers have roughly cubic time complexity with respect to the length of the input string.
 
-As shown by Valiant~\cite{valiant1975general}, Lee~\cite{lee2002fast} and others, CFL recognition is in some sense equivalent to binary matrix multiplication, a well-studied problem in linear algebra and combinatorics, which is known to be subcubic. This realization unlocks the door to a number of complexity-theoretic speedups to CFL recognition and fast general parsing algorithms.
+As shown by Valiant~\cite{valiant1975general}, Lee~\cite{lee2002fast} and others, general CFL recognition is in some sense equivalent to binary matrix multiplication, another well-studied combinatorial problem in circuit lower bounds that is known to be subcubic. This realization unlocks the door to a wide range of complexity-theoretic and practical speedups to CFL recognition and fast general parsing algorithms.
 
-\subsection{Parsing with holes}
+% Cover matrix multiplication-based parsing
 
-When a sentence contains so-called \textit{holes}, parsing becomes slightly more challenging. Holes are special tokens that can be filled by words in the grammar. A sentence might have multiple holes, representing a set of contextually valid words. For example, ``\textit{\_ \_ to eat \_}'' which could be filled by, e.g., ``\textit{I like\ldots sushi}'', ``\textit{They want\ldots pizza}'', or ``\textit{We need\ldots something}''.
+% Problem definition
 
-Language equations are a powerful tool for reasoning about formal languages. First popularized by Brzozowski~\cite{brzozowski1964derivatives, brzozowski1980equations} in the regular language setting, language equations essentially allow for holes in the string or grammar, which can be solved using algebraic techniques. In this paper, we restrict our attention to holes in the string.
+\subsection{Language Equations}
 
-\subsection{Parsing with errors}
+Language equations are a powerful tool for reasoning about formal languages and their inhabitants. First proposed by Ginsburg et al.~\cite{ginsburg1962two} for the ALGOL language, language equations are essentially systems of inequalities with variables representing \textit{holes}, i.e., unknown values, in the language or grammar. Solutions to these equations can be obtained using various fixpoint techniques, yielding members of the language. This insight reveals the true algebraic nature of CFLs and their cousins.
 
-When a sentence is not contained in a language, parsing becomes even more challenging. Parsing with errors or \textit{error recovery} is well-studied problem in the parsing literature studied by Aho~\cite{aho1972minimum} and others. The problem is to find the minimum number of edits required to transform a string into a string in the language. Typically we assume a fixed distance metric with a small upper bound.
+Being an algebraic framework, language equations also lead to a kind of calculus, akin to that of Lebniz and Newton. First realized by Brzozowski~\cite{brzozowski1964derivatives, brzozowski1980equations} and Antimirov~\cite{antimirov1996partial}, one can also take the derivative of a language equation, yielding another equation, which can be interpreted as a kind of language quotient. This technique leads to a family of elegant algorithms for incremental parsing~\cite{might2011parsing, adams2016complexity} and automata minimization~\cite{brzozowski1962canonical}. In our particular setting, the Brzozowski derivative, or left quotient, corresponds to finding the suffixes that complete a known prefix, i.e., code completion.
 
-Naively, one might simply enumerate all edits within a certain Levenshtein radius and reject invalid strings. However, this approach is intractable for long strings. Another approach is to compute the \textit{edit distance} between the string and the language as proposed by Aho. This approach is also intractable depending on the size of the grammar. A third approach is to use a language equation to compute the intersection between the Levenshtein hypersphere and the language.
+In this paper, we restrict our attention to holes in context-free and weakly context-sensitive languages, coinciding with edit locations in the source code of computer programs. Although prior work has considered language equations for parsing~\cite{might2011parsing}, to our knowledge they have never previously been considered for the purpose of code completion or syntax error correction.
 
-\subsection{Algebraic parsing}
+%Rosenkrantz~\cite{rosenkrantz1967matrix} introduces , and
 
-Although CFLs generally are quite expressive, they have known limitations, both practical and theoretical. From a practical standpoint, they are unable to capture many syntactic features of programming languages, e.g., indentation or variable binding. From a theoretical standpoint, they are not closed under intersection. These limitations motivate the study of more expressive yet still efficiently parsable formalisms, such as weakly context-sensitive languages.
+%When a sentence contains so-called \textit{holes}, parsing becomes slightly more challenging. Holes are special tokens that can be filled by words in the grammar. A sentence might have multiple holes, representing a set of contextually valid words. For example, ``\textit{\_ \_ to eat \_}'' which could be filled by, e.g., ``\textit{I like\ldots sushi}'', ``\textit{They want\ldots pizza}'', or ``\textit{We need\ldots something}''.
 
-A natural extension is to consider the family of languages closed under intersection. This leads us to conjunctive languages.
+\subsection{Syntax Repair}
+
+When a sentence is not syntactically valid, parsing becomes more challenging. Parsing with errors or \textit{error recovery} was first considered by Aho~\cite{aho1972minimum} and others. The problem is to find the minimum number of edits required to transform an arbitrary string into a string in the language. In practice one typically assumes a fixed distance metric with a small upper bound.
+
+In finite languages, this amounts to spelling correction, which has existed for many decades. Schulz and Stoyan~\cite{schulz2002fast} introduce Levenshtein automata for spelling correction with a finite dictionary, which can be adapted to compute context-free language edit distance using a language intersection operator. Bar-Hillel~\cite{bar1961formal} has a construction that shows the intersection between a CFL and an NFA is still context-free.
+
+Although CFLs are generally quite expressive, they are themselves not closed under intersection and have other practical limitations, i.e., are unable to capture many syntactic features of programming languages, e.g., indentation or variable binding. These limitations motivate us towards more expressive yet still efficiently parsable formalisms, such as weakly context-sensitive languages.
+
+Okhotin~\cite{okhotin2010decision} extends the language equations to conjunctive language, which are CFLs closed under intersection.
+
+Naively, one might think to enumerate all edits within a certain Levenshtein radius and reject invalid strings. However, this approach is intractable for long strings. Another approach is to compute the \textit{edit distance} between the string and the language as proposed by Aho. This approach is also intractable depending on the size of the grammar. A third approach is to use a language equation to compute the intersection between the Levenshtein hypersphere and the language.
 
 \section{Overview}
 
@@ -1707,6 +1715,16 @@ Not only is linear algebra over finite fields an expressive language for inferen
 We envision three primary use cases: (1) helping novice programmers become more quickly familiar with a new programming language (2) autocorrecting common typos among proficient but forgetful programmers and (3) as a prototyping tool for PL designers and educators. Featuring a grammar editor and built-in SAT solver, Tidyparse helps developers navigate the language design space, visualize syntax trees, debug parsing errors and quickly generate simple examples and counterexamples for testing. %Although the algorithm may seem esoteric at first glance, in our experience it is much more interpretable than classical parsers, which exhibit poor error-recovery and diagnostics.
 
 \section{Conclusion}
+
+The great compromise in program synthesis is one of efficiency versus expressiveness: the more expressive a language, the more concise and varied the programs it can represent, but the harder those programs are to synthesize without resorting to domain-specific heuristics. Likewise, the simpler a language is to synthesize, the weaker its concision and expressive power.
+
+Most existing work on program synthesis focus on general $\lambda$-calculi, or very narrow languages such as finite automata or regular expressions. The former are too expressive to be synthesized or verified, whilst the latter are too restrictive to be useful. In our work, we focus on context-free and mildly context-sensitive grammars, which are expressive enough to capture a variety of useful programming language features, but not so expressive as to be unsynthesizable.
+
+The second great compromise in program synthesis is that of reusability versus specialization. In programming, as in human affairs, there is a vast constellation of languages, each requiring specialized generators and interpreters. Are these languages truly irreconcilable? Or, as Noam Chomsky argues, are these merely dialects of a universal language? \textit{Synthesis} then, might be a misnomer, and more aptly called \textit{recognition}, in the analytic tradition.
+
+In our work, we argue these two compromises are not mutually exclusive, but complementary and reciprocal. Programs and the languages they inhabit are indeed synthetic, but can be analyzed and reused in the metalanguage of context-free grammars closed under conjunction. Not only does this admit an efficient synthesis algorithm, but allows users to introduce additional constraints without breaking compositionality, one of the most sacred tenets in programming language design.
+
+Furthermore, we argue it is possible to improve the efficiency of human programmers without sacrificing expressiveness by considering latency to synthesize an acceptable completion. In contrast with program synthesizers that require intermediate programs to be well-formed, our synthesizer is provably sound and complete up to a Levenshtein distance bound, and attempts to minimize total edits, but does not impose any constraints on the code itself being written.
 
 Tidyparse accepts a CFG and a string to parse. If the string is valid, it returns the parse forest, otherwise, it returns a set of repairs, ordered by their Levenshtein edit distance to the invalid string. Our method compiles each CFG and candidate string onto a matrix dynamical system using an extended version of Valiant's construction and solves for its fixedpoints using an incremental SAT solver. This approach to parsing has many advantages, enabling us to repair syntax errors, correct typos and generate parse trees for incomplete strings. By allowing the string to contain holes, repairs can contain either concrete tokens or nonterminals, which can be manually expanded by the user or a neural-guided search procedure. From a theoretical standpoint, this technique is particularly amenable to neural program synthesis and repair, naturally integrating with the masked-language-modeling task (MLM) used by transformer-based neural language models.
 
