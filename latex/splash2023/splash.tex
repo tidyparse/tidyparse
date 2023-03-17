@@ -926,10 +926,10 @@ In the following section, we will give a more efficient construction for generat
 \pagebreak
 \section{Levenshtein reachability}\label{sec:levenshtein}
 
-Levenshtein distance can be defined as an optimal transport problem between two strings $A, B: \Sigma^n$:
+Levenshtein distance can be defined as an optimal transport problem between two strings $A, B: \Sigma^*$:
 
 \begin{equation}
-\text{Levenshtein Distance} = \Delta(A, B) = \min_{\pi \in \Pi(\mu_A, \mu_B)} \int_{\Sigma^n \times \Sigma^n} \delta(A, B) , d\pi(A, B)
+\text{Levenshtein Distance} = \Delta(A, B) = \min_{\pi \in \Pi(\mu_A, \mu_B)} \int_{\Sigma^* \times \Sigma^*} \delta(A, B) d\pi(A, B)
 \end{equation}
 
 \noindent where $\mu_A$ and $\mu_B$ are the discrete distributions corresponding to strings $A$ and $B$, respectively. A single transportation plan, $\pi$, can be viewed as a sequence of Levenshtein edits, and $\Pi(\mu_A, \mu_B)$ is the set of all transport plans with marginals $\mu_A$ and $\mu_B$. Finally, the Levenshtein distance between $A$ and $B$ is then the minimum cost over all transportation plans, i.e., edit sequences $\pi \in \Pi(\mu_A, \mu_B)$.
