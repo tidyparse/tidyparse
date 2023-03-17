@@ -67,15 +67,15 @@ More specifically, our paper is structured as follows: we present two high-level
 %  \item Problem definition (independent section?)
 %\end{itemize}
 
-Three important questions arise when repairing any sort of program: (1) is the program broken in the first place? (2) if so, where are the errors located? (3) how should those locations then be altered? In the case of syntax correction, those questions are addressed in three related research areas, (1) parsing, (2) language equations and (3) repair. We survey each of those areas in turn.
+Three important questions arise when repairing any sort of program: (1) is the program broken in the first place? (2) if so, where are the errors located? (3) how should those locations then be altered? In the case of syntax correction, those questions are addressed by three related research areas, (1) parsing, (2) language equations and (3) repair. We survey each of those areas in turn.
 
 \subsection{CFL Parsing}
 
 Context-free language (CFL) parsing is the well-studied problem of how to turn a string into a unique tree, with many different algorithms and implementations (e.g., shift-reduce, recursive-descent, LR). Many of those algorithms expect grammars to be expressed in a certain form (e.g., left- or right- recursive) or are optimized for a narrow class of grammars (e.g., regular, linear).
 
-General CFL parsing allows ambiguity (non-unique trees) and be formulated as a dynamic programming problem, as shown by Cocke-Younger-Kasami (CYK)~\cite{sakai1961syntax}, Earley~\cite{earley1970efficient} and others, whose parsers have roughly cubic time complexity with respect to the length of the input string.
+General CFL parsing allows ambiguity (non-unique trees) and be formulated as a dynamic programming problem, as shown by Cocke-Younger-Kasami (CYK)~\cite{sakai1961syntax}, Earley~\cite{earley1970efficient} and others. These parsers have roughly cubic time complexity with respect to the length of the input string.
 
-As shown by Valiant~\cite{valiant1975general}, Lee~\cite{lee2002fast} and others, general CFL recognition is in some sense equivalent to binary matrix multiplication, another well-studied combinatorial problem in circuit lower bounds that is known to be subcubic. This realization unlocks the door to a wide range of complexity-theoretic and practical speedups to CFL recognition and fast general parsing algorithms.
+As shown by Valiant~\cite{valiant1975general}, Lee~\cite{lee2002fast} and others, general CFL recognition is in some sense equivalent to binary matrix multiplication, another well-studied combinatorial problem with broad applications, known to be at worst subcubic. This realization unlocks the door to a wide range of complexity-theoretic and practical speedups to CFL recognition and fast general parsing algorithms.
 
 % Cover matrix multiplication-based parsing
 
@@ -85,9 +85,9 @@ As shown by Valiant~\cite{valiant1975general}, Lee~\cite{lee2002fast} and others
 
 Language equations are a powerful tool for reasoning about formal languages and their inhabitants. First proposed by Ginsburg et al.~\cite{ginsburg1962two} for the ALGOL language, language equations are essentially systems of inequalities with variables representing \textit{holes}, i.e., unknown values, in the language or grammar. Solutions to these equations can be obtained using various fixpoint techniques, yielding members of the language. This insight reveals the true algebraic nature of CFLs and their cousins.
 
-Being an algebraic framework, language equations also lead to a kind of calculus, akin to that of Lebniz and Newton. First realized by Brzozowski~\cite{brzozowski1964derivatives, brzozowski1980equations} and Antimirov~\cite{antimirov1996partial}, one can also take the derivative of a language equation, yielding another equation, which can be interpreted as a kind of language quotient. This technique leads to a family of elegant algorithms for incremental parsing~\cite{might2011parsing, adams2016complexity} and automata minimization~\cite{brzozowski1962canonical}. In our particular setting, the Brzozowski derivative, or left quotient, corresponds to finding the suffixes that complete a known prefix, i.e., code completion.
+Being an algebraic formalism, language equations naturally give rise to a kind of calculus, vaguely reminiscent of Leibniz' and Newton's. First studied by Brzozowski~\cite{brzozowski1964derivatives, brzozowski1980equations} and Antimirov~\cite{antimirov1996partial}, one can take the derivative of a language equation, yielding another equation, which can be interpreted as a kind of continuation or language quotient, returning the suffixes that complete a given prefix. This technique leads to an elegant family of algorithms for incremental parsing~\cite{might2011parsing, adams2016complexity} and automata minimization~\cite{brzozowski1962canonical}. In our setting, differentiation corresponds to code completion.
 
-In this paper, we restrict our attention to holes in context-free and weakly context-sensitive languages, coinciding with edit locations in the source code of computer programs. Although prior work has considered language equations for parsing~\cite{might2011parsing}, to our knowledge they have never previously been considered for the purpose of code completion or syntax error correction.
+In this paper, we restrict our attention to language equations over context-free and weakly context-sensitive languages, whose variables coincide with edit locations in the source code of a computer program, and solutions correspond to syntax repairs. Although prior work has studied the use of language equations for parsing~\cite{might2011parsing}, to our knowledge they have never previously been considered for the purpose of code completion or syntax error correction.
 
 %Rosenkrantz~\cite{rosenkrantz1967matrix} introduces , and
 
@@ -95,15 +95,15 @@ In this paper, we restrict our attention to holes in context-free and weakly con
 
 \subsection{Syntax Repair}
 
-When a sentence is not syntactically valid, parsing becomes more challenging. Parsing with errors or \textit{error recovery} was first considered by Aho~\cite{aho1972minimum} and others. The problem is to find the minimum number of edits required to transform an arbitrary string into a string in the language. In practice one typically assumes a fixed distance metric with a small upper bound.
+In finite languages, syntax repair corresponds to spelling correction, a more restrictive and largely solved problem. Schulz and Stoyan~\cite{schulz2002fast} construct a finite automaton that returns the nearest dictionary entry by Levenshtein edit distance. Though considerably simpler than syntax correction, their work shares similar challenges and offers insights for handling more general repair scenarios.
 
-In finite languages, this amounts to spelling correction, which has existed for many decades. Schulz and Stoyan~\cite{schulz2002fast} introduce Levenshtein automata for spelling correction with a finite dictionary, which can be adapted to compute context-free language edit distance using a language intersection operator. Bar-Hillel~\cite{bar1961formal} has a construction that shows the intersection between a CFL and an NFA is still context-free.
+When a sentence is grammatically invalid, parsing grows more challenging. Parsing with errors or \textit{error recovery} was first considered by Aho~\cite{aho1972minimum, irons1963error} and others. Like spelling, the problem is to find the minimum number of edits required to transform an arbitrary string into a syntactically valid one, where validity is defined as containment in a (typically) context-free langauge.
 
-Although CFLs are generally quite expressive, they are themselves not closed under intersection and have other practical limitations, i.e., are unable to capture many syntactic features of programming languages, e.g., indentation or variable binding. These limitations motivate us towards more expressive yet still efficiently parsable formalisms, such as weakly context-sensitive languages.
+Bar-Hillel~\cite{bar1961formal} establishes the closure of CFLs under intersection with regular languages, and can be used to construct the corresponding minimum-cost CFG in a straightforward manner. However while generally quite expressive, CFLs are themselves not closed under intersection and have other practical limitations, i.e., are unable to express indentation or variable binding. These limitations motivate us towards more expressive yet still efficiently parsable formalisms.
 
-Okhotin~\cite{okhotin2010decision} extends the language equations to conjunctive language, which are CFLs closed under intersection.
+Conveniently, Okhotin~\cite{okhotin2010decision} offers exactly the formalism needed: language equations augmented with logical operators like conjunction or disjunction. These operators afford us the flexibility to encode both language union and intersection, which are difficult or impossible to express using a single grammar, as well as incorporate extra-syntactic side-constraints during solving.
 
-Naively, one might think to enumerate all edits within a certain Levenshtein radius and reject invalid strings. However, this approach is intractable for long strings. Another approach is to compute the \textit{edit distance} between the string and the language as proposed by Aho. This approach is also intractable depending on the size of the grammar. A third approach is to use a language equation to compute the intersection between the Levenshtein hypersphere and the language.
+%Naively, one might think to enumerate all edits within a certain Levenshtein radius and reject invalid strings. However, this approach is intractable for long strings. Another approach is to compute the \textit{edit distance} between the string and the language as proposed by Aho. This approach is also intractable depending on the size of the grammar. A third approach is to use a language equation to compute the intersection between the Levenshtein hypersphere and the language.
 
 \section{Overview}
 
@@ -238,6 +238,8 @@ w = [ w ( w (*@\hlgreen{)}@*) w w w w . w ( w ) ]
 \end{minipage}
 
 This coarsening is done to reduce the number of possible corrections, and is admissible because CFLs are closed under homomorphisms. (If we wanted to provide a lexical expansion, this would be possible.) These candidates then reranked using a probability metric.
+
+\pagebreak
 
 \hspace{-0.3cm}\begin{minipage}[t]{0.5\textwidth}
                  \begin{tcolorbox}[left skip=0.7cm,
@@ -923,6 +925,16 @@ In the following section, we will give a more efficient construction for generat
 
 \pagebreak
 \section{Levenshtein reachability}\label{sec:levenshtein}
+
+Levenshtein distance can be defined as an optimal transport problem between two strings $A, B: \Sigma^n$:
+
+\begin{equation}
+\text{Levenshtein Distance} = \Delta(A, B) = \min_{\pi \in \Pi(\mu_A, \mu_B)} \int_{\Sigma^n \times \Sigma^n} \delta(A, B) , d\pi(A, B)
+\end{equation}
+
+\noindent where $\mu_A$ and $\mu_B$ are the discrete distributions corresponding to strings $A$ and $B$, respectively. A single transportation plan, $\pi$, can be viewed as a sequence of Levenshtein edits, and $\Pi(\mu_A, \mu_B)$ is the set of all transport plans with marginals $\mu_A$ and $\mu_B$. Finally, the Levenshtein distance between $A$ and $B$ is then the minimum cost over all transportation plans, i.e., edit sequences $\pi \in \Pi(\mu_A, \mu_B)$.
+
+In the case where $A$ and $B$ are both fixed strings, Levenshtein distance can be interpreted as a shortest path problem over an unweighted graph whose vertices are the strings $A, B$ and edges represent Levenshtein edits. The distance between $A$ and $B$ then, is simply the length of the shortest path(s). When $B$ is a free variable, we can define a finite automaton accepting only strings within a given Levenshtein distance $d$ of $A$ by unrolling transition dynamics $\mathcal{L}(A, d)$ up to a fixed depth $d$.
 
 Levenshtein reachability is recognized by the nondeterministic infinite automaton (NIA) whose topology $\mathcal{L} = \knightkingarrow$ can be factored into a product of (a) the monotone Chebyshev topology $\kingarrow$, equipped with horizontal transitions accepting $\sigma_{i}$ and vertical transitions accepting Kleene stars, and (b) the monotone knight's topology $\knightarrow$, equipped with transitions accepting $\sigma_{i+2}$. The structure of this space is representable as an acyclic NFA~\cite{schulz2002fast}, populated by accept states within radius $k$ of $q_{n,0}$, or equivalently, a left-linear CFG whose productions finitely instantiate the transition dynamics:
 

@@ -38,7 +38,7 @@ fun workerPool() {
   repeat(20) { i ->
     GlobalScope.launch {
       when {
-        i % 2 == 0 -> console.log("PI approximation: ", pool.request(PIApproximation(10000000)).pi)
+        i % 2 == 0 -> { outputField.textContent += ("\nPI approximation: " + pool.request(PIApproximation(10000000)).pi) }
         else -> console.log("Sleeping for: ", pool.request(Sleep(Random.nextLong(500, 5000))).ms.toString())
       }
     }
