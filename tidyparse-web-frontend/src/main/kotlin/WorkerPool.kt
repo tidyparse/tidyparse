@@ -17,9 +17,7 @@ import kotlin.random.Random
 class WorkerException(message: String?) : Throwable(message)
 
 suspend fun Worker.send(data: String) = suspendCoroutine<MessageEvent> { continuation ->
-  this.onmessage = { messageEvent ->
-    continuation.resume(messageEvent)
-  }
+  this.onmessage = { messageEvent -> continuation.resume(messageEvent) }
   this.onerror = { event -> continuation.resumeWithException(WorkerException(event.type))}
   this.postMessage(data)
 }
@@ -39,31 +37,28 @@ var counter = 0
 val results = mutableListOf<RepairResult>()
 
 suspend fun workerPool() {
+//  if (sharedState.updaters.isEmpty())
+//  mutex.withLock { sharedState.registerUpdater { repairs -> repairs.forEach { it.updateTextArea() } } }
+
   val pool = WorkerPool(10, "./tidyparse-web-worker.js")
   val requestCounter = mutex.withLock { ++counter }
 
   GlobalScope.launch {
     RepairRequest(inputField.getCurrentLine() + "\n" + requestCounter)
-      .let { repair -> makeRequestAndWaitForTenRepairs(pool, repair) }
+      .let { repair -> pool.request(repair) }
   }
 }
 
-suspend fun makeRequestAndWaitForTenRepairs(pool: WorkerPool, repair: RepairRequest) {
-  val results = mutableListOf<RepairResult>()
-  while (results.size < 10) {
-    val result = pool.request(repair)
-    results.add(result)
-    result.updateTextArea(mutex)
-  }
-}
-
-suspend fun RepairResult.updateTextArea(mutex: Mutex) {
-  mutex.withLock {
-    console.log("Received: $requestId / $counter")
-    results.removeAll { it.requestId < counter }
-    if (requestId == counter) {
-      results.add(this)
-      outputField.textContent = results.sortedBy { it.requestId }.joinToString("\n") { "${it.requestId}: ${it.message}" }
+fun RepairResult.updateTextArea() {
+  GlobalScope.launch {
+    mutex.withLock {
+      console.log("Received: $requestId / $counter")
+      results.removeAll { it.requestId < counter }
+      if (requestId == counter) {
+        results.add(this@updateTextArea)
+        outputField.textContent =
+          results.sortedBy { it.requestId }.joinToString("\n") { "${it.requestId}: ${it.message}" }
+      }
     }
   }
 }
@@ -82,11 +77,6 @@ class WorkerPool(size: Int, private val workerScript: String) {
 
   private val availableWorkers = ArrayDeque<Worker>()
   private val jobs = ArrayDeque<Job>()
-
-//  fun terminateAll() {
-//    availableWorkers.forEach { worker -> worker.terminate() }
-//    jobs.forEach { job -> job.continuation.resumeWithException(WorkerException("Worker pool terminated")) }
-//  }
 
   init {
     repeat(size) { nr ->

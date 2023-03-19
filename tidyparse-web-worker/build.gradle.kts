@@ -22,6 +22,7 @@ kotlin {
     browser {
       webpackTask {
         outputFileName = "tidyparse-web-worker.js"
+        devtool = "source-map"// Remove later for production
       }
       distribution {
         name = "tidyparse-web-worker"

@@ -31,6 +31,7 @@ fun HTMLTextAreaElement.isCursorInsideGrammar() = "---" in value.substring(0, in
 fun processEditorContents() {
 //  ongoingWork?.cancel()
 //  ongoingWork = updateRecommendations()
+  preprocessGrammar()
   GlobalScope.async { workerPool() }
 }
 
