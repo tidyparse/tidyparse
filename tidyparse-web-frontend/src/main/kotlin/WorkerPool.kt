@@ -1,7 +1,8 @@
 
+import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.tidyparse.*
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.*
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -33,14 +34,36 @@ suspend fun <R : RequestResult> Worker.request(request: Request<R>): R {
   return response.result as R
 }
 
-fun workerPool() {
+val mutex = Mutex()
+var counter = 0
+val results = mutableListOf<RepairResult>()
+
+suspend fun workerPool() {
   val pool = WorkerPool(10, "./tidyparse-web-worker.js")
-  repeat(20) { i ->
-    GlobalScope.launch {
-      when {
-        i % 2 == 0 -> { outputField.textContent += ("\nPI approximation: " + pool.request(PIApproximation(10000000)).pi) }
-        else -> console.log("Sleeping for: ", pool.request(Sleep(Random.nextLong(500, 5000))).ms.toString())
-      }
+  val requestCounter = mutex.withLock { ++counter }
+
+  GlobalScope.launch {
+    RepairRequest(inputField.getCurrentLine() + "\n" + requestCounter)
+      .let { repair -> makeRequestAndWaitForTenRepairs(pool, repair) }
+  }
+}
+
+suspend fun makeRequestAndWaitForTenRepairs(pool: WorkerPool, repair: RepairRequest) {
+  val results = mutableListOf<RepairResult>()
+  while (results.size < 10) {
+    val result = pool.request(repair)
+    results.add(result)
+    result.updateTextArea(mutex)
+  }
+}
+
+suspend fun RepairResult.updateTextArea(mutex: Mutex) {
+  mutex.withLock {
+    console.log("Received: $requestId / $counter")
+    results.removeAll { it.requestId < counter }
+    if (requestId == counter) {
+      results.add(this)
+      outputField.textContent = results.sortedBy { it.requestId }.joinToString("\n") { "${it.requestId}: ${it.message}" }
     }
   }
 }
@@ -59,6 +82,11 @@ class WorkerPool(size: Int, private val workerScript: String) {
 
   private val availableWorkers = ArrayDeque<Worker>()
   private val jobs = ArrayDeque<Job>()
+
+//  fun terminateAll() {
+//    availableWorkers.forEach { worker -> worker.terminate() }
+//    jobs.forEach { job -> job.continuation.resumeWithException(WorkerException("Worker pool terminated")) }
+//  }
 
   init {
     repeat(size) { nr ->

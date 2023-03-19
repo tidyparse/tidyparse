@@ -29,13 +29,12 @@ fun HTMLTextAreaElement.getCurrentLine() = value.substring(0, getEndOfLineIdx())
 fun HTMLTextAreaElement.isCursorInsideGrammar() = "---" in value.substring(0, inputField.selectionStart!!)
 
 fun processEditorContents() {
-  ongoingWork?.cancel()
-  ongoingWork = updateRecommendations()
-//  workerPool()
+//  ongoingWork?.cancel()
+//  ongoingWork = updateRecommendations()
+  GlobalScope.async { workerPool() }
 }
 
-fun updateRecommendations() =
-  GlobalScope.async { withTimeout(10000L) { handleInput() } }
+fun updateRecommendations() = GlobalScope.async { handleInput() }
 
 fun updateProgress(query: String) {
   val sanitized = query.escapeHTML()
@@ -46,7 +45,7 @@ fun updateProgress(query: String) {
     )
 }
 
-suspend fun CoroutineScope.handleInput() {
+fun CoroutineScope.handleInput() {
   preprocessGrammar()
   if (!inputField.isCursorInsideGrammar()) return
   val line = inputField.getCurrentLine()
