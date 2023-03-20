@@ -1,3 +1,6 @@
+import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.DEVELOPMENT
+
+
 plugins {
   kotlin("js")
 }
@@ -25,6 +28,7 @@ kotlin {
       }
 
       webpackTask {
+        mode = DEVELOPMENT
         outputFileName = "tidyparse-web-frontend.js"
         devtool = "source-map" // Remove later for production
       }

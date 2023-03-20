@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.DEVELOPMENT
+
 plugins {
   kotlin("js")
 }
@@ -20,13 +22,16 @@ kotlin {
   js(IR) {
     binaries.executable()
     browser {
+      // Disable minification
       webpackTask {
+        mode = DEVELOPMENT
         outputFileName = "tidyparse-web-worker.js"
         devtool = "source-map"// Remove later for production
       }
       distribution {
         name = "tidyparse-web-worker"
       }
+
     }
   }
 //  sourceSets {
@@ -42,7 +47,9 @@ tasks.register<Copy>("copyJsTask") {
 //  dependsOn("browserDistribution")
   mustRunAfter("browserDistribution")
   val worker = "tidyparse-web-worker"
-  from("$rootDir/$worker/build/$worker/$worker.js".also { assert(File(it).exists())})
+  val dir = "$rootDir/$worker/build/$worker/".also { assert(File(it).exists())}
+  // Copy all files in directory
+  from("$dir/$worker.js", "$dir/$worker.js.map")
   into("$rootDir/tidyparse-web-frontend/build/processedResources/js/main/")
 }
 

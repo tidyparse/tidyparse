@@ -12,32 +12,32 @@ import kotlin.random.*
 fun main() = worker {
 
 // It seems like the CFG crashes the browser at runtime??
-//  val cfg = """
-//  S -> X
-//  X -> A | V | ( X , X ) | X X | ( X )
-//  A -> FUN | F | LI | M | L
-//  FUN -> fun V `->` X
-//  F -> if X then X else X
-//  M -> match V with Branch
-//  Branch -> `|` X `->` X | Branch Branch
-//  L -> let V = X
-//  L -> let rec V = X
-//  LI -> L in X
-//
-//  V -> Vexp | ( Vexp ) | List | Vexp Vexp
-//  Vexp -> Vname | FunName | Vexp VO Vexp | B
-//  Vexp -> ( Vname , Vname ) | Vexp Vexp | I
-//  List -> [] | V :: V
-//  Vname -> a | b | c | d | e | f | g | h | i
-//  Vname -> j | k | l | m | n | o | p | q | r
-//  Vname -> s | t | u | v | w | x | y | z
-//  FunName -> foldright | map | filter
-//  FunName -> curry | uncurry | ( VO )
-//  VO -> + | - | * | / | >
-//  VO -> = | < | `||` | `&&`
-//  I -> 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
-//  B ->  true | false
-//""".trimIndent().parseCFG()
+  val cfg = """
+  S -> X
+  X -> A | V | ( X , X ) | X X | ( X )
+  A -> FUN | F | LI | M | L
+  FUN -> fun V `->` X
+  F -> if X then X else X
+  M -> match V with Branch
+  Branch -> `|` X `->` X | Branch Branch
+  L -> let V = X
+  L -> let rec V = X
+  LI -> L in X
+
+  V -> Vexp | ( Vexp ) | List | Vexp Vexp
+  Vexp -> Vname | FunName | Vexp VO Vexp | B
+  Vexp -> ( Vname , Vname ) | Vexp Vexp | I
+  List -> [] | V :: V
+  Vname -> a | b | c | d | e | f | g | h | i
+  Vname -> j | k | l | m | n | o | p | q | r
+  Vname -> s | t | u | v | w | x | y | z
+  FunName -> foldright | map | filter
+  FunName -> curry | uncurry | ( VO )
+  VO -> + | - | * | / | >
+  VO -> = | < | `||` | `&&`
+  I -> 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
+  B ->  true | false
+""".trimIndent().parseCFG()
 
   receiveRequest { request ->
     when (request) {
@@ -50,7 +50,7 @@ fun main() = worker {
 //          updateProgress = {         console.log("Repair found: ${it}")
 //          }
 //        )
-        "_ _ _".split(" ").solve(setOf(), takeMoreWhile = { true })
+//        val t= "_ _ _".split(" ").solve(setOf(), takeMoreWhile = { true }).toList().joinToString("\n")
         delay(Random.nextLong(0L until 1000L))
             RepairResult(request.string)
       }

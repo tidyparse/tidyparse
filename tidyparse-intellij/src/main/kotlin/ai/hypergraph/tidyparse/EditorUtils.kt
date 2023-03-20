@@ -84,21 +84,23 @@ fun generateColors(n: Int): List<Color> =
     Color.getHSBColor(i.toFloat() / n.toFloat(), 0.85f, 1.0f)
   }
 
-private val htmlDiffGenerator: DiffRowGenerator =
+private val htmlDiffGenerator: DiffRowGenerator by lazy {
   DiffRowGenerator.create()
     .showInlineDiffs(true)
     .inlineDiffByWord(true)
     .newTag { f: Boolean -> "<${if (f) "" else "/"}span>" }
     .oldTag { _ -> "" }
     .build()
+}
 
-private val plaintextDiffGenerator: DiffRowGenerator =
+private val plaintextDiffGenerator: DiffRowGenerator by lazy {
   DiffRowGenerator.create()
     .showInlineDiffs(true)
     .inlineDiffByWord(true)
     .newTag { _ -> "" }
     .oldTag { _ -> "" }
     .build()
+}
 
 // TODO: maybe add a dedicated SAT constraint instead of filtering out NT invariants after?
 private fun CFG.overrideInvariance(l1: List<String>, l2: List<String>): String =
