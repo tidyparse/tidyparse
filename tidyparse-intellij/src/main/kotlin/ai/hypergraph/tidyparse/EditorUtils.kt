@@ -4,12 +4,18 @@ import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.sat.synthesizeIncrementally
 import com.github.difflib.text.DiffRow.Tag.*
 import com.github.difflib.text.DiffRowGenerator
-import com.intellij.openapi.application.runReadAction
+import com.intellij.codeInsight.navigation.NavigationGutterIconBuilder
+import com.intellij.icons.AllIcons
+import com.intellij.lang.annotation.AnnotationHolder
+import com.intellij.openapi.application.*
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.markup.*
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiFile
+import com.intellij.ui.JBColor
+import com.intellij.util.*
 import com.intellij.util.concurrency.AppExecutorUtil
 import java.awt.Color
 import java.util.concurrent.Future
@@ -24,9 +30,9 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
 
   override fun writeDisplayText(s: (Σᐩ) -> Σᐩ) = writeDisplayText(s(readDisplayText()))
 
-  override fun readEditorText(): Σᐩ = editor.document.text
+  override fun readEditorText(): Σᐩ = runReadAction { editor.document.text }
 
-  override fun getCaretPosition(): Int = editor.caretModel.offset
+  override fun getCaretPosition(): Int = runReadAction { editor.caretModel.offset }
 
   override fun getLatestCFG(): CFG = psiFile.recomputeGrammar()
 
@@ -48,7 +54,43 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
         else -> it.newLine.replace("<span>", "<span style=\"background-color: #FFFF66\">")
       }
     }
-}
+
+  override fun redecorateLines() = invokeLater {
+    val editorText = readEditorText()
+    val cfgText = editorText.substringBefore("---")
+    val cfg = cfgText.parseCFG()
+    val grammarIsValid = cfg.isNotEmpty()
+    if (!grammarIsValid) return@invokeLater
+
+    val grammarLines = 0..cfgText.lines().size
+    val lines = editorText.lines()
+    fun String.isEmptyOrGrammarDelim(i: Int) = trim().isEmpty() || "---" in trim() || i in grammarLines
+    val lineStatuses = lines.mapIndexed { i, it -> it.isEmptyOrGrammarDelim(i) || cfg.parse(it) != null }
+
+    // Add squiggly underlines to lines that are not in the grammar
+    val document = editor.document
+    val highlightManager = editor.markupModel
+
+    highlightManager.removeAllHighlighters()
+    val textAttributes = TextAttributes().apply {
+      errorStripeColor = JBColor.RED
+      effectType = EffectType.WAVE_UNDERSCORE
+      effectColor = JBColor.RED
+    }
+    lineStatuses.forEachIndexed { i, status ->
+      if (!status) {
+        val lineStart = document.getLineStartOffset(i)
+        val lineEnd = document.getLineEndOffset(i)
+        val range = TextRange(lineStart, lineEnd)
+          val highlighter = highlightManager.addRangeHighlighter(
+            range.startOffset, range.endOffset, 0, textAttributes, HighlighterTargetArea.EXACT_RANGE
+          )
+          highlighter.errorStripeMarkColor = JBColor.RED
+          highlighter.errorStripeTooltip = "Line not in grammar"
+        }
+      }
+    }
+  }
 
 // TODO: Do not re-compute all work on each keystroke, cache prior results
 fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile): Future<*>? {

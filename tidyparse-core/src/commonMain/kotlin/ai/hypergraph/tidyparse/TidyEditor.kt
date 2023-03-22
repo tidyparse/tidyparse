@@ -11,4 +11,12 @@ interface TidyEditor {
   fun getLatestCFG(): CFG
   fun diffAsHtml(l1: List<Σᐩ>, l2: List<Σᐩ>): Σᐩ = l2.joinToString(" ")
   fun getOptimalSynthesizer(sanitized: Σᐩ, variations: List<Mutator>): Sequence<Σᐩ>
+  fun redecorateLines() {}
 }
+
+fun TidyEditor.getGrammarText(): Σᐩ = readEditorText().substringBefore("---")
+
+fun TidyEditor.currentGrammar(): CFG =
+  try { readEditorText().parseCFG() } catch (e: Exception) { setOf() }
+
+fun TidyEditor.currentGrammarIsValid(): Boolean = currentGrammar().isNotEmpty()

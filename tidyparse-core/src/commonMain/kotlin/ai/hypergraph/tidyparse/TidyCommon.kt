@@ -94,7 +94,7 @@ fun render(
   """.trimIndent()
 
 fun TidyEditor.tryToReconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) =
-  try { reconcile(currentLine, isInGrammar, caretPos) } catch (_: Exception) { }
+  try { reconcile(currentLine, isInGrammar, caretPos) } catch (e: Exception) { e.printStackTrace() }
 
 @OptIn(ExperimentalTime::class)
 fun String.synthesizeCachingAndDisplayProgress(
@@ -160,6 +160,8 @@ fun TidyEditor.reconcile(
 
   if (cfg.isEmpty()) return
 
+  redecorateLines()
+
   var debugText = ""
   if (currentLine.containsHole()) {
     currentLine.synthesizeCachingAndDisplayProgress(this, cfg).let {
@@ -195,6 +197,7 @@ fun TidyEditor.reconcile(
         </html>
       """.trimIndent())
 //    .also { it.show() }
+
 }
 
 //    "$delim</pre>\n" +
@@ -214,6 +217,8 @@ fun TidyEditor.reconcile(
 //    }
 
 //fun CFG.toGrammar() = Grammar()
+
+fun String.getGrammar() = substringBefore("---")
 
 fun String.findRepairs(editor: TidyEditor, cfg: CFG, exclusions: Set<Int>, fishyLocations: List<Int>): String =
   synthesizeCachingAndDisplayProgress(
