@@ -3,7 +3,8 @@ S -> S , S | S ; S | S : S
 S -> S + S | S - S | S * S | S / S | S % S | S ** S | - S
 S -> S < S | S > S | S <= S | S >= S | S == S | S != S | S >> S | S :
 S -> S ( S ) | S ( S , S ) | S ;
-
+S -> [ S for S in S ] | [ S for S in S if S ] | [ S for S in S ]
+S -> lambda w : S | lambda w , w : S | lambda w , w , w : S | lambda w , w , w , w : S
 ---
 
 w = w ( [ w ( w . w . w ( ) ) for w in w ] ) ,
