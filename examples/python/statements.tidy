@@ -6,7 +6,6 @@ S -> S ( S ) | S ( S , S ) | S ;
 
 ---
 
-w = _ _ _ _ _ _ _ _ _ _ _
 w = w ( [ w ( w . w . w ( ) ) for w in w ] ) ,
 w = [ ( w , [ ( w , w * w + w ) for w in w ( w ) ] ) for w in w ( w ) ]
 w = w ( w ( lambda w : w ( w [ w ] ) , w ) )
@@ -89,3 +88,39 @@ w = w ( [ ( w . w ( ) , w ) for w , w in w . w ( ) ] )
 w . w ( w = { w : w . w ( [ w ] ) } )
 return w / w ** w . w * w . w ( w . w ( w . w , ( w . w [ w ] , w ) ) * w / w . w [ : , w ] ** w . w , w = w )
 w = w ( [ [ w ] , [ w ] , [ w * w . w ( [ w for w in w ] ) ] ] )
+
+w = w ( w ( lambda ( w , w ) : [ w , w ] , w ) )
+w = w ( * w ( lambda ( w , w ) : w == w , w ( w . w ) ) ) [ w ]
+w = [ ( w , w ( w ( lambda ( w , w ) : w , w ) ) ) for ( w , w ) in w ]
+w = w . w ( w , w = { w : [ w ] , w : [ w ] } ) w = w . w ( w . w )
+w = w ( w ( lambda ( w , w ) : w ( w - w ) , w ( w [ w ] , w ) ) )
+w = w ( w . w ( ) , lambda ( w , w ) : [ ( w , w ) ] , w )
+w = w ( w . w ( ) , lambda ( w , w ) : [ ( w , w ) for w in w ] , w )
+w = w ( w ( lambda ( w , w ) : [ w , w [ w ] , w [ w ] ] , w . w . w ( ) ) )
+w = w ( [ w ( w [ w ] - w [ w ] ) for w in w , w , w ] )
+w = w ( lambda ( w , w ) : ( w ( w ) , w ( w [ w ] ) ) , w )
+w = w ( ( w w [ w ] ) for w in w if w > w )
+w = [ w ( w , w , w ( w ) / w ) for w , w in w ( w . w w ) ]
+w = w ( lambda ( w , w ) : [ w + [ w ] for w in w ] , w )
+w = w . w ( lambda ( w , w ) : ( w , ( w , w ) ) ) . w ( lambda w , w : ( w [ w ] + w [ w ] , w [ w ] + w [ w ] ) ) . w ( )
+w , w = [ ( w if ( w [ w ] >= w ) else w [ w ] , w [ w ] , w [ w ] * w ) for w in w , w ]
+w = w ( [ w ( w , w ) for w in w , w , w ] )
+w = [ w for w , _ in w ( w . w ( ) , w = lambda ( w , w ) : w ) ]
+w = w ( lambda ( w , w ) : ( w [ w ] , w ( w ) ) , w )
+w = w . w ( * [ w . w . w ( w ) for w in w , w , w , w , w , w , w ] )
+w = w . w ( lambda ( w , w ) : ( w , w . w ( w . w ( ) , w ) [ w ] ) )
+w = [ w for w in w . w , ( ( w , ) ) ]
+w = w . w . w ( lambda ( w , w ) : ( w , w . w [ w ] . w ( w ) ) )
+w = [ w ( lambda w , ( w , w ) : w | w << w * w , w ( w ) , w ) for w in w ( w , w ) ]
+w = w [ ] + [ w for w in w ( w ( w ) , w ( w ) ) ]
+w = w ( w . w ( ( w ) w [ w ] / w ( w ) * w ) )
+w = w ( w . w ( ( w ) w [ w ] / w ( w ) * w ) )
+w = w ( [ w ( w ( w [ w ] , w [ w ] w [ w ] , w [ w ] ) ) for w , w in w ] )
+w = w . w ( lambda ( w , w ) : w . w ( ( w [ w ] - w [ w ] ) ** w ) ) . w ( lambda w , w : w + w )
+w = [ w for w in w ( w . w . w ( ) , w = lambda ( w , w ) : ( w , w ) ) ] [ : w ]
+w = [ ( w w [ w ] ) for w in w ]
+w [ w ] = w ( w ( lambda ( w , w ) : w , w ) )
+w = [ ( w [ w ] , w [ w ] - w [ w [ w ] ] ) for w in w . w ( ) if w [ w ] in w ] w
+w , w , w = [ w . w ( ( w . w ( w ) + w , w . w ( w ) + w , w . w ( w ) + w ) ) for w in w , w , w ]
+w = w ( [ w ( w [ w ] * ( w - w ) + w [ w ] * w ) for w in w , w , w ] )
+w = w . w . w ( lambda ( w , w ) : ( w [ : : - w ] , w ) ) . w ( ) . w ( lambda ( w , w ) : ( w [ : : - w ] , w ) )
