@@ -7,7 +7,7 @@ BF -> if B then B else B
  O -> + | - | * | /
  I -> 1 | 2 | 3 | 4 | I I | IF
  B -> true | false | B BO B | ( B ) | BF | N B
-BO -> and | or
+BO -> and | or | xor | nand
  N -> !
 
 ---

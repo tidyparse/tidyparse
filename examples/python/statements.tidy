@@ -1,0 +1,90 @@
+S -> w | S ( S ) | ( ) | S = S | S . S | S S | ( S ) | [ S ] | { S } | : | * S | [ ]
+S -> S , S | S ; S | S : S
+S -> S + S | S - S | S * S | S / S | S % S | S ** S
+S -> S < S | S > S | S <= S | S >= S | S == S | S != S | S >> S | S :
+S -> S ( S ) | S ( S , S )
+
+---
+
+w = w ( [ w ( w . w . w ( ) ) w w w w ] ) ,
+w = [ ( w , [ ( w , w * w + w ) w w w w ( w ) ] ) w w w w ( w ) ]
+w = w ( w ( w w : w ( w [ w ] ) , w ) )
+w = w . w ( [ ( w - w * w ) * ( w . w ( w . w ( - w + ( w + w ) / w ) ) - w ) + w w w w w ] )
+w = w ( w ) [ : w ( w . w ( w ( w ) * w ) ) ]
+w = w ( ( w [ w : w [ w ] - w , : ] , w [ w [ w ] + w : w . w [ w ] - w , : ] ) )
+w = ( w [ w ( w [ : , w ] ) , w ] w w > w * w ( w [ : , w ] ) w w )
+w = w ( w ( ( w [ w : w - w , w ] , w [ w : w - w , w ] ) ) ) / w ( w . w [ w ] + w . w [ w ] )
+w = w ( [ w ( w ( ) . w ( ) [ w ] ) w _ w w ( w ) ] )
+w = w . w ( [ ( w ( w * ( ( - w ) / w + w ) ) ) * ( - w ) * ( w . w ( w . w ( w * w ) ) - w ) ** w + w w w w w ] )
+w = w ( [ ( w [ w ] - w . w ( w ) ) ** w w w w w ( w ( w ) ) ] )
+w = w ( [ ( w [ w ] - w ( w [ w ] , * w ) ) ** w w w w w ( w ( w ) ) ] )
+w = w . w ( w ( w = w ( w . w [ w ( w , w . w ) ] ) ) )
+w = w ( w [ w : w ] ) * w + w ( w . w ( w ( w [ w : w ] ) / w ) )
+w . w = w ( w ( w w : ( w , w ( w [ w ] , w , w ) ) , w ) )
+w . w = w . w ( [ w [ w ( w / w ) ] ] )
+w = ( w . w ( [ w . w ( w <= w ) ] ) ) [ w ] [ w ] [ w ]
+w = w ( ( ( w ( w [ w ] ) - w ( w [ w ] ) ) / w ( w [ w ] ) ) * w , w )
+w = w ( [ w ( [ w ( w ) w w w w ( w ( w ) * w ) ] ) w w , w w w ( w ) w w w ( w ) % w ] )
+w = w . w ( w [ w [ w - w ] ] [ w [ w [ w - w ] ] == w ] )
+w = w ( ( w ( w . w [ w ] ) * w ( w ) ) )
+w = w ( ( w ( w [ w ] . w ) w w w w [ w : ] ) )
+w = w ( [ [ w . w ( ) , w . w ( ) ] w w w w ] )
+w = w ( [ [ w . w ( ) , w . w ( ) ] w w w w ] )
+w = w ( [ [ w . w ( ) , w . w ( ) ] w w w w + w [ w : w ] ] )
+w = w ( [ [ w . w ( ) , w . w ( ) ] w w w w + w [ w : w ] ] )
+w = w ( [ [ w . w ( ) , w . w ( ) ] w w w w + w [ w : w ] ] )
+w = w ( [ [ w . w ( ) , w . w ( ) ] w w w w + w [ w : w ] ] )
+w = w ( [ [ w . w ( ) , w . w ( ) ] w w w w [ w ] + w [ w ] [ w : w ] ] )
+w = w ( [ [ w . w ( ) , w . w ( ) ] w w w w [ w ] + w [ w ] [ w : w ] ] )
+w = w ( [ [ w . w ( ) , w . w ( ) ] w w w w + w [ w : w ] ] )
+w = w ( [ [ w . w ( ) , w . w ( ) ] w w w w + w [ w : w ] ] )
+w = w ( [ [ w . w ( ) , w . w ( ) ] w w w w + w [ w : w ] ] )
+w = w ( [ [ w . w ( ) , w . w ( ) ] w w w w + w [ w : w ] ] )
+w = w ( [ [ w . w ( ) , w . w ( ) ] w w w w + w [ w : w ] ] )
+w = w ( w ( w ( w . w [ w ] . w ( ) [ w ] [ w ] ) , w . w ) , w . w )
+( w , w ) = ( w [ : w ] , w [ ( w + w ( w ) ) : ] )
+w = w . w ( [ w ( w [ - w ] ) w w w w ] )
+w = w . w ( [ ( w . w ( w ) , w . w ( w ) ) w w w w ] )
+w = [ ( w ( w , w ) , w . w ( [ [ ] ] ) ) ]
+w = w . w . w ( w ( w . w ( w [ w ] ) - w . w ( w [ w ] ) ) ) ;
+w . w [ w ] . w = w ( [ - w , w , w ] + w ( w ( w . w [ w ] . w ) ) )
+w = [ w ( [ w [ w ] ] + [ w . w [ w ] w w w w [ w : ] ] ) . w ( w , w ) w w w w ( w ) ]
+w = [ [ w * ( w [ w ] - w [ w ] ) / ( w + w ) , w * ( w [ w ] - w [ w ] ) / ( w + w ) ] ]
+w = [ [ ( w [ w ] - w [ w ] [ w ] ) , ( w [ w ] - w [ w ] [ w ] ) , w ] ]
+w = [ [ ( w [ w ] + w [ w ] [ w ] ) , ( w [ w ] + w [ w ] [ w ] ) , w ] ]
+w = [ [ ( w [ w ] - w [ w ] [ w ] ) , ( w [ w ] - w [ w ] [ w ] ) , w ] ]
+w = [ [ ( w [ w ] + w [ w ] [ w ] ) , ( w [ w ] + w [ w ] [ w ] ) , w ] ]
+w ( w ( [ w w w w w . w ( w = w . w , w = w ) ] ) )
+w = w . w ( w ( w [ w [ w ] ] [ w ] [ w ] [ w ] ) )
+w = w . w ( w ( w [ w [ w ] ] [ w ] [ w ] [ w ] ) )
+w = w ( [ w ( w [ w ] [ w : ] ) w w w w ] )
+w . w ( w ( * [ w ( w = w , w = w ) w w w w ] , w = w ) )
+w = w w . w [ - w ] w w / ( ( w ( w . w [ - w ] ) / w ) ** w ) < w
+w w == w : w . w ( w ( w ( w ( w [ - w - w ] . w ( ) , w = w ( w ) ) [ w ] ) ) )
+w = w . w ( [ w . w ( ( w [ w , : ] - w [ w , : ] ) * ( w [ w , : ] - w [ w , : ] ) ) w w w w [ w [ w ] ] [ w ] ] )
+w = w . w ( [ w . w ( ( w [ w , : ] - w [ w , : ] ) * ( w [ w , : ] - w [ w , : ] ) ) w w w w [ w [ w ] ] [ w ] ] )
+w = w . w ( w ( [ [ w / w , w / w , w / w ] w w w w . w ( w ) ] , [ ] ) )
+w = w ( w ( w w : ( w , [ ] ) , w ( w ) ) )
+w = w ( [ w . w ( w ( w ) / ( w ) ) w w , w w w ( w [ w : : w ] , w [ w : : w ] ) ] ) / w
+w = w . w ( w , ( ( w [ w ] - w ) / ( w - w ) ) )
+w = w ( w ( w [ w . w ( w > w ) ] ) )
+w = [ w w w , _ w w [ w . w ( ( w , w ) ) : ] w ( w ( w w w w w w w ) ) ]
+w = w ( ( w - ( w * w . w [ w ] / w ) - w . w [ w ] ) / w . w [ w ] )
+w = w . w ( w . w ( [ w . w ( w , w ) ] * w ) , w )
+w . w [ w . w . w ( w ) ] = ( ( w [ w ] , w ( w [ w ] . w ) , w [ w ] , w [ w ] ) )
+w = w . w ( w , w . w ( [ w [ w ] , w [ w ] , w [ w ] , w ] ) ) [ : w ]
+w = w . w ( * ( w . w ( w , w [ w : ] ) ) )
+w = [ ( w ( w [ w ] ) , w ( w . w - w [ w ] ) ) w w w w ( w ( w ) ) ]
+w = w . w ( w , w , [ w w w w w ( w . w [ w ] ) ] , w = w )
+w = w . w ( w . w ( [ w [ w ] ] ) )
+w . w = w ( [ w ( w . w [ w ] ) w w w w ( w , w * w . w ) ] )
+w = w ( { w [ w ] : w . w [ w [ w ] ] / w , w [ w ] : w . w [ w [ w ] ] / w } )
+w = w + ( ( w [ ( w + w ) % w ] * w ) >> w )
+w = w ( [ ( w . w , w [ w ] ) ] )
+w = [ w ( ( w [ w ] * w . w + w ) * w , ( w [ w ] * w . w + w ) * w ) w w w w ]
+w = [ ( w . w ( w [ w ] ) , w . w ( w [ w ] ) ) w w w w ]
+w = [ ( w . w ( w [ w ] [ w ] ) , w . w ( w [ w ] [ w ] ) ) w w w w w w w w ( w ) ]
+w = w ( [ ( w . w ( ) , w ) w w , w w w . w ( ) ] )
+w . w ( w = { w : w . w ( [ w ] ) } )
+w w / w ** w . w * w . w ( w . w ( w . w , ( w . w [ w ] , w ) ) * w / w . w [ : , w ] ** w . w , w = w )
+w = w ( [ [ w ] , [ w ] , [ w * w . w ( [ w w w w w ] ) ] ] )

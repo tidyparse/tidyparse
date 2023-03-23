@@ -4,9 +4,6 @@ import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.sat.synthesizeIncrementally
 import com.github.difflib.text.DiffRow.Tag.*
 import com.github.difflib.text.DiffRowGenerator
-import com.intellij.codeInsight.navigation.NavigationGutterIconBuilder
-import com.intellij.icons.AllIcons
-import com.intellij.lang.annotation.AnnotationHolder
 import com.intellij.openapi.application.*
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.markup.*
@@ -15,7 +12,6 @@ import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiFile
 import com.intellij.ui.JBColor
-import com.intellij.util.*
 import com.intellij.util.concurrency.AppExecutorUtil
 import java.awt.Color
 import java.util.concurrent.Future
