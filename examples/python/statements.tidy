@@ -2,12 +2,18 @@ S -> w | S ( S ) | ( ) | S = S | S . S | S S | ( S ) | [ S ] | { S } | : | * S |
 S -> S , S | S ; S | S : S
 S -> S + S | S - S | S * S | S / S | S % S | S ** S | - S
 S -> S < S | S > S | S <= S | S >= S | S == S | S != S | S >> S | S :
-S -> S ( S ) | S ( S , S ) | S ;
-S -> [ S for S in S ] | [ S for S in S if S ] | [ S for S in S ]
+S -> S ;
+S -> :
+S -> None | True | False
+S -> S ^ S | S in S
+S -> [ S : ]
+S -> S for S in S | S for S in S if S
+S -> if S | if S else S | return S
+S -> not S | S or S
 S -> lambda w : S | lambda w , w : S | lambda w , w , w : S | lambda w , w , w , w : S
 ---
 
-w = w ( [ w ( w . w . w ( ) ) for w in w ] ) ,
+w = w ( [ w ( w . w . w ( ) ) for w in w ] )
 w = [ ( w , [ ( w , w * w + w ) for w in w ( w ) ] ) for w in w ( w ) ]
 w = w ( w ( lambda w : w ( w [ w ] ) , w ) )
 w = w . w ( [ ( w - w * w ) * ( w . w ( w . w ( - w + ( w + w ) / w ) ) - w ) + w for w in w ] )
@@ -15,7 +21,7 @@ w = w ( w ) [ : w ( w . w ( w ( w ) * w ) ) ]
 w = w ( ( w [ w : w [ w ] - w , : ] , w [ w [ w ] + w : w . w [ w ] - w , : ] ) )
 w = ( w [ w ( w [ : , w ] ) , w ] if w > w * w ( w [ : , w ] ) else w )
 w = w ( w ( ( w [ w : w - w , w ] , w [ w : w - w , w ] ) ) ) / w ( w . w [ w ] + w . w [ w ] )
-w = w ( [ w ( w ( ) . w ( ) [ w ] ) for _ in w ( w ) ] )
+w = w ( [ w ( w ( ) . w ( ) [ w ] ) for w in w ( w ) ] )
 w = w . w ( [ ( w ( w * ( ( - w ) / w + w ) ) ) * ( - w ) * ( w . w ( w . w ( w * w ) ) - w ) ** w + w for w in w ] )
 w = w ( [ ( w [ w ] - w . w ( w ) ) ** w for w in w ( w ( w ) ) ] )
 w = w ( [ ( w [ w ] - w ( w [ w ] , * w ) ) ** w for w in w ( w ( w ) ) ] )
@@ -69,7 +75,7 @@ w = w ( w ( lambda w : ( w , [ ] ) , w ( w ) ) )
 w = w ( [ w . w ( w ( w ) / ( w ) ) for w , w in w ( w [ w : : w ] , w [ w : : w ] ) ] ) / w
 w = w . w ( w , ( ( w [ w ] - w ) / ( w - w ) ) )
 w = w ( w ( w [ w . w ( w > w ) ] ) )
-w = [ w for w , _ in w [ w . w ( ( w , w ) ) : ] if ( not ( w in w or w in w ) ) ]
+w = [ w for w , w in w [ w . w ( ( w , w ) ) ] if ( not ( w in w or w in w ) ) ]
 w = w ( ( w - ( w * w . w [ w ] / w ) - w . w [ w ] ) / w . w [ w ] )
 w = w . w ( w . w ( [ w . w ( w , w ) ] * w ) , w )
 w . w [ w . w . w ( w ) ] = ( ( w [ w ] , w ( w [ w ] . w ) , w [ w ] , w [ w ] ) )
