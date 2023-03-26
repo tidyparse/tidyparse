@@ -1,8 +1,8 @@
 plugins {
   idea
-  kotlin("multiplatform") version "1.8.20-RC" apply false
+  kotlin("multiplatform") version "1.8.20-RC2" apply false
   id("com.github.ben-manes.versions") version "0.46.0"
-  kotlin("plugin.serialization") version "1.8.20-RC" apply false
+  kotlin("plugin.serialization") version "1.8.20-RC2" apply false
 }
 
 allprojects {
