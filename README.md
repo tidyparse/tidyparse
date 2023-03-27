@@ -215,3 +215,4 @@ The following individuals have helped shape this project through their enthusias
 * [Torsten Scholak](https://tscholak.github.io)
 * [Matthew Sotoudeh](https://masot.net)
 * [Paul Zhu](https://paulz.me)
+* [Kiran Gopinathan](https://gopiandcode.uk/)
