@@ -39,7 +39,7 @@ class TidyHighlightVisitor : HighlightVisitor {
     invokeLater {
       val editor = PsiEditorUtil.findEditor(element)!!
       val divIdx = editor.document.text.indexOf("---")
-      val highlighter = HighlightManager.getInstance(editor.project)
+      val highlighter = HighlightManager.getInstance(editor.project!!)
       // Highlight BNF syntax
       Regex("(->| \\| )")
         .findAll(editor.document.text)

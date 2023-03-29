@@ -102,7 +102,7 @@ tasks {
   }
 
   runPluginVerifier {
-    ideVersions = listOf("2022.3")
+    ideVersions = listOf("2023.1")
   }
 
   runIde {
