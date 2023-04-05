@@ -1,0 +1,27 @@
+START -> S
+S -> BS | IS
+
+IO -> + | - | * | /
+IS -> N | - N | IS IO IS | ( IS ) | BS
+N -> N1 | N2 | N3 | N4 | N5 | N6 | N7 | N8 | N9
+N1 -> 1
+N2 -> 2
+N3 -> 3
+N4 -> 4
+N5 -> 5
+N6 -> 6
+N7 -> 7
+N8 -> 8
+N9 -> 9
+
+B -> true | false
+BO -> and | or | =
+ISC -> IS < IS | IS > IS | IS == IS | IS != IS | if ( BS ) then { BS } else { BS } | if ( BS ) then { IS } else { IS }
+BS -> B | BS BO BS | ( ISC )
+---
+
+1 + 2
+
+_ + _
+
+_ _ _ _
