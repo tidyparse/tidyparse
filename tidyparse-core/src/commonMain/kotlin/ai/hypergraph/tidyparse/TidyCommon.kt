@@ -10,11 +10,18 @@ import ai.hypergraph.kaliningraph.types.*
 import kotlin.math.*
 import kotlin.time.*
 
-fun CFG.renderCFGToHTML(): String =
+fun CFG.renderCFGToHTML(tokens: Set<Σᐩ> = emptySet()): String =
   (listOf(originalForm.summarize("Original form")) +
       (if (originalForm == nonparametricForm) listOf()
       else listOf(nonparametricForm.summarize("Nonparametric form"))) +
-      listOf(summarize("Normal form"))).let { rewriteSummary ->
+      listOf(summarize("Normal form")) +
+      upwardClosure(tokens).let { closure ->
+        if (closure.size == size) listOf()
+        else listOf(closure.summarize("Upward closure")) +
+        listOf(filter { it.LHS !in closure.nonterminals }.summarize("Filtered"))
+      }
+  )
+  .let { rewriteSummary ->
     val maxLen = rewriteSummary.joinToString("\n").lines().maxOf { it.length }
     rewriteSummary.joinToString(delim(maxLen), "<pre>${delim(maxLen)}", "</pre>")
   }
@@ -78,7 +85,7 @@ fun render(
   reason: String? = null,
   prompt: String? = null,
   stubs: String? = null,
-  template: String? = prompt ?: editor.readDisplayText()
+  template: String = prompt ?: editor.readDisplayText()
     .substringAfter("Solving: ").substringBefore("\n")
 ): String = """
   <html>
@@ -88,7 +95,7 @@ fun render(
     // TODO: legend
     solutions.joinToString("\n", "\n", "\n") + """🔍 Solving: $template
   
-  ${if (reason != null) legend else ""}</pre>${stubs ?: ""}${cfg.renderCFGToHTML()}
+  ${if (reason != null) legend else ""}</pre>${stubs ?: ""}${cfg.renderCFGToHTML(template.tokenizeByWhitespace().toSet())}
   </body>
   </html>
   """.trimIndent()
@@ -182,7 +189,7 @@ fun TidyEditor.reconcile(
   }
 
   // Append the CFG only if parse succeeds
-  debugText += cfg.renderCFGToHTML()
+  debugText += cfg.renderCFGToHTML(currentLine.tokenizeByWhitespace().toSet())
 
 //  println(cfg.original.graph.toString())
 //  println(cfg.original.graph.toDot())

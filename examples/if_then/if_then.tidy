@@ -12,6 +12,8 @@ BO -> and | or | xor | nand
 
 ---
 
+true or false
+
 if true or false and false then 1 else 2
 
 if true then if true then 1 else 3 else true
