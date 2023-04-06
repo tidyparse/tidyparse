@@ -51,9 +51,13 @@ class TidyHighlightVisitor : HighlightVisitor {
           )
         }
 
+      val unfinished = divIdx == -1
+      val endOfGrammar = if (unfinished) editor.document.textLength else divIdx + 3
+
       // Highlight grammar
-      highlighter.addRangeHighlight(editor, 0, divIdx + 3,
-        BOLD_FONT, false, null)
+      highlighter.addRangeHighlight(editor, 0, endOfGrammar, BOLD_FONT, false, null)
+
+      if (unfinished) return@invokeLater
 
 //    val colorMap = cfg.terminals.zip(generateColors(cfg.terminals.size)).toMap()
 //    colorMap.keys.forEach {
