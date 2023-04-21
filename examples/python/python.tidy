@@ -1,13 +1,22 @@
-S -> w | w ( S ) | ( ) | w = S | w . S | S S  | ( S )
+S -> w | S ( S ) | ( ) | S = S | S . S | S S | ( S ) | [ S ] | { S } | : | * S | [ ]
 S -> S , S | S ; S | S : S
-S -> S + S | S - S | S * S | S / S | S % S
-S -> S < S | S > S | S <= S | S >= S | S == S | S != S
-S -> S and S | S or S | S not S | S in S | S not in S | S is S | S not is S
-S -> S if S else S | S for S in S | S while S | S with S | S as S
-S -> S [ S ] | S [ S : S ] | S [ S : S : S ] | S [ S , S ] | S [ S , S , S ]
+S -> S IOP S | S BOP S
+IOP -> + | - | * | / | % | ** | << | >> | & | ^
+BOP -> < | > | <= | >= | == | != | in | is | not in | is not
+S -> S ;
+S -> :
+S -> None | True | False
+S -> S ^ S | S in S
+S -> [ S : ]
+S -> S for S in S | S for S in S if S
+S -> if S | if S else S | return S
+S -> not S | S or S
+S -> lambda w : S | lambda w , w : S | lambda w , w , w : S | lambda w , w , w , w : S
 ---
 
 w . w ( w . w ( ) )
 w ( w ( ) )
 
 w < w + ( w )
+
+w = _ w _ w _ _ w 
