@@ -15,6 +15,7 @@ import com.intellij.ui.JBColor
 import com.intellij.util.concurrency.AppExecutorUtil
 import java.awt.Color
 import java.util.concurrent.Future
+import kotlin.time.*
 
 var mostRecentQuery: String = ""
 var promise: Future<*>? = null
@@ -32,10 +33,12 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
 
   override fun getLatestCFG(): CFG = psiFile.recomputeGrammar()
 
+  @OptIn(ExperimentalTime::class)
   override fun getOptimalSynthesizer(sanitized: Σᐩ, variations: List<Mutator>): Sequence<Σᐩ> =
     sanitized.synthesizeIncrementally(
       cfg = cfg,
       variations = variations,
+      takeMoreWhile = TimeSource.Monotonic.markNow().run { { elapsedNow().inWholeMilliseconds < TIMEOUT_MS } },
       updateProgress = { query ->
         if ("Solving:" in readDisplayText()) updateProgress(query, this)
       }
