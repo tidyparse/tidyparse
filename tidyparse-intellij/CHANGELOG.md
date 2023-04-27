@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.20.0
+
+- Implement a slew of performance improvements resulting in massive speedups
+- Miscellaneous bug fixes
+
 ## 0.15.0
 
 - Always use the fastest solver for a sketch

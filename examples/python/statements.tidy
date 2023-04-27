@@ -1,9 +1,10 @@
 S -> w | S ( S ) | ( ) | S = S | S . S | S S | ( S ) | [ S ] | { S } | : | * S | [ ]
 S -> S , S | S ; S | S : S
-S -> S + S | S - S | S * S | S / S | S % S | S ** S | - S
-S -> S < S | S > S | S <= S | S >= S | S == S | S != S | S >> S | S :
+S -> S IOP S | S BOP S
+IOP -> + | - | * | / | % | ** | << | >> | & | ^
+BOP -> < | > | <= | >= | == | != | in | is | not in | is not
 S -> S ;
-S -> :
+S -> S | S : | - S
 S -> None | True | False
 S -> S ^ S | S in S
 S -> [ S : ]

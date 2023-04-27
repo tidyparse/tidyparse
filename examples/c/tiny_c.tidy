@@ -1,3 +1,4 @@
+START -> program
 program -> statement
 statement -> if paren_expr statement
 statement -> if paren_expr statement else statement
@@ -13,6 +14,8 @@ sum -> term | sum + term | sum - term
 term -> id | int | paren_expr
 ---
 
-id = int
+id = int ;
 
-int < int
+int < int ;
+
+id = int + int + int ;

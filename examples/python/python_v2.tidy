@@ -1,0 +1,45 @@
+START -> statement
+statement -> simple_statement | compound_statement
+simple_statement -> assignment_statement | print_statement | import_statement | return_statement | pass_statement | break_statement | continue_statement | expression
+compound_statement -> if_statement | while_statement | for_statement | try_statement
+
+assignment_statement -> id = expression
+print_statement -> print ( expression_list )
+import_statement -> import id | from id import id_list
+return_statement -> return expression
+pass_statement -> pass
+break_statement -> break
+continue_statement -> continue
+
+if_statement -> if expression : statement
+while_statement -> while expression : statement
+for_statement -> for id in expression : statement
+try_statement -> try : statement except id : statement
+
+expression -> or_test | lambda_expr
+or_test -> and_test | or_test or and_test
+and_test -> not_test | and_test and not_test
+not_test -> comparison | not not_test
+comparison -> sum | comparison comp_operator sum
+comp_operator -> < | > | == | >= | <= | !=
+
+sum -> term | sum + term | sum - term
+term -> factor | term * factor | term / factor | term // factor | term % factor
+factor -> power | + factor | - factor | ~ factor
+power -> atom_expr | atom_expr ** factor
+atom_expr -> atom | atom_expr ( expression_list ) | atom_expr [ expression_list ] | atom_expr . id
+
+atom -> id | literal | ( expression ) | [ expression_list ] | { expression_list }
+literal -> int | float | string
+expression_list -> expression | expression , expression_list
+id_list -> id | id , id_list
+
+lambda_expr -> lambda parameters : expression
+parameters -> id | ( id_list )
+---
+
+id = ( ( int + ( int ) * int ) / int ) - int
+
+id = ( ( int + ( int * int ) - / int ) - int
+
+id = lambda ( id , id ) : id + id + int * <factor>
