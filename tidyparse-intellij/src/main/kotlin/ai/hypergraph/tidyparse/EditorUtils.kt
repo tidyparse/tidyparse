@@ -1,5 +1,6 @@
 package ai.hypergraph.tidyparse
 
+import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.sat.synthesizeIncrementally
 import com.github.difflib.text.DiffRow.Tag.*
@@ -42,7 +43,7 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
       updateProgress = { query ->
         if ("Solving:" in readDisplayText()) updateProgress(query, this)
       }
-    )
+    ).retainOnlySamplesWithDistinctEditSignature(sanitized)
 
   override fun diffAsHtml(l1: List<Σᐩ>, l2: List<Σᐩ>): Σᐩ =
     htmlDiffGenerator.generateDiffRows(l1, l2).joinToString(" ") {
@@ -175,3 +176,27 @@ fun PsiFile.recomputeGrammar(): CFG {
   } else cfg
 }
 
+// Takes a sequence of whitespace-delimited strings and filters for unique edit fingerprints
+// from the original string. For example, if the original string is "a b c d" and the sequence
+// emits "a b Q d" and "a b F d" then only the first is retained and the second is discarded.
+fun Sequence<String>.retainOnlySamplesWithDistinctEditSignature(originalString: String) =
+  distinctBy { computeEditSignature(originalString, it) }
+
+fun computeEditSignature(s1: String, s2: String): String {
+  fun String.type() = when {
+    isNonterminal() -> "NT/$this"
+    all { it.isJavaIdentifierPart() } -> "ID"
+    any { it in BRACKETS } -> "BK/$this"
+    else -> "OT"
+  }
+
+  return plaintextDiffGenerator.generateDiffRows(s1.tokenizeByWhitespace(), s2.tokenizeByWhitespace())
+    .joinToString(" ") {
+      when (it.tag) {
+        INSERT -> "I.${it.newLine.type()}"
+        DELETE -> ""
+        CHANGE -> "C.${it.newLine.type()}"
+        else -> "E"
+      }
+    }
+}
