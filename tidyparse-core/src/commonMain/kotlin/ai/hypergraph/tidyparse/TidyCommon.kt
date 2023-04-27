@@ -113,8 +113,9 @@ fun String.synthesizeCachingAndDisplayProgress(
   // TODO: think about whether we really want to solve for variations in every case
   variations: List<Mutator> =
     listOf(
-      { a, b -> a.everySingleHoleConfig() },
-      { a, b -> a.increasingLengthChunks() }
+      { a, b -> a.randomDeletions() },
+//      { a, b -> a.randomSingleSubtitutions(exclusions = b) },
+      { a, b -> a.randomDoubleSubstitutions(numberOfEdits = MAX_REPAIR, exclusions = b) }
     ),
 ): List<String> =
   synthCache.getOrPut(sanitized to cfg) {
