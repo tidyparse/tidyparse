@@ -1,0 +1,61 @@
+START -> statement
+
+statement -> declaration
+statement -> expression
+statement -> control_flow
+statement -> function_call
+statement -> assignment
+statement -> return_statement
+
+declaration -> val_declaration | var_declaration | function_declaration
+
+val_declaration -> val id : type | val id : type = expression
+var_declaration -> var id : type | var id : type = expression
+
+type -> basic_type | nullable_type
+basic_type -> Int | Float | Double | String | Boolean | Char | Long | Short | Any | Unit
+nullable_type -> basic_type ?
+
+function_declaration -> fun id ( parameters ) : type = expression
+parameters -> parameter | parameter , parameters
+parameter -> id : type
+
+expression -> binary_expr | unary_expr | paren_expr | id | literal | lambda_expr
+binary_expr -> expression binary_op expression
+binary_op -> + | - | * | / | % | && | || | == | != | > | < | >= | <= | ?: | . | ?. | ?:? | .?
+unary_expr -> unary_op expression
+unary_op -> ! | -
+
+paren_expr -> ( expression )
+
+literal -> int_literal | float_literal | double_literal | string_literal | boolean_literal | char_literal
+int_literal -> int
+float_literal -> float
+double_literal -> double
+string_literal -> string
+boolean_literal -> true | false
+char_literal -> char
+
+lambda_expr -> { lambda_parameters -> lambda_body }
+lambda_parameters -> id | id , lambda_parameters
+lambda_body -> expression
+
+control_flow -> if_expr | when_expr
+if_expr -> if paren_expr expression | if paren_expr expression else expression
+when_expr -> when paren_expr { when_cases }
+when_cases -> when_case | when_case when_cases
+when_case -> expression -> expression | else -> expression
+
+function_call -> id ( function_args )
+function_args -> expression | expression , function_args
+
+assignment -> id assignment_op expression
+assignment_op -> = | += | -= | *= | /= | %=
+
+return_statement -> return expression
+
+---
+
+val id : Int = int + int * int
+
+val id = { id -> int }
