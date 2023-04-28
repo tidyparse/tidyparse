@@ -34,10 +34,10 @@ object TidyToolWindow {
         (g as? Graphics2D)?.scale(1.0, 1.0)
       }
     }.apply {
-    contentType = "text/html"
-    isEditable = false
-    (caret as DefaultCaret).updatePolicy = NEVER_UPDATE
-  }
+      contentType = "text/html"
+      isEditable = false
+      (caret as DefaultCaret).updatePolicy = NEVER_UPDATE
+    }
 
   @Volatile
   var lastUpdate = ""

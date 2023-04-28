@@ -37,7 +37,7 @@ class TidyHighlightVisitor : HighlightVisitor {
 
   override fun visit(element: PsiElement) {
     invokeLater {
-      val editor = PsiEditorUtil.findEditor(element)!!
+      val editor = PsiEditorUtil.findEditor(element) ?: return@invokeLater
       val divIdx = editor.document.text.indexOf("---")
       val highlighter = HighlightManager.getInstance(editor.project!!)
       // Highlight BNF syntax
