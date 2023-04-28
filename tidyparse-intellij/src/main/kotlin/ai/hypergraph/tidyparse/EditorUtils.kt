@@ -9,12 +9,13 @@ import com.intellij.openapi.application.*
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.markup.*
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.util.TextRange
+import com.intellij.openapi.util.*
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiFile
 import com.intellij.ui.JBColor
 import com.intellij.util.concurrency.AppExecutorUtil
 import java.awt.Color
+import java.lang.management.ManagementFactory
 import java.util.concurrent.Future
 import kotlin.time.*
 
@@ -39,11 +40,21 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
     sanitized.synthesizeIncrementally(
       cfg = cfg,
       variations = variations,
-      takeMoreWhile = TimeSource.Monotonic.markNow().run { { elapsedNow().inWholeMilliseconds < TIMEOUT_MS } },
+      takeMoreWhile = TimeSource.Monotonic.markNow().run { { hasTimeLeft() && hasMemoryLeft() } },
       updateProgress = { query ->
         if ("Solving:" in readDisplayText()) updateProgress(query, this)
       }
     ).retainOnlySamplesWithDistinctEditSignature(sanitized)
+
+  @OptIn(ExperimentalTime::class)
+  private fun TimeSource.Monotonic.ValueTimeMark.hasTimeLeft() =
+    elapsedNow().inWholeMilliseconds < TIMEOUT_MS
+
+  // Cache value every 10 seconds
+  private var lastMemCheck = System.currentTimeMillis()
+  private fun hasMemoryLeft() =
+    !(System.currentTimeMillis().let { it - lastMemCheck > 10000 && true.apply { lastMemCheck = it } } &&
+        0.7 < ManagementFactory.getMemoryMXBean().heapMemoryUsage.let { it.used.toDouble() / it.max })
 
   override fun diffAsHtml(l1: List<Σᐩ>, l2: List<Σᐩ>): Σᐩ =
     htmlDiffGenerator.generateDiffRows(l1, l2).joinToString(" ") {

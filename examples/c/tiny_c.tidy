@@ -18,4 +18,8 @@ id = int ;
 
 int < int ;
 
-id = int + int + int ;
+while ( <term> ) ;
+
+while ( <expr> ) <statement>
+
+id = int + int - <term> ;

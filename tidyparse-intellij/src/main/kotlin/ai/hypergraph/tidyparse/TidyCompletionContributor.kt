@@ -39,7 +39,8 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
       currentLine = if (!currentLine.containsHole() && cfg.parse(currentLine) != null &&
         currentLine.getSurroundingNonterminal(column) == null)
         currentLine.getSurroundingToken(column)
-          .let { currentLine.replaceRange(it.range, "_") } else currentLine
+          ?.let { currentLine.replaceRange(it.range, "_") } ?: currentLine
+      else currentLine
 
       try { originalFile.recomputeGrammar() } catch (e: Exception) { return }
 
@@ -61,8 +62,8 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
     }
   }
 
-  private fun String.getSurroundingToken(i: Int): MatchResult =
-    Regex("\\S+").findAll(this).first { i in it.range.let { it.first..it.last + 1 } }
+  private fun String.getSurroundingToken(i: Int): MatchResult? =
+    Regex("\\S+").findAll(this).firstOrNull { i in it.range.let { it.first..it.last + 1 } }
 
   private fun String.getSurroundingNonterminal(i: Int): MatchResult? =
     Regex("<[^\\s>]+>").findAll(this).firstOrNull { i in it.range.let { it.first..it.last + 1 } }
