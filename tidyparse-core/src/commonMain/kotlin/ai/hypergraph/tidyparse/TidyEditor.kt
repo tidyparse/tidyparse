@@ -10,7 +10,7 @@ interface TidyEditor {
   fun writeDisplayText(s: (Σᐩ) -> Σᐩ)
   fun getLatestCFG(): CFG
   fun diffAsHtml(l1: List<Σᐩ>, l2: List<Σᐩ>): Σᐩ = l2.joinToString(" ")
-  fun getOptimalSynthesizer(sanitized: Σᐩ, variations: List<Mutator>): Sequence<Σᐩ>
+  fun getOptimalSynthesizer(cfg: CFG, sanitized: Σᐩ, variations: List<Mutator>): Sequence<Σᐩ>
   fun redecorateLines() {}
 }
 

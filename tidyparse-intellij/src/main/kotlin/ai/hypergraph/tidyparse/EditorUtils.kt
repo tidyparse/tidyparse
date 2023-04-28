@@ -36,7 +36,7 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
   override fun getLatestCFG(): CFG = psiFile.recomputeGrammar()
 
   @OptIn(ExperimentalTime::class)
-  override fun getOptimalSynthesizer(sanitized: Σᐩ, variations: List<Mutator>): Sequence<Σᐩ> =
+  override fun getOptimalSynthesizer(cfg: CFG, sanitized: Σᐩ, variations: List<Mutator>): Sequence<Σᐩ> =
     sanitized.synthesizeIncrementally(
       cfg = cfg,
       variations = variations,
@@ -106,19 +106,20 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
 // TODO: Do not re-compute all work on each keystroke, cache prior results
 fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile): Future<*>? {
     val tidyEditor = IJTidyEditor(editor, file)
-    val (caretPos, isInGrammar) = runReadAction {
-      editor.caretModel.logicalPosition.column to
-        editor.document.text.lastIndexOf("---").let { separator ->
-          if (separator == -1) true else editor.caretModel.offset < separator
-        }
-    }
+
     val sanitized = currentLine.trim().tokenizeByWhitespace().joinToString(" ")
     if (file.name.endsWith(".tidy") && sanitized != mostRecentQuery) {
       mostRecentQuery = sanitized
       promise?.cancel(true)
       TidyToolWindow.text = ""
-      promise = AppExecutorUtil.getAppExecutorService()
-         .submit { tidyEditor.tryToReconcile(sanitized, isInGrammar, caretPos) }
+      promise = AppExecutorUtil.getAppExecutorService().submit {
+         val (caretPos, isInGrammar) = runReadAction {
+           editor.caretModel.logicalPosition.column to
+               editor.document.text.lastIndexOf("---")
+                 .let { sepIdx -> if (sepIdx == -1) true else editor.caretModel.offset < sepIdx }
+         }
+         tidyEditor.tryToReconcile(sanitized, isInGrammar, caretPos)
+       }
 
       ToolWindowManager.getInstance(project).getToolWindow("Tidyparse")
         ?.let { runReadAction { if (!it.isVisible) it.show() } }

@@ -80,6 +80,7 @@ fun List<Tree>.renderStubs(): String =
     }
 
 fun render(
+  cfg: CFG,
   solutions: List<String>,
   editor: TidyEditor,
   reason: String? = null,
@@ -123,10 +124,10 @@ fun String.synthesizeCachingAndDisplayProgress(
     val renderedStubs = if (containsHole()) null
     else cfg.parseWithStubs(sanitized).second.renderStubs()
     val reason = if (containsHole()) null else no
-    editor.writeDisplayText(render(emptyList(), editor, stubs = renderedStubs, reason = reason))
+    editor.writeDisplayText(render(cfg, emptyList(), editor, stubs = renderedStubs, reason = reason))
     val solutions = mutableSetOf<Σᐩ>()
 
-    editor.getOptimalSynthesizer(sanitized, variations).map {
+    editor.getOptimalSynthesizer(cfg, sanitized, variations).map {
       solutions.add(it)
       val htmlSolutions =
         solutions.sortedWith(displayComparator(tokens)).let { solutions ->
@@ -136,7 +137,7 @@ fun String.synthesizeCachingAndDisplayProgress(
             .map { editor.diffAsHtml(tokens, it.tokenizeByWhitespace()) }
         }
 
-      editor.writeDisplayText(render(htmlSolutions, editor, stubs = renderedStubs, reason = reason))
+      editor.writeDisplayText(render(cfg, htmlSolutions, editor, stubs = renderedStubs, reason = reason))
     }.takeWhile { solutions.size <= maxResults && t.elapsedNow().inWholeMilliseconds < TIMEOUT_MS }.toList()
 
     solutions.sortedWith(displayComparator(tokens)).toList()
@@ -247,11 +248,11 @@ fun String.findRepairs(editor: TidyEditor, cfg: CFG, exclusions: Set<Int>, fishy
     }
   }
 
+// TODO: eliminate this completely
 var cfg: CFG = setOf()
 
 fun String.sanitized(): String =
   tokenizeByWhitespace().joinToString(" ") { if (it in cfg.terminals) it else "_" }
-
 
 const val ok = "<b>✅ Current line unambiguously parses! Parse tree:</b>\n"
 const val ambig = "<b>⚠️ Current line parses, but is ambiguous:</b>\n"
