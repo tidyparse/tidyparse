@@ -70,37 +70,116 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
     val editorText = readEditorText()
     val cfgText = editorText.substringBefore("---")
     val cfg = cfgText.parseCFG()
-    val grammarIsValid = cfg.isNotEmpty()
-    if (!grammarIsValid) return@invokeLater
+    if (cfg.isEmpty()) return@invokeLater
 
     val grammarLines = 0..cfgText.lines().size
     val lines = editorText.lines()
-    fun String.isEmptyOrGrammarDelim(i: Int) = trim().isEmpty() || "---" in trim() || i in grammarLines
-    val lineStatuses = lines.mapIndexed { i, it -> it.isEmptyOrGrammarDelim(i) || cfg.parse(it) != null }
+    fun String.isEmptyOrGrammarDelim(i: Int) =
+      trim().isEmpty() || "---" in trim() || i in grammarLines
+    val validAndInvalidTokens =
+      lines.mapIndexed { i, line ->
+        val tokens = line.tokenizeByWhitespace()
+        when {
+          line.isEmptyOrGrammarDelim(i) -> emptyList<Int>() to emptyList()
+          tokens.any { it.isHoleTokenIn(cfg) } -> emptyList<Int>() to emptyList()
+          line in cfg.language -> emptyList<Int>() to emptyList()
+          tokens.size < 4 -> emptyList<Int>() to tokens.indices.toList()
+          else -> cfg.parseInvalidWithMaximalFragments(line).map { it.span }
+            .filter { 2 < (it.last - it.first) }.flatten()
+            .let { it to tokens.indices.filterNot { i -> i in it } }
+        }.let { Triple(it.first, it.second, line) }
+      }
 
     // Add squiggly underlines to lines that are not in the grammar
     val document = editor.document
     val highlightManager = editor.markupModel
 
     highlightManager.removeAllHighlighters()
-    val textAttributes = TextAttributes().apply {
-      errorStripeColor = JBColor.RED
-      effectType = EffectType.WAVE_UNDERSCORE
-      effectColor = JBColor.RED
-    }
-    lineStatuses.forEachIndexed { i, status ->
-      if (!status) {
-        val lineStart = document.getLineStartOffset(i)
-        val lineEnd = document.getLineEndOffset(i)
-        val range = TextRange(lineStart, lineEnd)
-          val highlighter = highlightManager.addRangeHighlighter(
-            range.startOffset, range.endOffset, 0, textAttributes, HighlighterTargetArea.EXACT_RANGE
-          )
-          highlighter.errorStripeMarkColor = JBColor.RED
-          highlighter.errorStripeTooltip = "Line not in grammar"
-        }
+
+    validAndInvalidTokens.forEachIndexed { lineNo, (parseableSubregion, unparseableSubregion, line) ->
+      if ((unparseableSubregion + parseableSubregion).isNotEmpty()) {
+        val lineStart = document.getLineStartOffset(lineNo)
+        val lineEnd = document.getLineEndOffset(lineNo)
+
+        parseableSubregion.map { it..it }.mergeContiguousRanges()
+          .map { it.charIndicesOfWordsInString(line) }.forEach {
+            val range = TextRange(lineStart + it.start, lineStart + it.endInclusive)
+            highlightManager.addRangeHighlighter(
+              range.startOffset, range.endOffset, 0, greenUnderline, HighlighterTargetArea.EXACT_RANGE
+            )
+          }
+
+        unparseableSubregion.map { it..it }.mergeContiguousRanges()
+          .map { it.charIndicesOfWordsInString(line) }.forEach {
+            val range = TextRange(lineStart + it.start, lineStart + it.endInclusive)
+            highlightManager.addRangeHighlighter(
+              range.startOffset, range.endOffset, 0, orangeUnderline, HighlighterTargetArea.EXACT_RANGE
+            ).apply {
+              errorStripeMarkColor = JBColor.RED
+              errorStripeTooltip = "Line not in grammar"
+            }
+          }
+
+//        Regex("\\S+").findAll(line).filter { it.value !in cfg.terminals }.forEach {
+//          val range = TextRange(lineStart + it.range.start, lineStart + it.range.endInclusive)
+//          highlightManager.addRangeHighlighter(
+//            range.startOffset, range.endOffset, 0, redUnderline, HighlighterTargetArea.EXACT_RANGE
+//          ).apply {
+//            errorStripeMarkColor = JBColor.RED
+//            errorStripeTooltip = "Token not in grammar"
+//          }
+//        }
       }
     }
+  }
+}
+
+val greenUnderline = TextAttributes().apply {
+  effectType = EffectType.WAVE_UNDERSCORE
+  effectColor = JBColor.GREEN
+}
+val orangeUnderline = TextAttributes().apply {
+  effectType = EffectType.WAVE_UNDERSCORE
+  effectColor = JBColor.ORANGE
+}
+val redUnderline = TextAttributes().apply {
+  effectType = EffectType.WAVE_UNDERSCORE
+  effectColor = JBColor.RED
+}
+operator fun List<IntRange>.contains(i: Int) = any { i in it }
+
+// Takes an IntRange of word indices and a String of words delimited by one or more whitespaces,
+// and returns the corresponding IntRange of character indices in the original string.
+// For example, if the input is (1..2, "a__bb___ca d e f"), the output is 3..10
+fun IntRange.charIndicesOfWordsInString(str: String): IntRange {
+  // All tokens, including whitespaces
+  val wordTokens = str.split("\\s+".toRegex()).filter { it.isNotEmpty() }
+  val whitespaceTokens = str.split("\\S+".toRegex())
+
+  val allTokens = wordTokens.zip(whitespaceTokens)
+  val polarity = str.startsWith(wordTokens.first())
+  val interwoven = allTokens.flatMap {
+    if (polarity) listOf(it.first, it.second)
+    else listOf(it.second, it.first)
+  }
+
+  val s = start * 2
+  val l = last * 2
+  val (startIdx, endIdx) = (s) to (l + 1)
+
+  val adjust = if (startIdx == 0) 0 else 1
+
+  val startOffset = interwoven.subList(0, startIdx).sumOf { it.length } + adjust
+  val endOffset = interwoven.subList(0, endIdx + 1).sumOf { it.length }
+  return startOffset..endOffset
+}
+
+fun List<IntRange>.mergeContiguousRanges(): List<IntRange> =
+  sortedBy { it.first }.fold(mutableListOf<IntRange>()) { acc, range ->
+    if (acc.isEmpty()) acc.add(range)
+    else if (acc.last().last + 1 >= range.first) acc[acc.lastIndex] = acc.last().first..range.last
+    else acc.add(range)
+    acc
   }
 
 // TODO: Do not re-compute all work on each keystroke, cache prior results

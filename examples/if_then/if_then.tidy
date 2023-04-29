@@ -16,21 +16,21 @@ true or false
 
 if true or false and false then 1 else 2
 
-if true then if true then 1 else 3 else true
+ if true then if true then 1 else 3 else true
 
 if ( true and false ) then if true then true else 2 1 else 1
 if ( true and false ) then if true <BO> true then <I> else  1 else 1
 
-if ( true or false ) <BO> <B> then true else true 
+if ( true or false ) <BO> <B> then true else true
 if ( true or false ) then true else ! false
 
 _ true
 
-( true or true )
+( true or true ) or p
 
 _ true _ _ _ _
 
-if ( true or false ) + + then true else 2
+if ( true or false ) + + then q true else 2
 
 true 1 or false 3
 
