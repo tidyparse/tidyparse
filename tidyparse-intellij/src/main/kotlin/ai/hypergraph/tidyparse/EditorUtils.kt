@@ -66,6 +66,10 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
       }
     }
 
+  data class Segmentation(val valid: List<Int>, val invalid: List<Int>, val illegal: List<Int>, val line: String)
+  fun Σᐩ.illegalWordIndices(cfg: CFG) =
+    tokenizeByWhitespace().mapIndexedNotNull { idx: Int, s: Σᐩ -> if (s !in cfg.terminals) idx else null }
+
   override fun redecorateLines() = invokeLater {
     val editorText = readEditorText()
     val cfgText = editorText.substringBefore("---")
@@ -87,7 +91,14 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
           else -> cfg.parseInvalidWithMaximalFragments(line).map { it.span }
             .filter { 2 < (it.last - it.first) }.flatten()
             .let { it to tokens.indices.filterNot { i -> i in it } }
-        }.let { Triple(it.first, it.second, line) }
+        }.let {
+          Segmentation(
+            valid=it.first,
+            invalid=it.second,
+            illegal=line.illegalWordIndices(cfg),
+            line=line
+          )
+        }
       }
 
     // Add squiggly underlines to lines that are not in the grammar
@@ -96,7 +107,7 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
 
     highlightManager.removeAllHighlighters()
 
-    validAndInvalidTokens.forEachIndexed { lineNo, (parseableSubregion, unparseableSubregion, line) ->
+    validAndInvalidTokens.forEachIndexed { lineNo, (parseableSubregion, unparseableSubregion, illegalSubregion, line) ->
       if ((unparseableSubregion + parseableSubregion).isNotEmpty()) {
         val lineStart = document.getLineStartOffset(lineNo)
         val lineEnd = document.getLineEndOffset(lineNo)
@@ -109,7 +120,8 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
             )
           }
 
-        unparseableSubregion.map { it..it }.mergeContiguousRanges()
+        unparseableSubregion.filter { it !in illegalSubregion }
+          .map { it..it }.mergeContiguousRanges()
           .map { it.charIndicesOfWordsInString(line) }.forEach {
             val range = TextRange(lineStart + it.start, lineStart + it.endInclusive)
             highlightManager.addRangeHighlighter(
@@ -120,15 +132,13 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
             }
           }
 
-//        Regex("\\S+").findAll(line).filter { it.value !in cfg.terminals }.forEach {
-//          val range = TextRange(lineStart + it.range.start, lineStart + it.range.endInclusive)
-//          highlightManager.addRangeHighlighter(
-//            range.startOffset, range.endOffset, 0, redUnderline, HighlighterTargetArea.EXACT_RANGE
-//          ).apply {
-//            errorStripeMarkColor = JBColor.RED
-//            errorStripeTooltip = "Token not in grammar"
-//          }
-//        }
+        illegalSubregion.map { it..it }
+          .map { it.charIndicesOfWordsInString(line) }.forEach {
+            val range = TextRange(lineStart + it.start, lineStart + it.endInclusive)
+            highlightManager.addRangeHighlighter(
+              range.startOffset, range.endOffset, 0, redUnderline, HighlighterTargetArea.EXACT_RANGE
+            )
+          }
       }
     }
   }
