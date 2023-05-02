@@ -32,7 +32,8 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
 
       var currentLine = runReadAction { editor.currentLine() }.trim()
 
-      handle(currentLine, editor.project!!, editor, originalFile)?.get()
+      val tidyEditor = IJTidyEditor(editor, originalFile)
+      tidyEditor.handle()?.get()
 
       val column = editor.caretModel.logicalPosition.column
 

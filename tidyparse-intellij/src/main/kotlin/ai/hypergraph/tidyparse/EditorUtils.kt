@@ -1,14 +1,15 @@
 package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.*
+import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.kaliningraph.sat.synthesizeIncrementally
+import ai.hypergraph.kaliningraph.sat.*
 import com.github.difflib.text.DiffRow.Tag.*
 import com.github.difflib.text.DiffRowGenerator
 import com.intellij.openapi.application.*
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.markup.*
-import com.intellij.openapi.project.Project
+import com.intellij.openapi.editor.markup.HighlighterTargetArea.EXACT_RANGE
 import com.intellij.openapi.util.*
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiFile
@@ -33,22 +34,69 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
 
   override fun getCaretPosition(): Int = runReadAction { editor.caretModel.offset }
 
+  override fun currentLine(): Σᐩ =
+    runReadAction { editor.currentLine() }.tokenizeByWhitespace().joinToString(" ")
+
   override fun getLatestCFG(): CFG = psiFile.recomputeGrammar()
 
   @OptIn(ExperimentalTime::class)
-  override fun getOptimalSynthesizer(cfg: CFG, sanitized: Σᐩ, variations: List<Mutator>): Sequence<Σᐩ> =
-    sanitized.synthesizeIncrementally(
-      cfg = cfg,
-      variations = variations,
-      takeMoreWhile = TimeSource.Monotonic.markNow().run { { hasTimeLeft() && hasMemoryLeft() } },
-      updateProgress = { query ->
-        if ("Solving:" in readDisplayText()) updateProgress(query, this)
-      }
-    ).retainOnlySamplesWithDistinctEditSignature(sanitized)
+  override fun repair(cfg: CFG, str: Σᐩ): List<Σᐩ> {
+      val variations: List<Mutator> =
+        if (str.containsHole()) listOf(
+          { a, b -> a.randomDeletions(b) },
+//          { a, b -> a.randomSingleSubtitutions(exclusions = b) },
+          { a, b -> a.randomDoubleSubstitutions(numberOfEdits = MAX_REPAIR, exclusions = b) }
+        )
+        else listOf(
+          { a, b ->
+            a.multiTokenSubstitutionsAndInsertions(
+              numberOfEdits = 3,
+              exclusions = b,
+            )
+          }
+        )
 
-  @OptIn(ExperimentalTime::class)
-  private fun TimeSource.Monotonic.ValueTimeMark.hasTimeLeft() =
-    elapsedNow().inWholeMilliseconds < TIMEOUT_MS
+      val tokens: List<String> = str.tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" }
+      val sanitized: String = tokens.joinToString(" ")
+      val maxResults = 20
+      // TODO: think about whether we really want to solve for variations in every case
+
+      val takeMoreWhile: () -> Boolean = TimeSource.Monotonic.markNow().run { { hasTimeLeft() } }
+
+      val renderedStubs = if (str.containsHole()) null
+      else cfg.parseWithStubs(sanitized).second.renderStubs()
+      val reason = if (str.containsHole()) null else no
+      writeDisplayText(render(cfg, emptyList(), this, stubs = renderedStubs, reason = reason))
+      val solutions = mutableSetOf<Σᐩ>()
+
+      sanitized.synthesizeIncrementally(
+        cfg = cfg,
+        variations = variations,
+        takeMoreWhile = { takeMoreWhile() && hasMemoryLeft() && !Thread.interrupted() },
+        updateProgress = { query ->
+          if ("Solving:" in readDisplayText()) updateProgress(query, this)
+        },
+        synthesizer = { asCJL.synthesize(it) }
+      ).retainOnlySamplesWithDistinctEditSignature(sanitized)
+        .takeWhile { solutions.size <= maxResults }.forEach {
+          solutions.add(it)
+
+          val htmlSolutions = solutions.renderToHTML(tokens, calculateDiffs = !str.containsHole())
+
+          writeDisplayText(render(cfg, htmlSolutions, this, stubs = renderedStubs, reason = reason))
+        }
+
+      return solutions.renderToHTML(tokens, calculateDiffs = !str.containsHole())
+    }
+
+  private fun Set<Σᐩ>.renderToHTML(tokens: List<String>, calculateDiffs: Boolean = false) =
+    sortedWith(displayComparator(tokens)).let { solutions ->
+      if (calculateDiffs)
+        solutions
+        //        .also { it.map { println(diffAsLatex(tokens, it.tokenizeByWhitespace())) }; println() }
+        .map { diffAsHtml(tokens, it.tokenizeByWhitespace()) }
+      else solutions.map { it.escapeHTML() }
+    }
 
   // Cache value every 10 seconds
   private var lastMemCheck = System.currentTimeMillis()
@@ -66,79 +114,76 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
       }
     }
 
-  data class Segmentation(val valid: List<Int>, val invalid: List<Int>, val illegal: List<Int>, val line: String)
   fun Σᐩ.illegalWordIndices(cfg: CFG) =
     tokenizeByWhitespace().mapIndexedNotNull { idx: Int, s: Σᐩ -> if (s !in cfg.terminals) idx else null }
 
-  override fun redecorateLines() = invokeLater {
-    val editorText = readEditorText()
-    val cfgText = editorText.substringBefore("---")
-    val cfg = cfgText.parseCFG()
-    if (cfg.isEmpty()) return@invokeLater
+  private val segmentationCache = mutableMapOf<Int, Segmentation>()
 
-    val grammarLines = 0..cfgText.lines().size
+  fun getOrComputeSegmentations(cfg: CFG, editorText: Σᐩ): List<Segmentation> {
     val lines = editorText.lines()
-    fun String.isEmptyOrGrammarDelim(i: Int) =
-      trim().isEmpty() || "---" in trim() || i in grammarLines
-    val validAndInvalidTokens =
-      lines.mapIndexed { i, line ->
+    val lastGrammarLine = lines.map { it.trim() }.indexOfFirst { it.trim() == "---" }
+
+    fun String.isEmptyOrGrammarDelim(i: Int) = trim().isEmpty() || i in 0..lastGrammarLine
+
+    return lines.mapIndexed { lineNo, line ->
+      val key = editor.hashCode() + cfg.hashCode() + line.hashCode()
+      if (key in segmentationCache) Segmentation() // This means it was previously highlighted
+      else segmentationCache.computeIfAbsent(key) {
         val tokens = line.tokenizeByWhitespace()
         when {
-          line.isEmptyOrGrammarDelim(i) -> emptyList<Int>() to emptyList()
+          line.isEmptyOrGrammarDelim(lineNo) -> emptyList<Int>() to emptyList()
           tokens.any { it.isHoleTokenIn(cfg) } -> emptyList<Int>() to emptyList()
           line in cfg.language -> emptyList<Int>() to emptyList()
           tokens.size < 4 -> emptyList<Int>() to tokens.indices.toList()
-          else -> cfg.parseInvalidWithMaximalFragments(line).map { it.span }
-            .filter { 2 < (it.last - it.first) }.flatten()
+          else -> cfg.parseInvalidWithMaximalFragments(line)
+            .map { it.span }.filter { 2 < (it.last - it.first) }.flatten()
             .let { it to tokens.indices.filterNot { i -> i in it } }
         }.let {
           Segmentation(
-            valid=it.first,
-            invalid=it.second,
-            illegal=line.illegalWordIndices(cfg),
-            line=line
+            valid = it.first,
+            invalid = it.second,
+            illegal = line.illegalWordIndices(cfg),
+            line = line
           )
         }
       }
+    }
+  }
 
-    // Add squiggly underlines to lines that are not in the grammar
+  override fun redecorateLines(cfg: CFG) = invokeLater {
     val document = editor.document
+    val editorText = document.text
     val highlightManager = editor.markupModel
 
     highlightManager.removeAllHighlighters()
 
-    validAndInvalidTokens.forEachIndexed { lineNo, (parseableSubregion, unparseableSubregion, illegalSubregion, line) ->
-      if ((unparseableSubregion + parseableSubregion).isNotEmpty()) {
-        val lineStart = document.getLineStartOffset(lineNo)
-        val lineEnd = document.getLineEndOffset(lineNo)
+    getOrComputeSegmentations(cfg, editorText).forEachIndexed { i, seg ->
+      seg.highlightLine(document.getLineStartOffset(i), highlightManager)
+    }
+  }
 
-        parseableSubregion.map { it..it }.mergeContiguousRanges()
-          .map { it.charIndicesOfWordsInString(line) }.forEach {
-            val range = TextRange(lineStart + it.start, lineStart + it.endInclusive)
-            highlightManager.addRangeHighlighter(
-              range.startOffset, range.endOffset, 0, greenUnderline, HighlighterTargetArea.EXACT_RANGE
-            )
-          }
+  fun Segmentation.highlightLine(lineStart: Int, highlightManager: MarkupModel) {
+    if ((valid + invalid).isNotEmpty()) {
+      parseableRegions.forEach {
+        val range = TextRange(lineStart + it.first, lineStart + it.last)
+        highlightManager.addRangeHighlighter(range.startOffset, range.endOffset, 0, greenUnderline, EXACT_RANGE)
+      }
 
-        unparseableSubregion.filter { it !in illegalSubregion }
-          .map { it..it }.mergeContiguousRanges()
-          .map { it.charIndicesOfWordsInString(line) }.forEach {
-            val range = TextRange(lineStart + it.start, lineStart + it.endInclusive)
-            highlightManager.addRangeHighlighter(
-              range.startOffset, range.endOffset, 0, orangeUnderline, HighlighterTargetArea.EXACT_RANGE
-            ).apply {
-              errorStripeMarkColor = JBColor.RED
-              errorStripeTooltip = "Line not in grammar"
-            }
-          }
+      unparseableRegions.forEach {
+        val range = TextRange(lineStart + it.first, lineStart + it.last)
+        highlightManager.addRangeHighlighter(
+          range.startOffset, range.endOffset, 0, orangeUnderline, EXACT_RANGE
+        ).apply {
+          errorStripeMarkColor = JBColor.RED
+          errorStripeTooltip = "Line not in grammar"
+        }
+      }
 
-        illegalSubregion.map { it..it }
-          .map { it.charIndicesOfWordsInString(line) }.forEach {
-            val range = TextRange(lineStart + it.start, lineStart + it.endInclusive)
-            highlightManager.addRangeHighlighter(
-              range.startOffset, range.endOffset, 0, redUnderline, HighlighterTargetArea.EXACT_RANGE
-            )
-          }
+      illegalRegions.forEach {
+        val range = TextRange(lineStart + it.first, lineStart + it.last)
+        highlightManager.addRangeHighlighter(
+          range.startOffset, range.endOffset, 0, redUnderline, EXACT_RANGE
+        )
       }
     }
   }
@@ -146,7 +191,7 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
 
 val greenUnderline = TextAttributes().apply {
   effectType = EffectType.WAVE_UNDERSCORE
-  effectColor = JBColor.GREEN
+  effectColor = JBColor.BLUE
 }
 val orangeUnderline = TextAttributes().apply {
   effectType = EffectType.WAVE_UNDERSCORE
@@ -156,65 +201,21 @@ val redUnderline = TextAttributes().apply {
   effectType = EffectType.WAVE_UNDERSCORE
   effectColor = JBColor.RED
 }
-operator fun List<IntRange>.contains(i: Int) = any { i in it }
-
-// Takes an IntRange of word indices and a String of words delimited by one or more whitespaces,
-// and returns the corresponding IntRange of character indices in the original string.
-// For example, if the input is (1..2, "a__bb___ca d e f"), the output is 3..10
-fun IntRange.charIndicesOfWordsInString(str: String): IntRange {
-  // All tokens, including whitespaces
-  val wordTokens = str.split("\\s+".toRegex()).filter { it.isNotEmpty() }
-  val whitespaceTokens = str.split("\\S+".toRegex())
-
-  val allTokens = wordTokens.zip(whitespaceTokens)
-  val polarity = str.startsWith(wordTokens.first())
-  val interwoven = allTokens.flatMap {
-    if (polarity) listOf(it.first, it.second)
-    else listOf(it.second, it.first)
-  }
-
-  val s = start * 2
-  val l = last * 2
-  val (startIdx, endIdx) = (s) to (l + 1)
-
-  val adjust = if (startIdx == 0) 0 else 1
-
-  val startOffset = interwoven.subList(0, startIdx).sumOf { it.length } + adjust
-  val endOffset = interwoven.subList(0, endIdx + 1).sumOf { it.length }
-  return startOffset..endOffset
-}
-
-fun List<IntRange>.mergeContiguousRanges(): List<IntRange> =
-  sortedBy { it.first }.fold(mutableListOf<IntRange>()) { acc, range ->
-    if (acc.isEmpty()) acc.add(range)
-    else if (acc.last().last + 1 >= range.first) acc[acc.lastIndex] = acc.last().first..range.last
-    else acc.add(range)
-    acc
-  }
 
 // TODO: Do not re-compute all work on each keystroke, cache prior results
-fun handle(currentLine: String, project: Project, editor: Editor, file: PsiFile): Future<*>? {
-    val tidyEditor = IJTidyEditor(editor, file)
+fun IJTidyEditor.handle(): Future<*>? {
+  val currentLine = currentLine()
+  if (psiFile.name.endsWith(".tidy") && currentLine != mostRecentQuery) {
+    mostRecentQuery = currentLine
+    promise?.cancel(true)
+    TidyToolWindow.text = ""
+    promise = AppExecutorUtil.getAppExecutorService().submit { tryToReconcile() }
 
-    val sanitized = currentLine.trim().tokenizeByWhitespace().joinToString(" ")
-    if (file.name.endsWith(".tidy") && sanitized != mostRecentQuery) {
-      mostRecentQuery = sanitized
-      promise?.cancel(true)
-      TidyToolWindow.text = ""
-      promise = AppExecutorUtil.getAppExecutorService().submit {
-         val (caretPos, isInGrammar) = runReadAction {
-           editor.caretModel.logicalPosition.column to
-               editor.document.text.lastIndexOf("---")
-                 .let { sepIdx -> if (sepIdx == -1) true else editor.caretModel.offset < sepIdx }
-         }
-         tidyEditor.tryToReconcile(sanitized, isInGrammar, caretPos)
-       }
-
-      ToolWindowManager.getInstance(project).getToolWindow("Tidyparse")
-        ?.let { runReadAction { if (!it.isVisible) it.show() } }
-    }
-    return promise
+    ToolWindowManager.getInstance(editor.project!!).getToolWindow("Tidyparse")
+      ?.let { runReadAction { if (!it.isVisible) it.show() } }
   }
+  return promise
+}
 
 fun Editor.currentLine(): String =
   caretModel.let { it.visualLineStart to it.visualLineEnd }

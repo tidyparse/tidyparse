@@ -124,7 +124,7 @@ w = w ( w . w ( ( w ) w [ w ] / w ( w ) * w ) )
 w = w ( w . w ( ( w ) w [ w ] / w ( w ) * w ) )
 w = w ( [ w ( w ( w [ w ] , w [ w ] w [ w ] , w [ w ] ) ) for w , w in w ] )
 w = w . w ( lambda ( w , w ) : w . w ( ( w [ w ] - w [ w ] ) ** w ) ) . w ( lambda w , w : w + w )
-w = [ w for w in w ( w . w . w ( ) , w = lambda ( w , w ) : ( w , w ) ) ] [ : w ]
+w = [ w for w in w ( w . w . w ( ) , w = lambda ( w , w ) : ( w , w ) ) ] [ : w ] 
 w = [ ( w w [ w ] ) for w in w ]
 w [ w ] = w ( w ( lambda ( w , w ) : w , w ) )
 w = [ ( w [ w ] , w [ w ] - w [ w [ w ] ] ) for w in w . w ( ) if w [ w ] in w ] w

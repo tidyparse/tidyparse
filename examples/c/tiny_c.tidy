@@ -12,6 +12,7 @@ expr -> test | id = expr
 test -> sum | sum < sum
 sum -> term | sum + term | sum - term
 term -> id | int | paren_expr
+
 ---
 
 id = int ;
@@ -22,4 +23,4 @@ while ( <term> ) ;
 
 while ( <expr> ) <statement>
 
-id = int + int - <term> ;
+id = int + int - <term>

@@ -19,7 +19,8 @@ class TidyKeyHandler : TypedHandlerDelegate() {
   override fun charTyped(c: Char, project: Project, editor: Editor, file: PsiFile): Result =
     TypedHandlerDelegate.Result.CONTINUE.also {
       fontScalingRatio = (editor.colorsScheme.editorFontSize / 16.0).coerceAtLeast(1.0)
-      handle(runReadAction { editor.currentLine() }, project, editor, file)
+
+      IJTidyEditor(editor, file).handle()
     }
 }
 
@@ -27,5 +28,5 @@ class TidyBackspaceHandler : BackspaceHandlerDelegate() {
   override fun beforeCharDeleted(c: Char, file: PsiFile, editor: Editor) = Unit
 
   override fun charDeleted(c: Char, file: PsiFile, editor: Editor): Boolean =
-    true.also { handle(runReadAction { editor.currentLine() }, editor.project!!, editor, file) }
+    true.also { IJTidyEditor(editor, file).handle() }
 }

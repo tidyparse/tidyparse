@@ -40,6 +40,6 @@ parameters -> id | ( id_list )
 
 id = ( ( int + ( int ) * int ) / int ) - int
 
-id = ( ( int + ( int * int ) - / int ) - int
+id = ( ( int + ( int * int ) - / int ) - int 
 
 id = lambda ( id , id ) : id + id + int * <factor>

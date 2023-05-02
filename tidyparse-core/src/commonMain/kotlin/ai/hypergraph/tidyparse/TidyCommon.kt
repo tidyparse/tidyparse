@@ -14,12 +14,12 @@ fun CFG.renderCFGToHTML(tokens: Set<Σᐩ> = emptySet()): String =
   (listOf(originalForm.summarize("Original form")) +
       (if (originalForm == nonparametricForm) listOf()
       else listOf(nonparametricForm.summarize("Nonparametric form"))) +
-      listOf(summarize("Normal form")) +
-      upwardClosure(tokens).let { closure ->
-        if (closure.size == size) listOf()
-        else listOf(closure.summarize("Upward closure")) +
-        listOf(filter { it.LHS !in closure.nonterminals }.summarize("Filtered"))
-      }
+      listOf(summarize("Normal form"))
+//      upwardClosure(tokens).let { closure ->
+//        if (closure.size == size) listOf()
+//        else listOf(closure.summarize("Upward closure")) +
+//        listOf(filter { it.LHS !in closure.nonterminals }.summarize("Filtered"))
+//      }
   )
   .let { rewriteSummary ->
     val maxLen = rewriteSummary.joinToString("\n").lines().maxOf { it.length }
@@ -101,47 +101,22 @@ fun render(
   </html>
   """.trimIndent()
 
-fun TidyEditor.tryToReconcile(currentLine: String, isInGrammar: Boolean, caretPos: Int) =
-  try { reconcile(currentLine, isInGrammar, caretPos) } catch (e: Exception) { e.printStackTrace() }
+fun TidyEditor.tryToReconcile() =
+  try { reconcile() } catch (e: Exception) { e.printStackTrace() }
 
 @OptIn(ExperimentalTime::class)
-fun String.synthesizeCachingAndDisplayProgress(
-  editor: TidyEditor,
-  cfg: CFG,
-  tokens: List<String> = tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" },
-  sanitized: String = tokens.joinToString(" "),
-  maxResults: Int = 20,
-  // TODO: think about whether we really want to solve for variations in every case
-  variations: List<Mutator> =
-    listOf(
-      { a, b -> a.randomDeletions() },
-//      { a, b -> a.randomSingleSubtitutions(exclusions = b) },
-      { a, b -> a.randomDoubleSubstitutions(numberOfEdits = MAX_REPAIR, exclusions = b) }
-    ),
-): List<String> =
-  synthCache.getOrPut(sanitized to cfg) {
-    val t = TimeSource.Monotonic.markNow()
-    val renderedStubs = if (containsHole()) null
-    else cfg.parseWithStubs(sanitized).second.renderStubs()
-    val reason = if (containsHole()) null else no
-    editor.writeDisplayText(render(cfg, emptyList(), editor, stubs = renderedStubs, reason = reason))
-    val solutions = mutableSetOf<Σᐩ>()
+fun TimeSource.Monotonic.ValueTimeMark.hasTimeLeft() =
+  elapsedNow().inWholeMilliseconds < TIMEOUT_MS
 
-    editor.getOptimalSynthesizer(cfg, sanitized, variations).map {
-      solutions.add(it)
-      val htmlSolutions =
-        solutions.sortedWith(displayComparator(tokens)).let { solutions ->
-          if (containsHole()) solutions.map { it.escapeHTML() }
-          else solutions
-//        .also { it.map { println(diffAsLatex(tokens, it.tokenizeByWhitespace())) }; println() }
-            .map { editor.diffAsHtml(tokens, it.tokenizeByWhitespace()) }
-        }
+fun String.synthesizeCachingAndDisplayProgress(tidyEditor: TidyEditor, cfg: CFG): List<String> {
+  val sanitized: String = tokenizeByWhitespace().joinToString(" ") { if (it in cfg.terminals) it else "_" }
 
-      editor.writeDisplayText(render(cfg, htmlSolutions, editor, stubs = renderedStubs, reason = reason))
-    }.takeWhile { solutions.size <= maxResults && t.elapsedNow().inWholeMilliseconds < TIMEOUT_MS }.toList()
+  val cacheResultOn: Pair<String, CFG> = sanitized to cfg
 
-    solutions.sortedWith(displayComparator(tokens)).toList()
-  }
+  return synthCache.getOrPut(cacheResultOn) { tidyEditor.repair(cfg, this) }
+    // If empty, it could be because we timed out, so try again
+    .ifEmpty { tidyEditor.repair(cfg, this).also { synthCache.put(cacheResultOn, it) } }
+}
 
 fun updateProgress(query: String, editor: TidyEditor) {
   val sanitized = query.escapeHTML()
@@ -153,29 +128,27 @@ fun updateProgress(query: String, editor: TidyEditor) {
   }
 }
 
-fun TidyEditor.reconcile(
-  currentLine: String,
-  caretInGrammar: Boolean,
-  caretPos: Int
-) {
+fun TidyEditor.reconcile() {
+  val currentLine = currentLine()
   if (currentLine.isBlank()) return
+  val caretInGrammar = caretInGrammar()
   val cfg =
-    if (caretInGrammar)
+    (if (caretInGrammar)
       CFGCFG(
         names = currentLine.tokenizeByWhitespace()
           .filter { it !in setOf("->", "|") }.toSet()
       )
-    else getLatestCFG()
+    else getLatestCFG()).freeze()
 
   if (cfg.isEmpty()) return
 
-  redecorateLines()
+  if (!caretInGrammar) redecorateLines(cfg)
 
   var debugText = ""
   if (currentLine.containsHole()) {
     currentLine.synthesizeCachingAndDisplayProgress(this, cfg).let {
       debugText = "<pre><b>🔍 Found ${it.size} admissible solutions!</b>\n\n" +
-          it.joinToString("\n") { it.escapeHTML() } + "</pre>"
+          it.joinToString("\n", "\n", "\n") + "</pre>"
     }
   } else {
     println("Parsing `$currentLine` with stubs!")
@@ -184,8 +157,7 @@ fun TidyEditor.reconcile(
       if (parseForest.size == 1) "<pre>$ok\n🌳" + parseForest.first().prettyPrint() + "</pre>"
       else "<pre>$ambig\n🌳" + parseForest.joinToString("\n\n") { it.prettyPrint() } + "</pre>"
     } else {
-      val exclude = stubs.allIndicesInsideParseableRegions()
-      val repairs = currentLine.findRepairs(this, cfg, exclude, fishyLocations = listOf(caretPos))
+      val repairs = currentLine.synthesizeCachingAndDisplayProgress(this, cfg).joinToString("\n", "\n", "\n")
       "<pre>$no" + repairs + "\n$legend</pre>" + stubs.renderStubs()
     }
   }
@@ -228,25 +200,6 @@ fun TidyEditor.reconcile(
 //fun CFG.toGrammar() = Grammar()
 
 fun String.getGrammar() = substringBefore("---")
-
-fun String.findRepairs(editor: TidyEditor, cfg: CFG, exclusions: Set<Int>, fishyLocations: List<Int>): String =
-  synthesizeCachingAndDisplayProgress(
-    editor,
-    cfg = cfg,
-    tokens = tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" },
-    variations = listOf({ a, b ->
-      a.multiTokenSubstitutionsAndInsertions(
-        numberOfEdits = 3,
-        exclusions = b,
-        fishyLocations = fishyLocations
-      )
-    })
-  ).let {
-    if (it.isEmpty()) ""
-    else it.joinToString("\n", "\n", "\n") {
-      editor.diffAsHtml(tokenizeByWhitespace(), it.tokenizeByWhitespace())
-    }
-  }
 
 // TODO: eliminate this completely
 var cfg: CFG = setOf()
