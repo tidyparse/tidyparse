@@ -46,6 +46,7 @@ fun String.isNonterminal() = startsWith(la) && endsWith(ra)
 
 fun String.dehtmlify(): String =
   replace("&lt;", "<").replace("&gt;", ">")
+    .replace("<span.*?>".toRegex(), "").replace("</span>", "")
 
 val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
 var grammarFileCache: String = ""

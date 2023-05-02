@@ -47,16 +47,14 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
 //          { a, b -> a.randomSingleSubtitutions(exclusions = b) },
           { a, b -> a.randomDoubleSubstitutions(numberOfEdits = MAX_REPAIR, exclusions = b) }
         )
-        else listOf(
-          { a, b ->
-            a.multiTokenSubstitutionsAndInsertions(
-              numberOfEdits = 3,
-              exclusions = b,
-            )
-          }
-        )
+        else listOf { a, b ->
+          a.multiTokenSubstitutionsAndInsertions(
+            numberOfEdits = 3,
+            exclusions = b,
+          )
+        }
 
-      val tokens: List<String> = str.tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" }
+    val tokens: List<String> = str.tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" }
       val sanitized: String = tokens.joinToString(" ")
       val maxResults = 20
       // TODO: think about whether we really want to solve for variations in every case

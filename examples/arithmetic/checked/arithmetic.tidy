@@ -1,4 +1,4 @@
-S -> S1 | S2 | S3 | S4 | S5 | S6 | S7
+START -> S
 S -> S1 = S1
 S -> S2 = S2
 S -> S3 = S3
