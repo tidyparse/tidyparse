@@ -13,7 +13,7 @@ dependencies {
   api(project(":tidyparse-core"))
   implementation("org.jetbrains.kotlinx:kotlinx-html:0.8.1")
 //  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
-  val coroutinesVersion = "1.7.0-RC"
+  val coroutinesVersion = "1.7.1"
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutinesVersion")
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core-js:$coroutinesVersion")
 }

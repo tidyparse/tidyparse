@@ -50,7 +50,7 @@ kotlin {
           exclude(group = "org.sosy-lab", module = "javasmt-solver-mathsat5")
         }
 
-        api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.5.0")
+        api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.5.1")
       }
     }
     commonTest {

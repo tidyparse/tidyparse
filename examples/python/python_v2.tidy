@@ -21,7 +21,8 @@ or_test -> and_test | or_test or and_test
 and_test -> not_test | and_test and not_test
 not_test -> comparison | not not_test
 comparison -> sum | comparison comp_operator sum
-comp_operator -> < | > | == | >= | <= | !=
+comp_operator -> <
+comp_operator -> > | == | >= | <= | !=
 
 sum -> term | sum + term | sum - term
 term -> factor | term * factor | term / factor | term // factor | term % factor
@@ -40,6 +41,6 @@ parameters -> id | ( id_list )
 
 id = ( ( int + ( int ) * int ) / int ) - int
 
-id = ( ( int + ( int * int ) - / int ) - int 
+id = ( ( int + ( int * int ) + bool - / int ) - int
 
 id = lambda ( id , id ) : id + id + int * <factor>

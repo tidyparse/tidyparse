@@ -42,17 +42,18 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
   @OptIn(ExperimentalTime::class)
   override fun repair(cfg: CFG, str: Σᐩ): List<Σᐩ> {
       val variations: List<Mutator> =
-        if (str.containsHole()) listOf(
+//        if (str.containsHole())
+          listOf(
           { a, b -> a.randomDeletions(b) },
 //          { a, b -> a.randomSingleSubtitutions(exclusions = b) },
           { a, b -> a.randomDoubleSubstitutions(numberOfEdits = MAX_REPAIR, exclusions = b) }
         )
-        else listOf { a, b ->
-          a.multiTokenSubstitutionsAndInsertions(
-            numberOfEdits = 3,
-            exclusions = b,
-          )
-        }
+//        else listOf { a, b ->
+//          a.multiTokenSubstitutionsAndInsertions(
+//            numberOfEdits = 3,
+//            exclusions = b,
+//          )
+//        }
 
     val tokens: List<String> = str.tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" }
       val sanitized: String = tokens.joinToString(" ")
