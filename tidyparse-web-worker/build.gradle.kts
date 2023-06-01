@@ -9,7 +9,6 @@ group = properties("pluginGroup")
 version = properties("pluginVersion")
 
 dependencies {
-  testImplementation(kotlin("test"))
   api(project(":tidyparse-core"))
   implementation("org.jetbrains.kotlinx:kotlinx-html:0.8.1")
 //  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
@@ -25,13 +24,12 @@ kotlin {
       // Disable minification
       webpackTask {
         mode = DEVELOPMENT
-        outputFileName = "tidyparse-web-worker.js"
+        mainOutputFileName = "tidyparse-web-worker.js"
         devtool = "source-map"// Remove later for production
       }
       distribution {
-        name = "tidyparse-web-worker"
+        distributionName = "tidyparse-web-worker"
       }
-
     }
   }
 //  sourceSets {

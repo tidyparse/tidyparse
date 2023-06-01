@@ -4,6 +4,7 @@ import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.sat.*
+import bijectiveRepair
 import com.github.difflib.text.DiffRow.Tag.*
 import com.github.difflib.text.DiffRowGenerator
 import com.intellij.openapi.application.*
@@ -55,7 +56,7 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
 //          )
 //        }
 
-    val tokens: List<String> = str.tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" }
+      val tokens: List<String> = str.tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" }
       val sanitized: String = tokens.joinToString(" ")
       val maxResults = 20
       // TODO: think about whether we really want to solve for variations in every case
@@ -68,15 +69,24 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
       writeDisplayText(render(cfg, emptyList(), this, stubs = renderedStubs, reason = reason))
       val solutions = mutableSetOf<Σᐩ>()
 
-      sanitized.synthesizeIncrementally(
-        cfg = cfg,
-        variations = variations,
-        takeMoreWhile = { takeMoreWhile() && hasMemoryLeft() && !Thread.interrupted() },
-        updateProgress = { query ->
-          if ("Solving:" in readDisplayText()) updateProgress(query, this)
-        },
-        synthesizer = { asCJL.synthesize(it) }
-      ).retainOnlySamplesWithDistinctEditSignature(sanitized)
+//      sanitized.synthesizeIncrementally(
+//        cfg = cfg,
+//        variations = variations,
+//        takeMoreWhile = { takeMoreWhile() && hasMemoryLeft() && !Thread.interrupted() },
+//        updateProgress = { query ->
+//          if ("Solving:" in readDisplayText()) updateProgress(query, this)
+//        },
+//        synthesizer = { asCJL.synthesize(it) }
+//      )
+        bijectiveRepair(tokens, cfg.terminals, 2,
+          admissibilityFilter = { this in cfg.language },
+          takeMoreWhile = takeMoreWhile,
+          diagnostic = { query ->
+            if ("Solving:" in readDisplayText()) updateProgress(query.result, this)
+          }
+        )
+        .map { it.result }
+        .retainOnlySamplesWithDistinctEditSignature(sanitized)
         .takeWhile { solutions.size <= maxResults }.forEach {
           solutions.add(it)
 
