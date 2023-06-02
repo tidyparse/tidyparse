@@ -72,7 +72,6 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
     writeDisplayText(render(cfg, emptyList(), this, stubs = renderedStubs, reason = reason))
     val startTime = System.currentTimeMillis()
 
-    var i = 0
     updateProgress(sanitized, this)
     val repairs = (
       if ("_" !in tokens) bijectiveRepair(
@@ -81,7 +80,7 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
         edits = 2.also { println("Using bijective sampler with $it edits") },
         admissibilityFilter = { this in cfg.language },
         takeMoreWhile = takeMoreWhile,
-//        diagnostic = { if(i++ % 2 == 0) { println(it.result); /*updateProgress(it.result, this)*/ } }
+//        diagnostic = { println(it.result); /*updateProgress(it.result, this)*/ }
       ).map { it.result }.take(maxResults).toList()
       else sanitized.synthesizeIncrementally(
         cfg = cfg,
@@ -305,19 +304,12 @@ fun Sequence<String>.retainOnlySamplesWithDistinctEditSignature(originalString: 
   distinctBy { computeEditSignature(originalString, it) }
 
 fun computeEditSignature(s1: String, s2: String): String {
-  fun String.type() = when {
-    isNonterminalStub() -> "NT/$this"
-    all { it.isJavaIdentifierPart() } -> "ID"
-    any { it in BRACKETS } -> "BK/$this"
-    else -> "OT"
-  }
-
   return plaintextDiffGenerator.generateDiffRows(s1.tokenizeByWhitespace(), s2.tokenizeByWhitespace())
     .joinToString(" ") {
       when (it.tag) {
-        INSERT -> "I.${it.newLine.type()}"
+        INSERT -> "I.${it.newLine.cfgType()}"
         DELETE -> ""
-        CHANGE -> "C.${it.newLine.type()}"
+        CHANGE -> "C.${it.newLine.cfgType()}"
         else -> "E"
       }
     }

@@ -104,7 +104,6 @@ fun render(
 fun TidyEditor.tryToReconcile() =
   try { reconcile() } catch (e: Exception) { e.printStackTrace() }
 
-@OptIn(ExperimentalTime::class)
 fun TimeSource.Monotonic.ValueTimeMark.hasTimeLeft() =
   elapsedNow().inWholeMilliseconds < TIMEOUT_MS
 
