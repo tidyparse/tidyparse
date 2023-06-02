@@ -192,4 +192,5 @@ Yield_Arg -> From_Keyword Test | Testlist_Endcomma
 ---
 
 True OR True NEWLINE
-OR True NEWLINE
+True OR NEWLINE
+<Stmts_Or_Newlines> <Small_Stmts> NAME + NAME NEWLINE NAME ( NAME ) NEWLINE NEWLINE

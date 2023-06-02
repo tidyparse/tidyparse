@@ -42,7 +42,6 @@ fun CFG.preservesNTInvariance(newNT: String, oldTerminal: String) =
 val la = "<".escapeHTML()
 val ra = ">".escapeHTML()
 fun String.treatAsNonterminal() = drop(la.length).dropLast(ra.length)
-fun String.isNonterminal() = startsWith(la) && endsWith(ra)
 
 fun String.dehtmlify(): String =
   replace("&lt;", "<").replace("&gt;", ">")
@@ -147,7 +146,7 @@ fun TidyEditor.reconcile() {
 
   if (!caretInGrammar) redecorateLines(cfg)
 
-  var debugText = ""
+  var debugText: String
   if (currentLine.containsHole()) {
     currentLine.synthesizeCachingAndDisplayProgress(this, cfg).let {
       debugText = "<pre><b>🔍 Found ${it.size} admissible solutions!</b>\n\n" +

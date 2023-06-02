@@ -1,5 +1,6 @@
 package ai.hypergraph.tidyparse
 
+import java.lang.System.currentTimeMillis
 import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.*
@@ -18,7 +19,8 @@ import com.intellij.ui.JBColor
 import com.intellij.util.concurrency.AppExecutorUtil
 import java.awt.Color
 import java.lang.management.ManagementFactory
-import java.util.concurrent.Future
+import java.util.concurrent.*
+import kotlin.math.abs
 import kotlin.time.*
 
 var mostRecentQuery: String = ""
@@ -42,13 +44,13 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
 
   @OptIn(ExperimentalTime::class)
   override fun repair(cfg: CFG, str: Σᐩ): List<Σᐩ> {
-      val variations: List<Mutator> =
+    val variations: List<Mutator> =
 //        if (str.containsHole())
-          listOf(
-          { a, b -> a.randomDeletions(b) },
+      listOf(
+        { a, b -> a.randomDeletions(b) },
 //          { a, b -> a.randomSingleSubtitutions(exclusions = b) },
-          { a, b -> a.randomDoubleSubstitutions(numberOfEdits = MAX_REPAIR, exclusions = b) }
-        )
+        { a, b -> a.randomDoubleSubstitutions(numberOfEdits = MAX_REPAIR, exclusions = b) }
+      )
 //        else listOf { a, b ->
 //          a.multiTokenSubstitutionsAndInsertions(
 //            numberOfEdits = 3,
@@ -56,49 +58,58 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
 //          )
 //        }
 
-      val tokens: List<String> = str.tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" }
-      val sanitized: String = tokens.joinToString(" ")
-      val maxResults = 20
-      // TODO: think about whether we really want to solve for variations in every case
+    val tokens: List<String> = str.tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" }
+    val sanitized: String = tokens.joinToString(" ")
+    println("Sanitized: $sanitized")
+    val maxResults = 20
+    // TODO: think about whether we really want to solve for variations in every case
 
-      val takeMoreWhile: () -> Boolean = TimeSource.Monotonic.markNow().run { { hasTimeLeft() } }
+    val takeMoreWhile: () -> Boolean = TimeSource.Monotonic.markNow().run { { hasTimeLeft() } }
 
-      val renderedStubs = if (str.containsHole()) null
-      else cfg.parseWithStubs(sanitized).second.renderStubs()
-      val reason = if (str.containsHole()) null else no
-      writeDisplayText(render(cfg, emptyList(), this, stubs = renderedStubs, reason = reason))
-      val solutions = mutableSetOf<Σᐩ>()
+    val renderedStubs = if (str.containsHole()) null
+    else cfg.parseWithStubs(sanitized).second.renderStubs()
+    val reason = if (str.containsHole()) null else no
+    writeDisplayText(render(cfg, emptyList(), this, stubs = renderedStubs, reason = reason))
+    val startTime = System.currentTimeMillis()
 
-//      sanitized.synthesizeIncrementally(
-//        cfg = cfg,
-//        variations = variations,
-//        takeMoreWhile = { takeMoreWhile() && hasMemoryLeft() && !Thread.interrupted() },
-//        updateProgress = { query ->
-//          if ("Solving:" in readDisplayText()) updateProgress(query, this)
-//        },
-//        synthesizer = { asCJL.synthesize(it) }
-//      )
-        bijectiveRepair(tokens, cfg.terminals, 2,
-          admissibilityFilter = { this in cfg.language },
-          takeMoreWhile = takeMoreWhile,
-          diagnostic = { query ->
-            if ("Solving:" in readDisplayText()) updateProgress(query.result, this)
-          }
-        )
-        .map { it.result }
+    var i = 0
+    updateProgress(sanitized, this)
+    val repairs = (
+      if ("_" !in tokens) bijectiveRepair(
+        promptTokens = tokens.intersperse(),
+        fillers = cfg.terminals,
+        edits = 2.also { println("Using bijective sampler with $it edits") },
+        admissibilityFilter = { this in cfg.language },
+        takeMoreWhile = takeMoreWhile,
+//        diagnostic = { if(i++ % 2 == 0) { println(it.result); /*updateProgress(it.result, this)*/ } }
+      ).map { it.result }.take(maxResults).toList()
+      else sanitized.synthesizeIncrementally(
+        cfg = cfg,
+        variations = variations,
+        takeMoreWhile = { takeMoreWhile() && hasMemoryLeft() && !Thread.interrupted() },
+        synthesizer = { asCJL.synthesize(it) }
+      )
         .retainOnlySamplesWithDistinctEditSignature(sanitized)
-        .takeWhile { solutions.size <= maxResults }.forEach {
-          solutions.add(it)
-
-          val htmlSolutions = solutions.renderToHTML(tokens, calculateDiffs = !str.containsHole())
+        .runningFold(emptyList<Σᐩ>()) { acc, next -> acc + next }
+        .filter { it.isNotEmpty() }
+        .onEach { query ->
+          val htmlSolutions = query
+            .sortedWith(compareBy { levenshtein(tokens, it.tokenizeByWhitespace()) })
+            .renderToHTML(tokens, calculateDiffs = false)
 
           writeDisplayText(render(cfg, htmlSolutions, this, stubs = renderedStubs, reason = reason))
-        }
+          updateProgress(query.last(), this)
+        }.take(maxResults).lastOrNull() ?: emptyList()
+    )
 
-      return solutions.renderToHTML(tokens, calculateDiffs = !str.containsHole())
-    }
+    println("Finished in ${System.currentTimeMillis() - startTime}ms")
 
-  private fun Set<Σᐩ>.renderToHTML(tokens: List<String>, calculateDiffs: Boolean = false) =
+    return repairs
+      .sortedWith(compareBy { levenshtein(tokens, it.tokenizeByWhitespace()) })
+      .renderToHTML(tokens, calculateDiffs = true)
+  }
+
+  private fun List<Σᐩ>.renderToHTML(tokens: List<String>, calculateDiffs: Boolean = false) =
     sortedWith(displayComparator(tokens)).let { solutions ->
       if (calculateDiffs)
         solutions
@@ -260,7 +271,7 @@ private fun CFG.overrideInvariance(l1: List<String>, l2: List<String>): String =
   plaintextDiffGenerator.generateDiffRows(l1, l2).joinToString(" ") { dr ->
   val (old,new ) = dr.oldLine to dr.newLine
   // If repair substitutes a terminal with the same NT that it belongs to, do not treat as a diff
-  if (new.isNonterminal() && preservesNTInvariance(new.treatAsNonterminal(), old)) old else new
+  if (new.isNonterminalStub() && preservesNTInvariance(new.treatAsNonterminal(), old)) old else new
 }
 
 fun List<String>.dittoSummarize(): List<String> =
@@ -295,7 +306,7 @@ fun Sequence<String>.retainOnlySamplesWithDistinctEditSignature(originalString: 
 
 fun computeEditSignature(s1: String, s2: String): String {
   fun String.type() = when {
-    isNonterminal() -> "NT/$this"
+    isNonterminalStub() -> "NT/$this"
     all { it.isJavaIdentifierPart() } -> "ID"
     any { it in BRACKETS } -> "BK/$this"
     else -> "OT"
@@ -310,4 +321,42 @@ fun computeEditSignature(s1: String, s2: String): String {
         else -> "E"
       }
     }
+}
+
+/**
+ * Timer for triggering events with a designated delay.
+ * May be invoked multiple times inside the delay, but
+ * doing so will only prolong the event from firing.
+ */
+
+object Trigger : () -> Unit {
+  private var delay = 0L
+  private var timer = currentTimeMillis()
+  private var isRunning = false
+  private var invokable: () -> Unit = {}
+
+  override fun invoke() {
+    timer = currentTimeMillis()
+    if (isRunning) return
+    synchronized(this) {
+      isRunning = true
+
+      while (currentTimeMillis() - timer <= delay)
+        Thread.sleep(abs(delay - (currentTimeMillis() - timer)))
+
+      try {
+        invokable()
+      } catch (e: Exception) {
+        e.printStackTrace()
+      }
+
+      isRunning = false
+    }
+  }
+
+  operator fun invoke(withDelay: Long = 100, event: () -> Unit = {}) {
+    delay = withDelay
+    invokable = event
+    invoke()
+  }
 }
