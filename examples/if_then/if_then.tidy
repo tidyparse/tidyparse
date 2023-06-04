@@ -1,4 +1,4 @@
- S -> X
+ START -> X
  X -> I | F | P
  P -> I O I
  F -> IF | BF

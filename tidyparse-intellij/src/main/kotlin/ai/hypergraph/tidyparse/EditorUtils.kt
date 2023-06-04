@@ -77,7 +77,7 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
       if ("_" !in tokens) bijectiveRepair(
         promptTokens = tokens.intersperse(),
         fillers = cfg.terminals,
-        edits = 2.also { println("Using bijective sampler with $it edits") },
+        maxEdits = 2.also { println("Using bijective sampler with $it edits") },
         admissibilityFilter = { this in cfg.language },
         takeMoreWhile = takeMoreWhile,
 //        diagnostic = { println(it.result); /*updateProgress(it.result, this)*/ }

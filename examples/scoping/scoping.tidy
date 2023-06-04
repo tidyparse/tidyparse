@@ -1,0 +1,40 @@
+START -> program
+program -> def | scope
+def -> def_AA | def_BB | def_AB
+scope -> scope_AA | scope_BB | scope_AB
+def_scope -> def | { def } | scope | def_scope ; def_scope
+
+def_A -> A = value | def_A ; def_A
+def_B -> B = value | def_B ; def_B
+
+def_BB -> def_B | def_BB ; mix_B | def_BB ; def_BB
+def_AA -> def_A | def_AA ; mix_A | def_AA ; def_AA
+def_AB -> def_AA ; def_BB ; mix_def | def_BB ; def_AA ; mix_def
+    mix_def -> B = exp_AB | A = exp_AB | mix_def ; mix_def
+    mix_B -> A_B = exp_B | mix_B ; mix_B
+    mix_A -> A_B = exp_A | mix_A ; mix_A
+    A_B -> A | B
+
+scope_BB -> def_BB ; { def_BB } | def_BB ; { scope_BB }
+scope_BB -> def_AA ; { def_BB } | def_BB ; { scope_AA }
+scope_AA -> def_AA ; { def_AA } | def_AA ; { scope_AA }
+scope_AA -> def_BB ; { def_AA } | def_AA ; { scope_BB }
+scope_AB -> def_AA ; { def_BB ; { mix_scope } }
+scope_AB -> def_BB ; { def_AA ; { mix_scope } }
+scope_AB -> def_AB ; { mix_scope }
+mix_scope -> mix_def | mix_def ; { mix_scope } | mix_scope ; def_scope
+
+value -> 0 | 1 | 2 | 3 | value + value
+exp_A -> value | A | exp_A + exp_A
+exp_B -> value | B | exp_B + exp_B
+exp_AB -> exp_A | exp_B | exp_AB + exp_AB
+---
+
+A = 1 ; B = 1 ; B = B + 1 ; A = B + 1
+A = 1 ; { B = 1 + 1 + 2 ; { B = A } }
+
+
+B = 1 ; B = 1 <def_B> ; <def_B>
+A = 1 ; B = 1 + B ; B = 1
+A = B + 1 ; A = A + 1 _ _ _
+A = 1 ; { B = 1 + B ; { B = 1 }
