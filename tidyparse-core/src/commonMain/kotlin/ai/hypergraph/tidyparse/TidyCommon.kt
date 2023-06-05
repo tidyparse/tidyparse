@@ -54,7 +54,7 @@ fun displayComparator(tokens: List<String>): Comparator<String> =
   compareBy(tokenwiseLevenshteinEdits(tokens)).thenBy { it.length }
 
 fun tokenwiseLevenshteinEdits(tokens: List<String>): (String) -> Comparable<*> =
-  { levenshtein(tokens.filterNot { it.containsHole() }, it.tokenizeByWhitespace()) }
+  { levenshtein(tokens.filterNot { it == "_" }, it.tokenizeByWhitespace()) }
 
 fun List<Tree>.renderStubs(): String =
   runningFold(setOf<Tree>()) { acc, t -> if (acc.any { t.span isSubsetOf it.span }) acc else acc + t }
@@ -146,7 +146,7 @@ fun TidyEditor.reconcile() {
   if (!caretInGrammar) redecorateLines(cfg)
 
   var debugText: String
-  if (currentLine.containsHole()) {
+  if ("_" in currentLine.tokenizeByWhitespace()) {
     currentLine.synthesizeCachingAndDisplayProgress(this, cfg).let {
       debugText = "<pre><b>🔍 Found ${it.size} admissible solutions!</b>\n\n" +
           it.joinToString("\n", "\n", "\n") + "</pre>"

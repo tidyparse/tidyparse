@@ -151,7 +151,7 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
         val tokens = line.tokenizeByWhitespace()
         when {
           line.isEmptyOrGrammarDelim(lineNo) -> emptyList<Int>() to emptyList()
-          tokens.any { it.isHoleTokenIn(cfg) } -> emptyList<Int>() to emptyList()
+          "_" in tokens -> emptyList<Int>() to emptyList()
           line in cfg.language -> emptyList<Int>() to emptyList()
           tokens.size < 4 -> emptyList<Int>() to tokens.indices.toList()
           else -> cfg.parseInvalidWithMaximalFragments(line)
