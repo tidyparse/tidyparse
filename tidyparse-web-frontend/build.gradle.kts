@@ -11,7 +11,7 @@ version = properties("pluginVersion")
 
 dependencies {
   api(project(":tidyparse-core"))
-  implementation("org.jetbrains.kotlinx:kotlinx-html:0.8.1")
+  implementation("org.jetbrains.kotlinx:kotlinx-html:0.9.0-dev-1")
 //  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
   val coroutinesVersion = "1.7.1"
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutinesVersion")

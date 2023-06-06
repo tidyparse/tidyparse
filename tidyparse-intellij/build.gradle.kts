@@ -5,8 +5,8 @@ import org.jetbrains.changelog.markdownToHTML
 
 plugins {
   kotlin("jvm")
-  id("org.jetbrains.intellij") version "1.13.3"
-  id("org.jetbrains.changelog") version "2.0.0"
+  id("org.jetbrains.intellij") version "1.14.0"
+  id("org.jetbrains.changelog") version "2.1.0"
 }
 
 fun properties(key: String) = project.findProperty(key).toString()
