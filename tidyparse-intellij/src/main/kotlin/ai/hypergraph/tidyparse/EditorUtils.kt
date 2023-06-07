@@ -133,9 +133,6 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
       }
     }
 
-  fun Σᐩ.illegalWordIndices(cfg: CFG) =
-    tokenizeByWhitespace().mapIndexedNotNull { idx: Int, s: Σᐩ -> if (s !in cfg.terminals) idx else null }
-
   private val segmentationCache = mutableMapOf<Int, Segmentation>()
 
   fun getOrComputeSegmentations(cfg: CFG, editorText: Σᐩ): List<Segmentation> {
@@ -147,25 +144,8 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
     return lines.mapIndexed { lineNo, line ->
       val key = editor.hashCode() + cfg.hashCode() + line.hashCode()
       if (key in segmentationCache) Segmentation() // This means it was previously highlighted
-      else segmentationCache.computeIfAbsent(key) {
-        val tokens = line.tokenizeByWhitespace()
-        when {
-          line.isEmptyOrGrammarDelim(lineNo) -> emptyList<Int>() to emptyList()
-          "_" in tokens -> emptyList<Int>() to emptyList()
-          line in cfg.language -> emptyList<Int>() to emptyList()
-          tokens.size < 4 -> emptyList<Int>() to tokens.indices.toList()
-          else -> cfg.parseInvalidWithMaximalFragments(line)
-            .map { it.span }.filter { 2 < (it.last - it.first) }.flatten()
-            .let { it to tokens.indices.filterNot { i -> i in it } }
-        }.let {
-          Segmentation(
-            valid = it.first,
-            invalid = it.second,
-            illegal = line.illegalWordIndices(cfg),
-            line = line
-          )
-        }
-      }
+      else if (line.isEmptyOrGrammarDelim(lineNo)) Segmentation()
+      else segmentationCache.computeIfAbsent(key) { Segmentation.build(cfg, editorText) }
     }
   }
 
