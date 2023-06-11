@@ -198,4 +198,5 @@ True OR True OR NEWLINE
 <Stmt_Or_Newline> <Testlist_Star_Expr> <Open_Paren> <Arglist> NEWLINE NEWLINE
 _ _ _ _
 
-[ * ( NAME for [ [ ] [ : ] , * NAME ] in [ ( ( NUMBER , NUMBER ) , NAME ) ] ) ] NEWLINE
+[ * ( NAME for [ [ ] [ : ] , * NUMBER ] in [ ( ( NAME , NAME ) , NUMBER ) ] ) ] NEWLINE
+( lambda * NAME : NAME ( NAME ) . NAME ( NAME ) ) ( * ( [ NAME ] * NUMBER ) ) == NUMBER ** NUMBER NEWLINE
