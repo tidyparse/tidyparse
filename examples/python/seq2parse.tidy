@@ -197,3 +197,5 @@ True OR True OR NEWLINE
 <Stmts_Or_Newlines> <Testlist_Star_Expr> <Open_Paren> <Arglist> NEWLINE NEWLINE
 <Stmt_Or_Newline> <Testlist_Star_Expr> <Open_Paren> <Arglist> NEWLINE NEWLINE
 _ _ _ _
+
+[ * ( NAME for [ [ ] [ : ] , * NAME ] in [ ( ( NUMBER , NUMBER ) , NAME ) ] ) ] NEWLINE

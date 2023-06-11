@@ -1,7 +1,7 @@
 plugins {
   idea
   kotlin("multiplatform") version "1.9.0-Beta" apply false
-  id("com.github.ben-manes.versions") version "0.46.0"
+  id("com.github.ben-manes.versions") version "0.47.0"
   kotlin("plugin.serialization") version "1.9.0-Beta" apply false
 }
 
