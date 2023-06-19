@@ -1,0 +1,125 @@
+% This file was created with tikzplotlib v0.10.1.
+\begin{tikzpicture}
+
+\definecolor{coral25514978}{RGB}{255,149,78}
+\definecolor{darkgray176}{RGB}{176,176,176}
+\definecolor{darkviolet1270255}{RGB}{127,0,255}
+\definecolor{dodgerblue25149242}{RGB}{25,149,242}
+\definecolor{lightgray204}{RGB}{204,204,204}
+\definecolor{palegreen178242149}{RGB}{178,242,149}
+\definecolor{red}{RGB}{255,0,0}
+\definecolor{turquoise76242206}{RGB}{76,242,206}
+
+\begin{axis}[
+legend cell align={left},
+legend style={fill opacity=0.8, draw opacity=1, text opacity=1, draw=lightgray204},
+tick align=outside,
+tick pos=left,
+title={$\Delta=2$ Repair Precision},
+x grid style={darkgray176},
+xlabel={Seconds},
+xmin=-0.7425, xmax=11.7425,
+xtick style={color=black},
+xtick={0,1,2,3,4,5,6,7,8,9,10,11},
+xticklabels={60,55,50,45,40,35,30,25,20,15,10,5},
+y grid style={darkgray176},
+ymin=0, ymax=0.126,
+yticklabel style={
+  color=black,
+  /pgf/number format/fixed,
+  /pgf/number format/precision=2
+}
+]
+\draw[draw=none,fill=darkviolet1270255] (axis cs:-0.175,0) rectangle (axis cs:0.175,0.12);
+\addlegendimage{ybar,ybar legend,draw=none,fill=darkviolet1270255}
+\addlegendentry{P@1k}
+
+\draw[draw=none,fill=darkviolet1270255] (axis cs:0.825,0) rectangle (axis cs:1.175,0.099);
+\draw[draw=none,fill=darkviolet1270255] (axis cs:1.825,0) rectangle (axis cs:2.175,0.086);
+\draw[draw=none,fill=darkviolet1270255] (axis cs:2.825,0) rectangle (axis cs:3.175,0.078);
+\draw[draw=none,fill=darkviolet1270255] (axis cs:3.825,0) rectangle (axis cs:4.175,0.07);
+\draw[draw=none,fill=darkviolet1270255] (axis cs:4.825,0) rectangle (axis cs:5.175,0.062);
+\draw[draw=none,fill=darkviolet1270255] (axis cs:5.825,0) rectangle (axis cs:6.175,0.049);
+\draw[draw=none,fill=darkviolet1270255] (axis cs:6.825,0) rectangle (axis cs:7.175,0.039);
+\draw[draw=none,fill=darkviolet1270255] (axis cs:7.825,0) rectangle (axis cs:8.175,0.036);
+\draw[draw=none,fill=darkviolet1270255] (axis cs:8.825,0) rectangle (axis cs:9.175,0.029);
+\draw[draw=none,fill=darkviolet1270255] (axis cs:9.825,0) rectangle (axis cs:10.175,0.018);
+\draw[draw=none,fill=darkviolet1270255] (axis cs:10.825,0) rectangle (axis cs:11.175,0.008);
+\draw[draw=none,fill=dodgerblue25149242] (axis cs:-0.175,0) rectangle (axis cs:0.175,0.094);
+\addlegendimage{ybar,ybar legend,draw=none,fill=dodgerblue25149242}
+\addlegendentry{P@20}
+
+\draw[draw=none,fill=dodgerblue25149242] (axis cs:0.825,0) rectangle (axis cs:1.175,0.083);
+\draw[draw=none,fill=dodgerblue25149242] (axis cs:1.825,0) rectangle (axis cs:2.175,0.076);
+\draw[draw=none,fill=dodgerblue25149242] (axis cs:2.825,0) rectangle (axis cs:3.175,0.073);
+\draw[draw=none,fill=dodgerblue25149242] (axis cs:3.825,0) rectangle (axis cs:4.175,0.065);
+\draw[draw=none,fill=dodgerblue25149242] (axis cs:4.825,0) rectangle (axis cs:5.175,0.06);
+\draw[draw=none,fill=dodgerblue25149242] (axis cs:5.825,0) rectangle (axis cs:6.175,0.047);
+\draw[draw=none,fill=dodgerblue25149242] (axis cs:6.825,0) rectangle (axis cs:7.175,0.036);
+\draw[draw=none,fill=dodgerblue25149242] (axis cs:7.825,0) rectangle (axis cs:8.175,0.034);
+\draw[draw=none,fill=dodgerblue25149242] (axis cs:8.825,0) rectangle (axis cs:9.175,0.029);
+\draw[draw=none,fill=dodgerblue25149242] (axis cs:9.825,0) rectangle (axis cs:10.175,0.018);
+\draw[draw=none,fill=dodgerblue25149242] (axis cs:10.825,0) rectangle (axis cs:11.175,0.008);
+\draw[draw=none,fill=turquoise76242206] (axis cs:-0.175,0) rectangle (axis cs:0.175,0.089);
+\addlegendimage{ybar,ybar legend,draw=none,fill=turquoise76242206}
+\addlegendentry{P@15}
+
+\draw[draw=none,fill=turquoise76242206] (axis cs:0.825,0) rectangle (axis cs:1.175,0.076);
+\draw[draw=none,fill=turquoise76242206] (axis cs:1.825,0) rectangle (axis cs:2.175,0.07);
+\draw[draw=none,fill=turquoise76242206] (axis cs:2.825,0) rectangle (axis cs:3.175,0.065);
+\draw[draw=none,fill=turquoise76242206] (axis cs:3.825,0) rectangle (axis cs:4.175,0.057);
+\draw[draw=none,fill=turquoise76242206] (axis cs:4.825,0) rectangle (axis cs:5.175,0.052);
+\draw[draw=none,fill=turquoise76242206] (axis cs:5.825,0) rectangle (axis cs:6.175,0.044);
+\draw[draw=none,fill=turquoise76242206] (axis cs:6.825,0) rectangle (axis cs:7.175,0.036);
+\draw[draw=none,fill=turquoise76242206] (axis cs:7.825,0) rectangle (axis cs:8.175,0.034);
+\draw[draw=none,fill=turquoise76242206] (axis cs:8.825,0) rectangle (axis cs:9.175,0.029);
+\draw[draw=none,fill=turquoise76242206] (axis cs:9.825,0) rectangle (axis cs:10.175,0.018);
+\draw[draw=none,fill=turquoise76242206] (axis cs:10.825,0) rectangle (axis cs:11.175,0.008);
+\draw[draw=none,fill=palegreen178242149] (axis cs:-0.175,0) rectangle (axis cs:0.175,0.081);
+\addlegendimage{ybar,ybar legend,draw=none,fill=palegreen178242149}
+\addlegendentry{P@10}
+
+\draw[draw=none,fill=palegreen178242149] (axis cs:0.825,0) rectangle (axis cs:1.175,0.068);
+\draw[draw=none,fill=palegreen178242149] (axis cs:1.825,0) rectangle (axis cs:2.175,0.062);
+\draw[draw=none,fill=palegreen178242149] (axis cs:2.825,0) rectangle (axis cs:3.175,0.055);
+\draw[draw=none,fill=palegreen178242149] (axis cs:3.825,0) rectangle (axis cs:4.175,0.049);
+\draw[draw=none,fill=palegreen178242149] (axis cs:4.825,0) rectangle (axis cs:5.175,0.047);
+\draw[draw=none,fill=palegreen178242149] (axis cs:5.825,0) rectangle (axis cs:6.175,0.039);
+\draw[draw=none,fill=palegreen178242149] (axis cs:6.825,0) rectangle (axis cs:7.175,0.029);
+\draw[draw=none,fill=palegreen178242149] (axis cs:7.825,0) rectangle (axis cs:8.175,0.031);
+\draw[draw=none,fill=palegreen178242149] (axis cs:8.825,0) rectangle (axis cs:9.175,0.029);
+\draw[draw=none,fill=palegreen178242149] (axis cs:9.825,0) rectangle (axis cs:10.175,0.018);
+\draw[draw=none,fill=palegreen178242149] (axis cs:10.825,0) rectangle (axis cs:11.175,0.008);
+\draw[draw=none,fill=coral25514978] (axis cs:-0.175,0) rectangle (axis cs:0.175,0.044);
+\addlegendimage{ybar,ybar legend,draw=none,fill=coral25514978}
+\addlegendentry{P@5}
+
+\draw[draw=none,fill=coral25514978] (axis cs:0.825,0) rectangle (axis cs:1.175,0.039);
+\draw[draw=none,fill=coral25514978] (axis cs:1.825,0) rectangle (axis cs:2.175,0.039);
+\draw[draw=none,fill=coral25514978] (axis cs:2.825,0) rectangle (axis cs:3.175,0.039);
+\draw[draw=none,fill=coral25514978] (axis cs:3.825,0) rectangle (axis cs:4.175,0.034);
+\draw[draw=none,fill=coral25514978] (axis cs:4.825,0) rectangle (axis cs:5.175,0.029);
+\draw[draw=none,fill=coral25514978] (axis cs:5.825,0) rectangle (axis cs:6.175,0.029);
+\draw[draw=none,fill=coral25514978] (axis cs:6.825,0) rectangle (axis cs:7.175,0.023);
+\draw[draw=none,fill=coral25514978] (axis cs:7.825,0) rectangle (axis cs:8.175,0.021);
+\draw[draw=none,fill=coral25514978] (axis cs:8.825,0) rectangle (axis cs:9.175,0.021);
+\draw[draw=none,fill=coral25514978] (axis cs:9.825,0) rectangle (axis cs:10.175,0.013);
+\draw[draw=none,fill=coral25514978] (axis cs:10.825,0) rectangle (axis cs:11.175,0.008);
+\draw[draw=none,fill=red] (axis cs:-0.175,0) rectangle (axis cs:0.175,0.016);
+\addlegendimage{ybar,ybar legend,draw=none,fill=red}
+\addlegendentry{P@1}
+
+\draw[draw=none,fill=red] (axis cs:0.825,0) rectangle (axis cs:1.175,0.018);
+\draw[draw=none,fill=red] (axis cs:1.825,0) rectangle (axis cs:2.175,0.016);
+\draw[draw=none,fill=red] (axis cs:2.825,0) rectangle (axis cs:3.175,0.016);
+\draw[draw=none,fill=red] (axis cs:3.825,0) rectangle (axis cs:4.175,0.016);
+\draw[draw=none,fill=red] (axis cs:4.825,0) rectangle (axis cs:5.175,0.013);
+\draw[draw=none,fill=red] (axis cs:5.825,0) rectangle (axis cs:6.175,0.01);
+\draw[draw=none,fill=red] (axis cs:6.825,0) rectangle (axis cs:7.175,0.01);
+\draw[draw=none,fill=red] (axis cs:7.825,0) rectangle (axis cs:8.175,0.008);
+\draw[draw=none,fill=red] (axis cs:8.825,0) rectangle (axis cs:9.175,0.008);
+\draw[draw=none,fill=red] (axis cs:9.825,0) rectangle (axis cs:10.175,0.01);
+\draw[draw=none,fill=red] (axis cs:10.825,0) rectangle (axis cs:11.175,0.008);
+\end{axis}
+
+\end{tikzpicture}
