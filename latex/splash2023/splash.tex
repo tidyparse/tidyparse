@@ -1547,7 +1547,7 @@ In our work, we recast the problem of ECP as a special case of tensor completion
 
 \section{Human Repair Benchmark}\label{sec:human}
 
-Below, we plot the results of a human repair benchmark measuring the Precision@k of our repair procedure against human repairs of varying edit distances and latency cutoffs across 1233 distinct Python snippets $(\Delta_1 = 649, \Delta_2 = 384, \Delta_3 = 200)$ from the StackOverflow dataset~\cite{wong2019syntax}.
+Below, we plot the results of a human repair benchmark measuring the Precision@k of our repair procedure against human repairs of varying edit distances and latency cutoffs.% across 1233 distinct Python snippets $(\Delta_1 = 649, \Delta_2 = 384, \Delta_3 = 200)$ from the StackOverflow dataset~\cite{wong2019syntax}.
 
 \begin{figure}[H]
 \input{repair1-3_plot.tex}
@@ -1556,7 +1556,21 @@ Below, we plot the results of a human repair benchmark measuring the Precision@k
 %\caption{Human repair benchmark. Note the y-axis across different edit distance plots has varying ranges.}\label{fig:human}
 \end{figure}
 
-For comparison below are the results from Seq2Parse on the same dataset. Seq2Parse only supports Precision@1 repairs, and so we only report precision@1 from the StackOverflow benchmark for comparison. Unlike our approach which only produces syntactically correct repairs, Seq2Parse also produces syntactically incorrect repairs and so we report the percentage of syntactically correct repairs (Syntactic), as well as the precision of the abstract tokens repairs (HumanEval), and the exact character match precision (CharMatch).
+\begin{figure}[H]
+\input{repair1_plot.tex}
+%\resizebox{.3\textwidth}{!}{\input{repair1_plot.tex}}
+%\resizebox{.307\textwidth}{!}{\input{repair2_plot.tex}}
+%\caption{Human repair benchmark. Note the y-axis across different edit distance plots has varying ranges.}\label{fig:human}
+\end{figure}
+
+\begin{figure}[H]
+\input{repair2_plot.tex}
+%\resizebox{.3\textwidth}{!}{\input{repair1_plot.tex}}
+%\resizebox{.307\textwidth}{!}{\input{repair2_plot.tex}}
+%\caption{Human repair benchmark. Note the y-axis across different edit distance plots has varying ranges.}\label{fig:human}
+\end{figure}
+
+For comparison below are the results from Seq2Parse on the same dataset. Seq2Parse only supports Precision@1 repairs, and so we only report precision@1 from the StackOverflow benchmark for comparison. Unlike our approach which only produces syntactically correct repairs, Seq2Parse also produces syntactically incorrect repairs and so we report the percentage of syntactically correct repairs (Syntactic), as well as the precision of the abstract tokens repairs (AbstractEval), and the exact character match precision (CharMatch).
 
 \begin{figure}[h]
 \resizebox{0.3\textwidth}{!}{
@@ -1576,7 +1590,7 @@ ymin=0,ymax=1,
 \addplot coordinates {(1-edit, 0.9) (2-edit, 0.857) (3-edit, 0.794)};
 \addplot coordinates {(1-edit, 0.454) (2-edit, 0.162) (3-edit, 0.096)};
 \addplot coordinates {(1-edit, 0.005) (2-edit, 0.004) (3-edit, 0.0)};
-\legend{Syntactic, HumanEval, CharMatch}
+\legend{Syntactic, AbstractEval, CharMatch}
 \end{axis}
 \end{tikzpicture}
 }
