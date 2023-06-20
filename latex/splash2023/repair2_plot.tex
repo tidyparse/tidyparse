@@ -10,7 +10,7 @@
 
 \begin{axis}[
 legend cell align={left},
-legend style={fill opacity=0.8, draw opacity=1, text opacity=1, draw=lightgray204},
+legend style={fill opacity=0.8, draw opacity=1, text opacity=1, draw=lightgray204, legend columns=-1, legend pos=north east},
 tick align=outside,
 tick pos=left,
 title={$\Delta=2$ Repair Precision},
@@ -99,6 +99,8 @@ height=0.33\textwidth,
 \draw[draw=none,fill=deepskyblue3176236] (axis cs:11.825,0) rectangle (axis cs:12.175,0);
 \draw[draw=none,fill=deepskyblue3176236] (axis cs:12.825,0) rectangle (axis cs:13.175,0);
 \draw[draw=none,fill=deepskyblue3176236] (axis cs:13.825,0) rectangle (axis cs:14.175,0.016);
+\addplot [red, thick] coordinates {(-0.8925,0.16) (14.8925,0.16)};
+\node[above, red] at (axis cs:13,0.16) {Seq2Parse P@1@\~2s};
 \end{axis}
 
 \end{tikzpicture}
