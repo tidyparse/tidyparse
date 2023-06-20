@@ -1550,10 +1550,10 @@ In our work, we recast the problem of ECP as a special case of tensor completion
 Below, we plot the results of a human repair benchmark measuring the Precision@k of our repair procedure against human repairs of varying edit distances and latency cutoffs across 1233 distinct Python snippets $(\Delta_1 = 649, \Delta_2 = 384, \Delta_3 = 200)$ from the StackOverflow dataset~\cite{wong2019syntax}.
 
 \begin{figure}[H]
-\resizebox{.32\textwidth}{!}{\input{repair1-3_plot.tex}}
-\resizebox{.3\textwidth}{!}{\input{repair1_plot.tex}}
-\resizebox{.307\textwidth}{!}{\input{repair2_plot.tex}}
-\caption{Human repair benchmark. Note the y-axis across different edit distance plots has varying ranges.}\label{fig:human}
+\input{repair1-3_plot.tex}
+%\resizebox{.3\textwidth}{!}{\input{repair1_plot.tex}}
+%\resizebox{.307\textwidth}{!}{\input{repair2_plot.tex}}
+%\caption{Human repair benchmark. Note the y-axis across different edit distance plots has varying ranges.}\label{fig:human}
 \end{figure}
 
 For comparison below are the results from Seq2Parse on the same dataset. Seq2Parse only supports Precision@1 repairs, and so we only report precision@1 from the StackOverflow benchmark for comparison. Unlike our approach which only produces syntactically correct repairs, Seq2Parse also produces syntactically incorrect repairs and so we report the percentage of syntactically correct repairs (Syntactic), as well as the precision of the abstract tokens repairs (HumanEval), and the exact character match precision (CharMatch).
