@@ -40,14 +40,14 @@
 %% Title information
 \title{Syntax Error Correction as Idempotent Matrix Completion}
 \begin{abstract}
-In this work, we illustrate how to lower context-free language recognition onto a tensor algebra over finite fields. In addition to its theoretical value, this connection has yielded surprisingly useful applications in incremental parsing, code completion and program repair. For example, we use it to repair syntax errors, perform sketch-based program synthesis, and decide various language induction and membership queries. This line of research provides an elegant unification of context-free program repair, code completion and sketch-based program synthesis. To accelerate code completion, we design and implement a novel incremental parser-synthesizer that transforms CFGs onto a dynamical system over finite field arithmetic, enabling us to suggest syntax repairs in-between keystrokes.
+In this work, we illustrate how to lower context-free language recognition onto a tensor algebra over finite fields. In addition to its theoretical value, this connection has yielded surprisingly useful applications in incremental parsing, code completion and program repair. For example, we use it to repair syntax errors, perform sketch-based program synthesis, and decide various language induction and membership queries. This line of research provides an elegant unification of context-free program repair, code completion and sketch-based program synthesis. To accelerate code completion, we design and implement a novel incremental parser-synthesizer that transforms CFGs onto a dynamical system over finite field arithmetic, enabling us to suggest syntax repairs in-between keystrokes. Our approach attains state-of-the-art repair precision@$\@\{1, 5, 10\}$ on a dataset of human Python repairs at a fraction of the cost of existing methods, and is easily extensible to other programming languages.
 \end{abstract}
 
 \maketitle
 
 \section{Introduction}
 
-Syntax correction is one of the first problems that novice programmers encounter when learning to write code and a perennial issue in computer programming. Put simply, it is the problem of repairing a syntactically incorrect program so that it parses. This problem is challenging because well-formed programs have many extra-syntactic constraints, increasing the complexity of repair, but also because the problem is highly under-determined: repairs must align with the surrounding code context, and the correct repair is seldom unique, even assuming minimality.
+Syntax correction is one of the first problems that novice programmers encounter when learning to write code and a perennial issue in computer programming. Put simply, it is the problem of repairing a syntactically incorrect program so that it parses. This problem is challenging because well-formed programs have many extra-syntactic constraints, increasing the complexity of repair, but also because the problem is highly under-determined: repairs must be consistient with the surrounding context, and the correct repair is seldom unique, even assuming minimality.
 
 The majority of prior work on syntax correction can be separated into one of two high-level categories: (1) \textit{pattern matching}, which uses hand-crafted rules to identify and correct common syntax errors, and (2) \textit{machine learning}, i.e., which uses a statistical language model to repair code via a set of learned heuristics. The former approach is effective but requires language-specific rules, while the latter generates more natural edits, but is costly to train, generalizes poorly, has high sample complexity, and is difficult to incorporate new constraints without retraining.
 
@@ -67,7 +67,7 @@ More specifically, our paper is structured as follows: we present two high-level
 %  \item Problem definition (independent section?)
 %\end{itemize}
 
-Three important questions arise when repairing any sort of program: (1) is the program broken in the first place? (2) if so, where are the errors located? (3) how should those locations then be altered? In the case of syntax correction, those questions are addressed by three related research areas, (1) parsing, (2) language equations and (3) repair. We survey each of those areas in turn.
+Three important questions arise when repairing syntax errors: (1) is the program broken in the first place? (2) if so, where are the errors located? (3) how should those locations then be altered? In the case of syntax correction, those questions are addressed by three related research areas, (1) parsing, (2) language equations and (3) repair. We survey each of those areas in turn.
 
 \subsection{CFL Parsing}
 
@@ -97,13 +97,54 @@ In this paper, we restrict our attention to language equations over context-free
 
 In finite languages, syntax repair corresponds to spelling correction, a more restrictive and largely solved problem. Schulz and Stoyan~\cite{schulz2002fast} construct a finite automaton that returns the nearest dictionary entry by Levenshtein edit distance. Though considerably simpler than syntax correction, their work shares similar challenges and offers insights for handling more general repair scenarios.
 
-When a sentence is grammatically invalid, parsing grows more challenging. Parsing with errors or \textit{error recovery} was first considered by Aho~\cite{aho1972minimum, irons1963error} and others. Like spelling, the problem is to find the minimum number of edits required to transform an arbitrary string into a syntactically valid one, where validity is defined as containment in a (typically) context-free langauge.
+When a sentence is grammatically invalid, parsing grows more challenging. Like spelling, the problem is to find the minimum number of edits required to transform an arbitrary string into a syntactically valid one, where validity is defined as containment in a (typically) context-free language. Early work, including Aho~\cite{irons1963error, aho1972minimum} propose a dynamic programming algorithm that computes the minimum number of edits required to transform a string into a valid one. The problem of actually generating the repairs however is not well-posed, as there are often many valid strings that can be obtained within a given number of edits. We instead focus on bounded Levenshtein reachability, which is the problem of finding useful repairs within a fixed Levenshtein distance of the broken string, which requires language intersection.
 
 Bar-Hillel~\cite{bar1961formal} establishes the closure of CFLs under intersection with regular languages, and can be used to construct the corresponding minimum-cost CFG in a straightforward manner. However while generally quite expressive, CFLs are themselves not closed under intersection and have other practical limitations, i.e., are unable to express indentation or variable binding. These limitations motivate us towards more expressive yet still efficiently parsable formalisms.
 
 Conveniently, Okhotin~\cite{okhotin2010decision} offers exactly the formalism needed: language equations augmented with logical operators like conjunction or disjunction. These operators afford us the flexibility to encode both language union and intersection, which are difficult or impossible to express using a single grammar, as well as incorporate extra-syntactic side-constraints during solving.
 
 %Naively, one might think to enumerate all edits within a certain Levenshtein radius and reject invalid strings. However, this approach is intractable for long strings. Another approach is to compute the \textit{edit distance} between the string and the language as proposed by Aho. This approach is also intractable depending on the size of the grammar. A third approach is to use a language equation to compute the intersection between the Levenshtein hypersphere and the language.
+
+\section{Problem Statement}
+
+The context-free Levenshtein reachability problem can be formally stated as follows:
+
+Definition: The language edit distance (LED) is the minimum number of edits required to transform a string into a valid one, where validity is defined as containment in a context-free language, $\ell: \mathcal{L}$, i.e., $\Delta^*(\err{\sigma}, \ell) \coloneqq \min_{\sigma \in \ell}\Delta(\err{\sigma}, \sigma)$, and $\Delta$ is the Levenshtein distance.
+
+We seek to find the set of strings $S$ such that $\forall \tilde{\sigma}\in S, \Delta(\err{\sigma}, \tilde{\sigma}) \leq k$, where $k$ is the maximum number of edits greater than or equal to the language edit distance. We call this set the \textit{Levenshtein hypersphere} of $\err{\sigma}$ and denote it $\Delta_k(\err{\sigma})$. Since $k$ is lower-bounded by $\Delta^*(\err{\sigma}, \ell)$, we have $1 \leq \Delta_k(\err{\sigma})$.
+
+We now consider an upper bound on $\Delta^*(\err{\sigma}, \ell)$.
+
+\begin{lemma}
+  For any nonempty language $\ell: \mathcal{L}(\mathcal{G})$ and invalid string $\err{\sigma}: \Sigma^n$, there exists an $(\tilde{\sigma}, m)$ such that $\tilde{\sigma} \in \ell\cap\Sigma^m$ and $0 < \Delta(\err{\sigma}, \ell) \leq \max(m, n) < \infty$.\\
+\end{lemma}
+
+\begin{proof}
+  Since $\ell$ is nonempty, it must have at least one inhabitant $\sigma \in \ell$. Let $\tilde{\sigma}$ be the smallest such member. Since $\tilde{\sigma}$ is a valid sentence in $\ell$, by definition it must be that $|\tilde{\sigma}|<\infty$. Let $m:=|\tilde{\sigma}|$. Since we know $\err{\sigma} \notin \ell$, it follows that $0 < \Delta(\err{\sigma}, \ell)$. Let us consider two cases, either $\tilde{\sigma} = \varepsilon$, or $0 < |\tilde{\sigma}|$:
+
+  \begin{itemize}
+    \item If $\tilde{\sigma} = \varepsilon$, then $\Delta(\err{\sigma}, \tilde{\sigma}) = n$ by full erasure of $\err{\sigma}$, or
+    \item If $0 < m$, then $\Delta(\err{\sigma}, \tilde{\sigma}) \leq \max(m, n)$ by overwriting.
+  \end{itemize}
+
+  In either case, it follows $\Delta(\err{\sigma}, \ell) \leq \max(m, n)$ and $\ell$ is always reachable via a finite nonempty set of Levenshtein edits, i.e., $0 < \Delta(\err{\sigma}, \ell) < \infty$.
+\end{proof}
+
+In practice, this problem is ill-posed even when $k = \Delta^*(\err{\sigma}, \ell)$. For example, consider the language of ursine dietary preferences. Although $\err{\sigma}\coloneq$ ``Bears like to eat tomatoes'' is not in the language, $\Delta^*$ is 1, e.g., ``Bears like to eat'', however there are many other variations with the same edit distance, e.g., or ``Bears like to eat \{\hlorange{berries}, \hlorange{honey}, \hlorange{fish}\}''. We may also wish to consider two or more edits, e.g., ``\{\hlgreen{Polar}, \hlgreen{Panda}\} bears like to eat \{\hlgreen{seals}, \hlgreen{bamboo}\}''. In general, there are many valid strings within a fixed Levenshtein distance of $\err{\sigma}$, and we seek to find among them, the set of strings that are both syntactically valid and semantically plausible within a short amount of time.
+
+\section{Approach}
+
+We now present a number of optimality criteria for the parsing framework. These criteria were used to guide the design of various components and evaluate its performance.
+
+\begin{itemize}
+  \item First and foremost, the framework must be \textbf{sound} and \textbf{complete}. That is, the parser-generator must (1) accept arbitrary conjunctive grammars, and (2) generate a parser which accepts all and only syntactically valid strings and (3) when a string is invalid, our synthesizer must eventually generate all syntactically valid strings within a fixed distance from it.
+  \item Second, we require that the resulting repairs be \textbf{plausible} and \textbf{diverse}. In other words, the framework should generate repairs that are likely to be written by a human being, consistent with the surrounding context, and reasonably diverse in their structure.
+  \item Third, the framework must be \textbf{efficient} and \textbf{responsive}. That is, it must be able to recognize well-formed strings in subcubic time, and generate admissible repairs in subpolynomial time. These conditions are necessary to provide real-time feedback whilst the user is typing.
+  \item Fourth, the framework must also be \textbf{robust} and \textbf{scalable}. In practice, this means that the framework should be robust to multiple errors, handle grammars with a large number of productions and be able to scale linearly as the number of processor cores are increased.
+  \item Finally, the framework must be \textbf{flexible} and \textbf{extensible}. Intended as a general-purpose tool for generating syntax repairs in a wide variety of programming languages, end-users should be able to extend the framework with their own custom grammars and side-constraints.
+\end{itemize}
+
+With these criteria in mind, we now present the parsing framework in Section~\ref{sec:parsing}.
 
 \section{Overview}
 
@@ -122,7 +163,6 @@ We then use each edit template, in conjunction with the grammar to search for ad
 
 %A number of important details are omitted from this overview. For example, we do not discuss the details of the combinatorial number system, the LFSR, or the statistical distance metric. We also do not discuss the details of the matrix equivalence relation, the linear system of equations, or the least fixpoint. We defer these details to the rest of the paper.
 
-\pagebreak
 \section{Toy Example}
 
 Suppose we are given the following context-free grammar:
@@ -386,6 +426,254 @@ Valiant's decision procedure can be abstracted by lifting into the domain of bit
 
 So far, we have only considered the syntactic theory of breadth-bounded CFLs with holes, however, our construction can be easily extended to handle the family of CFLs closed under conjunction. The additional expressivity afforded by the language conjunction operator will be indispensable when considering practical program repair scenarios, which may require extra-grammatical constraints such as indentation-sensitivity or Levenshtein-bounded reachability. That extension, and the resulting theory of breadth-bounded CJLs with holes, will be explored in Sec.~\ref{sec:lclreach}.
 
+\section{Levenshtein reachability}\label{sec:levenshtein}
+
+%Levenshtein distance can be defined as an optimal transport problem between two strings $A, B: \Sigma^*$:
+%
+%\begin{equation}
+%  \text{Levenshtein Distance} = \Delta(A, B) = \min_{\pi \in \Pi(\mu_A, \mu_B)} \int_{\Sigma^* \times \Sigma^*} \delta(A, B) d\pi(A, B)
+%\end{equation}
+%
+%\noindent where $\mu_A$ and $\mu_B$ are the discrete distributions corresponding to strings $A$ and $B$, respectively. A single transportation plan, $\pi$, can be viewed as a sequence of Levenshtein edits, and $\Pi(\mu_A, \mu_B)$ is the set of all transport plans with marginals $\mu_A$ and $\mu_B$. Finally, the Levenshtein distance between $A$ and $B$ is then the minimum cost over all transportation plans, i.e., edit sequences $\pi \in \Pi(\mu_A, \mu_B)$.
+
+In the case where $A$ and $B$ are both fixed strings, Levenshtein distance can be interpreted as a shortest path problem over an unweighted graph whose vertices are the strings $A, B$ and edges represent Levenshtein edits. The distance between $A$ and $B$ then, is simply the length of the shortest path(s). When $B$ is a free variable, we can define a finite automaton accepting only strings within a given Levenshtein distance $d$ of $A$ by unrolling transition dynamics $\mathcal{L}(A, d)$ up to a fixed depth $d$.
+
+Levenshtein reachability is recognized by the nondeterministic infinite automaton (NIA) whose topology $\mathcal{L} = \knightkingarrow$ can be factored into a product of (a) the monotone Chebyshev topology $\kingarrow$, equipped with horizontal transitions accepting $\sigma_{i}$ and vertical transitions accepting Kleene stars, and (b) the monotone knight's topology $\knightarrow$, equipped with transitions accepting $\sigma_{i+2}$. The structure of this space is representable as an acyclic NFA~\cite{schulz2002fast}, populated by accept states within radius $k$ of $q_{n,0}$, or equivalently, a left-linear CFG whose productions finitely instantiate the transition dynamics:
+
+\begin{figure}[H]
+  \begin{minipage}[c]{0.45\textwidth}
+    \centering
+    \underline{NFA}\vspace{10pt}
+    \resizebox{\textwidth}{!}{
+    \begin{tikzpicture}[
+%->, % makes the edges directed
+    >=stealth',
+    node distance=2.5cm, % specifies the minimum distance between two nodes. Change if necessary.
+%  every state/.style={thick, fill=gray!10}, % sets the properties for each ’state’ node
+    initial text=$ $, % sets the text that appears on the start arrow
+    ]
+    \node[state, initial]                (00) {$q_{0,0}$};
+    \node[state, right of=00]            (10) {$q_{1,0}$};
+    \node[state, right of=10]            (20) {$q_{2,0}$};
+    \node[state, right of=20]            (30) {$q_{3,0}$};
+    \node[right of=30]                   (40) {$\vphantom{\vdots}\cdots$};
+    \node[accepting, state, right of=40] (n0) {$q_{n,0}$};
+
+    \node[state, above of=00]            (01) {$q_{0,1}$};
+    \node[state, right of=01]            (11) {$q_{1,1}$};
+    \node[state, right of=11]            (21) {$q_{2,1}$};
+    \node[state, right of=21]            (31) {$q_{3,1}$};
+    \node[right of=31]                   (41) {$\vphantom{\vdots}\cdots$};
+    \node[accepting, state, right of=41] (n1) {$q_{n,1}$};
+
+    \node[above of=01]                   (0j) {$\mathmakebox[\widthof{$\cdots$}]{\vdots}$};
+\node[right of=0j]                   (1j) {$\mathmakebox[\widthof{$\cdots$}]{\vdots}$};
+\node[right of=1j]                   (2j) {$\mathmakebox[\widthof{$\cdots$}]{\vdots}$};
+\node[right of=2j]                   (3j) {$\mathmakebox[\widthof{$\cdots$}]{\vdots}$};
+\node[right of=3j]                   (4j) {$\iddots$};
+\node[accepting, right of=4j]        (nj) {$\mathmakebox[\widthof{$\cdots$}]{\vdots}$};
+
+\node[state, above of=0j]            (0k) {$q_{0,k}$};
+\node[state, right of=0k]            (1k) {$q_{1,k}$};
+\node[state, right of=1k]            (2k) {$q_{2,k}$};
+\node[state, right of=2k]            (3k) {$q_{3,k}$};
+\node[right of=3k]                   (4k) {$\vphantom{\vdots}\cdots$};
+\node[accepting, state, right of=4k] (nk) {$q_{n,k}$};
+
+\draw [->] (00) edge[below] node{$\sigma_1$} (10);
+\draw [->] (10) edge[below] node{$\sigma_2$} (20);
+\draw [->] (20) edge[below] node{$\sigma_3$} (30);
+\draw [->] (30) edge[below] node{$\sigma_4$} (40);
+\draw [->] (40) edge[below] node{$\sigma_n$} (n0);
+
+\draw [->] (01) edge[below] node{$\sigma_1$} (11);
+\draw [->] (11) edge[below] node{$\sigma_2$} (21);
+\draw [->] (21) edge[below] node{$\sigma_3$} (31);
+\draw [->] (31) edge[below] node{$\sigma_4$} (41);
+\draw [->] (41) edge[below] node{$\sigma_n$} (n1);
+
+\draw [->] (0j) edge[below] node{$\sigma_1$} (1j);
+\draw [->] (1j) edge[below] node{$\sigma_2$} (2j);
+\draw [->] (2j) edge[below] node{$\sigma_3$} (3j);
+\draw [->] (3j) edge[below] node{$\sigma_4$} (4j);
+\draw [->] (4j) edge[below] node{$\sigma_n$} (nj);
+
+\draw [->] (0k) edge[below] node{$\sigma_1$} (1k);
+\draw [->] (1k) edge[below] node{$\sigma_2$} (2k);
+\draw [->] (2k) edge[below] node{$\sigma_3$} (3k);
+\draw [->] (3k) edge[below] node{$\sigma_4$} (4k);
+\draw [->] (4k) edge[below] node{$\sigma_n$} (nk);
+
+\draw [->] (00) edge[left] node{$*$}         (11);
+\draw [->] (10) edge[left] node{$*$}         (21);
+\draw [->] (20) edge[left] node{$*$}         (31);
+\draw [->] (30) edge[left] node{$*$}         (41);
+\draw [->] (30) edge[bend right, below] node{$\sigma_5$} (41);
+\draw [->] (40) edge[           right] node{$\sigma_n$}  (n1);
+\draw [->] (40) edge[bend right, left] node{$*$}         (n1);
+
+\draw [->] (01) edge[left] node{$*$}                     (1j);
+\draw [->] (11) edge[left] node{$*$}                     (2j);
+\draw [->] (21) edge[left] node{$*$}                     (3j);
+\draw [->] (31) edge[left] node{$*$}                     (4j);
+\draw [->] (31) edge[bend right, below] node{$\sigma_5$} (4j);
+\draw [->] (41) edge[           right] node{$\sigma_n$}  (nj);
+\draw [->] (41) edge[bend right, left] node{$*$}         (nj);
+
+\draw [->] (0j) edge[left] node{$*$}                     (1k);
+\draw [->] (1j) edge[left] node{$*$}                     (2k);
+\draw [->] (2j) edge[left] node{$*$}                     (3k);
+\draw [->] (3j) edge[left] node{$*$}                     (4k);
+\draw [->] (3j) edge[bend right, below] node{$\sigma_5$} (4k);
+\draw [->] (4j) edge[           right] node{$\sigma_n$}  (nk);
+\draw [->] (4j) edge[bend right, left] node{$*$}         (nk);
+
+\draw [->] (00) edge[bend left, left] node{$*$}   (01);
+\draw [->] (10) edge[bend left, left] node{$*$}   (11);
+\draw [->] (20) edge[bend left, left] node{$*$}   (21);
+\draw [->] (30) edge[bend left, left] node{$*$}   (31);
+\draw [->] (40) edge[right] node{$*$}             (41);
+\draw [->] (n0) edge[bend right, right] node{$*$} (n1);
+
+\draw [->] (01) edge[bend left, left] node{$*$}   (0j);
+\draw [->] (11) edge[bend left, left] node{$*$}   (1j);
+\draw [->] (21) edge[bend left, left] node{$*$}   (2j);
+\draw [->] (31) edge[bend left, left] node{$*$}   (3j);
+\draw [->] (41) edge[right] node{$*$}             (4j);
+\draw [->] (n1) edge[bend right, right] node{$*$} (nj);
+
+\draw [->] (0j) edge[bend left, left] node{$*$}   (0k);
+\draw [->] (1j) edge[bend left, left] node{$*$}   (1k);
+\draw [->] (2j) edge[bend left, left] node{$*$}   (2k);
+\draw [->] (3j) edge[bend left, left] node{$*$}   (3k);
+\draw [->] (4j) edge[right] node{$*$}             (4k);
+\draw [->] (nj) edge[bend right, right] node{$*$} (nk);
+
+\draw [->] (00) edge[below] node{$\sigma_2$}    (21);
+\draw [->] (10) edge[below] node{$\sigma_3$}    (31);
+\draw [->] (20) edge[below] node{$\sigma_4$}    (41);
+
+\draw [->] (01) edge[below] node{$\sigma_2$}    (2j);
+\draw [->] (11) edge[below] node{$\sigma_3$}    (3j);
+\draw [->] (21) edge[below] node{$\sigma_4$}    (4j);
+
+\draw [->] (0j) edge[below] node{$\sigma_2$}    (2k);
+\draw [->] (1j) edge[below] node{$\sigma_3$}    (3k);
+\draw [->] (2j) edge[below] node{$\sigma_4$}    (4k);
+
+%https://tex.stackexchange.com/a/20986/139648
+\draw [decorate,decoration={brace,amplitude=10pt,raise=10pt,mirror}] (00.south west) -- (n0.south east) node[midway,yshift=-3em]{\textbf{String length}};
+\draw [decorate,decoration={brace,amplitude=10pt,raise=20pt}] (00.south west) -- (0k.north west) node[midway,xshift=-40pt,rotate=90]{\textbf{Levenshtein edit distance}};
+\end{tikzpicture}
+}
+\end{minipage}
+\hfill
+\begin{minipage}[l]{5 cm}
+\centering
+\underline{CFG}\vspace{7pt}
+\begin{align*}
+S &\Rightarrow \{\cdot \in Q \mid \delta(\cdot, q_{n,0}) \leq k\}\\
+* &\Rightarrow \{\cdot \in \Sigma\}\\
+\big\{q_{i, j} &\Rightarrow \{q_{i, j-1}*\} \mid i, j \in [1, n]\times[1, k]\big\}\\
+\big\{q_{i, j} &\Rightarrow \{q_{i-1, j-1}*\}\mid i, j\in[1, n]\times [1, k]\big\}\\
+\big\{q_{i, j} &\Rightarrow \{q_{i-1, j} \sigma_i \}\mid i, j \in [1, n]\times[0, k]\big\} \\
+\big\{q_{i, j} &\Rightarrow \{q_{i-2, j-1} \sigma_i\} \mid i, j \in [2, n]\times[1, k] \big\}\\
+\end{align*}
+\end{minipage}
+\caption{Levenshtein reachability from $\Sigma^n$ can be described as either an acyclic $\epsilon$-free NFA, or a left-linear CFG.}
+\end{figure}
+
+\section{Language Edit Reachability}\label{sec:editreach}
+
+\begin{wrapfigure}{r}{0.33\textwidth}
+\begin{minipage}[c]{0.33\textwidth}
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[
+dot/.style = {circle, inner sep=0pt, minimum size=1mm, fill,
+node contents={}}
+]
+\def\firstcircle{(-2.1,0) coordinate (a) circle (2.4cm)}
+\def\firstcirclea{(-2.1,0) coordinate (b) circle (0.6cm)}
+\def\firstcircleb{(-2.1,0) coordinate (c) circle (1.2cm)}
+\def\firstcirclec{(-2.1,0) coordinate (d) circle (1.8cm)}
+\def\secondcircle{(1.2,0) coordinate (e) circle (1.5cm)}
+\begin{scope}
+\clip \secondcircle;
+\fill[black!15] \firstcircle;
+\end{scope}
+\draw \firstcircle node[dot,label=$\err{\sigma}$](z0);
+\draw [dashed] \firstcirclea;
+\draw [dashed] \firstcircleb;
+\draw [dashed] \firstcirclec;
+\draw[-stealth] (-2.1,0) -- (-1.5, 0) node[midway,below]{$d_1$};
+\draw[-stealth] (-1.5,0) -- (-0.9, 0) node[midway,below]{$d_2$};
+\draw[-stealth] (-0.9,0) -- (-0.3, 0) node[midway,below]{$\vphantom{d}\ldots$};
+\draw[-stealth] (-0.3,0) -- (0.3, 0) node[midway,below]{$d^*$};
+\draw[-stealth] (-0.3,0) -- (0.3, 0) node[midway,above]{$\tilde{\sigma}$};
+\draw \secondcircle;
+\node [above] at (current bounding box.north -| a) {$\mathcal{L}(G(\err\sigma, d^*))$};
+\node [above,yshift=1.5cm] at (e) {$\mathcal{L}(\mathcal{G}')$};
+\end{tikzpicture}
+}
+\end{minipage}
+\caption{LED is computed gradually by incrementing $d$ until $\mathcal{L}^\cap_{d}\neq \varnothing$.}
+\end{wrapfigure}
+
+Assume a hypothetical $\Phi(\mathcal{G}': \mathbb{G}, \err{\sigma}: \Sigma^*)\mapsto \tilde{\sigma}: \mathcal{L}(\mathcal{G}')$ which takes a CFG, $\mathcal{G}'$, generating an arbitrary nonempty CFL, and an unparseable string, $\err{\sigma}$, and which returns element(s) of $\mathcal{L}(\mathcal{G}')$ most similar to $\err{\sigma}$ according to their Levenshtein distance $\Delta(\err{\sigma}, \cdot)$.
+
+Let $G(\err{\sigma}: \Sigma^*, d: \mathbb{N}^+) \mapsto \mathbb{G}$ be the specific construction described in Sec.~\ref{sec:levenshtein} which accepts a string, $\err{\sigma}$, and an edit distance, $d$, and returns a grammar representing the NFA that recognizes the language of all strings within Levenshtein radius $d$ of $\err{\sigma}$. To find the language edit distance and corresponding least-distance edit, we must find the smallest $d$ such that $\mathcal{L}^\cap_d$ is nonempty, where $\mathcal{L}^\cap_d$ is defined as $\mathcal{L}(G(\err\sigma, d)) \cap \mathcal{L}(\mathcal{G}')$. In other words, we seek $\tilde{\sigma}$ and $d^*$ under which three criteria are equisatisfiable:\linebreak (1) $\tilde{\sigma}\in\mathcal{L}(\mathcal{G}')$, and (2) $\Delta(\err{\sigma}, \tilde{\sigma}) \leq d^* \Longleftrightarrow \tilde{\sigma} \in \mathcal{L}(G(\err{\sigma}, d^*))$, and (3) $\not\exists \sigma' \in \mathcal{L}(\mathcal{G}').[\Delta(\err{\sigma}, \sigma') < d^*]$.
+To satisfy these criteria, it suffices to check $d \in (1, d_{\max}]$ by encoding the Levenshtein automata and the original grammar as a single SAT formula, call it, $\varphi_d(\cdot)$ and gradually admitting new acceptance states at increasing radii. If $\varphi_d(\cdot)$ returns UNSAT, $d$ is increased until either (1) a satisfying assignment is found or (2) $d_{\max}$ is attained. This procedure is guaranteed to terminate in at most either (1) the number of steps required to overwrite every symbol in $\err{\sigma}$, or (2) the length of the shortest string in $\mathcal{L}(\mathcal{G}')$, whichever is greater. More precisely:
+
+\begin{equation}
+\varphi_{d+1}(\mathcal{G}', \err{\sigma}) := \begin{cases}
+\varphi[\tilde{\sigma}\in\mathcal{L}(G(\err\sigma, d)) \land \tilde{\sigma}\in \mathcal{L}(\mathcal{G}')] & \text{if $d=1$ or SAT}.\\
+\varphi_{d} \oplus \bigoplus_{\{q \in Q \mid \delta(q, q_{n,0}) = d+1\}}\varphi[S \rightarrow q] & \text{if $d \leq \max(|\err{\sigma}|, \min_{\sigma \in \mathcal{L}(\mathcal{G}')}|\sigma|)$}.
+\end{cases}
+\end{equation}
+
+\noindent The function $\varphi_{d+1}(\mathcal{G}', \err{\sigma})$ is a realizer of $\Phi$.
+
+%By intersection with a CFG, $\mathcal{G}'$, Bar-Hillel ensures the resulting language will remain context-free.
+%
+%We then intersect that language with $\Sigma^n$ and $\mathcal{L}(\mathcal{G})$, the original grammar, to obtain a finite set.
+
+\section{Linear conjunctive reachability}\label{sec:lclreach}
+
+It is well-known that the family of CFLs is not closed under intersection. Let us consider the traditional example, $\mathcal{L}_\cap := \mathcal{L}(\mathcal{G}_1) \cap \mathcal{L}(\mathcal{G}_2)$ defined as follows:
+
+\begin{table}[H]
+\begin{tabular}{llll}
+$P_1 := \big\{\;S \rightarrow L\:R,$ & $\:L \rightarrow a\:b \mid a\:L\:b,$ & $R \rightarrow c \mid c \:R\;\big\}$\vspace{5pt}\\
+$P_2 := \big\{\;S \rightarrow L\:R,$ & $\:R \rightarrow b\:c \mid b\:R\:c,$ & $L \rightarrow a \mid a \:L\;\big\}$
+\end{tabular}
+\end{table}
+
+\noindent Note that $\mathcal{L}_\cap$ generates the language $\big\{\;a^d b^d c^d \mid d > 0\;\big\}$, which according to the pumping lemma is not context-free. We can encode $\bigcap_{i=1}^c \mathcal{L}(\mathcal{G}_i)$ as a polygonal prism with upper-triangular matrices adjoined to each rectangular face. More precisely, we intersect all terminals $\Sigma_\cap := \bigcap_{i=1}^c \Sigma_i$, then for each $t_\cap \in \Sigma_\cap$ and CFG, construct an equivalence class $E(t_\cap, \mathcal{G}_i) = \{ w_i \mid (w_i \rightarrow t_\cap) \in P_i\}$ and bind them together using conjunction:\vspace{-5pt}
+
+\begin{align}
+\bigwedge_{t\in\Sigma_\cap}\bigwedge_{j = 1}^{c-1}\bigwedge_{i=1}^{|\sigma|} E(t_{\cap}, \mathcal{G}_j) \equiv_{\sigma_i} E(t_{\cap}, \mathcal{G}_{j+1})
+\end{align}
+% Generated by cfl4_intersection.vox, open with https://voxelator.com/
+\begin{figure}[H]
+\includegraphics[height=0.1\textwidth]{../figures/angle1.png}\hspace{-5pt}
+\includegraphics[height=0.1\textwidth]{../figures/angle2.png}\hspace{-5pt}
+\includegraphics[height=0.1\textwidth]{../figures/angle5.png}\hspace{-5pt}
+\includegraphics[height=0.1\textwidth]{../figures/angle3.png}\hspace{-3pt}
+\includegraphics[height=0.1\textwidth]{../figures/angle4.png}
+\caption{Orientations of a $\bigcap_{i = 1}^4 \mathcal{L}(\mathcal{G}_i) \cap \Sigma ^6$ configuration. As $c \rightarrow \infty$, this shape approximates a circular cone whose symmetric axis joins $\sigma_i$ with orthonormal unit productions $w_i \rightarrow t_\cap$, and $S_i \in \Lambda^*_{\sigma}?$ represented by the outermost bitvector inhabitants. Equations of this form are equiexpressive with the family of CSLs realizable by finite CFL intersection.}
+\end{figure}
+
+It is a well-known fact in formal language theory that CFLs are closed under union, composition, substitution and intersection with regular languages, and the intersection between two CFLs is decidable. However CFLs are not closed under intersection, which requires a more general formalism. Following Okhotin~\cite{okhotin2001conjunctive}, we define higher-order grammar combinators $\cup, \cap: \mathcal{G}^*\times\mathcal{G}^*\rightarrow\mathcal{G}^*$ where $\mathcal{G}^*$ is a conjunctive grammar, which are basically finite collections of CFGs. Unlike parser combinators which are susceptible to ambiguity errors, our grammar combinators return parse forests in case of syntactic ambiguity, and do not suffer from the same shortcomings.
+
+Given two CFLs $\mathcal{L}_\mathcal{G}, \mathcal{L}_{\mathcal{G}'}$, we can compute the intersection $\mathcal{L}_\mathcal{G}\cap\mathcal{L}_{\mathcal{G}'}\cap\Sigma^d$ by encoding $(\mathbf{M}_\mathcal{G}^*\sigma) = (\mathbf{M}_{\mathcal{G}'}^*\sigma)$. This allows us to build a DSL of grammar combinators to constrain the solution space.
+
+For example, we can solve $\Sigma^d \cap \overline{\mathcal{L}_\mathcal{G}}$ by enumerating $\{\beta\sigma'\gamma \mid \sigma' \in \Sigma^d, \beta = \gamma = \_^k\}$, overapproximating the prefix and suffix (padding left and right), and checking for UNSAT to underapproximate \textit{impossible substrings}, strings which cannot appear in any $\{\sigma \in \mathcal{L}_\mathcal{G}\}$. Precomputing impossible substrings for a given grammar allows us to quickly eliminate inadmissible repairs and localize syntax errors in candidate strings.
+
+Using the technique from Sec.~\ref{sec:levenshtein}, we can also compute language edit distance, the minimum number of Levenshtein edits required to fix a syntactically invalid string. Language intersection is significantly faster than approximating the gradient via sampling.
+
+We can also build a set of grammars of increasing granularity, like a lattice structure. Basically, we can build up a lattice (in the order theoretic sense), consisting of grammars of increasing granularity. All programming languages require balanced parentheses, but some have additional constraints. So we can combine grammars, count and do bounded linear integer arithmetic.
+
 \section{Tree Denormalization}
 
 % https://www.ling.upenn.edu/advice/latex/qtree/qtreenotes.pdf
@@ -452,7 +740,7 @@ $\mathcal{O}(n+1)$                   & & $\mathcal{O}\left(\frac{1}{4}(n-1)^2\ri
 
 The problem of incremental parsing is closely related to \textit{dynamic matrix inverse} in the linear algebra setting, and \textit{incremental transitive closure} with vertex updates in the graph setting. By carefully encoding the matrix relation from Sec.~\ref{sec:matrix} and employing an incremental SAT solver, we can gradually update SAT constraints as new keystrokes are received to eliminate redundancy.
 
-\pagebreak\section{From CFG parsing to SAT solving}\label{sec:sat}
+\section{From CFG parsing to SAT solving}\label{sec:sat}
 
 Parsing can be viewed as a special case of repair, however for the sake of efficiency, we first attempt to parse, then resort to repair. Repair can be solved analytically as constraint satisfaction problem using SAT, which allows us to easily combine constraints and solve them incrementally.
 
@@ -810,7 +1098,7 @@ Although $\langle\kappa, \rho\rangle$ could be used directly to exhaustively sea
 To achieve ergodicity, we permute the elements of $\stirlingii{n}{k}\times\Sigma^k$ using a finite field with a characteristic polynomial $C$ of degree $m:=\lceil \log_p {n \choose k}|\Sigma|^k \rceil$. By choosing $C$ to be some irreducible polynomial, one ensures the path is fully periodic while guaranteeing the mixing properties we desire, i.e., suppose $U: \mathbb{Z}_2^{m\times m}$ is a matrix whose structure is shown in Eq.~\ref{eq:lfsr}, wherein $C$ is a primitive polynomial over $\mathbb{Z}_2^m$ with coefficients $C_{1\ldots m}$ and semiring operators $\oplus := + \pmod 2, \otimes := \land, \top := 1, \circ:=0$.\vspace{-5pt}
 
 \begin{align}
-    U^tV = \begin{pNiceMatrix}[nullify-dots,xdots/line-style=loosely dotted]
+    U^\intercal V = \begin{pNiceMatrix}[nullify-dots,xdots/line-style=loosely dotted]
                C_1    & \cdd  &       &       & C_m \\
                \top   & \circ & \cdd  &       & \circ \\
                \circ  & \ddd  & \ddd  &       & \vdd \\
@@ -921,255 +1209,6 @@ In the following section, we will give a more efficient construction for generat
 %  \end{align*}
 %
 %  This is needed because of the doubly-ambiguous nature of tree search: a single string may have a parse forest, and an incomplete string simultaneously occupies a superposition of possible parse forests. When we encounter two adjacent parse forests which cannot be joined, we know that either (1) the left derivation must change (2) the right derivation must change or (3) there must be a hole in the middle which joins the two together. When recursing over the state space, we must simultaneously consider all three possibilities.
-
-\pagebreak
-\section{Levenshtein reachability}\label{sec:levenshtein}
-
-Levenshtein distance can be defined as an optimal transport problem between two strings $A, B: \Sigma^*$:
-
-\begin{equation}
-\text{Levenshtein Distance} = \Delta(A, B) = \min_{\pi \in \Pi(\mu_A, \mu_B)} \int_{\Sigma^* \times \Sigma^*} \delta(A, B) d\pi(A, B)
-\end{equation}
-
-\noindent where $\mu_A$ and $\mu_B$ are the discrete distributions corresponding to strings $A$ and $B$, respectively. A single transportation plan, $\pi$, can be viewed as a sequence of Levenshtein edits, and $\Pi(\mu_A, \mu_B)$ is the set of all transport plans with marginals $\mu_A$ and $\mu_B$. Finally, the Levenshtein distance between $A$ and $B$ is then the minimum cost over all transportation plans, i.e., edit sequences $\pi \in \Pi(\mu_A, \mu_B)$.
-
-In the case where $A$ and $B$ are both fixed strings, Levenshtein distance can be interpreted as a shortest path problem over an unweighted graph whose vertices are the strings $A, B$ and edges represent Levenshtein edits. The distance between $A$ and $B$ then, is simply the length of the shortest path(s). When $B$ is a free variable, we can define a finite automaton accepting only strings within a given Levenshtein distance $d$ of $A$ by unrolling transition dynamics $\mathcal{L}(A, d)$ up to a fixed depth $d$.
-
-Levenshtein reachability is recognized by the nondeterministic infinite automaton (NIA) whose topology $\mathcal{L} = \knightkingarrow$ can be factored into a product of (a) the monotone Chebyshev topology $\kingarrow$, equipped with horizontal transitions accepting $\sigma_{i}$ and vertical transitions accepting Kleene stars, and (b) the monotone knight's topology $\knightarrow$, equipped with transitions accepting $\sigma_{i+2}$. The structure of this space is representable as an acyclic NFA~\cite{schulz2002fast}, populated by accept states within radius $k$ of $q_{n,0}$, or equivalently, a left-linear CFG whose productions finitely instantiate the transition dynamics:
-
-\begin{figure}[H]
-\begin{minipage}[c]{0.45\textwidth}
-\centering
-\underline{NFA}\vspace{10pt}
-\resizebox{\textwidth}{!}{
-\begin{tikzpicture}[
-%->, % makes the edges directed
->=stealth',
-node distance=2.5cm, % specifies the minimum distance between two nodes. Change if necessary.
-%  every state/.style={thick, fill=gray!10}, % sets the properties for each ’state’ node
-initial text=$ $, % sets the text that appears on the start arrow
-]
-\node[state, initial]                (00) {$q_{0,0}$};
-\node[state, right of=00]            (10) {$q_{1,0}$};
-\node[state, right of=10]            (20) {$q_{2,0}$};
-\node[state, right of=20]            (30) {$q_{3,0}$};
-\node[right of=30]                   (40) {$\vphantom{\vdots}\cdots$};
-\node[accepting, state, right of=40] (n0) {$q_{n,0}$};
-
-\node[state, above of=00]            (01) {$q_{0,1}$};
-\node[state, right of=01]            (11) {$q_{1,1}$};
-\node[state, right of=11]            (21) {$q_{2,1}$};
-\node[state, right of=21]            (31) {$q_{3,1}$};
-\node[right of=31]                   (41) {$\vphantom{\vdots}\cdots$};
-\node[accepting, state, right of=41] (n1) {$q_{n,1}$};
-
-\node[above of=01]                   (0j) {$\mathmakebox[\widthof{$\cdots$}]{\vdots}$};
-\node[right of=0j]                   (1j) {$\mathmakebox[\widthof{$\cdots$}]{\vdots}$};
-\node[right of=1j]                   (2j) {$\mathmakebox[\widthof{$\cdots$}]{\vdots}$};
-\node[right of=2j]                   (3j) {$\mathmakebox[\widthof{$\cdots$}]{\vdots}$};
-\node[right of=3j]                   (4j) {$\iddots$};
-\node[accepting, right of=4j]        (nj) {$\mathmakebox[\widthof{$\cdots$}]{\vdots}$};
-
-\node[state, above of=0j]            (0k) {$q_{0,k}$};
-\node[state, right of=0k]            (1k) {$q_{1,k}$};
-\node[state, right of=1k]            (2k) {$q_{2,k}$};
-\node[state, right of=2k]            (3k) {$q_{3,k}$};
-\node[right of=3k]                   (4k) {$\vphantom{\vdots}\cdots$};
-\node[accepting, state, right of=4k] (nk) {$q_{n,k}$};
-
-\draw [->] (00) edge[below] node{$\sigma_1$} (10);
-\draw [->] (10) edge[below] node{$\sigma_2$} (20);
-\draw [->] (20) edge[below] node{$\sigma_3$} (30);
-\draw [->] (30) edge[below] node{$\sigma_4$} (40);
-\draw [->] (40) edge[below] node{$\sigma_n$} (n0);
-
-\draw [->] (01) edge[below] node{$\sigma_1$} (11);
-\draw [->] (11) edge[below] node{$\sigma_2$} (21);
-\draw [->] (21) edge[below] node{$\sigma_3$} (31);
-\draw [->] (31) edge[below] node{$\sigma_4$} (41);
-\draw [->] (41) edge[below] node{$\sigma_n$} (n1);
-
-\draw [->] (0j) edge[below] node{$\sigma_1$} (1j);
-\draw [->] (1j) edge[below] node{$\sigma_2$} (2j);
-\draw [->] (2j) edge[below] node{$\sigma_3$} (3j);
-\draw [->] (3j) edge[below] node{$\sigma_4$} (4j);
-\draw [->] (4j) edge[below] node{$\sigma_n$} (nj);
-
-\draw [->] (0k) edge[below] node{$\sigma_1$} (1k);
-\draw [->] (1k) edge[below] node{$\sigma_2$} (2k);
-\draw [->] (2k) edge[below] node{$\sigma_3$} (3k);
-\draw [->] (3k) edge[below] node{$\sigma_4$} (4k);
-\draw [->] (4k) edge[below] node{$\sigma_n$} (nk);
-
-\draw [->] (00) edge[left] node{$*$}         (11);
-\draw [->] (10) edge[left] node{$*$}         (21);
-\draw [->] (20) edge[left] node{$*$}         (31);
-\draw [->] (30) edge[left] node{$*$}         (41);
-\draw [->] (30) edge[bend right, below] node{$\sigma_5$} (41);
-\draw [->] (40) edge[           right] node{$\sigma_n$}  (n1);
-\draw [->] (40) edge[bend right, left] node{$*$}         (n1);
-
-\draw [->] (01) edge[left] node{$*$}                     (1j);
-\draw [->] (11) edge[left] node{$*$}                     (2j);
-\draw [->] (21) edge[left] node{$*$}                     (3j);
-\draw [->] (31) edge[left] node{$*$}                     (4j);
-\draw [->] (31) edge[bend right, below] node{$\sigma_5$} (4j);
-\draw [->] (41) edge[           right] node{$\sigma_n$}  (nj);
-\draw [->] (41) edge[bend right, left] node{$*$}         (nj);
-
-\draw [->] (0j) edge[left] node{$*$}                     (1k);
-\draw [->] (1j) edge[left] node{$*$}                     (2k);
-\draw [->] (2j) edge[left] node{$*$}                     (3k);
-\draw [->] (3j) edge[left] node{$*$}                     (4k);
-\draw [->] (3j) edge[bend right, below] node{$\sigma_5$} (4k);
-\draw [->] (4j) edge[           right] node{$\sigma_n$}  (nk);
-\draw [->] (4j) edge[bend right, left] node{$*$}         (nk);
-
-\draw [->] (00) edge[bend left, left] node{$*$}   (01);
-\draw [->] (10) edge[bend left, left] node{$*$}   (11);
-\draw [->] (20) edge[bend left, left] node{$*$}   (21);
-\draw [->] (30) edge[bend left, left] node{$*$}   (31);
-\draw [->] (40) edge[right] node{$*$}             (41);
-\draw [->] (n0) edge[bend right, right] node{$*$} (n1);
-
-\draw [->] (01) edge[bend left, left] node{$*$}   (0j);
-\draw [->] (11) edge[bend left, left] node{$*$}   (1j);
-\draw [->] (21) edge[bend left, left] node{$*$}   (2j);
-\draw [->] (31) edge[bend left, left] node{$*$}   (3j);
-\draw [->] (41) edge[right] node{$*$}             (4j);
-\draw [->] (n1) edge[bend right, right] node{$*$} (nj);
-
-\draw [->] (0j) edge[bend left, left] node{$*$}   (0k);
-\draw [->] (1j) edge[bend left, left] node{$*$}   (1k);
-\draw [->] (2j) edge[bend left, left] node{$*$}   (2k);
-\draw [->] (3j) edge[bend left, left] node{$*$}   (3k);
-\draw [->] (4j) edge[right] node{$*$}             (4k);
-\draw [->] (nj) edge[bend right, right] node{$*$} (nk);
-
-\draw [->] (00) edge[below] node{$\sigma_2$}    (21);
-\draw [->] (10) edge[below] node{$\sigma_3$}    (31);
-\draw [->] (20) edge[below] node{$\sigma_4$}    (41);
-
-\draw [->] (01) edge[below] node{$\sigma_2$}    (2j);
-\draw [->] (11) edge[below] node{$\sigma_3$}    (3j);
-\draw [->] (21) edge[below] node{$\sigma_4$}    (4j);
-
-\draw [->] (0j) edge[below] node{$\sigma_2$}    (2k);
-\draw [->] (1j) edge[below] node{$\sigma_3$}    (3k);
-\draw [->] (2j) edge[below] node{$\sigma_4$}    (4k);
-
-%https://tex.stackexchange.com/a/20986/139648
-\draw [decorate,decoration={brace,amplitude=10pt,raise=10pt,mirror}] (00.south west) -- (n0.south east) node[midway,yshift=-3em]{\textbf{String length}};
-\draw [decorate,decoration={brace,amplitude=10pt,raise=20pt}] (00.south west) -- (0k.north west) node[midway,xshift=-40pt,rotate=90]{\textbf{Levenshtein edit distance}};
-\end{tikzpicture}
-}
-\end{minipage}
-\hfill
-\begin{minipage}[l]{5 cm}
-\centering
-\underline{CFG}\vspace{7pt}
-\begin{align*}
-S &\Rightarrow \{\cdot \in Q \mid \delta(\cdot, q_{n,0}) \leq k\}\\
-* &\Rightarrow \{\cdot \in \Sigma\}\\
-\big\{q_{i, j} &\Rightarrow \{q_{i, j-1}*\} \mid i, j \in [1, n]\times[1, k]\big\}\\
-\big\{q_{i, j} &\Rightarrow \{q_{i-1, j-1}*\}\mid i, j\in[1, n]\times [1, k]\big\}\\
-\big\{q_{i, j} &\Rightarrow \{q_{i-1, j} \sigma_i \}\mid i, j \in [1, n]\times[0, k]\big\} \\
-\big\{q_{i, j} &\Rightarrow \{q_{i-2, j-1} \sigma_i\} \mid i, j \in [2, n]\times[1, k] \big\}\\
-\end{align*}
-\end{minipage}
-\caption{Levenshtein reachability from $\Sigma^n$ can be described as either an acyclic $\epsilon$-free NFA, or a left-linear CFG.}
-\end{figure}
-
-\section{Language Edit Reachability}\label{sec:editreach}
-
-\begin{wrapfigure}{r}{0.33\textwidth}
-\begin{minipage}[c]{0.33\textwidth}
-\centering
-\resizebox{\textwidth}{!}{
-\begin{tikzpicture}[
-dot/.style = {circle, inner sep=0pt, minimum size=1mm, fill,
-node contents={}}
-]
-\def\firstcircle{(-2.1,0) coordinate (a) circle (2.4cm)}
-\def\firstcirclea{(-2.1,0) coordinate (b) circle (0.6cm)}
-\def\firstcircleb{(-2.1,0) coordinate (c) circle (1.2cm)}
-\def\firstcirclec{(-2.1,0) coordinate (d) circle (1.8cm)}
-\def\secondcircle{(1.2,0) coordinate (e) circle (1.5cm)}
-\begin{scope}
-\clip \secondcircle;
-\fill[black!15] \firstcircle;
-\end{scope}
-\draw \firstcircle node[dot,label=$\err{\sigma}$](z0);
-\draw [dashed] \firstcirclea;
-\draw [dashed] \firstcircleb;
-\draw [dashed] \firstcirclec;
-\draw[-stealth] (-2.1,0) -- (-1.5, 0) node[midway,below]{$d_1$};
-\draw[-stealth] (-1.5,0) -- (-0.9, 0) node[midway,below]{$d_2$};
-\draw[-stealth] (-0.9,0) -- (-0.3, 0) node[midway,below]{$\vphantom{d}\ldots$};
-\draw[-stealth] (-0.3,0) -- (0.3, 0) node[midway,below]{$d^*$};
-\draw[-stealth] (-0.3,0) -- (0.3, 0) node[midway,above]{$\tilde{\sigma}$};
-\draw \secondcircle;
-\node [above] at (current bounding box.north -| a) {$\mathcal{L}(G(\err\sigma, d^*))$};
-\node [above,yshift=1.5cm] at (e) {$\mathcal{L}(\mathcal{G}')$};
-\end{tikzpicture}
-}
-\end{minipage}
-\caption{LED is computed gradually by incrementing $d$ until $\mathcal{L}^\cap_{d}\neq \varnothing$.}
-\end{wrapfigure}
-
-Assume a hypothetical $\Phi(\mathcal{G}': \mathbb{G}, \err{\sigma}: \Sigma^*)\mapsto \tilde{\sigma}: \mathcal{L}(\mathcal{G}')$ which takes a CFG, $\mathcal{G}'$, generating an arbitrary nonempty CFL, and an unparseable string, $\err{\sigma}$, and which returns element(s) of $\mathcal{L}(\mathcal{G}')$ most similar to $\err{\sigma}$ according to their Levenshtein distance $\Delta(\err{\sigma}, \cdot)$.
-
-Let $G(\err{\sigma}: \Sigma^*, d: \mathbb{N}^+) \mapsto \mathbb{G}$ be the specific construction described in Sec.~\ref{sec:levenshtein} which accepts a string, $\err{\sigma}$, and an edit distance, $d$, and returns a grammar representing the NFA that recognizes the language of all strings within Levenshtein radius $d$ of $\err{\sigma}$. To find the language edit distance and corresponding least-distance edit, we must find the smallest $d$ such that $\mathcal{L}^\cap_d$ is nonempty, where $\mathcal{L}^\cap_d$ is defined as $\mathcal{L}(G(\err\sigma, d)) \cap \mathcal{L}(\mathcal{G}')$. In other words, we seek $\tilde{\sigma}$ and $d^*$ under which three criteria are equisatisfiable:\linebreak (1) $\tilde{\sigma}\in\mathcal{L}(\mathcal{G}')$, and (2) $\Delta(\err{\sigma}, \tilde{\sigma}) \leq d^* \Longleftrightarrow \tilde{\sigma} \in \mathcal{L}(G(\err{\sigma}, d^*))$, and (3) $\not\exists \sigma' \in \mathcal{L}(\mathcal{G}').[\Delta(\err{\sigma}, \sigma') < d^*]$.
-To satisfy these criteria, it suffices to check $d \in (1, d_{\max}]$ by encoding the Levenshtein automata and the original grammar as a single SAT formula, call it, $\varphi_d(\cdot)$ and gradually admitting new acceptance states at increasing radii. If $\varphi_d(\cdot)$ returns UNSAT, $d$ is increased until either (1) a satisfying assignment is found or (2) $d_{\max}$ is attained. This procedure is guaranteed to terminate in at most either (1) the number of steps required to overwrite every symbol in $\err{\sigma}$, or (2) the length of the shortest string in $\mathcal{L}(\mathcal{G}')$, whichever is greater. More precisely:
-
-\begin{equation}
-\varphi_{d+1}(\mathcal{G}', \err{\sigma}) := \begin{cases}
-\varphi[\tilde{\sigma}\in\mathcal{L}(G(\err\sigma, d)) \land \tilde{\sigma}\in \mathcal{L}(\mathcal{G}')] & \text{if $d=1$ or SAT}.\\
-\varphi_{d} \oplus \bigoplus_{\{q \in Q \mid \delta(q, q_{n,0}) = d+1\}}\varphi[S \rightarrow q] & \text{if $d \leq \max(|\err{\sigma}|, \min_{\sigma \in \mathcal{L}(\mathcal{G}')}|\sigma|)$}.
-\end{cases}
-\end{equation}
-
-\noindent The function $\varphi_{d+1}(\mathcal{G}', \err{\sigma})$ is a realizer of $\Phi$.
-
-%By intersection with a CFG, $\mathcal{G}'$, Bar-Hillel ensures the resulting language will remain context-free.
-%
-%We then intersect that language with $\Sigma^n$ and $\mathcal{L}(\mathcal{G})$, the original grammar, to obtain a finite set.
-
-\section{Linear conjunctive reachability}\label{sec:lclreach}
-
-It is well-known that the family of CFLs is not closed under intersection. Let us consider the traditional example, $\mathcal{L}_\cap := \mathcal{L}(\mathcal{G}_1) \cap \mathcal{L}(\mathcal{G}_2)$ defined as follows:
-
-\begin{table}[H]
-\begin{tabular}{llll}
-  $P_1 := \big\{\;S \rightarrow L\:R,$ & $\:L \rightarrow a\:b \mid a\:L\:b,$ & $R \rightarrow c \mid c \:R\;\big\}$\vspace{5pt}\\
-  $P_2 := \big\{\;S \rightarrow L\:R,$ & $\:R \rightarrow b\:c \mid b\:R\:c,$ & $L \rightarrow a \mid a \:L\;\big\}$
-\end{tabular}
-\end{table}
-
-\noindent Note that $\mathcal{L}_\cap$ generates the language $\big\{\;a^d b^d c^d \mid d > 0\;\big\}$, which according to the pumping lemma is not context-free. We can encode $\bigcap_{i=1}^c \mathcal{L}(\mathcal{G}_i)$ as a polygonal prism with upper-triangular matrices adjoined to each rectangular face. More precisely, we intersect all terminals $\Sigma_\cap := \bigcap_{i=1}^c \Sigma_i$, then for each $t_\cap \in \Sigma_\cap$ and CFG, construct an equivalence class $E(t_\cap, \mathcal{G}_i) = \{ w_i \mid (w_i \rightarrow t_\cap) \in P_i\}$ and bind them together using conjunction:\vspace{-5pt}
-
-\begin{align}
-  \bigwedge_{t\in\Sigma_\cap}\bigwedge_{j = 1}^{c-1}\bigwedge_{i=1}^{|\sigma|} E(t_{\cap}, \mathcal{G}_j) \equiv_{\sigma_i} E(t_{\cap}, \mathcal{G}_{j+1})
-\end{align}
-  % Generated by cfl4_intersection.vox, open with https://voxelator.com/
-\begin{figure}[H]
-  \includegraphics[height=0.1\textwidth]{../figures/angle1.png}\hspace{-5pt}
-  \includegraphics[height=0.1\textwidth]{../figures/angle2.png}\hspace{-5pt}
-  \includegraphics[height=0.1\textwidth]{../figures/angle5.png}\hspace{-5pt}
-  \includegraphics[height=0.1\textwidth]{../figures/angle3.png}\hspace{-3pt}
-  \includegraphics[height=0.1\textwidth]{../figures/angle4.png}
-    \caption{Orientations of a $\bigcap_{i = 1}^4 \mathcal{L}(\mathcal{G}_i) \cap \Sigma ^6$ configuration. As $c \rightarrow \infty$, this shape approximates a circular cone whose symmetric axis joins $\sigma_i$ with orthonormal unit productions $w_i \rightarrow t_\cap$, and $S_i \in \Lambda^*_{\sigma}?$ represented by the outermost bitvector inhabitants. Equations of this form are equiexpressive with the family of CSLs realizable by finite CFL intersection.}
-\end{figure}
-
-It is a well-known fact in formal language theory that CFLs are closed under union, composition, substitution and intersection with regular languages, and the intersection between two CFLs is decidable. However CFLs are not closed under intersection, which requires a more general formalism. Following Okhotin~\cite{okhotin2001conjunctive}, we define higher-order grammar combinators $\cup, \cap: \mathcal{G}^*\times\mathcal{G}^*\rightarrow\mathcal{G}^*$ where $\mathcal{G}^*$ is a conjunctive grammar, which are basically finite collections of CFGs. Unlike parser combinators which are susceptible to ambiguity errors, our grammar combinators return parse forests in case of syntactic ambiguity, and do not suffer from the same shortcomings.
-
-Given two CFLs $\mathcal{L}_\mathcal{G}, \mathcal{L}_{\mathcal{G}'}$, we can compute the intersection $\mathcal{L}_\mathcal{G}\cap\mathcal{L}_{\mathcal{G}'}\cap\Sigma^d$ by encoding $(\mathbf{M}_\mathcal{G}^*\sigma) = (\mathbf{M}_{\mathcal{G}'}^*\sigma)$. This allows us to build a DSL of grammar combinators to constrain the solution space.
-
-For example, we can solve $\Sigma^d \cap \overline{\mathcal{L}_\mathcal{G}}$ by enumerating $\{\beta\sigma'\gamma \mid \sigma' \in \Sigma^d, \beta = \gamma = \_^k\}$, overapproximating the prefix and suffix (padding left and right), and checking for UNSAT to underapproximate \textit{impossible substrings}, strings which cannot appear in any $\{\sigma \in \mathcal{L}_\mathcal{G}\}$. Precomputing impossible substrings for a given grammar allows us to quickly eliminate inadmissible repairs and localize syntax errors in candidate strings.
-
-Using the technique from Sec.~\ref{sec:levenshtein}, we can also compute language edit distance, the minimum number of Levenshtein edits required to fix a syntactically invalid string. Language intersection is significantly faster than approximating the gradient via sampling.
-
-We can also build a set of grammars of increasing granularity, like a lattice structure. Basically, we can build up a lattice (in the order theoretic sense), consisting of grammars of increasing granularity. All programming languages require balanced parentheses, but some have additional constraints. So we can combine grammars, count and do bounded linear integer arithmetic.
 
 \pagebreak\section{Error Recovery}\label{sec:error}
 
@@ -1616,6 +1655,36 @@ ymin=0,ymax=3000,
 \caption{Seq2Parse precision@1 and latency on the StackOverflow dataset.}
 \end{figure}
 
+\section{Repair with adaptive sampler}
+
+\begin{figure}[H]
+\input{repair1-3_10s_plot.tex}
+%\resizebox{.3\textwidth}{!}{\input{repair1_plot.tex}}
+%\resizebox{.307\textwidth}{!}{\input{repair2_plot.tex}}
+%\caption{Human repair benchmark. Note the y-axis across different edit distance plots has varying ranges.}\label{fig:human}
+\end{figure}
+
+\begin{figure}[H]
+\input{repair1_10s_plot.tex}
+%\resizebox{.3\textwidth}{!}{\input{repair1_plot.tex}}
+%\resizebox{.307\textwidth}{!}{\input{repair2_plot.tex}}
+%\caption{Human repair benchmark. Note the y-axis across different edit distance plots has varying ranges.}\label{fig:human}
+\end{figure}
+
+\begin{figure}[H]
+\input{repair2_10s_plot.tex}
+%\resizebox{.3\textwidth}{!}{\input{repair1_plot.tex}}
+%\resizebox{.307\textwidth}{!}{\input{repair2_plot.tex}}
+%\caption{Human repair benchmark. Note the y-axis across different edit distance plots has varying ranges.}\label{fig:human}
+\end{figure}
+
+\begin{figure}[H]
+\input{repair3_10s_plot.tex}
+%\resizebox{.3\textwidth}{!}{\input{repair1_plot.tex}}
+%\resizebox{.307\textwidth}{!}{\input{repair2_plot.tex}}
+%\caption{Human repair benchmark. Note the y-axis across different edit distance plots has varying ranges.}\label{fig:human}
+\end{figure}
+
 \section{Latency Benchmark}\label{sec:latency}
 
 In the following benchmarks, we measure the wall clock time required to synthesize solutions to length-50 strings sampled from various Dyck languages, where Dyck-n is the Dyck language containing n different types of balanced parentheses.
@@ -1687,7 +1756,7 @@ error bars/y explicit
 
 \noindent In the second experiment, we sample a random valid string as before, but delete p tokens at random and rather than provide the location(s), ask our model to solve for both the location(s) and repair by sampling uniformly from all n-token HCs, then measure the total time required to decode the first admissible repair. Note the logarithmic scale on the y-axis.
 
-\pagebreak\section{Accuracy Benchmark}
+\section{Accuracy Benchmark}
 
 In the following benchmark, we analyze bracketing errors in a dataset of Java and Python code snippets mined from open-source repositories on GitHub. For Java, we sample valid single-line statements with bracket nesting more than two levels deep, synthetically delete one bracket uniformly at random, repair using Tidyparse\footnote{Using the Dyck-n grammar augmented with \texttt{D1} {\color{blue}\texttt{->}} \texttt{w} {\color{blue}\texttt{|}} \texttt{D1}. Contiguous non-bracket tokens are substituted with a single placeholder token, \texttt{w}, and restored verbatim after bracket repair.}, then take the top-1 repair after $t$ seconds, and validate using ANTLR's Java 8 parser.
 
