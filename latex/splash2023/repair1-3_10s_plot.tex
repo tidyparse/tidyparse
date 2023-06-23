@@ -1,86 +1,106 @@
 % This file was created with tikzplotlib v0.10.1.
 \begin{tikzpicture}
 
-\definecolor{darkgray176}{RGB}{176,176,176}
-\definecolor{darkviolet1270255}{RGB}{127,0,255}
-\definecolor{deepskyblue3176236}{RGB}{3,176,236}
-\definecolor{dodgerblue45123246}{RGB}{45,123,246}
-\definecolor{lightgray204}{RGB}{204,204,204}
-\definecolor{royalblue8762253}{RGB}{87,62,253}
+  \definecolor{darkgray176}{RGB}{176,176,176}
+  \definecolor{darkviolet1270255}{RGB}{127,0,255}
+  \definecolor{deepskyblue3176236}{RGB}{3,176,236}
+  \definecolor{dodgerblue45123246}{RGB}{45,123,246}
+  \definecolor{lightgray204}{RGB}{204,204,204}
+  \definecolor{royalblue8762253}{RGB}{87,62,253}
 
-\begin{axis}[
-legend cell align={left},
-legend style={fill opacity=0.8, draw opacity=1, text opacity=1, draw=lightgray204, legend columns=-1, legend pos=north east},
-tick align=outside,
-tick pos=left,
-title={$\Delta\in[1,3]$ Repair Precision},
-x grid style={darkgray176},
-xlabel={Seconds},
-xmin=-0.6425, xmax=9.6425,
-xtick style={color=black},
-xtick={0,1,2,3,4,5,6,7,8,9},
-xticklabels={10,9,8,7,6,5,4,3,2,1},
-y grid style={darkgray176},
-ylabel={Precision@k},
-ymin=0, ymax=0.8001,
-ytick style={color=black},
-width=\textwidth,
-height=0.33\textwidth,
-]
-\draw[draw=none,fill=darkviolet1270255] (axis cs:-0.175,0) rectangle (axis cs:0.175,0.762);
-\addlegendimage{ybar,ybar legend,draw=none,fill=darkviolet1270255}
-\addlegendentry{P@All}
+  \begin{axis}[
+    legend cell align={left},
+    legend style={fill opacity=0.8, draw opacity=1, text opacity=1, draw=lightgray204, legend columns=-1, legend pos=north east},
+    tick align=outside,
+    tick pos=left,
+    title={$\Delta\in[1,3]$ Repair Precision},
+    x grid style={darkgray176},
+    xlabel={Milliseconds},
+    xmin=-0.8925, xmax=14.8925,
+    xtick style={color=black},
+    xtick={0,1,2,3,4,5,6,7,8,9,10,11,12,13,14},
+    xticklabels={1500,1400,1300,1200,1100,1000,900,800,700,600,500,400,300,200,100},
+    y grid style={darkgray176},
+    ylabel={Precision@k},
+    ymin=0, ymax=0.63,
+    ytick style={color=black},
+    width=\textwidth,
+    height=0.33\textwidth,
+  ]
+    \draw[draw=none,fill=darkviolet1270255] (axis cs:-0.175,0) rectangle (axis cs:0.175,0.6);
+    \addlegendimage{ybar,ybar legend,draw=none,fill=darkviolet1270255}
+    \addlegendentry{P@All}
 
-\draw[draw=none,fill=darkviolet1270255] (axis cs:0.825,0) rectangle (axis cs:1.175,0.755);
-\draw[draw=none,fill=darkviolet1270255] (axis cs:1.825,0) rectangle (axis cs:2.175,0.75);
-\draw[draw=none,fill=darkviolet1270255] (axis cs:2.825,0) rectangle (axis cs:3.175,0.743);
-\draw[draw=none,fill=darkviolet1270255] (axis cs:3.825,0) rectangle (axis cs:4.175,0.735);
-\draw[draw=none,fill=darkviolet1270255] (axis cs:4.825,0) rectangle (axis cs:5.175,0.725);
-\draw[draw=none,fill=darkviolet1270255] (axis cs:5.825,0) rectangle (axis cs:6.175,0.713);
-\draw[draw=none,fill=darkviolet1270255] (axis cs:6.825,0) rectangle (axis cs:7.175,0.699);
-\draw[draw=none,fill=darkviolet1270255] (axis cs:7.825,0) rectangle (axis cs:8.175,0.683);
-\draw[draw=none,fill=darkviolet1270255] (axis cs:8.825,0) rectangle (axis cs:9.175,0.629);
-\draw[draw=none,fill=royalblue8762253] (axis cs:-0.175,0) rectangle (axis cs:0.175,0.662);
-\addlegendimage{ybar,ybar legend,draw=none,fill=royalblue8762253}
-\addlegendentry{P@10}
+    \draw[draw=none,fill=darkviolet1270255] (axis cs:0.825,0) rectangle (axis cs:1.175,0.6);
+    \draw[draw=none,fill=darkviolet1270255] (axis cs:1.825,0) rectangle (axis cs:2.175,0.592);
+    \draw[draw=none,fill=darkviolet1270255] (axis cs:2.825,0) rectangle (axis cs:3.175,0.584);
+    \draw[draw=none,fill=darkviolet1270255] (axis cs:3.825,0) rectangle (axis cs:4.175,0.56);
+    \draw[draw=none,fill=darkviolet1270255] (axis cs:4.825,0) rectangle (axis cs:5.175,0.552);
+    \draw[draw=none,fill=darkviolet1270255] (axis cs:5.825,0) rectangle (axis cs:6.175,0.544);
+    \draw[draw=none,fill=darkviolet1270255] (axis cs:6.825,0) rectangle (axis cs:7.175,0.52);
+    \draw[draw=none,fill=darkviolet1270255] (axis cs:7.825,0) rectangle (axis cs:8.175,0.496);
+    \draw[draw=none,fill=darkviolet1270255] (axis cs:8.825,0) rectangle (axis cs:9.175,0.48);
+    \draw[draw=none,fill=darkviolet1270255] (axis cs:9.825,0) rectangle (axis cs:10.175,0.472);
+    \draw[draw=none,fill=darkviolet1270255] (axis cs:10.825,0) rectangle (axis cs:11.175,0.44);
+    \draw[draw=none,fill=darkviolet1270255] (axis cs:11.825,0) rectangle (axis cs:12.175,0.424);
+    \draw[draw=none,fill=darkviolet1270255] (axis cs:12.825,0) rectangle (axis cs:13.175,0.352);
+    \draw[draw=none,fill=darkviolet1270255] (axis cs:13.825,0) rectangle (axis cs:14.175,0.304);
+    \draw[draw=none,fill=royalblue8762253] (axis cs:-0.175,0) rectangle (axis cs:0.175,0.536);
+    \addlegendimage{ybar,ybar legend,draw=none,fill=royalblue8762253}
+    \addlegendentry{P@10}
 
-\draw[draw=none,fill=royalblue8762253] (axis cs:0.825,0) rectangle (axis cs:1.175,0.66);
-\draw[draw=none,fill=royalblue8762253] (axis cs:1.825,0) rectangle (axis cs:2.175,0.658);
-\draw[draw=none,fill=royalblue8762253] (axis cs:2.825,0) rectangle (axis cs:3.175,0.653);
-\draw[draw=none,fill=royalblue8762253] (axis cs:3.825,0) rectangle (axis cs:4.175,0.65);
-\draw[draw=none,fill=royalblue8762253] (axis cs:4.825,0) rectangle (axis cs:5.175,0.646);
-\draw[draw=none,fill=royalblue8762253] (axis cs:5.825,0) rectangle (axis cs:6.175,0.637);
-\draw[draw=none,fill=royalblue8762253] (axis cs:6.825,0) rectangle (axis cs:7.175,0.633);
-\draw[draw=none,fill=royalblue8762253] (axis cs:7.825,0) rectangle (axis cs:8.175,0.621);
-\draw[draw=none,fill=royalblue8762253] (axis cs:8.825,0) rectangle (axis cs:9.175,0.575);
-\draw[draw=none,fill=dodgerblue45123246] (axis cs:-0.175,0) rectangle (axis cs:0.175,0.587);
-\addlegendimage{ybar,ybar legend,draw=none,fill=dodgerblue45123246}
-\addlegendentry{P@5}
+    \draw[draw=none,fill=royalblue8762253] (axis cs:0.825,0) rectangle (axis cs:1.175,0.536);
+    \draw[draw=none,fill=royalblue8762253] (axis cs:1.825,0) rectangle (axis cs:2.175,0.528);
+    \draw[draw=none,fill=royalblue8762253] (axis cs:2.825,0) rectangle (axis cs:3.175,0.528);
+    \draw[draw=none,fill=royalblue8762253] (axis cs:3.825,0) rectangle (axis cs:4.175,0.512);
+    \draw[draw=none,fill=royalblue8762253] (axis cs:4.825,0) rectangle (axis cs:5.175,0.504);
+    \draw[draw=none,fill=royalblue8762253] (axis cs:5.825,0) rectangle (axis cs:6.175,0.496);
+    \draw[draw=none,fill=royalblue8762253] (axis cs:6.825,0) rectangle (axis cs:7.175,0.48);
+    \draw[draw=none,fill=royalblue8762253] (axis cs:7.825,0) rectangle (axis cs:8.175,0.456);
+    \draw[draw=none,fill=royalblue8762253] (axis cs:8.825,0) rectangle (axis cs:9.175,0.448);
+    \draw[draw=none,fill=royalblue8762253] (axis cs:9.825,0) rectangle (axis cs:10.175,0.44);
+    \draw[draw=none,fill=royalblue8762253] (axis cs:10.825,0) rectangle (axis cs:11.175,0.416);
+    \draw[draw=none,fill=royalblue8762253] (axis cs:11.825,0) rectangle (axis cs:12.175,0.4);
+    \draw[draw=none,fill=royalblue8762253] (axis cs:12.825,0) rectangle (axis cs:13.175,0.336);
+    \draw[draw=none,fill=royalblue8762253] (axis cs:13.825,0) rectangle (axis cs:14.175,0.296);
+    \draw[draw=none,fill=dodgerblue45123246] (axis cs:-0.175,0) rectangle (axis cs:0.175,0.488);
+    \addlegendimage{ybar,ybar legend,draw=none,fill=dodgerblue45123246}
+    \addlegendentry{P@5}
 
-\draw[draw=none,fill=dodgerblue45123246] (axis cs:0.825,0) rectangle (axis cs:1.175,0.584);
-\draw[draw=none,fill=dodgerblue45123246] (axis cs:1.825,0) rectangle (axis cs:2.175,0.584);
-\draw[draw=none,fill=dodgerblue45123246] (axis cs:2.825,0) rectangle (axis cs:3.175,0.579);
-\draw[draw=none,fill=dodgerblue45123246] (axis cs:3.825,0) rectangle (axis cs:4.175,0.577);
-\draw[draw=none,fill=dodgerblue45123246] (axis cs:4.825,0) rectangle (axis cs:5.175,0.575);
-\draw[draw=none,fill=dodgerblue45123246] (axis cs:5.825,0) rectangle (axis cs:6.175,0.566);
-\draw[draw=none,fill=dodgerblue45123246] (axis cs:6.825,0) rectangle (axis cs:7.175,0.563);
-\draw[draw=none,fill=dodgerblue45123246] (axis cs:7.825,0) rectangle (axis cs:8.175,0.554);
-\draw[draw=none,fill=dodgerblue45123246] (axis cs:8.825,0) rectangle (axis cs:9.175,0.522);
-\draw[draw=none,fill=deepskyblue3176236] (axis cs:-0.175,0) rectangle (axis cs:0.175,0.368);
-\addlegendimage{ybar,ybar legend,draw=none,fill=deepskyblue3176236}
-\addlegendentry{P@1}
+    \draw[draw=none,fill=dodgerblue45123246] (axis cs:0.825,0) rectangle (axis cs:1.175,0.488);
+    \draw[draw=none,fill=dodgerblue45123246] (axis cs:1.825,0) rectangle (axis cs:2.175,0.48);
+    \draw[draw=none,fill=dodgerblue45123246] (axis cs:2.825,0) rectangle (axis cs:3.175,0.48);
+    \draw[draw=none,fill=dodgerblue45123246] (axis cs:3.825,0) rectangle (axis cs:4.175,0.464);
+    \draw[draw=none,fill=dodgerblue45123246] (axis cs:4.825,0) rectangle (axis cs:5.175,0.456);
+    \draw[draw=none,fill=dodgerblue45123246] (axis cs:5.825,0) rectangle (axis cs:6.175,0.448);
+    \draw[draw=none,fill=dodgerblue45123246] (axis cs:6.825,0) rectangle (axis cs:7.175,0.44);
+    \draw[draw=none,fill=dodgerblue45123246] (axis cs:7.825,0) rectangle (axis cs:8.175,0.416);
+    \draw[draw=none,fill=dodgerblue45123246] (axis cs:8.825,0) rectangle (axis cs:9.175,0.408);
+    \draw[draw=none,fill=dodgerblue45123246] (axis cs:9.825,0) rectangle (axis cs:10.175,0.4);
+    \draw[draw=none,fill=dodgerblue45123246] (axis cs:10.825,0) rectangle (axis cs:11.175,0.384);
+    \draw[draw=none,fill=dodgerblue45123246] (axis cs:11.825,0) rectangle (axis cs:12.175,0.376);
+    \draw[draw=none,fill=dodgerblue45123246] (axis cs:12.825,0) rectangle (axis cs:13.175,0.312);
+    \draw[draw=none,fill=dodgerblue45123246] (axis cs:13.825,0) rectangle (axis cs:14.175,0.28);
+    \draw[draw=none,fill=deepskyblue3176236] (axis cs:-0.175,0) rectangle (axis cs:0.175,0.336);
+    \addlegendimage{ybar,ybar legend,draw=none,fill=deepskyblue3176236}
+    \addlegendentry{P@1}
 
-\draw[draw=none,fill=deepskyblue3176236] (axis cs:0.825,0) rectangle (axis cs:1.175,0.368);
-\draw[draw=none,fill=deepskyblue3176236] (axis cs:1.825,0) rectangle (axis cs:2.175,0.368);
-\draw[draw=none,fill=deepskyblue3176236] (axis cs:2.825,0) rectangle (axis cs:3.175,0.365);
-\draw[draw=none,fill=deepskyblue3176236] (axis cs:3.825,0) rectangle (axis cs:4.175,0.365);
-\draw[draw=none,fill=deepskyblue3176236] (axis cs:4.825,0) rectangle (axis cs:5.175,0.363);
-\draw[draw=none,fill=deepskyblue3176236] (axis cs:5.825,0) rectangle (axis cs:6.175,0.356);
-\draw[draw=none,fill=deepskyblue3176236] (axis cs:6.825,0) rectangle (axis cs:7.175,0.351);
-\draw[draw=none,fill=deepskyblue3176236] (axis cs:7.825,0) rectangle (axis cs:8.175,0.346);
-\draw[draw=none,fill=deepskyblue3176236] (axis cs:8.825,0) rectangle (axis cs:9.175,0.324);
-\addplot [red, thick] coordinates {(-0.8925,0.35) (14.8925,0.35)};
-\node[above, red] at (axis cs:13,0.35) {Seq2Parse P@1@2s};
-\end{axis}
+    \draw[draw=none,fill=deepskyblue3176236] (axis cs:0.825,0) rectangle (axis cs:1.175,0.336);
+    \draw[draw=none,fill=deepskyblue3176236] (axis cs:1.825,0) rectangle (axis cs:2.175,0.328);
+    \draw[draw=none,fill=deepskyblue3176236] (axis cs:2.825,0) rectangle (axis cs:3.175,0.328);
+    \draw[draw=none,fill=deepskyblue3176236] (axis cs:3.825,0) rectangle (axis cs:4.175,0.32);
+    \draw[draw=none,fill=deepskyblue3176236] (axis cs:4.825,0) rectangle (axis cs:5.175,0.312);
+    \draw[draw=none,fill=deepskyblue3176236] (axis cs:5.825,0) rectangle (axis cs:6.175,0.304);
+    \draw[draw=none,fill=deepskyblue3176236] (axis cs:6.825,0) rectangle (axis cs:7.175,0.296);
+    \draw[draw=none,fill=deepskyblue3176236] (axis cs:7.825,0) rectangle (axis cs:8.175,0.296);
+    \draw[draw=none,fill=deepskyblue3176236] (axis cs:8.825,0) rectangle (axis cs:9.175,0.296);
+    \draw[draw=none,fill=deepskyblue3176236] (axis cs:9.825,0) rectangle (axis cs:10.175,0.288);
+    \draw[draw=none,fill=deepskyblue3176236] (axis cs:10.825,0) rectangle (axis cs:11.175,0.272);
+    \draw[draw=none,fill=deepskyblue3176236] (axis cs:11.825,0) rectangle (axis cs:12.175,0.256);
+    \draw[draw=none,fill=deepskyblue3176236] (axis cs:12.825,0) rectangle (axis cs:13.175,0.224);
+    \draw[draw=none,fill=deepskyblue3176236] (axis cs:13.825,0) rectangle (axis cs:14.175,0.184);
+    \addplot [red, thick] coordinates {(-0.8925,0.35) (14.8925,0.35)};
+    \node[above, red] at (axis cs:13.5,0.35) {S2P P@1@2s};
+  \end{axis}
 
 \end{tikzpicture}
