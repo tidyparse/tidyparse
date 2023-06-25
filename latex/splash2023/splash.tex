@@ -111,9 +111,7 @@ The context-free Levenshtein reachability problem can be formally stated as foll
 
 Definition: The language edit distance (LED) is the minimum number of edits required to transform a string into a valid one, where validity is defined as containment in a context-free language, $\ell: \mathcal{L}$, i.e., $\Delta^*(\err{\sigma}, \ell) \coloneqq \min_{\sigma \in \ell}\Delta(\err{\sigma}, \sigma)$, and $\Delta$ is the Levenshtein distance.
 
-We seek to find the set of strings $S$ such that $\forall \tilde{\sigma}\in S, \Delta(\err{\sigma}, \tilde{\sigma}) \leq k$, where $k$ is the maximum number of edits greater than or equal to the language edit distance. We call this set the \textit{Levenshtein hypersphere} of $\err{\sigma}$ and denote it $\Delta_k(\err{\sigma})$. Since $k$ is lower-bounded by $\Delta^*(\err{\sigma}, \ell)$, we have $1 \leq \Delta_k(\err{\sigma})$.
-
-We now consider an upper bound on $\Delta^*(\err{\sigma}, \ell)$.
+We seek to find the set of strings $S$ such that $\forall \tilde{\sigma}\in S, \Delta(\err{\sigma}, \tilde{\sigma}) \leq k$, where $k$ is the maximum number of edits greater than or equal to the language edit distance. We call this set the \textit{Levenshtein hypersphere} of $\err{\sigma}$ and denote it $\Delta_k(\err{\sigma})$. Since $1 \leq \Delta^*(\err{\sigma}, \ell) \leq k$, we have $1 \leq k$. We now consider an upper bound on $\Delta^*(\err{\sigma}, \ell)$, i.e., the greatest lower bound on $k$ such that $\Delta_k(\err{\sigma}) \cap \ell \neq \varnothing$.
 
 \begin{lemma}
   For any nonempty language $\ell: \mathcal{L}(\mathcal{G})$ and invalid string $\err{\sigma}: \Sigma^n$, there exists an $(\tilde{\sigma}, m)$ such that $\tilde{\sigma} \in \ell\cap\Sigma^m$ and $0 < \Delta(\err{\sigma}, \ell) \leq \max(m, n) < \infty$.\\
@@ -1666,6 +1664,27 @@ In the following benchmark, we measure the Precision@k of our repair procedure a
 %\caption{Human repair benchmark. Note the y-axis across different edit distance plots has varying ranges.}\label{fig:human}
 \end{figure}
 
+\begin{figure}[H]
+\input{repair1_10s_plot.tex}
+%\resizebox{.3\textwidth}{!}{\input{repair1_plot.tex}}
+%\resizebox{.307\textwidth}{!}{\input{repair2_plot.tex}}
+%\caption{Human repair benchmark. Note the y-axis across different edit distance plots has varying ranges.}\label{fig:human}
+\end{figure}
+
+\begin{figure}[H]
+\input{repair2_10s_plot.tex}
+%\resizebox{.3\textwidth}{!}{\input{repair1_plot.tex}}
+%\resizebox{.307\textwidth}{!}{\input{repair2_plot.tex}}
+%\caption{Human repair benchmark. Note the y-axis across different edit distance plots has varying ranges.}\label{fig:human}
+\end{figure}
+
+\begin{figure}[H]
+\input{repair3_10s_plot.tex}
+%\resizebox{.3\textwidth}{!}{\input{repair1_plot.tex}}
+%\resizebox{.307\textwidth}{!}{\input{repair2_plot.tex}}
+%\caption{Human repair benchmark. Note the y-axis across different edit distance plots has varying ranges.}\label{fig:human}
+\end{figure}
+
 \section{Latency Benchmark}\label{sec:latency}
 
 In the following benchmarks, we measure the wall clock time required to synthesize solutions to length-50 strings sampled from various Dyck languages, where Dyck-n is the Dyck language containing n different types of balanced parentheses.
@@ -1832,7 +1851,7 @@ error bars/y explicit
 %Incoder
 %CarperAI?
 
-\pagebreak\section{Discussion}\label{sec:discussion}
+\section{Discussion}\label{sec:discussion}
 
 While error correction with a few errors is tolerable, latency can vary depending on many factors including string length and grammar size. If errors are localized to the beginning or end of a string, then latency is typically below 500ms. We observe that errors are typically concentrated nearby historical edit locations, which can be retrieved from the IDE or version control.
 
