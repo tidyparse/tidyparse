@@ -40,7 +40,7 @@
 %% Title information
 \title{Syntax Error Correction as Idempotent Matrix Completion}
 \begin{abstract}
-In this work, we illustrate how to lower context-free language recognition onto a tensor algebra over finite fields. In addition to its theoretical value, this connection has yielded surprisingly useful applications in incremental parsing, code completion and program repair. For example, we use it to repair syntax errors, perform sketch-based program synthesis, and decide various language induction and membership queries. This line of research provides an elegant unification of context-free program repair, code completion and sketch-based program synthesis. To accelerate code completion, we design and implement a novel incremental parser-synthesizer that transforms CFGs onto a dynamical system over finite field arithmetic, enabling us to suggest syntax repairs in-between keystrokes. Our approach attains state-of-the-art repair precision@$\@\{1, 5, 10\}$ on a dataset of human Python repairs at a fraction of the cost of existing methods, and is easily extensible to other programming languages.
+In this work, we illustrate how to lower context-free language recognition onto a tensor algebra over finite fields. In addition to its theoretical value, this connection has yielded surprisingly useful applications in incremental parsing, code completion and program repair. To accelerate code completion, we design and implement a novel incremental parser-synthesizer that transforms CFGs onto a dynamical system over finite field arithmetic, enabling us to suggest syntax repairs in-between keystrokes. Our approach attains state-of-the-art repair precision@$\@\{5, 10\}$ on a dataset of human Python repairs at a fraction of the cost of existing methods. Unlike prior work, our approach does not employ neural networks, and is therefore highly flexible to additional constraints and readily extensible to new programming languages.
 \end{abstract}
 
 \maketitle
@@ -109,7 +109,9 @@ Conveniently, Okhotin~\cite{okhotin2010decision} offers exactly the formalism ne
 
 The context-free Levenshtein reachability problem can be formally stated as follows:
 
-Definition: The language edit distance (LED) is the minimum number of edits required to transform a string into a valid one, where validity is defined as containment in a context-free language, $\ell: \mathcal{L}$, i.e., $\Delta^*(\err{\sigma}, \ell) \coloneqq \min_{\sigma \in \ell}\Delta(\err{\sigma}, \sigma)$, and $\Delta$ is the Levenshtein distance.
+\begin{definition}
+The language edit distance (LED) is the minimum number of edits required to transform a string into a valid one, where validity is defined as containment in a context-free language, $\ell: \mathcal{L}$, i.e., $\Delta^*(\err{\sigma}, \ell) \coloneqq \min_{\sigma \in \ell}\Delta(\err{\sigma}, \sigma)$, and $\Delta$ is the Levenshtein distance.
+\end{definition}
 
 We seek to find the set of strings $S$ such that $\forall \tilde{\sigma}\in S, \Delta(\err{\sigma}, \tilde{\sigma}) \leq k$, where $k$ is the maximum number of edits greater than or equal to the language edit distance. We call this set the \textit{Levenshtein hypersphere} of $\err{\sigma}$ and denote it $\Delta_k(\err{\sigma})$. Since $1 \leq \Delta^*(\err{\sigma}, \ell) \leq k$, we have $1 \leq k$. We now consider an upper bound on $\Delta^*(\err{\sigma}, \ell)$, i.e., the greatest lower bound on $k$ such that $\Delta_k(\err{\sigma}) \cap \ell \neq \varnothing$.
 
@@ -128,7 +130,17 @@ We seek to find the set of strings $S$ such that $\forall \tilde{\sigma}\in S, \
   In either case, it follows $\Delta(\err{\sigma}, \ell) \leq \max(m, n)$ and $\ell$ is always reachable via a finite nonempty set of Levenshtein edits, i.e., $0 < \Delta(\err{\sigma}, \ell) < \infty$.
 \end{proof}
 
-In practice, this problem is ill-posed even when $k = \Delta^*(\err{\sigma}, \ell)$. For example, consider the language of ursine dietary preferences. Although $\err{\sigma}\coloneq$ ``Bears like to eat tomatoes'' is not in the language, $\Delta^*$ is 1, e.g., ``Bears like to eat'', however there are many other variations with the same edit distance, e.g., or ``Bears like to eat \{\hlorange{berries}, \hlorange{honey}, \hlorange{fish}\}''. We may also wish to consider two or more edits, e.g., ``\{\hlgreen{Polar}, \hlgreen{Panda}\} bears like to eat \{\hlgreen{seals}, \hlgreen{bamboo}\}''. In general, there are many valid strings within a fixed Levenshtein distance of $\err{\sigma}$, and we seek to find among them, the set of strings that are both syntactically valid and semantically plausible within a short amount of time.
+Let us now consider the maximum growth rate of the admissible set, $A \coloneq \Delta_k(\err{\sigma}) \cap \ell$, as a function of $k$ and $n$. Let $\ell \coloneq \err{\sigma}$. Since $\ell$ is finite and thus regular, $\bar\ell = \Delta_k(\err{\sigma}) \setminus \{\err{\sigma}\}$ is regular by closure of regular languages under complementation, and thus context-free a fortiori. Since $\bar\ell$ accepts every string except $\err{\sigma}$, it represents the worst CFL in terms of asymptotic growth of $A$.
+
+\begin{lemma}
+The complexity of exhaustively searching $A$ is upper bounded by $\mathcal{O}\left({{kn + n + 1} \choose k}(|\Sigma| + 1)^k\right)$.
+\end{lemma}
+
+\begin{proof}
+We can overestimate the size of $A$ by considering the number of unique ways to insert, delete, or substitute $k$ terminals into a string $|\err{\sigma}|$ of size $n$. This can be overaproximated by interspersing $\varepsilon^k$ around every token, i.e., $\err{\sigma}'\coloneq \left(\varepsilon^k\err{\sigma}_i\right)_{i=1}^n\varepsilon^k$, where $|\err{\sigma}'| = kn + n + 1$, and only considering substitution. To admit deletion, we augment $\Sigma_\varepsilon \coloneq \Sigma \cup \{\varepsilon\}$, thus deletions and insertions may be considered as special cases of substitution. Thus, we have $kn + n + 1$ positions to insert $(|\Sigma| + 1)$ tokens, i.e., ${{kn + n + 1} \choose k}(|\Sigma| + 1)^k$ ways to edit $\err{\sigma}'$. This upper bound is not tight, because it double counts many identical edits w.r.t. $\err{\sigma}$. Nonetheless, it is sufficient to show $|A| < {{kn + n + 1} \choose k}(|\Sigma| + 1)^k$.
+\end{proof}
+
+In practice, this problem is ill-posed even when $k = \Delta^*(\err{\sigma}, \ell)$. For example, consider the language of ursine dietary preferences. Although $\err{\sigma}\coloneq$ ``Bears like to eat tomatoes'' is not in the language, e.g., $\tilde{\sigma}\coloneq$``Bears like to eat'' is valid $(\Delta^*=1)$, however there are many other variations with the same edit distance, e.g., or ``Bears like to eat \{\hlorange{berries}, \hlorange{honey}, \hlorange{fish}\}''. We may also wish to consider two or more edits, e.g., ``\{\hlgreen{Polar}, \hlgreen{Panda}\} bears like to eat \{\hlgreen{seals}, \hlgreen{bamboo}\}''. In general, there are many valid strings within a fixed Levenshtein distance of $\err{\sigma}$, and we seek to find among them, the set of strings that are both syntactically valid and semantically plausible within a short amount of time.
 
 \section{Approach}
 
