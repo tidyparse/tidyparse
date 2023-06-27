@@ -11,7 +11,7 @@ import tikzplotlib
 
 def plot_data(data, filename):
     # Define a mapping from '60s' ... '5s' to numerical values
-    second_mapping = {f"{i}": i for i in range(1700, 0, -200)}
+    second_mapping = {f"{i}": i for i in range(100, 1800, 200)}
 
     ind = np.arange(len(second_mapping))  # the x locations for the groups
     width = 0.35       # the width of the bars
@@ -36,7 +36,7 @@ def plot_data(data, filename):
     ax.set_xticklabels(list(second_mapping.keys()))
     # ax.bar(ind, vals, width, bottom=bottom, color=colors[i], label=label)
     # ax.legend()
-    ax.legend(loc='upper right')
+    ax.legend(loc='upper left')
     ax.set_ylabel('Precision@k')
     ax.set_title('$\Delta\in[1,3]$ Repair Precision')
 
