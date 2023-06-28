@@ -11,7 +11,7 @@ import tikzplotlib
 
 def plot_data(data, filename):
     # Define a mapping from '60s' ... '5s' to numerical values
-    second_mapping = {f"{i}": i for i in range(100, 1800, 200)}
+    second_mapping = {f"{i}": i for i in range(20, 300, 40)}
 
     ind = np.arange(len(second_mapping))  # the x locations for the groups
     width = 0.35       # the width of the bars
@@ -102,7 +102,7 @@ P@All= 1700s: 0.629, 1500s: 0.619, 1300s: 0.603, 1100s: 0.584, 900s: 0.562, 700s
 # conda deactivate && conda activate cstk
 if __name__ == '__main__':
     pattern = r"(P@\w+)=((?:\s+\d+s:\s+\d+\.\d+,?)+)"
-    matches = re.findall(pattern, three_edits_ms)
+    matches = re.findall(pattern, all_edits_sec)
 
     data = []
     for match in matches:
@@ -112,4 +112,4 @@ if __name__ == '__main__':
 
     print(json.dumps(data))
 
-    plot_data(data, "repair3_10s_plot.tex")
+    plot_data(data, "repair1-3_plot.tex")

@@ -1613,21 +1613,9 @@ Both sets of experiments use 40 Intel Skylake cores, running at 2.4 GHz, with 16
 Below, we plot the results of a human repair benchmark measuring the Precision@k of our repair procedure against human repairs of varying edit distances and latency cutoffs.% across 1233 distinct Python snippets $(\Delta_1 = 649, \Delta_2 = 384, \Delta_3 = 200)$ from the StackOverflow dataset~\cite{wong2019syntax}.
 
 \begin{figure}[H]
-\input{repair1-3_plot.tex}
-%\resizebox{.3\textwidth}{!}{\input{repair1_plot.tex}}
-%\resizebox{.307\textwidth}{!}{\input{repair2_plot.tex}}
-%\caption{Human repair benchmark. Note the y-axis across different edit distance plots has varying ranges.}\label{fig:human}
-\end{figure}
-
-\begin{figure}[H]
-\input{repair1_plot.tex}
-%\resizebox{.3\textwidth}{!}{\input{repair1_plot.tex}}
-%\resizebox{.307\textwidth}{!}{\input{repair2_plot.tex}}
-%\caption{Human repair benchmark. Note the y-axis across different edit distance plots has varying ranges.}\label{fig:human}
-\end{figure}
-
-\begin{figure}[H]
-\input{repair2_plot.tex}
+\resizebox{.3\textwidth}{!}{\input{repair1-3_plot.tex}}
+\resizebox{.3\textwidth}{!}{\input{repair1_plot.tex}}
+\resizebox{.3\textwidth}{!}{\input{repair2_plot.tex}}
 %\resizebox{.3\textwidth}{!}{\input{repair1_plot.tex}}
 %\resizebox{.307\textwidth}{!}{\input{repair2_plot.tex}}
 %\caption{Human repair benchmark. Note the y-axis across different edit distance plots has varying ranges.}\label{fig:human}
@@ -1688,7 +1676,7 @@ In the following benchmark, we measure the Precision@k of our repair procedure a
 \resizebox{.25\textwidth}{!}{\input{repair1_10s_plot.tex}}
 \resizebox{.24\textwidth}{!}{\input{repair2_10s_plot.tex}}
 \resizebox{.24\textwidth}{!}{\input{repair3_10s_plot.tex}}
-\caption{Adaptive sampling repairs. The red line indicates Seq2Parse performance on the same dataset.}
+\caption{Adaptive sampling repairs. The red line indicates Seq2Parse precision@1 on the same dataset.}
 \end{figure}
 
 \subsection{Latency Benchmark}\label{sec:latency}
