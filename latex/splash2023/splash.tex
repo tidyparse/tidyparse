@@ -15,7 +15,7 @@
 %% Conference information
 %% Supplied to authors by publisher for camera-ready submission;
 %% use defaults for review submission.
-\acmConference[SPLASH'23]{ACM SIGPLAN conference on Systems, Programming, Languages, and Applications: Software for Humanity}{October 22-27, 2023}{Cascais, Portugal}
+\acmConference[POPL'24]{SIGPLAN Symposium on Principles of Programming Languages}{January 17-19, 2024}{London, United Kingdom}
 %\acmYear{2018}
 %\acmISBN{} % \acmISBN{978-x-xxxx-xxxx-x/YY/MM}
 %\acmDOI{} % \acmDOI{10.1145/nnnnnnn.nnnnnnn}
@@ -105,7 +105,7 @@ Conveniently, Okhotin~\cite{okhotin2010decision} offers exactly the formalism ne
 
 %Naively, one might think to enumerate all edits within a certain Levenshtein radius and reject invalid strings. However, this approach is intractable for long strings. Another approach is to compute the \textit{edit distance} between the string and the language as proposed by Aho. This approach is also intractable depending on the size of the grammar. A third approach is to use a language equation to compute the intersection between the Levenshtein hypersphere and the language.
 
-\pagebreak\section{Problem Statement}
+\section{Problem Statement}
 
 The context-free Levenshtein reachability problem can be formally stated as follows:
 
@@ -144,7 +144,7 @@ We note that the above bound applies to all strings and languages, and relates t
 
 In practice, this problem is ill-posed even when $k = \Delta^*(\err{\sigma}, \ell) \approx 1$. For example, consider the language of ursine dietary preferences. Although $\err{\sigma}\coloneq$ ``Bears like to eat tomatoes'' is not in the language, e.g., $\tilde{\sigma}\coloneq$``Bears like to eat'' is valid $(\Delta^*=1)$, however there are many other variations with the same or similar edit distance, e.g., or ``Bears like to eat \{\hlorange{berries}, \hlorange{honey}, \hlorange{fish}\}'', or ``\{\hlgreen{Polar}, \hlgreen{Panda}\} bears like to eat \{\hlgreen{seals}, \hlgreen{bamboo}\}''. In general, there are many valid strings within a fixed Levenshtein distance of $\err{\sigma}$, and we seek to find among them, the set of strings that are both syntactically valid and semantically plausible within a short amount of time.
 
-\section{Approach}
+\section{Overview}
 
 We now present a number of optimality criteria for the parsing framework. These criteria were used to guide the design of various components and evaluate its performance.
 
@@ -156,13 +156,9 @@ We now present a number of optimality criteria for the parsing framework. These 
   \item Finally, the framework must be \textbf{flexible} and \textbf{extensible}. Intended as a general-purpose tool for generating syntax repairs in a wide variety of programming languages, end-users should be able to extend the framework with their own custom grammars and side-constraints.
 \end{itemize}
 
-With these criteria in mind, we now present the parsing framework in Section~\ref{sec:parsing}.
-
-\section{Overview}
-
 \begin{figure}[t]
   \centering
-  \includegraphics[width=0.9\linewidth]{../figures/architecture_overview.png}
+  \includegraphics[width=0.6\linewidth]{../figures/architecture_overview.png}
   \caption{Overview of the framework.}
   \label{fig:overview}
 \end{figure}
@@ -174,203 +170,6 @@ If the string is invalid, we first form a bijection between edits and the Levens
 We then use each edit template, in conjunction with the grammar to search for admissible repairs. This is done by encoding the template and grammar as a matrix equivalence relation and solving for the least fixpoint using a linear system of equations over a finite field. We describe this process in more detail in Section~\ref{sec:matrix}. The resulting samples will all be syntactically valid according to the grammar. These are reranked according to a statistical distance metric, and we output the most likely samples to the user. This whole process is illustrated in Figure~\ref{fig:overview}.
 
 %A number of important details are omitted from this overview. For example, we do not discuss the details of the combinatorial number system, the LFSR, or the statistical distance metric. We also do not discuss the details of the matrix equivalence relation, the linear system of equations, or the least fixpoint. We defer these details to the rest of the paper.
-
-\section{Toy Example}
-
-Suppose we are given the following context-free grammar:
-
-\begin{wholetidyinput}
-S -> S and S | S xor S | ( S ) | true | false | ! S(*@\caret{ }@*)
-\end{wholetidyinput}
-
-\noindent For reasons that will become clear in Sec.~\ref{sec:matrix}, this will automatically be rewritten into the grammar:
-
-\begin{verbatim}
- F.! → !     S.) → S F.)  and.S → F.and S   S → F.! S     S → false    S → S ε+
- F.( → (   F.xor → xor    xor.S → F.xor S   S → S and.S   S → true    ε+ → ε
- F.) → )   F.and → and        S → S xor.S   S → F.( S.)   S → <S>     ε+ → ε+ ε+
-\end{verbatim}
-
-%\noindent We can visualize the CFG as either a graph or a matrix:
-%
-%\begin{figure}[H]
-%    \includegraphics[width=3.5cm]{../figures/bool_arith_cfg_graph.png}
-%    \hspace{20pt}
-%    \includegraphics[width=3.5cm]{../figures/bool_arith_cfg_mat.bmp}
-%\end{figure}
-
-\noindent Given a string containing holes, our tool will return several completions in a few milliseconds:
-
-\begin{tcolorbox}[left skip=0.7cm,
-top=0.1cm,
-middle=0mm,
-boxsep=0mm,
-underlay unbroken and first={%
-    \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
-}]
-  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-true _ _ _ ( false _ ( _ _ _ _ ! _ _ ) _ _ _ _(*@\caret{ }@*)
-  \end{lstlisting}
-  \tcblower
-  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-true (*@\hlorange{xor}@*) (*@\hlorange{!}@*) ( false (*@\hlorange{xor}@*) ( <S> (*@\hlorange{)}@*) or ! (*@\hlorange{<S>}@*) ) (*@\hlorange{xor}@*) (*@\hlorange{<S>}@*)
-true (*@\hlorange{xor}@*) (*@\hlorange{!}@*) ( false (*@\hlorange{and}@*) ( <S> (*@\hlorange{)}@*) or ! (*@\hlorange{<S>}@*) ) (*@\hlorange{xor}@*) (*@\hlorange{<S>}@*)
-true (*@\hlorange{xor}@*) (*@\hlorange{!}@*) ( false (*@\hlorange{and}@*) ( <S> (*@\hlorange{)}@*) and ! (*@\hlorange{<S>}@*) ) (*@\hlorange{xor}@*) (*@\hlorange{<S>}@*)
-true (*@\hlorange{xor}@*) (*@\hlorange{!}@*) ( false (*@\hlorange{and}@*) ( <S> (*@\hlorange{)}@*) and ! (*@\hlorange{<S>}@*) ) (*@\hlorange{and}@*) (*@\hlorange{<S>}@*)
-...
-  \end{lstlisting}
-\end{tcolorbox}
-
-\noindent Similarly, if provided with a string containing various errors, it will return several suggestions how to fix it, where \hlgreen{green} is insertion, \hlorange{orange} is substitution and \hlred{red} is deletion.
-
-\begin{tcolorbox}[left skip=0.7cm,
-top=0.1cm,
-middle=0mm,
-boxsep=0mm,
-underlay unbroken and first={%
-    \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
-}]
-\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-true and ( false or and true false(*@\caret{ }@*)
-\end{lstlisting}
-\tcblower
-\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-1.) true and ( false or (*@\hlorange{!}@*) true (*@\hlorange{)}@*)
-2.) true and ( false or (*@\hlgreen{<S>}@*) and true (*@\hlorange{)}@*)
-3.) true and ( false or (*@\hlorange{(}@*) true (*@\hlorange{)}@*) (*@\hlgreen{)}@*)
-...
-9.) true and ( false or (*@\hlgreen{!}@*) (*@\hlgreen{<S>}@*) (*@\hlgreen{)}@*) and true (*@\hlred{false} @*)
-\end{lstlisting}
-\end{tcolorbox}
-
-\noindent In the following paper, we will describe how we built it.
-
-\section{Python Correction}
-
-Given an invalid string, the tool will first map the string to a coarsened version and generate edits:
-
-\hspace{-0.3cm}\begin{minipage}[t]{0.5\textwidth}
-\begin{tcolorbox}[left skip=0.7cm,
-top=0.1cm,
-middle=0mm,
-boxsep=0mm,
-underlay unbroken and first={%
-  \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
-}]
-\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-v = [float(n for n in l.split(':')]
-\end{lstlisting}
-\tcblower
-\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-v = [float(*@\hlred{(}@*)n for n in l.split(':')]
-v = [float((*@\hlgreen{)}@*)n for n in l.split(':')]
-v = [float((*@\hlorange{)}@*) for n in l.split(':')]
-v = [float(n(*@\hlgreen{)}@*) for n in l.split(':')]
-\end{lstlisting}
-\end{tcolorbox}
-\end{minipage}
-\begin{minipage}[t]{0.5\textwidth}
-\begin{tcolorbox}[left skip=0.7cm,
-top=0.1cm,
-middle=0mm,
-boxsep=0mm,
-underlay unbroken and first={%
-  \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
-}]
-\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-w = [ w ( w w w w w . w ( w ) ]
-\end{lstlisting}
-\tcblower
-\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-w = [ w (*@\hlred{(}@*) w w w w w . w ( w ) ]
-w = [ w ( (*@\hlgreen{)}@*) w w w w w . w ( w ) ]
-w = [ w ( (*@\hlorange{)}@*) w w w w . w ( w ) ]
-w = [ w ( w (*@\hlgreen{)}@*) w w w w . w ( w ) ]
-\end{lstlisting}
-\end{tcolorbox}
-\end{minipage}
-
-This coarsening is done to reduce the number of possible corrections, and is admissible because CFLs are closed under homomorphisms. (If we wanted to provide a lexical expansion, this would be possible.) These candidates then reranked using a probability metric.
-
-\hspace{-0.3cm}\begin{minipage}[t]{0.5\textwidth}
-                 \begin{tcolorbox}[left skip=0.7cm,
-                 top=0.1cm,
-                 middle=0mm,
-                 boxsep=0mm,
-                 underlay unbroken and first={%
-                   \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
-                 }]
-                 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-v = [float(n for n in l.split(':')]
-                 \end{lstlisting}
-                 \tcblower
-                 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-v = [float(n(*@\hlgreen{)}@*) for n in l.split(':')]
-v = [float(*@\hlred{(}@*)n for n in l.split(':')]
-v = [float((*@\hlgreen{)}@*)n for n in l.split(':')]
-v = [float((*@\hlorange{)}@*) for n in l.split(':')]
-                 \end{lstlisting}
-                 \end{tcolorbox}
-\end{minipage}
-\begin{minipage}[t]{0.5\textwidth}
-  \begin{tcolorbox}[left skip=0.7cm,
-  top=0.1cm,
-  middle=0mm,
-  boxsep=0mm,
-  underlay unbroken and first={%
-    \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
-  }]
-  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-w = [ w ( w w w w w . w ( w ) ]
-  \end{lstlisting}
-  \tcblower
-  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-w = [ w ( w (*@\hlgreen{)}@*) w w w w . w ( w ) ]
-w = [ w (*@\hlred{(}@*) w w w w w . w ( w ) ]
-w = [ w ( (*@\hlgreen{)}@*) w w w w w . w ( w ) ]
-w = [ w ( (*@\hlorange{)}@*) w w w w . w ( w ) ]
-  \end{lstlisting}
-  \end{tcolorbox}
-\end{minipage}
-
-Finally, we eliminate everything which is not parsed by the official Python parser.
-
-\hspace{-0.3cm}\begin{minipage}[t]{0.5\textwidth}
-                 \begin{tcolorbox}[left skip=0.7cm,
-                 top=0.1cm,
-                 middle=0mm,
-                 boxsep=0mm,
-                 underlay unbroken and first={%
-                   \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
-                 }]
-                 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-v = [float(n for n in l.split(':')]
-                 \end{lstlisting}
-                 \tcblower
-                 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-v = [float(n(*@\hlgreen{)}@*) for n in l.split(':')]
-v = [float((*@\hlorange{)}@*) for n in l.split(':')]
-                 \end{lstlisting}
-                 \end{tcolorbox}
-\end{minipage}
-\begin{minipage}[t]{0.5\textwidth}
-  \begin{tcolorbox}[left skip=0.7cm,
-  top=0.1cm,
-  middle=0mm,
-  boxsep=0mm,
-  underlay unbroken and first={%
-    \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
-  }]
-  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-w = [ w ( w w w w w . w ( w ) ]
-  \end{lstlisting}
-  \tcblower
-  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-w = [ w ( w (*@\hlgreen{)}@*) w w w w . w ( w ) ]
-w = [ w ( (*@\hlorange{)}@*) w w w w . w ( w ) ]
-  \end{lstlisting}
-  \end{tcolorbox}
-\end{minipage}
 
 \section{Matrix Theory}\label{sec:matrix}
 
@@ -438,7 +237,7 @@ Valiant's decision procedure can be abstracted by lifting into the domain of bit
 
 So far, we have only considered the syntactic theory of breadth-bounded CFLs with holes, however, our construction can be easily extended to handle the family of CFLs closed under conjunction. The additional expressivity afforded by the language conjunction operator will be indispensable when considering practical program repair scenarios, which may require extra-grammatical constraints such as indentation-sensitivity or Levenshtein-bounded reachability. That extension, and the resulting theory of breadth-bounded CJLs with holes, will be explored in Sec.~\ref{sec:lclreach}.
 
-\section{Levenshtein reachability}\label{sec:levenshtein}
+\subsection{Levenshtein reachability}\label{sec:levenshtein}
 
 %Levenshtein distance can be defined as an optimal transport problem between two strings $A, B: \Sigma^*$:
 %
@@ -448,154 +247,16 @@ So far, we have only considered the syntactic theory of breadth-bounded CFLs wit
 %
 %\noindent where $\mu_A$ and $\mu_B$ are the discrete distributions corresponding to strings $A$ and $B$, respectively. A single transportation plan, $\pi$, can be viewed as a sequence of Levenshtein edits, and $\Pi(\mu_A, \mu_B)$ is the set of all transport plans with marginals $\mu_A$ and $\mu_B$. Finally, the Levenshtein distance between $A$ and $B$ is then the minimum cost over all transportation plans, i.e., edit sequences $\pi \in \Pi(\mu_A, \mu_B)$.
 
+\begin{wrapfigure}{r}{0.45\textwidth}
+  \resizebox{.45\textwidth}{!}{\input{nfa_cfg.tex}}
+  \caption{Levenshtein reachability from $\Sigma^n$ can be described as an NFA, or a left-linear CFG.}
+\end{wrapfigure}
+
 In the case where $A$ and $B$ are both fixed strings, Levenshtein distance can be interpreted as a shortest path problem over an unweighted graph whose vertices are the strings $A, B$ and edges represent Levenshtein edits. The distance between $A$ and $B$ then, is simply the length of the shortest path(s). When $B$ is a free variable, we can define a finite automaton accepting only strings within a given Levenshtein distance $d$ of $A$ by unrolling transition dynamics $\mathcal{L}(A, d)$ up to a fixed depth $d$.
 
-Levenshtein reachability is recognized by the nondeterministic infinite automaton (NIA) whose topology $\mathcal{L} = \knightkingarrow$ can be factored into a product of (a) the monotone Chebyshev topology $\kingarrow$, equipped with horizontal transitions accepting $\sigma_{i}$ and vertical transitions accepting Kleene stars, and (b) the monotone knight's topology $\knightarrow$, equipped with transitions accepting $\sigma_{i+2}$. The structure of this space is representable as an acyclic NFA~\cite{schulz2002fast}, populated by accept states within radius $k$ of $q_{n,0}$, or equivalently, a left-linear CFG whose productions finitely instantiate the transition dynamics:
+Levenshtein reachability is recognized by the nondeterministic infinite automaton (NIA) whose topology $\mathcal{L} = \knightkingarrow$ can be factored into a product of (a) the monotone Chebyshev topology $\kingarrow$, equipped with horizontal transitions accepting $\sigma_{i}$ and vertical transitions accepting Kleene stars, and (b) the monotone knight's topology $\knightarrow$, equipped with transitions accepting $\sigma_{i+2}$. The structure of this space is representable as an acyclic NFA~\cite{schulz2002fast}, populated by accept states within radius $k$ of $q_{n,0}$, or equivalently, a left-linear CFG whose productions finitely instantiate the transition dynamics.
 
-\begin{figure}[H]
-  \begin{minipage}[c]{0.45\textwidth}
-    \centering
-    \underline{NFA}\vspace{10pt}
-    \resizebox{\textwidth}{!}{
-    \begin{tikzpicture}[
-%->, % makes the edges directed
-    >=stealth',
-    node distance=2.5cm, % specifies the minimum distance between two nodes. Change if necessary.
-%  every state/.style={thick, fill=gray!10}, % sets the properties for each ’state’ node
-    initial text=$ $, % sets the text that appears on the start arrow
-    ]
-    \node[state, initial]                (00) {$q_{0,0}$};
-    \node[state, right of=00]            (10) {$q_{1,0}$};
-    \node[state, right of=10]            (20) {$q_{2,0}$};
-    \node[state, right of=20]            (30) {$q_{3,0}$};
-    \node[right of=30]                   (40) {$\vphantom{\vdots}\cdots$};
-    \node[accepting, state, right of=40] (n0) {$q_{n,0}$};
-
-    \node[state, above of=00]            (01) {$q_{0,1}$};
-    \node[state, right of=01]            (11) {$q_{1,1}$};
-    \node[state, right of=11]            (21) {$q_{2,1}$};
-    \node[state, right of=21]            (31) {$q_{3,1}$};
-    \node[right of=31]                   (41) {$\vphantom{\vdots}\cdots$};
-    \node[accepting, state, right of=41] (n1) {$q_{n,1}$};
-
-    \node[above of=01]                   (0j) {$\mathmakebox[\widthof{$\cdots$}]{\vdots}$};
-\node[right of=0j]                   (1j) {$\mathmakebox[\widthof{$\cdots$}]{\vdots}$};
-\node[right of=1j]                   (2j) {$\mathmakebox[\widthof{$\cdots$}]{\vdots}$};
-\node[right of=2j]                   (3j) {$\mathmakebox[\widthof{$\cdots$}]{\vdots}$};
-\node[right of=3j]                   (4j) {$\iddots$};
-\node[accepting, right of=4j]        (nj) {$\mathmakebox[\widthof{$\cdots$}]{\vdots}$};
-
-\node[state, above of=0j]            (0k) {$q_{0,k}$};
-\node[state, right of=0k]            (1k) {$q_{1,k}$};
-\node[state, right of=1k]            (2k) {$q_{2,k}$};
-\node[state, right of=2k]            (3k) {$q_{3,k}$};
-\node[right of=3k]                   (4k) {$\vphantom{\vdots}\cdots$};
-\node[accepting, state, right of=4k] (nk) {$q_{n,k}$};
-
-\draw [->] (00) edge[below] node{$\sigma_1$} (10);
-\draw [->] (10) edge[below] node{$\sigma_2$} (20);
-\draw [->] (20) edge[below] node{$\sigma_3$} (30);
-\draw [->] (30) edge[below] node{$\sigma_4$} (40);
-\draw [->] (40) edge[below] node{$\sigma_n$} (n0);
-
-\draw [->] (01) edge[below] node{$\sigma_1$} (11);
-\draw [->] (11) edge[below] node{$\sigma_2$} (21);
-\draw [->] (21) edge[below] node{$\sigma_3$} (31);
-\draw [->] (31) edge[below] node{$\sigma_4$} (41);
-\draw [->] (41) edge[below] node{$\sigma_n$} (n1);
-
-\draw [->] (0j) edge[below] node{$\sigma_1$} (1j);
-\draw [->] (1j) edge[below] node{$\sigma_2$} (2j);
-\draw [->] (2j) edge[below] node{$\sigma_3$} (3j);
-\draw [->] (3j) edge[below] node{$\sigma_4$} (4j);
-\draw [->] (4j) edge[below] node{$\sigma_n$} (nj);
-
-\draw [->] (0k) edge[below] node{$\sigma_1$} (1k);
-\draw [->] (1k) edge[below] node{$\sigma_2$} (2k);
-\draw [->] (2k) edge[below] node{$\sigma_3$} (3k);
-\draw [->] (3k) edge[below] node{$\sigma_4$} (4k);
-\draw [->] (4k) edge[below] node{$\sigma_n$} (nk);
-
-\draw [->] (00) edge[left] node{$*$}         (11);
-\draw [->] (10) edge[left] node{$*$}         (21);
-\draw [->] (20) edge[left] node{$*$}         (31);
-\draw [->] (30) edge[left] node{$*$}         (41);
-\draw [->] (30) edge[bend right, below] node{$\sigma_5$} (41);
-\draw [->] (40) edge[           right] node{$\sigma_n$}  (n1);
-\draw [->] (40) edge[bend right, left] node{$*$}         (n1);
-
-\draw [->] (01) edge[left] node{$*$}                     (1j);
-\draw [->] (11) edge[left] node{$*$}                     (2j);
-\draw [->] (21) edge[left] node{$*$}                     (3j);
-\draw [->] (31) edge[left] node{$*$}                     (4j);
-\draw [->] (31) edge[bend right, below] node{$\sigma_5$} (4j);
-\draw [->] (41) edge[           right] node{$\sigma_n$}  (nj);
-\draw [->] (41) edge[bend right, left] node{$*$}         (nj);
-
-\draw [->] (0j) edge[left] node{$*$}                     (1k);
-\draw [->] (1j) edge[left] node{$*$}                     (2k);
-\draw [->] (2j) edge[left] node{$*$}                     (3k);
-\draw [->] (3j) edge[left] node{$*$}                     (4k);
-\draw [->] (3j) edge[bend right, below] node{$\sigma_5$} (4k);
-\draw [->] (4j) edge[           right] node{$\sigma_n$}  (nk);
-\draw [->] (4j) edge[bend right, left] node{$*$}         (nk);
-
-\draw [->] (00) edge[bend left, left] node{$*$}   (01);
-\draw [->] (10) edge[bend left, left] node{$*$}   (11);
-\draw [->] (20) edge[bend left, left] node{$*$}   (21);
-\draw [->] (30) edge[bend left, left] node{$*$}   (31);
-\draw [->] (40) edge[right] node{$*$}             (41);
-\draw [->] (n0) edge[bend right, right] node{$*$} (n1);
-
-\draw [->] (01) edge[bend left, left] node{$*$}   (0j);
-\draw [->] (11) edge[bend left, left] node{$*$}   (1j);
-\draw [->] (21) edge[bend left, left] node{$*$}   (2j);
-\draw [->] (31) edge[bend left, left] node{$*$}   (3j);
-\draw [->] (41) edge[right] node{$*$}             (4j);
-\draw [->] (n1) edge[bend right, right] node{$*$} (nj);
-
-\draw [->] (0j) edge[bend left, left] node{$*$}   (0k);
-\draw [->] (1j) edge[bend left, left] node{$*$}   (1k);
-\draw [->] (2j) edge[bend left, left] node{$*$}   (2k);
-\draw [->] (3j) edge[bend left, left] node{$*$}   (3k);
-\draw [->] (4j) edge[right] node{$*$}             (4k);
-\draw [->] (nj) edge[bend right, right] node{$*$} (nk);
-
-\draw [->] (00) edge[below] node{$\sigma_2$}    (21);
-\draw [->] (10) edge[below] node{$\sigma_3$}    (31);
-\draw [->] (20) edge[below] node{$\sigma_4$}    (41);
-
-\draw [->] (01) edge[below] node{$\sigma_2$}    (2j);
-\draw [->] (11) edge[below] node{$\sigma_3$}    (3j);
-\draw [->] (21) edge[below] node{$\sigma_4$}    (4j);
-
-\draw [->] (0j) edge[below] node{$\sigma_2$}    (2k);
-\draw [->] (1j) edge[below] node{$\sigma_3$}    (3k);
-\draw [->] (2j) edge[below] node{$\sigma_4$}    (4k);
-
-%https://tex.stackexchange.com/a/20986/139648
-\draw [decorate,decoration={brace,amplitude=10pt,raise=10pt,mirror}] (00.south west) -- (n0.south east) node[midway,yshift=-3em]{\textbf{String length}};
-\draw [decorate,decoration={brace,amplitude=10pt,raise=20pt}] (00.south west) -- (0k.north west) node[midway,xshift=-40pt,rotate=90]{\textbf{Levenshtein edit distance}};
-\end{tikzpicture}
-}
-\end{minipage}
-\hfill
-\begin{minipage}[l]{5 cm}
-\centering
-\underline{CFG}\vspace{7pt}
-\begin{align*}
-S &\Rightarrow \{\cdot \in Q \mid \delta(\cdot, q_{n,0}) \leq k\}\\
-* &\Rightarrow \{\cdot \in \Sigma\}\\
-\big\{q_{i, j} &\Rightarrow \{q_{i, j-1}*\} \mid i, j \in [1, n]\times[1, k]\big\}\\
-\big\{q_{i, j} &\Rightarrow \{q_{i-1, j-1}*\}\mid i, j\in[1, n]\times [1, k]\big\}\\
-\big\{q_{i, j} &\Rightarrow \{q_{i-1, j} \sigma_i \}\mid i, j \in [1, n]\times[0, k]\big\} \\
-\big\{q_{i, j} &\Rightarrow \{q_{i-2, j-1} \sigma_i\} \mid i, j \in [2, n]\times[1, k] \big\}\\
-\end{align*}
-\end{minipage}
-\caption{Levenshtein reachability from $\Sigma^n$ can be described as either an acyclic $\epsilon$-free NFA, or a left-linear CFG.}
-\end{figure}
-
-\section{Language Edit Reachability}\label{sec:editreach}
+\subsection{Language Edit Reachability}\label{sec:editreach}
 
 \begin{wrapfigure}{r}{0.33\textwidth}
 \begin{minipage}[c]{0.33\textwidth}
@@ -650,7 +311,7 @@ To satisfy these criteria, it suffices to check $d \in (1, d_{\max}]$ by encodin
 %
 %We then intersect that language with $\Sigma^n$ and $\mathcal{L}(\mathcal{G})$, the original grammar, to obtain a finite set.
 
-\section{Linear conjunctive reachability}\label{sec:lclreach}
+\subsection{Linear conjunctive reachability}\label{sec:lclreach}
 
 It is well-known that the family of CFLs is not closed under intersection. Let us consider the traditional example, $\mathcal{L}_\cap := \mathcal{L}(\mathcal{G}_1) \cap \mathcal{L}(\mathcal{G}_2)$ defined as follows:
 
@@ -686,100 +347,7 @@ Using the technique from Sec.~\ref{sec:levenshtein}, we can also compute languag
 
 We can also build a set of grammars of increasing granularity, like a lattice structure. Basically, we can build up a lattice (in the order theoretic sense), consisting of grammars of increasing granularity. All programming languages require balanced parentheses, but some have additional constraints. So we can combine grammars, count and do bounded linear integer arithmetic.
 
-\section{Tree Denormalization}
-
-% https://www.ling.upenn.edu/advice/latex/qtree/qtreenotes.pdf
-% https://cpb-us-w2.wpmucdn.com/campuspress.yale.edu/dist/0/119/files/2014/12/sec-10.17-drawing-arrows-2ek9r2b.pdf
-
-Our parser emits a binary forest consisting of parse trees for the candidate string which are constructed bottom-up using a variant of $\otimes$ called $\hat{\otimes}$, which simply records backpointers:
-
-\begin{align}
-   X\:\hat{\otimes}\:Z := \big\{\;w\hphantom{.}^{\nearrow}_{\searrow}\nobarfrac{x}{z} \mid \langle x, z\rangle \in X \times Z, (w\rightarrow xz) \in P\;\big\}
-\end{align}
-
-Due to Chomsky normalization however, the resulting forests are full of trees that are thin and crooked. To restore the natural shape of the tree, we first construct the parse forests bottom-up, then prune away synthetic nonterminals top-down by recursively grafting denormalized grandchildren onto the root. This transformation is purely cosmetic and only used when rendering the parse trees.
-
-\begin{figure}[H]
-  \begin{minipage}{.45\linewidth}
-    \begin{algorithm}[H]
-      \caption{Tree denormalization}\label{alg:cap}
-      \begin{algorithmic}
-        \Procedure{Cut}{\texttt{t: Tree}}
-          \State $\texttt{stems} \leftarrow \{\:\textsc{Cut}(\texttt{c}) \mid \texttt{c} \in \texttt{t.children}\:\}$
-          \If{$\texttt{t.root} \in (V_{\mathcal{G}'} \setminus V_{\mathcal{G}})$}
-            \State \textbf{return } \texttt{stems} %\Comment{Drop synthetic nonterminals.}
-          \Else%\Comment{Graft the denormalized children on root.}
-            \State \textbf{return } $\{\:\texttt{Tree(t.root, stems)}\:\}$
-          \EndIf
-        \EndProcedure
-      \end{algorithmic}
-    \end{algorithm}
-  \end{minipage}
-  \resizebox{.54\textwidth}{!}{
-    \begin{tabular}{ll}
-        \Tree [.\texttt{S} \tikz\node(v1){\texttt{true}} [.$\ccancel{\texttt{and.S}}$ \tikz\node(v3){\texttt{and}} [.\texttt{S} \tikz\node(v5){\texttt{(}} [.$\ccancel{\texttt{S.)}}$ [.\texttt{S} \tikz\node(v9){\texttt{false}} [.$\ccancel{\texttt{or.S}}$ \tikz\node(v11){\texttt{xor}} [.\texttt{S} \texttt{!} \texttt{true} ] ] ] \tikz\node(v7){\texttt{)}} ] ] ] ]
-%    \Tree [.S [.NP John ] [.VP [.\tikz\node(v1){V}; sleeps ] ] ]
-        \hspace{-2cm}
-        &
-        \Tree [.\texttt{S} \tikz\node(v2){\texttt{true}} \tikz\node(v4){\texttt{and}} [.\texttt{S} \tikz\node(v6){\texttt{(}} [.\texttt{S} \tikz\node(v10){\texttt{false}} \tikz\node(v12){\texttt{xor}} [.\texttt{S} \texttt{!} \texttt{true} ] ] \tikz\node(v8){\texttt{)}} ] ]\\\\\\
-%    \Tree [.\tikz\node(v2){V}; [.\tikz\node(v3){V}; ] [.Adv {a lot} ] ]
-        \hspace{1cm}\Huge{Pre-Denormalization} & \hspace{2cm}\Huge{Post-Denormalization}
-    \end{tabular}
-    \begin{tikzpicture}[overlay]
-%    \draw [red,dashed,-stealth] (v1) to[bend left] (v2);
-        \draw [red,dashed,-stealth] (v3) to[bend left] (v4);
-%    \draw [red,dashed,-stealth] (v5) to[bend left] (v6);
-        \draw [red,dashed,-stealth] (v7) to[bend left] (v8);
-%    \draw [red,dashed,-stealth] (v9) to[bend right] (v10);
-        \draw [red,dashed,-stealth] (v11) to[bend right] (v12);
-    \end{tikzpicture}
-  }
-  \caption{Since $\mathcal{G}'$ contains synthetic nodes, to recover a parse tree congruent with the original grammar $\mathcal{G}$, we prune all synthetic nodes and graft their stems onto the grandparent via a simple recursive procedure (Alg.~\ref{alg:cap}).}%, which is used to denormalize both complete and partial ASTs (cf. \S~\ref{sec:error}) alike.}
-%    \caption{Result of applying Algorithm~\ref{alg:cap} to the tree obtained by parsing the string: \texttt{true and ( false or ! true )}.}
-\end{figure}
-
-\section{Parser incrementalization}\label{sec:incrementalization}
-
-When the string is altered, we can reuse prior work by only recomputing affected submatrices, yielding a parser whose complexity is location-dependent, i.e., at worst quadratic in terms of $|\Sigma^*|$ assuming $\mathcal{O}(1)$ cost for each CNF-nonterminal subset join, $V_1'\otimes V_2'$. Borrowing the notation from probabilistic graphical models, where shaded nodes denote bound variables and unshaded nodes are unobserved:
-
-\begin{center}
-\begin{tabular}{ c c c c c }
-\scalebox{0.32}{\mkTrellisAppend{7}} & & \scalebox{0.32}{\mkTrellisInsert{6}}         & & \scalebox{0.32}{\mkTrellisInsert{7}}         \\
-Append                               & & Delete                                       & & Insert                                       \\
-$\mathcal{O}(n+1)$                   & & $\mathcal{O}\left(\frac{1}{4}(n-1)^2\right)$ & & $\mathcal{O}\left(\frac{1}{4}(n+1)^2\right)$ \\
-\end{tabular}
-\end{center}
-
-The problem of incremental parsing is closely related to \textit{dynamic matrix inverse} in the linear algebra setting, and \textit{incremental transitive closure} with vertex updates in the graph setting. By carefully encoding the matrix relation from Sec.~\ref{sec:matrix} and employing an incremental SAT solver, we can gradually update SAT constraints as new keystrokes are received to eliminate redundancy.
-
-\section{From CFG parsing to SAT solving}\label{sec:sat}
-
-Parsing can be viewed as a special case of repair, however for the sake of efficiency, we first attempt to parse, then resort to repair. Repair can be solved analytically as constraint satisfaction problem using SAT, which allows us to easily combine constraints and solve them incrementally.
-
-\begin{figure}[H]
-\adjustbox{scale=0.75,center}{%
-\[\begin{tikzcd}[row sep=large, col sep=huge]
-\text{String} && \text{Grammar} && \err{\text{String}} \\
-[-20pt] \highlight{\Sigma}^{n} \arrow[dr] & \text{\underline{Parsing}} & \mathcal{G}_\varepsilon \arrow[u, dashed, no head, color=gray] \arrow[dl]\arrow[ddl, bend left] \arrow[ddd, dashed, no head, color=gray] \arrow[dr]\arrow[ddr, bend right] & \text{\underline{Repair}} & \err{\Sigma^{n}} \arrow[dl] \\
-& V^{n} \arrow[d] & & (V_\varepsilon \cup \{\texttt{\_}\})^{n+q} \arrow[d, shift left]\arrow[d, shift right] & \\
-& \mathbb{Z}_2^{n\times n \times |V|} \arrow[d, shift left] \arrow[d, shift right] & & \mathbb{Z}^{(n+q)^2 \times |V_\varepsilon|}_2 \rightarrow \mathbb{Z}_2^{|V_{\varepsilon}|} \arrow[d, shift left]\arrow[d, shift right] & \\
-& CST & \phantom{.} & \left\langle (\highlight{\Sigma} \setminus \{\varepsilon\})^*, CST \right\rangle &
-\end{tikzcd}\]
-}
-\end{figure}
-
-%\noindent The compactness of this representation can be improved via a combinatorial number system without loss of generality, although $\mathds{1}$ is a convenient encoding for SAT.
-
-%We precompute the shadow of fully-resolved substrings before feeding it to the SAT solver. If the substring is known, we can simply compute this directly outside the SAT solver. Shaded regions are bitvector literals and light regions correspond to bitvector variables.
-
-%We illustrate this fact in \S\ref{sec:error}:
-%
-%\begin{figure}[H]
-%    \includegraphics[width=2cm]{../figures/parse1.png}
-%    \includegraphics[width=2cm]{../figures/parse2.png}
-%    \includegraphics[width=2cm]{../figures/parse3.png}
-%    \includegraphics[width=2cm]{../figures/parse4.png}
-%\end{figure}
+\subsection{Coarsening and simplification}
 
 \newcommand\ddd{\Ddots}
 \newcommand\vdd{\Vdots}
@@ -805,296 +373,33 @@ Parsing can be viewed as a special case of repair, however for the sake of effic
 \newcommand\ppp{\phantom{\nse}}
 \newcommand\hhg[1]{\tikz[overlay]\node[rectangle,fill=black!15,draw=none,text opacity =1] {$#1$};}
 
-Our algorithm produces set of concrete syntax trees (CSTs) for a given valid string. Otherwise, if the string is invalid, the algorithm generates a set of admissible corrections, alongside their CSTs.
+\begin{wrapfigure}{r}{0.4\textwidth}
+  \resizebox{0.4\textwidth}{!}{\input{expr_simpl.tex}}
+  \caption{When is this reduction admissible?}
+\end{wrapfigure}
 
-%\section{Coarsening and simplification of subexpressions}
-%
-%Depicted below is a SAT tensor representing \hlgray{$\sigma_1\:\sigma_2\:\sigma_3$}$\:\_\:\ldots\:\_$ where shaded regions demarcate known bitvector literals $\mathcal{L}_{r,c}$ (i.e., representing established nonterminal forests) and unshaded regions correspond to bitvector variables $\mathcal{V}_{r,c}$ (i.e., representing seeded nonterminal forests to be solved) for an incomplete string. Since $\mathcal{L}_{r,c}$ are fixed, we precompute them outside the SAT solver.
-%
-%Clearly, solving complexity is highly dependent on the string length. For the sake of complexity, it would be convenient if well-formed subexpressions could be collapsed into a single nonterminal, or multiple nonterminals (in case of ambiguity). Naturally, this raises the question of when can partial derivations be simplified, i.e., under what circumstances is the following reduction admissible?
-%
-%\begin{figure}[H]
-%\[
-%\mathbf{M}^* = \begin{pNiceArray}{ccccccc}[margin, extra-margin=2pt,colortbl-like, xdots/line-style=loosely dotted]
-%\vno & \rcr \vs{1} & \mathcal{L}_{1,3} & \mathcal{L}_{1,3} & \rcw \mathcal{V}_{1,4} & \cdd & \mathcal{V}_{1,n} \\
-%\vdd & \ddd        & \rcr\vs{2}        & \mathcal{L}_{2,3} & \rcw\vdd               &      & \vdd \\
-%     &             &                   & \rcr\vs{3}        & \rcw                   &      & \\
-%     &             &                   &                   & \mathcal{V}_{4,4}      &      & \\
-%     &             &                   &                   &                        & \ddd & \\
-%     &             &                   &                   &                        &      & \mathcal{V}_{n,n} \\
-%\vno & \cdd        &                   &                   &                        &      & \vno
-%\end{pNiceArray} \equiv
-%\begin{pNiceArray}{ccccc}[margin, extra-margin=2pt,colortbl-like, xdots/line-style=loosely dotted]
-%\vno & \rcr\mathcal{L}_{1,3} & \rcw\mathcal{V}_{1,4} & \cdd & \mathcal{V}_{1,n} \\
-%\vdd & \ddd                  & \mathcal{V}_{2,4}     &      & \vdd \\
-%     &                       &                       & \ddd & \\
-%     &                       &                       &      & \mathcal{V}_{n,n} \\
-%\vno & \cdd                  &                       &      & \vno
-%\end{pNiceArray}
-%\]
-%\end{figure}
-%
-%This transformation is admissible when the subexpression is ``complete'', i.e., its derivation cannot be altered by appending or prepending text. For example, the string \texttt{( - b )} is morally \textit{complete} in the sense that inserting adjacent text should not alter the interior derivation, while \texttt{- b} is not, as introducing adjacent text (e.g., \texttt{a - b}) may alter the derivation of its contents depending on the structure of the CFG. This question can be reduced to a quotient: Does there exist another nonterminal, when so adjoined that will ``strip away'' any tokens, leading to another derivation?
-%
-%More formally, given an arbitrary (potentially ambiguous) context free grammar $\mathcal{G}: \mathbb{G}$, and string $\alpha: \Sigma^\ast$, is there a decision procedure that returns whether appending and/or prepending symbols can alter the parse forest of $\alpha$? In other words, we want a function $F: (\mathbb{G} \times \Sigma^\ast) \rightarrow \mathbb{B}$ that returns whether $\alpha$'s parse forest according to $\mathcal{G}$ is unique over $\beta\alpha\gamma$, for all $\beta, \gamma: \Sigma^\ast$.
-%
-%Specifically, let $\Lambda_\alpha$ denote the set of all parse trees that are generated by the string $\alpha$ using $\mathcal{G}$, and consider $\bm\Lambda_{\alpha}$, the union of all parse trees and their subtrees that (1) can be generated by $\beta\alpha\gamma$ using $\mathcal{G}$ for arbitrary $\beta, \gamma \in \Sigma^\ast$, and (2) have a leaf in $\alpha$. We call the parse forest $\Lambda_\alpha$ \textit{unique} iff $\forall t \in \bm\Lambda_{\alpha}\exists t' \in \Lambda_\alpha$, such that $t$ is either a subtree of $t'$, or $t'$ is a proper subtree of $t$.
-%
-%\begin{equation*}
-%  M^*(\mathcal{G}, \beta\alpha\gamma)=
-%\begin{tikzpicture}[
-%  scale=0.4,
-%  baseline,
-%  label distance=10pt % added
-%]
-%
-%\matrix [matrix of math nodes,left delimiter=(,right delimiter=),row sep=0.1cm,column sep=0.1cm] (m) {
-%\varnothing & \beta_1^\shri & \phantom{\cdots} & \,\Lambda_{\beta}\,  &        &                      & \phantom{\qs{|\alpha|}} &        &                      & \smash{\Lambda_{\beta\alpha\gamma}^*}      \\
-%            &               & \phantom{\ddots} & \phantom{\vdots}     &        & \bm\Lambda_\alpha^\shup &                  &        &                      &        \\
-%            &               &                  & \bs{|\beta|}         &        &                      &                  &        &                      & \phantom{\bs{|\beta|}}       \\
-%            &               &                  &                      & \qs{1} & \phantom{\cdots}     & \Lambda_{\alpha} &        &                      & \phantom{\vs{j}} \\
-%            &               &                  &                      &        & \phantom{\ddots}     & \phantom{\vdots} &        & \bm\Lambda_\alpha^\shri &        \\
-%            &               &                  &                      &        &                      & \qs{|\alpha|}           &        &                      & \phantom{\qs{|\alpha|}}      \\
-%            &               &                  &                      &        &                      &                  & \gs{1} & \phantom{\cdots}     & \Lambda_{\gamma}\vphantom{\gs{1}} \\
-%            &               &                  &                      &        &                      &                  &        & \phantom{\ddots}     & \phantom{\vdots} \\
-%            &               &                  &                      &        &                      &                  &        &                      & \gamma_{|\gamma|}^\shup      \\
-%\varnothing &               &                  &                      &        &                      &                  &        &                      & \varnothing\\
-%};
-%
-%\draw[loosely dotted] (m-1-1.south) -- (m-10-1.north);
-%\draw[loosely dotted] (m-1-1.south east) -- (m-10-10.north west);
-%\draw[loosely dotted] (m-10-1.east) -- (m-10-10.west);
-%
-%% β
-%\draw[loosely dotted] (m-1-2.south east) -- ([xshift=0.3cm]m-3-4.north west);
-%\draw[loosely dotted] (m-1-2.east) -- (m-1-4.west);
-%\draw[loosely dotted] (m-1-4.south) -- (m-3-4.north);
-%
-%\draw[dashed] (m-1-4.north east) -- (m-3-4.south east);
-%\draw[dashed] (m-3-4.south east) -- (m-3-10.south east);
-%\draw[dashed] (m-1-7.north east) -- (m-6-7.south east);
-%\draw[dashed] (m-6-7.south east) -- (m-6-10.south east);
-%
-%% α
-%\draw[loosely dotted] (m-4-5.south east) -- ([xshift=0.45cm,yshift=-0.2cm]m-6-7.north west);
-%\draw[loosely dotted] (m-4-5.east) -- (m-4-7.west);
-%\draw[loosely dotted] (m-4-7.south) -- (m-6-7.north);
-%
-%% γ
-%\draw[loosely dotted] (m-7-8.south east) -- ([xshift=-0.1cm,yshift=-0.3cm]m-9-10.north west);
-%\draw[loosely dotted] (m-7-8.east) -- (m-7-10.west);
-%\draw[loosely dotted] (m-7-10.south) -- (m-9-10.north);
-%\node[
-%    fit=(m-1-2)(m-1-4),
-%    inner xsep=0,inner ysep=10pt,
-%    above delimiter=\{,
-%    label=above:$\beta$
-%] {};
-%
-%\node[
-%    fit=(m-7-10)(m-9-10),
-%    inner xsep=14pt,inner ysep=0,
-%    right delimiter=\},
-%    label=right:$\gamma$
-%] {};
-%
-%\end{tikzpicture}
-%\end{equation*}
-%
-%Let $\bm\Lambda_{\alpha}^{\shur}$ be defined as $\bm\Lambda_{\alpha}^{\shur}:=\bm\Lambda_{\alpha}^\shup\cup\bm\Lambda_{\alpha}^\shri$, the union of all right- and left-quotients of $\alpha$.
+Depicted right is a SAT tensor representing \hlgray{$\sigma_1\:\sigma_2\:\sigma_3$}$\:\_\:\ldots\:\_$ where shaded regions demarcate known bitvector literals $\mathcal{L}_{r,c}$ (i.e., representing established nonterminal forests) and unshaded regions correspond to bitvector variables $\mathcal{V}_{r,c}$ (i.e., representing seeded nonterminal forests to be solved) for an incomplete string. Since $\mathcal{L}_{r,c}$ are fixed, we precompute them outside the SAT solver.
+
+Clearly, solving complexity is highly dependent on the string length. For the sake of complexity, it would be convenient if well-formed subexpressions could be collapsed into a single nonterminal, or multiple nonterminals (in case of ambiguity). Naturally, this raises the question of when can partial derivations be simplified, i.e., under what circumstances is the following reduction admissible?
+
+This transformation is admissible when the subexpression is ``complete'', i.e., its derivation cannot be altered by appending or prepending text. For example, the string \texttt{( - b )} is morally \textit{complete} in the sense that inserting adjacent text should not alter the interior derivation, while \texttt{- b} is not, as introducing adjacent text (e.g., \texttt{a - b}) may alter the derivation of its contents depending on the structure of the CFG. This question can be reduced to a quotient: Does there exist another nonterminal, when so adjoined that will ``strip away'' any tokens, leading to another derivation?
+
+\begin{wrapfigure}{r}{0.33\textwidth}
+  \resizebox{0.35\textwidth}{!}{\input{mat_simpl.tex}}
+  \caption{General case of subexpression rediction.}
+\end{wrapfigure}
+
+More formally, given an arbitrary (potentially ambiguous) context free grammar $\mathcal{G}: \mathbb{G}$, and string $\alpha: \Sigma^\ast$, is there a decision procedure that returns whether appending and/or prepending symbols can alter the parse forest of $\alpha$? In other words, we want a function $F: (\mathbb{G} \times \Sigma^\ast) \rightarrow \mathbb{B}$ that returns whether $\alpha$'s parse forest according to $\mathcal{G}$ is unique over $\beta\alpha\gamma$, for all $\beta, \gamma: \Sigma^\ast$.
+
+Specifically, let $\Lambda_\alpha$ denote the set of all parse trees that are generated by the string $\alpha$ using $\mathcal{G}$, and consider $\bm\Lambda_{\alpha}$, the union of all parse trees and their subtrees that (1) can be generated by $\beta\alpha\gamma$ using $\mathcal{G}$ for arbitrary $\beta, \gamma \in \Sigma^\ast$, and (2) have a leaf in $\alpha$. We call the parse forest $\Lambda_\alpha$ \textit{unique} iff $\forall t \in \bm\Lambda_{\alpha}\exists t' \in \Lambda_\alpha$, such that $t$ is either a subtree of $t'$, or $t'$ is a proper subtree of $t$.
+
+
+Let $\bm\Lambda_{\alpha}^{\shur}$ be defined as $\bm\Lambda_{\alpha}^{\shur}:=\bm\Lambda_{\alpha}^\shup\cup\bm\Lambda_{\alpha}^\shri$, the union of all right- and left-quotients of $\alpha$.
 %
 %Claim #1: The parse forest for $\alpha$ is unique when $\bm\Lambda_{\alpha}^{\shur} = \varnothing$.
 %
 %Question: Claim #1 is sufficient, but is it necessary?
 
-\pagebreak\section{Backpropagation of error}
-
-%    Although holes may occur anywhere, let us consider two cases in which $\Sigma^+$ is strictly left- or right-constrained, i.e., $\highlight{x}z, x\highlight{z}: \Sigma^{|x|+|z|}$.
-
-Valiant's $\otimes$-operator, which yields the set of productions unifying known factors in a binary CFG, naturally implies the existence of a left- and right-quotient, which yield the set of nonterminals that may appear the right or left side of a known factor and its corresponding root. In other words, a known factor not only implicates subsequent expressions that can be derived from it, but also adjacent factors that may be composed with it to form a given derivation.
-
-\begin{table}[H]
-\resizebox{\textwidth}{!}{
-  \begin{tabular}{ccccc}
-    Valiant's $\otimes$-operator && Left Quotient && Right Quotient \\\\
-    $x \otimes z := \big\{\;w \mid (w \rightarrow x z)\in P\;\big\}$ &&
-    $\frac{\partial w}{\partial \cev{x}} := \big\{\;z \mid (w \rightarrow x z)\in P\;\big\}$ &&
-    $\frac{\partial w}{\partial \vec{z}} := \big\{\;x \mid (w \rightarrow x z)\in P\;\big\}$ \\\\
-    \begin{tabular}{|c|c|}
-      \hline
-      \cellcolor{black!15}\hspace{-0.5mm}$x$\hspace{-0.5mm} & \hspace{-0.95mm}$w$\hspace{-0.95mm} \\ \hline
-      \multicolumn{1}{c|}{~} & \cellcolor{black!15}\hspace{-0.95mm}$z$\hspace{-0.95mm} \\
-      \cline{2-2}
-    \end{tabular} &&
-    \begin{tabular}{|c|c|}
-      \hline
-      \cellcolor{black!15}\hspace{-0.5mm}$x$\hspace{-0.5mm} & \cellcolor{black!15}\hspace{-0.95mm}$w$\hspace{-0.95mm} \\ \hline
-      \multicolumn{1}{c|}{~} & \hspace{-0.95mm}$z$\hspace{-0.95mm} \\
-      \cline{2-2}
-    \end{tabular} &&
-    \begin{tabular}{|c|c|}
-      \hline
-      \hspace{-0.5mm}$x$\hspace{-0.5mm} & \cellcolor{black!15}\hspace{-0.95mm}$w$\hspace{-0.95mm} \\ \hline
-      \multicolumn{1}{c|}{~} & \cellcolor{black!15}\hspace{-0.95mm}$z$\hspace{-0.95mm} \\
-      \cline{2-2}
-    \end{tabular}
-  \end{tabular}
-}
-\end{table}
-
-\noindent The left quotient coincides with the derivative operator first proposed by Brzozowski~\cite{brzozowski1964derivatives} and Antimirov~\cite{antimirov1996partial} over regular languages, lifted into the context-free setting (our work). When the root and LHS are fixed, e.g., $\frac{\partial S}{\partial \cev{x}}: (\cev{V} \rightarrow S) \rightarrow \vec{\mathcal{V}}$ returns the set of admissible nonterminals to the RHS. One may also consider a gradient operator, $\cev{\nabla} S: (\cev{\mathcal{V}} \rightarrow S) \rightarrow \vec{\mathcal{V}}$, which simultaneously tracks the partials with respect to a set of multiple LHS nonterminals produced by a fixed root.
-
-%  These operators in the context-free setting respect linearity. The $\oplus$ case is trivial. For $\otimes$, let us consider the left quotient. Its symmetric case is left as an exercise for the reader:
-%
-%  $\frac{\partial}{\partial x}(f\otimes g) = \frac{\partial f}{\partial x}\otimes g \oplus f\otimes\frac{\partial g}{\partial x}$
-%
-%  TODO: prove the product rule holds for CFG reachability.
-
-If the root itself is unknown, we can define an operator, $\mathcal{H}_{\mathcal{W}\subseteq\mathcal{V}}: (\cev{\mathcal{V}}\times\vec{\mathcal{V}}\times\mathcal{W}) \rightarrow (\vec{\mathcal{V}}\times\vec{\mathcal{V}}\rightarrow\mathcal{W})$, which tracks second-order partial derivatives for all roots in $\mathcal{W}$. Unlike differential calculus on smooth manifolds, partials in this calculus do not necessarily commute depending on the CFG.
-
-\definecolor{R}{RGB}{202,65,55}
-\definecolor{G}{RGB}{151,216,56}
-\definecolor{W}{RGB}{255,255,255}
-\definecolor{X}{RGB}{65,65,65}
-
-\newcommand{\TikZRubikFaceLeft}[9]{\def\myarrayL{#1,#2,#3,#4,#5,#6,#7,#8,#9}}
-\newcommand{\TikZRubikFaceRight}[9]{\def\myarrayR{#1,#2,#3,#4,#5,#6,#7,#8,#9}}
-\newcommand{\TikZRubikFaceTop}[9]{\def\myarrayT{#1,#2,#3,#4,#5,#6,#7,#8,#9}}
-\newcommand{\BuildArray}{\foreach \X [count=\Y] in \myarrayL%
-{\ifnum\Y=1%
-\xdef\myarray{"\X"}%
-\else%
-\xdef\myarray{\myarray,"\X"}%
-\fi}%
-\foreach \X in \myarrayR%
-{\xdef\myarray{\myarray,"\X"}}%
-\foreach \X in \myarrayT%
-{\xdef\myarray{\myarray,"\X"}}%
-\xdef\myarray{{\myarray}}%
-}
-\TikZRubikFaceLeft
-{LA}{W}{W}
-{W}{LB}{LC}
-{LD}{W}{W}
-\TikZRubikFaceRight
-{W}{LK}{W}
-{LC}{W}{LG}
-{W}{LH}{W}
-\TikZRubikFaceTop
-{LA}{W}{LI}
-{W}{W}{LJ}
-{W}{LK}{W}
-\BuildArray
-\pgfmathsetmacro\radius{0.1}
-\tdplotsetmaincoords{55}{135}
-
-\showcellnumberfalse
-
-\begin{figure}
-  \[
-  \begin{align*}
-    o &\rightarrow \hiliD{so} \mid \hiliC{rs} \mid \hiliB{rr}\hspace{0.5pt} \mid \hiliA{oo}\\
-    r &\rightarrow \hiliE{so} \mid \hiliH{ss}\hspace{0.4pt}\mid \hiliF{rr}\hspace{0.5pt} \mid \hiliK{os}\\
-    s &\rightarrow \hiliL{so} \mid \hiliG{rs} \mid \hiliJ{or} \mid \hiliI{oo}
-  \end{align*} \phantom{=} \mathcal{H}_{\{o\}} = \begin{pmatrix}
-        \hiliA{\pder{^2 o}{\cev{o}\partial\vec{o}}} & \pder{^2 o}{\cev{o}\partial\vec{r}} & \pder{^2 o}{\cev{o}\partial\vec{s}}\\
-        \pder{^2 o}{\cev{r}\partial\vec{o}} & \hiliB{\pder{^2 o}{\cev{r}\partial\vec{r}}} & \hiliC{\pder{^2 o}{\cev{r}\partial\vec{s}}}\\
-        \hiliD{\pder{^2 o}{\cev{s}\partial\vec{o}}} & \pder{^2 o}{\cev{s}\partial\vec{r}} & \pder{^2 o}{\cev{s}\partial\vec{s}}
-      \end{pmatrix}
-%    \mathcal{J} = \begin{pmatrix}
-%       \pder{o}{o} & \pder{o}{r} & \pder{o}{s}\\
-%       \pder{r}{o} & \pder{r}{r} & \pder{r}{s}\\
-%       \pder{s}{o} & \pder{s}{r} & \pder{s}{s}
-%    \end{pmatrix}
-  \]
-  \hspace{-0.5cm}\begin{minipage}[l]{4.3cm}
-  \scalebox{0.8}{\begin{tikzpicture}
-    \clip (-3,-2.5) rectangle (3,2.5);
-    \begin{scope}[tdplot_main_coords]
-      \filldraw [canvas is yz plane at x=1.5] (-1.5,-1.5) rectangle (1.5,1.5);
-      \filldraw [canvas is xz plane at y=1.5] (-1.5,-1.5) rectangle (1.5,1.5);
-      \filldraw [canvas is yx plane at z=1.5] (-1.5,-1.5) rectangle (1.5,1.5);
-      \foreach \X [count=\XX starting from 0] in {-1.5,-0.5,0.5}{
-        \foreach \Y [count=\YY starting from 0] in {-1.5,-0.5,0.5}{
-          \pgfmathtruncatemacro{\Z}{\XX+3*(2-\YY)}
-          \pgfmathsetmacro{\mycolor}{\myarray[\Z]}
-          \draw [thick,canvas is yz plane at x=1.5,shift={(\X,\Y)},fill=\mycolor] (0.5,0) -- ({1-\radius},0) arc (-90:0:\radius) -- (1,{1-\radius}) arc (0:90:\radius) -- (\radius,1) arc (90:180:\radius) -- (0,\radius) arc (180:270:\radius) -- cycle;
-          \ifshowcellnumber
-          \node[canvas is yz plane at x=1.5,shift={(\X+0.5,\Y+0.5)}] {\Z};
-          \fi
-          \pgfmathtruncatemacro{\Z}{2-\XX+3*(2-\YY)+9}
-          \pgfmathsetmacro{\mycolor}{\myarray[\Z]}
-          \draw [thick,canvas is xz plane at y=1.5,shift={(\X,\Y)},fill=\mycolor] (0.5,0) -- ({1-\radius},0) arc (-90:0:\radius) -- (1,{1-\radius}) arc (0:90:\radius) -- (\radius,1) arc (90:180:\radius) -- (0,\radius) arc (180:270:\radius) -- cycle;
-          \ifshowcellnumber
-          \node[canvas is xz plane at y=1.5,shift={(\X+0.5,\Y+0.5)},xscale=-1] {\Z};
-          \fi
-          \pgfmathtruncatemacro{\Z}{2-\YY+3*\XX+18}
-          \pgfmathsetmacro{\mycolor}{\myarray[\Z]}
-          \draw [thick,canvas is yx plane at z=1.5,shift={(\X,\Y)},fill=\mycolor] (0.5,0) -- ({1-\radius},0) arc (-90:0:\radius) -- (1,{1-\radius}) arc (0:90:\radius) -- (\radius,1) arc (90:180:\radius) -- (0,\radius) arc (180:270:\radius) -- cycle;
-          \ifshowcellnumber
-          \node[canvas is yx plane at z=1.5,shift={(\X+0.5,\Y+0.5)},xscale=-1,rotate=-90] {\Z};
-          \fi
-        }
-      }
-      \draw [decorate,decoration={calligraphic brace,amplitude=10pt,mirror},yshift=0pt, line width=1.25pt]
-      (3,0) -- (3,3) node [black,midway,xshift=-8pt, yshift=-14pt] {\footnotesize $V_x$};
-      \draw [decorate,decoration={calligraphic brace,amplitude=10pt},yshift=0pt, line width=1.25pt]
-      (3,0) -- (0,-3) node [black,midway,xshift=-16pt, yshift=0pt] {\footnotesize $V_z$};
-      \draw [decorate,decoration={calligraphic brace,amplitude=10pt},yshift=0pt, line width=1.25pt]
-      (0,-3) -- (-3,-3) node [black,midway,xshift=-8pt, yshift=14pt] {\footnotesize $V_w$};
-    \end{scope}
-  \end{tikzpicture}}
-  \end{minipage}
-  \begin{minipage}[c]{3.5cm}
-    \begin{align*}
-      \mathcal{H}_{\{r\}} = & \begin{pmatrix}
-         \pder{^2 r}{\cev{o}\partial\vec{o}} & \pder{^2 r}{\cev{o}\partial\vec{r}} & \hiliK{\pder{^2 r}{\cev{o}\partial\vec{s}}}\\
-         \pder{^2 r}{\cev{r}\partial\vec{o}} & \hiliF{\pder{^2 r}{\cev{r}\partial\vec{r}}} & \pder{^2 r}{\cev{r}\partial\vec{s}}\\
-         \hiliE{\pder{^2 r}{\cev{s}\partial\vec{o}}} & \pder{^2 r}{\cev{s}\partial\vec{r}} & \hiliH{\pder{^2 r}{\cev{s}\partial\vec{s}}}
-      \end{pmatrix}
-    \end{align*}
-      \begin{align*}
-      \mathcal{H}_{\{s\}} = & \begin{pmatrix}
-         \hiliI{\pder{^2 s}{\cev{o}\partial\vec{o}}} & \hiliJ{\pder{^2 s}{\cev{o}\partial\vec{r}}} & \pder{^2 s}{\cev{o}\partial\vec{s}}\\
-         \pder{^2 s}{\cev{r}\partial\vec{o}} & \pder{^2 s}{\cev{r}\partial\vec{r}} & \hiliG{\pder{^2 s}{\cev{r}\partial\vec{s}}}\\
-         \hiliL{\pder{^2 s}{\cev{s}\partial\vec{o}}} & \pder{^2 s}{\cev{s}\partial\vec{r}} & \pder{^2 s}{\cev{s}\partial\vec{s}}
-      \end{pmatrix}
-    \end{align*}
-  \end{minipage}
-  \caption{CFGs are witnessed by a rank-3 tensor, whose inhabitants indicate CNF productions. Gradients in this setting effectively condition the parse tensor M by constraining the superposition of admissible parse forests.\vspace{-10pt}}
-\end{figure}
-
-\noindent By allowing the matrix $\mathcal{M}^*$ to contain bitvector variables representing holes in $\sigma$, we obtain a set of multilinear equations whose solutions exactly correspond to the set of admissible repairs and their corresponding parse forests. Specifically, the repairs coincide with holes in the superdiagonal $\mathcal{M}^*_{r+1 = c}$, and the parse forests occur along upper-triangular entries $\mathcal{M}^*_{r + 1 < c}$.
-%
-%%We precompute the shadow of fully-resolved substrings before feeding it to the SAT solver. If the substring is known, we can simply compute this directly outside the SAT solver. Shaded regions are bitvector literals and light regions correspond to bitvector variables.
-%
-%%We illustrate this fact in \S\ref{sec:error}:
-%%
-%%\begin{figure}[H]
-%%    \includegraphics[width=2cm]{../figures/parse1.png}
-%%    \includegraphics[width=2cm]{../figures/parse2.png}
-%%    \includegraphics[width=2cm]{../figures/parse3.png}
-%%    \includegraphics[width=2cm]{../figures/parse4.png}
-%%\end{figure}
-%
-%  \begin{figure}[H]
-%    \[
-%      \mathcal{M}^* = \begin{pNiceArray}{ccccccc}[margin, extra-margin=2pt,colortbl-like, xdots/line-style=loosely dotted]
-%          \vno & \rcr \shup x_1 &  \Cdots      & \mathcal{V}_{1,|x|} & \rcw \mathcal{V}_{1,4} & \cdd & \mathcal{V}^* \\
-%          \vdd & \ddd           &  \Ddots      & \rcr\Vdots          & \rcw\vdd               &      & \vdd \\
-%               &                &              & \rcr\shup x_{|x|}   & \rcw                   &      & \\
-%               &                &              &                     & \mathcal{V}_{4,4}      &      & \\
-%               &                &              &                     &                        & \ddd & \\
-%               &                &              &                     &                        &      & \mathcal{V}_{n,n} \\
-%          \vno & \cdd           &              &                     &                        &      & \vno
-%      \end{pNiceArray}
-%    \]
-%  \end{figure}
-
-%We also need the constraint that no two conflicting nonterminals may be active at any given time... TODO: describe uniqueness constraint
-%  \noindent Depicted above is a SAT tensor representing \hlgray{$\sigma_1\:\sigma_2\:\sigma_3$}$\:\_\:\ldots\:\_$ where shaded regions demarcate known bitvector literals $\mathcal{L}_{r,c}$ (i.e., representing established nonterminal forests) and unshaded regions correspond to bitvector variables $\mathcal{V}_{r,c}$ (i.e., representing seeded nonterminal forests to be grown). Since $\mathcal{L}_{r,c}$ are fixed, we precompute them outside the SAT solver.
-
-\pagebreak
 \subsection{Gradient estimation}\label{sec:dsi}
 
 Now that we have a reliable method to synthesize admissible completions for strings containing holes, i.e., fix \textit{localized} errors, $S: \mathcal{G} \times (\Sigma\cup\{\varepsilon, \texttt{\_}\})^n \rightarrow \{\Sigma^n\}\subseteq \mathcal{L}_\mathcal{G}$, how can we use $S$ to repair some unparseable string, i.e., $\err{\sigma_1\ldots\:\sigma_n}: \highlight{\Sigma}^n \cap\mathcal{L}_\mathcal{G}^\complement$ where the holes' locations are unknown? Three questions stand out in particular: how many holes are needed to repair the string, where should we put those holes, and how ought we fill them to obtain a parseable $\tilde{\sigma} \in \mathcal{L}_\mathcal{G}$?
@@ -1163,7 +468,7 @@ Finally, to sample $\bm{\sigma}\sim\Delta_{q}(\err{\sigma})$, we enumerate templ
 
 \noindent This approach is tractable for $n \lesssim 100, q \lesssim 3$, however more complex repairs require a more efficient gradient estimator. We will discuss two alternate approaches, one using an adaptive sampler (Sec.~\ref{sec:holes}) and another based on Levenshtein reachability (Sec.~\ref{sec:levenshtein}).
 
-\pagebreak\section{Probabilistic reachability}\label{sec:holes}
+\subsection{Probabilistic reachability}\label{sec:holes}
 
 Since there are $\Sigma_{d=1}^q{n \choose d}$ total sketch templates, each with $(|\Sigma| + 1)^{2d}$ individual edits to check, if $n$ and $q$ are large, this space can be intractable to exhaustively search and a uniform prior may be highly sample-inefficient. Furthermore, na\"ively sampling $\bm{\sigma}_i\sim\Sigma^{n\pm q}\cap\Delta_{q}(\err{\sigma})$ is likely to produce a large number of unnatural edits. To provide rapid and relevant suggestions, we prioritize candidate repairs according to the following seven-step procedure:
 
@@ -1222,147 +527,121 @@ In the following section, we will give a more efficient construction for generat
 %
 %  This is needed because of the doubly-ambiguous nature of tree search: a single string may have a parse forest, and an incomplete string simultaneously occupies a superposition of possible parse forests. When we encounter two adjacent parse forests which cannot be joined, we know that either (1) the left derivation must change (2) the right derivation must change or (3) there must be a hole in the middle which joins the two together. When recursing over the state space, we must simultaneously consider all three possibilities.
 
-\pagebreak\section{Error Recovery}\label{sec:error}
+\section{Parsing}
+
+\subsection{Tree Denormalization}
+
+% https://www.ling.upenn.edu/advice/latex/qtree/qtreenotes.pdf
+% https://cpb-us-w2.wpmucdn.com/campuspress.yale.edu/dist/0/119/files/2014/12/sec-10.17-drawing-arrows-2ek9r2b.pdf
+
+Our parser emits a binary forest consisting of parse trees for the candidate string which are constructed bottom-up using a variant of $\otimes$ called $\hat{\otimes}$, which simply records backpointers:
+
+\begin{align}
+   X\:\hat{\otimes}\:Z := \big\{\;w\hphantom{.}^{\nearrow}_{\searrow}\nobarfrac{x}{z} \mid \langle x, z\rangle \in X \times Z, (w\rightarrow xz) \in P\;\big\}
+\end{align}
+
+Due to Chomsky normalization however, the resulting forests are full of trees that are thin and crooked. To restore the natural shape of the tree, we first construct the parse forests bottom-up, then prune away synthetic nonterminals top-down by recursively grafting denormalized grandchildren onto the root. This transformation is purely cosmetic and only used when rendering the parse trees.
+
+\begin{figure}[H]
+  \begin{minipage}{.45\linewidth}
+    \begin{algorithm}[H]
+      \caption{Tree denormalization}\label{alg:cap}
+      \begin{algorithmic}
+        \Procedure{Cut}{\texttt{t: Tree}}
+          \State $\texttt{stems} \leftarrow \{\:\textsc{Cut}(\texttt{c}) \mid \texttt{c} \in \texttt{t.children}\:\}$
+          \If{$\texttt{t.root} \in (V_{\mathcal{G}'} \setminus V_{\mathcal{G}})$}
+            \State \textbf{return } \texttt{stems} %\Comment{Drop synthetic nonterminals.}
+          \Else%\Comment{Graft the denormalized children on root.}
+            \State \textbf{return } $\{\:\texttt{Tree(t.root, stems)}\:\}$
+          \EndIf
+        \EndProcedure
+      \end{algorithmic}
+    \end{algorithm}
+  \end{minipage}
+  \resizebox{.54\textwidth}{!}{
+    \begin{tabular}{ll}
+        \Tree [.\texttt{S} \tikz\node(v1){\texttt{true}} [.$\ccancel{\texttt{and.S}}$ \tikz\node(v3){\texttt{and}} [.\texttt{S} \tikz\node(v5){\texttt{(}} [.$\ccancel{\texttt{S.)}}$ [.\texttt{S} \tikz\node(v9){\texttt{false}} [.$\ccancel{\texttt{or.S}}$ \tikz\node(v11){\texttt{xor}} [.\texttt{S} \texttt{!} \texttt{true} ] ] ] \tikz\node(v7){\texttt{)}} ] ] ] ]
+%    \Tree [.S [.NP John ] [.VP [.\tikz\node(v1){V}; sleeps ] ] ]
+        \hspace{-2cm}
+        &
+        \Tree [.\texttt{S} \tikz\node(v2){\texttt{true}} \tikz\node(v4){\texttt{and}} [.\texttt{S} \tikz\node(v6){\texttt{(}} [.\texttt{S} \tikz\node(v10){\texttt{false}} \tikz\node(v12){\texttt{xor}} [.\texttt{S} \texttt{!} \texttt{true} ] ] \tikz\node(v8){\texttt{)}} ] ]\\\\\\
+%    \Tree [.\tikz\node(v2){V}; [.\tikz\node(v3){V}; ] [.Adv {a lot} ] ]
+        \hspace{1cm}\Huge{Pre-Denormalization} & \hspace{2cm}\Huge{Post-Denormalization}
+    \end{tabular}
+    \begin{tikzpicture}[overlay]
+%    \draw [red,dashed,-stealth] (v1) to[bend left] (v2);
+        \draw [red,dashed,-stealth] (v3) to[bend left] (v4);
+%    \draw [red,dashed,-stealth] (v5) to[bend left] (v6);
+        \draw [red,dashed,-stealth] (v7) to[bend left] (v8);
+%    \draw [red,dashed,-stealth] (v9) to[bend right] (v10);
+        \draw [red,dashed,-stealth] (v11) to[bend right] (v12);
+    \end{tikzpicture}
+  }
+  \caption{Since $\mathcal{G}'$ contains synthetic nodes, to recover a parse tree congruent with the original grammar $\mathcal{G}$, we prune all synthetic nodes and graft their stems onto the grandparent via a simple recursive procedure (Alg.~\ref{alg:cap}).}%, which is used to denormalize both complete and partial ASTs (cf. \S~\ref{sec:error}) alike.}
+%    \caption{Result of applying Algorithm~\ref{alg:cap} to the tree obtained by parsing the string: \texttt{true and ( false or ! true )}.}
+\end{figure}
+
+\subsection{Parser incrementalization}\label{sec:incrementalization}
+
+When the string is altered, we can reuse prior work by only recomputing affected submatrices, yielding a parser whose complexity is location-dependent, i.e., at worst quadratic in terms of $|\Sigma^*|$ assuming $\mathcal{O}(1)$ cost for each CNF-nonterminal subset join, $V_1'\otimes V_2'$. Borrowing the notation from probabilistic graphical models, where shaded nodes denote bound variables and unshaded nodes are unobserved:
+
+\begin{figure}[H]
+\begin{center}
+\begin{tabular}{ c c c c c }
+\scalebox{0.32}{\mkTrellisAppend{7}} & & \scalebox{0.32}{\mkTrellisInsert{6}}         & & \scalebox{0.32}{\mkTrellisInsert{7}}         \\
+Append                               & & Delete                                       & & Insert                                       \\
+$\mathcal{O}(n+1)$                   & & $\mathcal{O}\left(\frac{1}{4}(n-1)^2\right)$ & & $\mathcal{O}\left(\frac{1}{4}(n+1)^2\right)$ \\
+\end{tabular}
+\end{center}
+\end{figure}
+
+The problem of incremental parsing is closely related to \textit{dynamic matrix inverse} in the linear algebra setting, and \textit{incremental transitive closure} with vertex updates in the graph setting. By carefully encoding the matrix relation from Sec.~\ref{sec:matrix} and employing an incremental SAT solver, we can gradually update SAT constraints as new keystrokes are received to eliminate redundancy.
+
+\pagebreak\subsection{From CFG parsing to SAT solving}\label{sec:sat}
+
+\begin{wrapfigure}{r}{0.4\textwidth}
+  \resizebox{.4\textwidth}{!}{\input{curtains.tex}}
+  \caption{Parsing and repair share the same grammar.}
+\end{wrapfigure}
+
+Parsing can be viewed as a special case of repair, however for the sake of efficiency, we first attempt to parse, then resort to repair. Repair can be solved analytically as constraint satisfaction problem using SAT, which allows us to easily combine constraints and solve them incrementally.
+
+
+%\noindent The compactness of this representation can be improved via a combinatorial number system without loss of generality, although $\mathds{1}$ is a convenient encoding for SAT.
+
+%We precompute the shadow of fully-resolved substrings before feeding it to the SAT solver. If the substring is known, we can simply compute this directly outside the SAT solver. Shaded regions are bitvector literals and light regions correspond to bitvector variables.
+
+%We illustrate this fact in \S\ref{sec:error}:
+%
+%\begin{figure}[H]
+%    \includegraphics[width=2cm]{../figures/parse1.png}
+%    \includegraphics[width=2cm]{../figures/parse2.png}
+%    \includegraphics[width=2cm]{../figures/parse3.png}
+%    \includegraphics[width=2cm]{../figures/parse4.png}
+%\end{figure}
+
+Our algorithm produces set of concrete syntax trees (CSTs) for a given valid string. Otherwise, if the string is invalid, the algorithm generates a set of admissible corrections, alongside their CSTs.
+
+\subsection{Error Recovery}\label{sec:error}
+
+\begin{figure}[H]
+  \resizebox{0.99\textwidth}{!}{\input{binary_trees.tex}}
+\end{figure}
 
 The matrix $\mathcal{M}^*$ encodes a superposition of all admissible binary trees of a fixed breadth. Consider the string \texttt{\_ ... \_}, which might generate various parse trees:
 
-\begin{figure}[H]
-  \resizebox{0.99\textwidth}{!}{
-    \[
-      \mathbf{M}^* = \begin{pNiceArray}{ccccccc}[margin, extra-margin=2pt,colortbl-like, xdots/line-style=loosely dotted]
-         \tikzmark{a} & \tikzmark{k}  & \tikzmark{b} & \tikzmark{m} & \tikzmark{c} & \tikzmark{q} & \tikzmark{d} \\
-                 \vno & \tikzmark{l}  &              & \tikzmark{n} &              & \tikzmark{r} & \tikzmark{w} \\
-                 \vdd & \ddd          & \tikzmark{e} & \tikzmark{o} & \tikzmark{f} & \tikzmark{s} & \tikzmark{g} \\
-                      &               &              & \tikzmark{p} &              & \tikzmark{t} & \tikzmark{x} \\
-                      &               &              &              & \tikzmark{h} & \tikzmark{u} & \tikzmark{i} \\
-                      &               &              &              &              & \tikzmark{v} &              \\
-                 \vno & \cdd          &              &              &              & \vno         & \tikzmark{j}
-      \end{pNiceArray}
-      \begin{tikzpicture}[overlay, remember picture, blubr/.style={-,blue}, redbr/.style={-,red}, grnbr/.style={-,green}]
-        \draw [grnbr] ({pic cs:l}) to ({pic cs:r});
-        \draw [grnbr] ({pic cs:v}) to ({pic cs:r});
-        \draw [grnbr] ({pic cs:r}) to ({pic cs:w});
-        \draw [blubr] ({pic cs:a}) to ({pic cs:b});
-        \draw [blubr] ({pic cs:e}) to ({pic cs:b});
-        \draw [blubr] ({pic cs:h}) to ({pic cs:c});
-        \draw [blubr] ({pic cs:b}) to ({pic cs:c});
-        \draw [blubr] ({pic cs:c}) to ({pic cs:d});
-        \draw [redbr] ({pic cs:h}) to ({pic cs:i});
-        \draw [redbr] ({pic cs:j}) to ({pic cs:i});
-        \draw [redbr] ({pic cs:e}) to ({pic cs:g});
-        \draw [redbr] ({pic cs:i}) to ({pic cs:g});
-        \draw [redbr] ({pic cs:g}) to ({pic cs:d});
-      \end{tikzpicture}\Rightarrow
-      \left\{\begin{pNiceArray}{ccccccc}[margin, extra-margin=2pt,colortbl-like, xdots/line-style=loosely dotted]
-        \tikzmark{a1} & \tikzmark{k1}  & \tikzmark{b1} & \tikzmark{m1} & \tikzmark{c1} & \tikzmark{q1} & \tikzmark{d1} \\
-        \vno          & \tikzmark{l1}  &               & \tikzmark{n1} &               & \tikzmark{r1} & \tikzmark{w1} \\
-        \vdd          & \ddd           & \tikzmark{e1} & \tikzmark{o1} & \tikzmark{f1} & \tikzmark{s1} & \tikzmark{g1} \\
-                      &                &               & \tikzmark{p1} &               & \tikzmark{t1} & \tikzmark{x1} \\
-                      &                &               &               & \tikzmark{h1} & \tikzmark{u1} & \tikzmark{i1} \\
-                      &                &               &               &               & \tikzmark{v1} &              \\
-        \vno          & \cdd           &               &               &               & \vno          & \tikzmark{j1}
-      \end{pNiceArray}
-      \begin{tikzpicture}[overlay, remember picture, redbr/.style={-,red}]
-        \draw [redbr] ({pic cs:a1}) to ({pic cs:d1});
-        \draw [redbr] ({pic cs:h1}) to ({pic cs:i1});
-        \draw [redbr] ({pic cs:j1}) to ({pic cs:i1});
-        \draw [redbr] ({pic cs:e1}) to ({pic cs:g1});
-        \draw [redbr] ({pic cs:i1}) to ({pic cs:g1});
-        \draw [redbr] ({pic cs:g1}) to ({pic cs:d1});
-      \end{tikzpicture}_{\textstyle,}
-      \begin{pNiceArray}{ccccccc}[margin, extra-margin=2pt,colortbl-like, xdots/line-style=loosely dotted]
-        \tikzmark{a2} & \tikzmark{k2}  & \tikzmark{b2} & \tikzmark{m2} & \tikzmark{c2} & \tikzmark{q2} & \tikzmark{d2} \\
-        \vno          & \tikzmark{l2}  &               & \tikzmark{n2} &               & \tikzmark{r2} & \tikzmark{w2} \\
-        \vdd          & \ddd           & \tikzmark{e2} & \tikzmark{o2} & \tikzmark{f2} & \tikzmark{s2} & \tikzmark{g2} \\
-                      &                &               & \tikzmark{p2} &               & \tikzmark{t2} & \tikzmark{x2} \\
-                      &                &               &               & \tikzmark{h2} & \tikzmark{u2} & \tikzmark{i2} \\
-                      &                &               &               &               & \tikzmark{v2} &              \\
-        \vno          & \cdd           &               &               &               & \vno          & \tikzmark{j2}
-      \end{pNiceArray}
-      \begin{tikzpicture}[overlay, remember picture, blubr/.style={-,blue}]
-        \draw [blubr] ({pic cs:a2}) to ({pic cs:b2});
-        \draw [blubr] ({pic cs:e2}) to ({pic cs:b2});
-        \draw [blubr] ({pic cs:h2}) to ({pic cs:c2});
-        \draw [blubr] ({pic cs:b2}) to ({pic cs:c2});
-        \draw [blubr] ({pic cs:c2}) to ({pic cs:d2});
-        \draw [blubr] ({pic cs:j2}) to ({pic cs:d2});
-      \end{tikzpicture}_{\textstyle,}
-      \begin{pNiceArray}{ccccccc}[margin, extra-margin=2pt,colortbl-like, xdots/line-style=loosely dotted]
-        \tikzmark{a3} & \tikzmark{k3}  & \tikzmark{b3} & \tikzmark{m3} & \tikzmark{c3} & \tikzmark{q3} & \tikzmark{d3} \\
-        \vno          & \tikzmark{l3}  &               & \tikzmark{n3} &               & \tikzmark{r3} & \tikzmark{w3} \\
-        \vdd          & \ddd           & \tikzmark{e3} & \tikzmark{o3} & \tikzmark{f3} & \tikzmark{s3} & \tikzmark{g3} \\
-                      &                &               & \tikzmark{p3} &               & \tikzmark{t3} & \tikzmark{x3} \\
-                      &                &               &               & \tikzmark{h3} & \tikzmark{u3} & \tikzmark{i3} \\
-                      &                &               &               &               & \tikzmark{v3} &              \\
-        \vno          & \cdd           &               &               &               & \vno          & \tikzmark{j3}
-      \end{pNiceArray}
-      \begin{tikzpicture}[overlay, remember picture, grnbr/.style={-,green}]
-        \draw [grnbr] ({pic cs:l3}) to ({pic cs:r3});
-        \draw [grnbr] ({pic cs:n3}) to ({pic cs:p3});
-        \draw [grnbr] ({pic cs:v3}) to ({pic cs:r3});
-        \draw [grnbr] ({pic cs:r3}) to ({pic cs:w3});
-        \draw [grnbr] ({pic cs:j3}) to ({pic cs:d3});
-        \draw [grnbr] ({pic cs:a3}) to ({pic cs:d3});
-      \end{tikzpicture}\ldots\right\}
-    \]
-  }
-\end{figure}
+\begin{wrapfigure}{R}{0.4\textwidth}
+  \begin{center}
+  \resizebox{.3\textwidth}{!}{\input{error_recovery.tex}}
+  \end{center}
+  \caption{By recursing over upper diagonals of decreasing elevation and discarding all subtrees that fall under the shadow of another's canopy, we can recover the partial subtrees. The example depicted above contains three such branches, rooted at nonterminals $C, B, A$.}\label{fig:peaks}
+\end{wrapfigure}
 
-\noindent Not only is Tidyparse capable of suggesting repairs to invalid strings, it can also return partial trees for those same strings, which is often helpful for debugging purposes. Unlike LL- and LR-style parsers which require special rules for error recovery, Tidyparse can simply analyze the structure of $M^*$ to recover parse branches. If $S \notin  \Lambda^*_\sigma$, the upper triangular entries of $M^*$ will take the form of a jagged-shaped ridge whose peaks signify the roots of maximally-parsable substrings $\hat{\sigma}_{i, j}$.
+Not only is Tidyparse capable of suggesting repairs to invalid strings, it can also return partial trees for those same strings, which is often helpful for debugging purposes. Unlike LL- and LR-style parsers which require special rules for error recovery, Tidyparse can simply analyze the structure of $M^*$ to recover parse branches. If $S \notin  \Lambda^*_\sigma$, the upper triangular entries of $M^*$ will take the form of a jagged-shaped ridge whose peaks signify the roots of maximally-parsable substrings $\hat{\sigma}_{i, j}$.
 
-\begin{figure}[H]
-  \hspace{-0.5cm}\begin{minipage}[l]{6cm}
-      \[
-        \begin{NiceMatrix}
-          \leftarrow & \nse & \nsi & \nfi & \nfo & \nth & \ntw & \non & \leftarrow & \ppp \\
-                     &      & \ddd & \ddd & \ddd & \ddd & \ddd & \ddd & \ddd & \ppp \\
-      \sigma_1^\shri & \cdd &      & A    &      &      &      &      &      & \ppp \\
-                \vno & \ddd &  T_A & \vdd &      &      &      &      &      & \ppp \\
-                \vdd & \ddd &      & \pcd & \cdd &      & B    &      &      & \ppp \\
-                     &      &      &      &      & T_B  & \vdd &      &      & \ppp \\
-                     &      &      &      &      &      & \pcd & \cdd &      & C    \\
-                     &      &      &      &      &      &      &      & T_C  & \vdd \\
-                     &      &      &      &      &      &      &      &      & \\
-                     &      &      &      &      &      &      &      &      & \\
-                     &      &      &      &      &      &      &      &      & \\
-                     &      &      &      &      &      &      &      & \ppp & \sigma_n^\shup \\
-                \vno & \cdd &      &      &      &      &      &      & \vno &
-        \end{NiceMatrix}
-    \]
-  \end{minipage}
-  \hspace{1cm}
-  \begin{minipage}[l]{6cm}
-      \begin{halftidyinput}
-      (*@\err{\texttt{⊤ and ⊤ ! and ⊥ xor ⊤ ! ⊤ and ⊥}}\caret{ }@*)
-      \end{halftidyinput}
+These branches are located on peaks of the upper triangular (UT) matrix ridge. As depicted in Fig.~\ref{fig:peaks}, we traverse the peaks by decreasing elevation to collect partial AST branches and display the highest nonoverlapping branches, in this case $T_C$ and $T_A$ to the user, to help them diagnose the parsing error and manually repair it.
 
-      \begin{verbatim}
-    Recovered 3 parseable leaves:
-      \end{verbatim}
-      \noindent\hspace{0.64cm}\emoji{herb}\hspace{1.70cm}\emoji{herb}\hspace{1.98cm}\emoji{herb}\vspace{-5pt}
-      \begin{verbatim}
-    └── ! [3]   └── and [4]   └── xor [6]
-      \end{verbatim}
-
-      \begin{verbatim}
-    Recovered 2 parseable branches:
-      \end{verbatim}
-    \hspace{0.64cm}\emoji{herb}\hspace{2.51cm}\emoji{herb}\vspace{-5pt}
-      \begin{verbatim}
-    └── S [0..2]     └── S [8..11]
-        ├── ⊤ [0]        ├── S [8..9]
-        ├── and [1]      │   ├── ! [8]
-        └── ⊤ [2]        │   └── ⊤ [9]
-                         ├── and [10]
-                         └── ⊥ [11]
-      \end{verbatim}
-    \end{minipage}
-  \caption{Peaks along the UT matrix ridge correspond to maximally parseable substrings. By recursing over upper diagonals of decreasing elevation and discarding all subtrees that fall under the shadow of another's canopy, we can recover the partial subtrees. The example depicted above contains three such branches, rooted at nonterminals $C, B, A$.}\label{fig:peaks}
-\end{figure}
-
-\noindent These branches are located on peaks of the upper triangular (UT) matrix ridge. As depicted in Fig.~\ref{fig:peaks}, we traverse the peaks by decreasing elevation to collect partial AST branches and display the highest nonoverlapping branches, in this case $T_C$ and $T_A$ to the user, to help them diagnose the parsing error and manually repair it.
-
-\pagebreak\section{Nonterminal Stubs}
+\subsection{Nonterminal Stubs}
 
 Tidyparse augments CFGs with two additional rules, which are desugared into a vanilla CFG before parsing. The first rule, $\alpha\textsc{-sub}$, allows the user to define a nonterminal parameterized by $\alpha$, a non-recursive nonterminal in the same the CFG representing some finite type and its inhabitants. $\alpha\textsc{-sub}$ replaces all productions containing $\langle\alpha\rangle$ with the terminals in their transitive closure, $\alpha \rightarrow^* \beta$. The second rule, $\alpha\textsc{-int}$, introduces homonymous terminals for each user-defined nonterminal.
 
@@ -1444,7 +723,9 @@ if <Vexp> _ _ _ _ _(*@\caret{ }@*)
 \end{lstlisting}
 \end{tcolorbox}
 
-\pagebreak\section{Practical Example}
+\section{Practical Example}
+
+\input{example.tex}
 
 Tidyparse requires a grammar, which can either be provided by the user or ingested from a BNF specification. The following grammar represents a slightly more realistic programming language:
 
@@ -1503,7 +784,7 @@ var -> a | b | c | f | x | y | z
 \end{lstlisting}
 \end{tcolorbox}
 
-\pagebreak\subsection{Grammar Assistance}
+\subsection{Grammar Assistance}
 
 Tidyparse uses a CFG to parse the CFG, so it can provide assistance while the user is designing the CFG. For example, if the CFG does not parse, it will suggest possible fixes. In the future, we intend to use this functionality to perform example-based codesign and grammar induction.
 
