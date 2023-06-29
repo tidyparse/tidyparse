@@ -1,0 +1,191 @@
+
+Suppose we are given the following context-free grammar:
+
+\begin{wholetidyinput}
+S -> S and S | S xor S | ( S ) | true | false | ! S(*@\caret{ }@*)
+\end{wholetidyinput}
+
+\noindent For reasons that will become clear in Sec.~\ref{sec:matrix}, this will automatically be rewritten into the grammar:
+
+\begin{verbatim}
+ F.! → !     S.) → S F.)  and.S → F.and S   S → F.! S     S → false    S → S ε+
+ F.( → (   F.xor → xor    xor.S → F.xor S   S → S and.S   S → true    ε+ → ε
+ F.) → )   F.and → and        S → S xor.S   S → F.( S.)   S → <S>     ε+ → ε+ ε+
+\end{verbatim}
+
+%\noindent We can visualize the CFG as either a graph or a matrix:
+%
+%\begin{figure}[H]
+%    \includegraphics[width=3.5cm]{../figures/bool_arith_cfg_graph.png}
+%    \hspace{20pt}
+%    \includegraphics[width=3.5cm]{../figures/bool_arith_cfg_mat.bmp}
+%\end{figure}
+
+\noindent Given a string containing holes, our tool will return several completions in a few milliseconds:
+
+\begin{tcolorbox}[left skip=0.7cm,
+top=0.1cm,
+middle=0mm,
+boxsep=0mm,
+underlay unbroken and first={%
+    \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+}]
+  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+true _ _ _ ( false _ ( _ _ _ _ ! _ _ ) _ _ _ _(*@\caret{ }@*)
+  \end{lstlisting}
+  \tcblower
+  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+true (*@\hlorange{xor}@*) (*@\hlorange{!}@*) ( false (*@\hlorange{xor}@*) ( <S> (*@\hlorange{)}@*) or ! (*@\hlorange{<S>}@*) ) (*@\hlorange{xor}@*) (*@\hlorange{<S>}@*)
+true (*@\hlorange{xor}@*) (*@\hlorange{!}@*) ( false (*@\hlorange{and}@*) ( <S> (*@\hlorange{)}@*) or ! (*@\hlorange{<S>}@*) ) (*@\hlorange{xor}@*) (*@\hlorange{<S>}@*)
+true (*@\hlorange{xor}@*) (*@\hlorange{!}@*) ( false (*@\hlorange{and}@*) ( <S> (*@\hlorange{)}@*) and ! (*@\hlorange{<S>}@*) ) (*@\hlorange{xor}@*) (*@\hlorange{<S>}@*)
+true (*@\hlorange{xor}@*) (*@\hlorange{!}@*) ( false (*@\hlorange{and}@*) ( <S> (*@\hlorange{)}@*) and ! (*@\hlorange{<S>}@*) ) (*@\hlorange{and}@*) (*@\hlorange{<S>}@*)
+...
+  \end{lstlisting}
+\end{tcolorbox}
+
+\noindent Similarly, if provided with a string containing various errors, it will return several suggestions how to fix it, where \hlgreen{green} is insertion, \hlorange{orange} is substitution and \hlred{red} is deletion.
+
+\begin{tcolorbox}[left skip=0.7cm,
+top=0.1cm,
+middle=0mm,
+boxsep=0mm,
+underlay unbroken and first={%
+    \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+}]
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+true and ( false or and true false(*@\caret{ }@*)
+\end{lstlisting}
+\tcblower
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+1.) true and ( false or (*@\hlorange{!}@*) true (*@\hlorange{)}@*)
+2.) true and ( false or (*@\hlgreen{<S>}@*) and true (*@\hlorange{)}@*)
+3.) true and ( false or (*@\hlorange{(}@*) true (*@\hlorange{)}@*) (*@\hlgreen{)}@*)
+...
+9.) true and ( false or (*@\hlgreen{!}@*) (*@\hlgreen{<S>}@*) (*@\hlgreen{)}@*) and true (*@\hlred{false} @*)
+\end{lstlisting}
+\end{tcolorbox}
+
+\noindent Given an invalid string, the tool will first map the string to a coarsened version and generate edits:
+
+\hspace{-0.3cm}\begin{minipage}[t]{0.5\textwidth}
+\begin{tcolorbox}[left skip=0.7cm,
+top=0.1cm,
+middle=0mm,
+boxsep=0mm,
+underlay unbroken and first={%
+  \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+}]
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+v = [float(n for n in l.split(':')]
+\end{lstlisting}
+\tcblower
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+v = [float(*@\hlred{(}@*)n for n in l.split(':')]
+v = [float((*@\hlgreen{)}@*)n for n in l.split(':')]
+v = [float((*@\hlorange{)}@*) for n in l.split(':')]
+v = [float(n(*@\hlgreen{)}@*) for n in l.split(':')]
+\end{lstlisting}
+\end{tcolorbox}
+\end{minipage}
+\begin{minipage}[t]{0.5\textwidth}
+\begin{tcolorbox}[left skip=0.7cm,
+top=0.1cm,
+middle=0mm,
+boxsep=0mm,
+underlay unbroken and first={%
+  \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+}]
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+w = [ w ( w w w w w . w ( w ) ]
+\end{lstlisting}
+\tcblower
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+w = [ w (*@\hlred{(}@*) w w w w w . w ( w ) ]
+w = [ w ( (*@\hlgreen{)}@*) w w w w w . w ( w ) ]
+w = [ w ( (*@\hlorange{)}@*) w w w w . w ( w ) ]
+w = [ w ( w (*@\hlgreen{)}@*) w w w w . w ( w ) ]
+\end{lstlisting}
+\end{tcolorbox}
+\end{minipage}
+
+This coarsening is done to reduce the number of possible corrections, and is admissible because CFLs are closed under homomorphisms. (If we wanted to provide a lexical expansion, this would be possible.) These candidates then reranked using a probability metric.
+
+\hspace{-0.3cm}\begin{minipage}[t]{0.5\textwidth}
+                 \begin{tcolorbox}[left skip=0.7cm,
+                 top=0.1cm,
+                 middle=0mm,
+                 boxsep=0mm,
+                 underlay unbroken and first={%
+                   \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+                 }]
+                 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+v = [float(n for n in l.split(':')]
+                 \end{lstlisting}
+                 \tcblower
+                 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+v = [float(n(*@\hlgreen{)}@*) for n in l.split(':')]
+v = [float(*@\hlred{(}@*)n for n in l.split(':')]
+v = [float((*@\hlgreen{)}@*)n for n in l.split(':')]
+v = [float((*@\hlorange{)}@*) for n in l.split(':')]
+                 \end{lstlisting}
+                 \end{tcolorbox}
+\end{minipage}
+\begin{minipage}[t]{0.5\textwidth}
+  \begin{tcolorbox}[left skip=0.7cm,
+  top=0.1cm,
+  middle=0mm,
+  boxsep=0mm,
+  underlay unbroken and first={%
+    \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+  }]
+  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+w = [ w ( w w w w w . w ( w ) ]
+  \end{lstlisting}
+  \tcblower
+  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+w = [ w ( w (*@\hlgreen{)}@*) w w w w . w ( w ) ]
+w = [ w (*@\hlred{(}@*) w w w w w . w ( w ) ]
+w = [ w ( (*@\hlgreen{)}@*) w w w w w . w ( w ) ]
+w = [ w ( (*@\hlorange{)}@*) w w w w . w ( w ) ]
+  \end{lstlisting}
+  \end{tcolorbox}
+\end{minipage}
+
+Finally, we eliminate everything which is not parsed by the official Python parser.
+
+\hspace{-0.3cm}\begin{minipage}[t]{0.5\textwidth}
+                 \begin{tcolorbox}[left skip=0.7cm,
+                 top=0.1cm,
+                 middle=0mm,
+                 boxsep=0mm,
+                 underlay unbroken and first={%
+                   \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+                 }]
+                 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+v = [float(n for n in l.split(':')]
+                 \end{lstlisting}
+                 \tcblower
+                 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+v = [float(n(*@\hlgreen{)}@*) for n in l.split(':')]
+v = [float((*@\hlorange{)}@*) for n in l.split(':')]
+                 \end{lstlisting}
+                 \end{tcolorbox}
+\end{minipage}
+\begin{minipage}[t]{0.5\textwidth}
+  \begin{tcolorbox}[left skip=0.7cm,
+  top=0.1cm,
+  middle=0mm,
+  boxsep=0mm,
+  underlay unbroken and first={%
+    \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+  }]
+  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+w = [ w ( w w w w w . w ( w ) ]
+  \end{lstlisting}
+  \tcblower
+  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+w = [ w ( w (*@\hlgreen{)}@*) w w w w . w ( w ) ]
+w = [ w ( (*@\hlorange{)}@*) w w w w . w ( w ) ]
+  \end{lstlisting}
+  \end{tcolorbox}
+\end{minipage}

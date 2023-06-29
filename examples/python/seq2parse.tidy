@@ -100,6 +100,7 @@ With_Item -> Test | Test As_Keyword Expr
 Except_Clause -> Except_Keyword | Except_Keyword Test | Except_Keyword Test As_Keyword Simple_Name
 Suite -> Simple_Stmt | Newline Indent Stmts_Or_Newlines Dedent
 
+InsertErr -> ~
 Async_Keyword -> async
 Await_Keyword -> await
 If_Keyword -> if
