@@ -189,3 +189,141 @@ w = [ w ( (*@\hlorange{)}@*) w w w w . w ( w ) ]
   \end{lstlisting}
   \end{tcolorbox}
 \end{minipage}
+
+Tidyparse requires a grammar, which can either be provided by the user or ingested from a BNF specification. The following grammar represents a slightly more realistic programming language:
+
+\begin{tcolorbox}[left skip=0.7cm,
+top=0.1cm,
+middle=0mm,
+boxsep=0mm,
+underlay unbroken and first={%
+  \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+}]
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+S -> A | V | ( X , X ) | X X | ( X )
+A -> Fun | F | L | L in X
+Fun -> fun V (*@`@*)->(*@`@*) X
+F -> if X then X else X
+L -> let V = X | let rec V = X
+V -> Vexp | ( Vexp ) | Vexp Vexp
+Vexp -> VarName | FunName | Vexp VO Vexp | ( VarName , VarName ) | Vexp Vexp
+VarName -> a | b | c | d | e | ... | z
+FunName -> foldright | map | filter | curry | uncurry
+VO ->  + | - | * | / | > | = | < | (*@`@*)||(*@`@*) | &&
+---
+let curry f = ( fun x y -> f ( _ _ _(*@\caret{ }@*)) )
+\end{lstlisting}
+\tcblower
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+let curry f = ( fun x y -> f ( (*@\hlorange{<X>}@*) ) )
+let curry f = ( fun x y -> f ( (*@\hlorange{<FunName>}@*) ) )
+let curry f = ( fun x y -> f ( (*@\hlorange{curry}@*) (*@\hlorange{<X>}@*) ) )
+...
+\end{lstlisting}
+\end{tcolorbox}
+
+\noindent We can also handle error correction and completion in the untyped \lambda-calculus, as shown below:
+
+\begin{tcolorbox}[left skip=0.7cm,
+top=0.1cm,
+middle=0mm,
+boxsep=0mm,
+underlay unbroken and first={%
+  \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+}]
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+sxp -> λ var . sxp | sxp sxp | var | ( sxp ) | const
+const -> 1 | 2 | 3 | 4 | 5 | 6
+var -> a | b | c | f | x | y | z
+---
+( λ f . ( λ x . f ( x x ) ) ( λ x . f ( x x ) (*@\caret{ }@*)
+\end{lstlisting}
+\tcblower
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+1.) ( λ f . ( λ x . f ( x x ) ) (*@\hlorange{)}@*) λ x . f ( x x )
+2.) ( λ f . ( λ x . f ( x x ) ) (*@\hlorange{x}@*) (*@\hlgreen{)}@*) λ x . f ( x x )
+3.) ( λ f . ( λ x . f ( x x ) ) ( λ x . f ( x(*@\hlred{ }@*)) (*@\hlgreen{)}@*) (*@\hlgreen{)}@*)
+...
+\end{lstlisting}
+\end{tcolorbox}
+
+\noindent Name resolution and scope checking is also possible but requires a more sophisticated grammar.
+
+\subsection{Grammar Assistance}
+
+Tidyparse uses a CFG to parse the CFG, so it can provide assistance while the user is designing the CFG. For example, if the CFG does not parse, it will suggest possible fixes. In the future, we intend to use this functionality to perform example-based codesign and grammar induction.
+
+\begin{tcolorbox}[left skip=0.7cm,
+top=0.1cm,
+middle=0mm,
+boxsep=0mm,
+underlay unbroken and first={%
+  \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+}]
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+B -> true | false | (*@\caret{ }@*)
+\end{lstlisting}
+\tcblower
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+B -> true | false (*@\hlred{ }@*)
+B -> true | false (*@\hlorange{<RHS>}@*)
+B -> true | false | (*@\hlgreen{<RHS>}@*)
+...
+\end{lstlisting}
+\end{tcolorbox}
+
+\subsection{Interactive Nonterminal Expansion}
+
+Users can interactively build up a complex expression by placing the caret over a stub they wish to expand, then pressing \keys{\ctrl + \SPACE}:
+
+\begin{tcolorbox}[left skip=0.7cm,
+top=0.1cm,
+middle=0mm,
+boxsep=0mm,
+underlay unbroken and first={%
+  \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+}]
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+if <(*@\caret{V}@*)exp> X then <Vexp> else <Vexp>
+\end{lstlisting}
+\tcblower
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+if (*@\hlorange{map}@*) X then <Vexp> else <Vexp>
+if (*@\hlorange{uncurry}@*) X then <Vexp> else <Vexp>
+if (*@\hlorange{foldright}@*) X then <Vexp> else <Vexp>
+...
+\end{lstlisting}
+\end{tcolorbox}
+
+\subsection{Conjunctive Grammars}
+
+Many natural and programming languages exhibit context-sensitivity, such as Python indentation. Unlike traditional parser-generators, Tidyparse can encode CFL intersection, allowing it to detect and correct errors in a more expressive family of languages than would ordinarily be possible using CFGs alone. For example, consider the grammar from Sec.~\ref{sec:lclreach}:
+
+\begin{tcolorbox}[left skip=0.7cm,
+top=0.1cm,
+middle=0mm,
+boxsep=0mm,
+underlay unbroken and first={%
+  \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+}]
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+S -> L R    L -> a b | a L b    R -> c | c R    &&&
+S -> L R    R -> b c | b R c    L -> a | a L
+---
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _(*@\caret{ }@*)
+\end{lstlisting}
+\tcblower
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+1.) a b c
+2.) a a b b c c
+3.) a a a b b b c c c
+4.) a a a a b b b b c c c c
+...
+\end{lstlisting}
+\end{tcolorbox}
+
+\noindent Tidyparse uses the notation \texttt{G1} {\color{blue}\texttt{\&\&\&}} \texttt{G2} and \texttt{G1} {\color{blue}\texttt{|||}} \texttt{G2} to signify $\mathcal{L}_{\mathcal{G}_1}\cap\mathcal{L}_{\mathcal{G}_2}$ and $\mathcal{L}_{\mathcal{G}_1}\cup\mathcal{L}_{\mathcal{G}_2}$ respectively, i.e., the intersection or union of two or more grammars' languages. {Composition}, complementation and other operations on finite languages are also possible, although undocumented at present.
+
+%There are some more examples too.
+%
+%The line between parsing and computation is blurry.

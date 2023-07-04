@@ -62,6 +62,7 @@
 \usepackage{subcaption}
 \usetikzlibrary{backgrounds}
 \usetikzlibrary{tikzmark}
+\usetikzlibrary{hobby}
 
 \usepackage{mwe}
 
@@ -389,7 +390,8 @@
 
 %======== Arrows =========
 
-\usetikzlibrary{decorations.pathreplacing,automata,calc,positioning,matrix,fit}
+\usetikzlibrary{decorations.pathreplacing,automata,calc,positioning,matrix,fit,decorations.pathmorphing}
+
 \usepackage{wrapfig}
 
 \newcommand{\mkTrellis}[1]{
@@ -527,3 +529,5 @@
 \pgfplotstableread[col sep=comma,]{timings_unloc.csv}\unloctimings
 \pgfplotstableread[col sep=comma,]{natural_errors.csv}\naturalerrors
 \pgfplotstableread[col sep=comma,]{synthetic_errors.csv}\syntheticerrors
+
+\usepackage[all,pdf]{xy}
