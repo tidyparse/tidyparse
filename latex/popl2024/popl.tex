@@ -234,10 +234,14 @@ Details of the bisimilarity between parsing and matrix multiplication can be fou
 
 \subsection{Parsing with holes}
 
-Valiant's algorithm can be abstracted by lifting into the domain of bitvector variables, i.e., linear equations over finite fields, where each nonterminal inhabitant of the northeasternmost bitvector $\mathcal{T}$ is instead an algebraic expression whose solutions correspond to valid parse forests for an incomplete string on the superdiagonal (our work). This yields a novel interpretation of Valiant's algorithm as an equational theory over finite fields, allowing us to solve for admissible completions of a porous string and their parse forests. More formally, we solve the following problem:
+Valiant's algorithm can be abstracted by lifting it into the domain of linear equations over finite fields, where each bitvector in the upper triangular matrix instead contains polynomials whose solutions identify nonterminals participating in the parse forest of a \textit{porous string} on the superdiagonal (our work). This interpretation of Valiant's algorithm as an equational theory offers a novel polytime reduction from language equations onto XORSAT. More formally, we solve the following problem:% e.g., langauge membership, langauge quotient, and reachability
+
+\begin{definition}[Hole subsumption]
+  Let $\underline\Sigma \coloneqq \Sigma \cup \{\_\}$, where $\_$ represents a hole. We denote $\sqsubseteq: \underline\Sigma^n \times \Sigma^n$ as the relation $\{\langle\sigma, \sigma'\rangle \mid \sigma_i \in \Sigma \implies \sigma_i = \sigma_i'\}$ and the set of all $\{\sigma' \mid \sigma' \sqsubseteq \sigma\}$ as $\text{H}(\sigma)$.
+\end{definition}
 
 \begin{definition}[Parsing with holes]
-Let $\underline\Sigma \coloneq \Sigma \cup \{\_\}$, whose holes denote free variables. Given a CFG, $\mathcal{G}: \mathbb{G}$, and a \textit{porous string}, $\sigma: \underline\Sigma^n, n: \mathbb{N}^{\geq 2}$, it is possible to encode the function $[S \in \Lambda^*_\sigma]$ as a polynomial over a finite field, $p: \mathbb{Z}_2^{|V|}\rightarrow\mathbb{Z}_2$, whose zeros correspond to valid completions.
+Let $\underline\Sigma \coloneq \Sigma \cup \{\_\}$, whose holes denote free variables. Given a CFG, $\mathcal{G}: \mathbb{G}$, and a \textit{porous string}, $\sigma: \underline\Sigma^{n-1}, n: \mathbb{N}^{\geq 3}$, it is possible to extract the set $\text{H}(\sigma)\cap\mathcal{L}(\mathcal{G})$ by constructing a bijective function $\varphi: 2^{\underline V} \leftrightarrow (\mathbb{Z}_2^{|V|}\rightarrow\mathbb{Z}_2)$ to encode an idempotent matrix over a finite field, $\mathcal{M}\coloneqq (\mathbb{Z}_2^{|V|}\rightarrow\mathbb{Z}_2^{|V|})^{n \times n}$, whose fixedpoints $[\mathcal{M}_\sigma = \mathcal{M}_\sigma^2]$ represent all $\sigma' \in \text{H}(\sigma)\cap\mathcal{L}(\mathcal{G})$.
 \end{definition}
 
 \noindent The precise encoding is immaterial, as long as $\langle\boxplus, \boxtimes\rangle$ are defined so the diagram below commutes,\footnote{Hereinafter, we use gray highlighting to denote types and functions defined over strings and binary constants only.}
@@ -245,7 +249,7 @@ Let $\underline\Sigma \coloneq \Sigma \cup \{\_\}$, whose holes denote free vari
 \begin{figure}[H]
   \adjustbox{center}{%
     \[\begin{tikzcd}[row sep=large, column sep=huge]
-        \langle\mathcal{G}', \highlight{\Sigma}^{n-1}\rangle \arrow[leftrightarrow, drrr, shorten=-1mm] & & [-135pt] & \vspace{20pt}\stackrel{\text{(Parsing)}}{\text{Set}} \arrow[d, phantom] & \stackrel{\text{(Recognition)}}{\text{Bit}} \arrow[d, phantom] & [-90pt] & \langle\mathcal{G}', \Sigma^{n-1}\rangle \arrow[drr, shorten=-2mm] & [-90pt] & \stackrel{\text{(Synthesis)}}{\text{SAT}} \arrow[d, phantom]\\[-30pt]
+        \langle\mathcal{G}', \highlight{\Sigma}^{n-1}\rangle \arrow[leftrightarrow, drrr, shorten=-1mm] & & [-135pt] & \vspace{20pt}\stackrel{\text{(Parsing)}}{\text{Set}} \arrow[d, phantom] & \stackrel{\text{(Recognition)}}{\text{Bit}} \arrow[d, phantom] & [-90pt] & \langle\mathcal{G}', \underline\Sigma^{n-1}\rangle \arrow[drr, shorten=-2mm] & [-90pt] & \stackrel{\text{(Synthesis)}}{\text{SAT}} \arrow[d, phantom]\\[-30pt]
         \text{Rubix}  \arrow[rr, phantom] & & [-135pt] & M \times M \arrow[r, "\mathds{1}^{2^{n\times n}}", labels=above] \arrow[d, "\hspace{-13pt}\bigoplus\:\bigotimes"] & \mathbb{Z}_2^{|V|^{n\times n}} \times \mathbb{Z}_2^{|V|^{n\times n}} \arrow[d, "\hspace{-13.4pt}\highlight{+}\:\highlight{*}"] \arrow[l, "\mathds{1}^{-2^{n\times n}}", labels=below] \arrow[rrrr, rightarrowtail, "\varphi^{2^{n\times n}}", labels=above] & [-90pt] & & [-90pt] & \mathcal{M} \times \mathcal{M} \arrow[llll, rightharpoonup, shorten=1mm, "\varphi^{-2^{n\times n}}", labels=below] \arrow[d, "\hspace{-9pt}+\:\:\:*"] \\
         \text{Matrix} \arrow[rr, phantom] & & [-135pt] & 2^V \times 2^V \arrow[r, "\mathds{1}^{2}", labels=above] \arrow[d, "\hspace{-9pt}\oplus\:\otimes"] & \mathbb{Z}_2^{|V|} \times \mathbb{Z}_2^{|V|} \arrow[d, "\hspace{-15.8pt}\highlight{\boxplus}\:\highlight{\boxtimes}"] \arrow[l, "\mathds{1}^{-2}", labels=below] \arrow[rrrr, rightarrowtail, "\varphi^2", labels=above] & [-90pt] & & [-90pt] & \mathcal{V} \times \mathcal{V} \arrow[llll, rightharpoonup, shorten=1mm, "\varphi^{-2}", labels=below] \arrow[d, "\hspace{-9.5pt}\boxplus\:\boxtimes"] \arrow[u] \\
         \text{Vector} \arrow[rr, phantom] & & [-135pt] & 2^V \arrow[r, "\mathds{1}", labels=above] & \mathbb{Z}_2^{|V|} \arrow[l, "\mathds{1}^{-1}", labels=below] \arrow[rrrr, rightarrowtail, "\varphi", labels=above] & [-90pt] & & [-90pt] & \mathcal{V} \arrow[llll, rightharpoonup, shorten=1mm, "\varphi^{-1}", labels=below] \arrow[u]
@@ -369,11 +373,8 @@ Let $G(\err{\sigma}: \Sigma^*, d: \mathbb{N}^+) \mapsto \mathbb{G}$ be the speci
 
 \subsection{Sparsification}
 
-Although we can encode $[\mathcal{M}_\sigma = \mathcal{M}^2_\sigma]$ explicitly, na\"ively encoding the formula as a dense constraint system is highly suboptimal. A considerably more sparse but logically equivalent representation can be achieved by analyzing the structure of the grammar and string in question. For starters, we can always ignore all lower-triangular comparisons $\{\mathcal{M}_{ij} \mid i \geq j\}$. Since we are typically interested in strings with some bound variables, $\{\sigma: (\Sigma \cup \{\_\})^* \mid \exists i.\sigma_i \in \Sigma\}$, there will also be many upper-triangular nonterminals $(v, i, j) \subset V\times\{i, j \mid 0 \leq i \leq j \leq |\sigma|)\}$ that are incompatible with the surrounding structure, i.e., which cannot influence $[S \in \Lambda_\sigma^*]$ based on neighboring entries regardless of which values they assume. By analyzing the grammar and upper-triangular structure of $\mathcal{M}_\sigma$, it is often possible to avoid many elementwise comparisons in the equivalence relation.
+Although we can encode $[\mathcal{M}_\sigma = \mathcal{M}^2_\sigma]$ explicitly, na\"ively encoding the formula as a dense constraint system is highly suboptimal. A considerably more sparse but logically equivalent representation can be achieved by analyzing the structure of the grammar and string in question. For starters, we can always ignore all lower-triangular comparisons $\{\mathcal{M}_{ij} \mid i \geq j\}$. Since we are typically interested in strings with some bound variables, $\{\sigma: (\Sigma \cup \{\_\})^* \mid \exists i.\sigma_i \in \Sigma\}$, there will also be many upper-triangular nonterminals $\langle v, i, j\rangle \subset V\times\{i, j \mid 0 \leq i \leq j \leq |\sigma|)\}$ that are incompatible with the surrounding structure, i.e., which cannot influence $[S \in \Lambda_\sigma^*]$ based on neighboring entries regardless of which values they assume. By analyzing the grammar and upper-triangular structure of $\mathcal{M}_\sigma$, it is often possible to avoid many elementwise comparisons in the equivalence relation.
 
-\begin{definition}[Hole subsumption]
-  Let $\underline\Sigma \coloneqq \Sigma \cup \{\_\}$, where $\_$ represents a hole. We denote $\sqsubseteq: \underline\Sigma^n \times \Sigma^n$ as the relation $\{\langle\sigma, \sigma'\rangle \mid \sigma_i \in \Sigma \implies \sigma_i = \sigma_i'\}$ and the set of all $\{\sigma' \mid \sigma' \sqsubseteq \sigma\}$ as $\text{H}(\sigma)$.
-\end{definition}
 
 \begin{definition}[Impossible nonterminals]
   Given $\sigma: \underline\Sigma^*$ and $\mathcal{G}: \mathbb{G}$, an impossible nonterminal is a triple $\langle v, i, j\rangle: V\times\{i, j \mid 0 \leq i \leq j \leq |\sigma|)\}$ such that $\forall \sigma': \Sigma^{j-i}, \sigma' \in \text{H}(\sigma_i\ldots\sigma_j) \implies v\notin\Lambda^*_{\sigma'}$.
@@ -395,7 +396,7 @@ Although we can encode $[\mathcal{M}_\sigma = \mathcal{M}^2_\sigma]$ explicitly,
 
 \begin{definition}[Terminal closure]
   Let $\Rightarrow^*_\mathcal{G}$ be the reflexive transitive closure defined in the usual way.
-  The terminal closure, denoted $\text{T}(v)$, is the set $\{\sigma: \Sigma \mid \exists\:\alpha, \beta: (V\cup\Sigma)^*, v \Rightarrow^*_\mathcal{G} \alpha u \beta\}$.
+  The terminal closure, denoted $\text{T}(v)$, is the set $\{\sigma: \Sigma \mid \exists\:\alpha, \beta: (V\cup\Sigma)^*, v \Rightarrow^*_\mathcal{G} \alpha \sigma \beta\}$.
 \end{definition}
 
 Let $p: \underline\Sigma^*\rightarrow\mathbb{N}^{|\Sigma|}$ be the Parikh vector~\cite{parikh1966context} over some string. We define the Parikh image of as the set of all terminals indexed by a nonzero element of the Parikh vector. More formally,
@@ -404,7 +405,7 @@ Let $p: \underline\Sigma^*\rightarrow\mathbb{N}^{|\Sigma|}$ be the Parikh vector
   We define the Parikh image of a porous string $\sigma: \underline\Sigma^*$, as $\Pi(\sigma)\coloneq\{v \in V \mid 0 < p(\sigma)[v]\}$ and the minimal Parikh image, $\Pi^*(\sigma)\coloneqq \max_{\sigma' \in \text{H}(\sigma)}\Pi(\sigma')$.
 \end{definition}
 
-We can underapproximate the set of impossible nonterminals for a candidate triple $v, i, j$ by computing the minimal Parikh image of $\sigma_i\ldots\sigma_j$, and comparing it with the terminal closure of $v$ under $\mathcal{G}$. If the terminal closure is not a cover of the minimal Parikh image, then the triple is impossible. We leave the exercise of computing the minimal Parikh image to the reader.
+We can underapproximate the set of impossible nonterminals for a candidate triple $\langle v, i, j\rangle$ by computing the minimal Parikh image of $\sigma_i\ldots\sigma_j$, and comparing it with the terminal closure of $v$ under $\mathcal{G}$. If the terminal closure is not a cover of the minimal Parikh image, then the triple is impossible. We leave the exercise of computing the minimal Parikh image to the reader.
 
 \subsection{Coarsening and simplification}
 
