@@ -40,7 +40,7 @@
 %% Title information
 \title{Syntax Error Correction as Idempotent Matrix Completion}
 \begin{abstract}
-In this work, we illustrate how to lower context-free language recognition onto a tensor algebra over finite fields. In addition to its theoretical value, this connection has yielded surprisingly useful applications in incremental parsing, code completion and program repair. To accelerate code completion, we design and implement a novel incremental parser-synthesizer that transforms CFGs onto a dynamical system over finite field arithmetic, enabling us to suggest syntax repairs in-between keystrokes. Our approach attains state-of-the-art repair precision@$\@\{5, 10\}$ on a dataset of human Python repairs at a fraction of the cost of existing methods. Unlike prior work, our approach does not employ neural networks, and is therefore highly flexible to additional constraints and readily extensible to new programming languages.
+In this work, we illustrate how to lower context-free language recognition onto a tensor algebra over finite fields. In addition to its theoretical value, this connection has yielded surprisingly useful applications in incremental parsing, code completion and program repair. To accelerate code completion, we design and implement a novel incremental parser-synthesizer that transforms CFGs onto a dynamical system over finite field arithmetic, enabling us to suggest syntax repairs in-between keystrokes. Our approach attains state-of-the-art repair precision@$\@\{5, 10\}$ on a dataset of human Python repairs at a fraction of the time and cost of existing methods. Unlike prior work, our approach does not employ neural networks, and is therefore highly flexible to additional constraints and readily extensible to new programming languages.
 \end{abstract}
 
 \maketitle
@@ -49,17 +49,77 @@ In this work, we illustrate how to lower context-free language recognition onto 
 
 In programming, most errors initially manifest as syntax errors, and though often cosmetic, manual repair can present a significant challenge for novice programmers. \textit{Syntax correction} is the problem of repairing a syntactically incorrect program so that it parses. This problem is challenging because well-formed programs have many extra-syntactic constraints, increasing the complexity of repair, but also because the problem is highly under-determined: repairs must be consistent with the surrounding context, and the correct repair is seldom unique, even assuming minimality.
 
-The majority of prior work on syntax correction can be separated into one of two high-level categories: (1) \textit{pattern matching}, which uses hand-crafted rules to identify and correct common syntax errors, and (2) \textit{machine learning}, i.e., which uses a statistical language model to repair code via a set of learned heuristics. The former approach is effective but requires language-specific rules. The latter generates more natural edits, but is costly to train, generalizes poorly, has high sample complexity, and is difficult to incorporate new constraints without retraining.
+The majority of prior work on syntax correction can be separated into one of two high-level categories: (1) \textit{formal methods}, which use handcrafted rules to identify and correct common syntax errors (e.g.,~\cite{aho1972minimum}), and (2) \textit{machine learning}, which typically use neural language models to repair code (e.g.~\cite{sakkas2022seq2parse}). The formal approach can be effective but only produces one repair, while the latter generates more natural edits, but is more costly to train and difficult to incorporate new constraints.
 
-Traditionally, parsers have ignored developer tools like code completion, to their detriment. The approach we propose offers a compelling alternative to its textbook presentation in the parsing literature, not only because it unifies parsing, code completion and error correction under a simple algebraic framework, but also because it is composable using ordinary logical primitives, which are highly flexible to additional constraints and well-suited for SAT-based implementation.
+Our primary contribution borrows insights from Boolean matrix parsing~\cite{valiant1975general} and LCL~\cite{zhang2017context} reachability to develop a new theory of error correction based on SAT solving. This approach offers a compelling alternative to its textbook presentation, not only because it unifies parsing, code completion and error correction under a simple algebraic framework, but is highly efficient, composable using ordinary logical primitives and well-suited for integrated developer tools.
 
-In our work, we recast the problem of syntax correction as a special case of tensor completion with an logical semiring, and lay the foundation for a new approach to program repair grounded in formal language theory, unifying \textit{code completion}, \textit{error correction} and \textit{syntax repair}. We provide exact and approximate algorithms for solving these problems in the real-world setting, and implement them in a real-time editor called Tidyparse, demonstrating their practical utility. Given a well-formed grammar, our tool can be used to complete unfinished code, parse incomplete code and repair broken fragments in arbitrary context-free and linear conjunctive languages.
+In our work, we recast the problem of syntax correction as a special case of tensor completion with semiring algebra, and lay the foundation for a new approach to program repair grounded in formal language theory, unifying \textit{code completion}, \textit{error correction} and \textit{syntax repair}. We provide exact and approximate algorithms for solving these problems in the real-world setting, and implement them in a real-time editor called Tidyparse. Our contribution is a state-of-the-art fast repair procedure that is provably sound and complete up to a Levenshtein bound. Given an arbitrary well-formed grammar, our tool can be used to complete unfinished code, parse incomplete code and repair broken fragments in arbitrary context-free and linear conjunctive languages.
 
-More specifically, our paper is structured as follows: we present two high-level approaches to syntax correction: one that samples random edits and accepts only those which parse (Theory 1, probabilistic correction), and another that uses equational reasoning to find the satisfying assignments to a system of multilinear equations over finite fields (Theory 2, model-theoretic). Finally, we show how these two approaches can be combined to attain state-of-the-art performance (Theory 1.5), and validate it on a variety of real-world program repair scenarios.
+Our paper is structured as follows: we present two high-level approaches to syntax correction: one that samples random edits and accepts only those which parse (Theory 1, probabilistic correction), and another that uses equational reasoning to find the satisfying assignments to a system of multilinear equations over finite fields (Theory 2, model-theoretic). Finally, we show how these two approaches can be combined to attain human-level precision and state-of-the-art wall clock latency on a dataset of human syntax errors and repairs -- without using a neural language model.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\linewidth]{../figures/architecture_overview.pdf}
+  \caption{Our framework consists of three components, namely (2) a solver, (4) ranker and (3) sampler. Given an invalid string and grammar (1), we first compile them into a Boolean tensor (2) representing a multilinear system of equations whose fixed points characterize the admisisble set. The system can be solved directly, yielding a set of repairs that are ranked using a suitable scoring function (4). Optionally, we may introduce stochastic edits to the string using the Levenshtein ball sampler (3) and extract the solutions by $\epsilon$-decreasing resampling (5). When the langauge edit distance and solutions are time-sensitive, (5) is typically more efficient.}
+  \label{fig:overview}
+\end{figure}
 
 \section{Overview}
 
-We now present a number of optimality criteria for the parsing framework. These criteria were used to guide the design of various components and evaluate its performance.
+Our architecture accepts a grammar and a string, which may contain any arbitrary characters. We tokenize then abstract the string, then attempt to parse it using Valiant's algorithm~\cite{valiant1979completeness}. If the string is syntactically valid, we return the parse forest (described in \S~\ref{sec:parsing}), otherwise, we return the partial parse forest and a small set of edits that would make the string syntactically valid. As we will show in \S~\ref{sec:problem}, this set is guaranteed to be nonempty by a straightforward existence proof.
+
+If the string is invalid, we first form a bijection between bitvectors and the Levenshtein ball using a combinatorial number system, sample bitvectors without replacement using an LFSR, and decode them as repairs. This sequence can be viewed as a randomized space-filling curve over the set of all edits within a fixed distance from the original string. Further details are provided in \S~\ref{sec:dsi}.
+
+Using the Levenshtein ball sampler as a proposal distribution, we then solve for the least fixpoint of an idempotent matrix relation to obtain the set of syntactically admissible repairs, all of which are guaranteed to be minimal and syntactically valid. Finally, these repairs are reranked according to their statistical likelihood, and the most likely samples are presented to the user. We describe our solver in more detail in \S~\ref{sec:matrix} and this whole process is illustrated in Fig.~\ref{fig:overview}.
+
+\subsection{Illustrative example}
+
+Below is an example illustrating how our repair procedure works on a real Python code fragment.
+
+\begin{enumerate}
+  \item \texttt{d = sum([foo(i\err{]} for i in vals))}
+  \item \begin{tabular}{|c|c|c|c|c|c|c|c|c|c|c|c|c|c|c|}
+          \hline
+          \texttt{d} & \texttt{=} & \texttt{sum} & \texttt{(} & \texttt{[} & \texttt{foo} & \texttt{(} & \texttt{i} & \texttt{]} & \texttt{for} & \texttt{i} & \texttt{in} & \texttt{vals} & \texttt{)} & \texttt{)} \\\hline
+  \end{tabular}
+  \item \begin{tabular}{|c|c|c|c|c|c|c|c|c|c|c|c|c|c|c|}
+          \hline
+          \texttt{ID} & \texttt{=} & \texttt{ID} & \texttt{(} & \texttt{[} & \texttt{ID} & \texttt{(} & \texttt{ID} & \texttt{]} & \texttt{for} & \texttt{ID} & \texttt{in} & \texttt{ID} & \texttt{)} & \texttt{)} \\\hline
+  \end{tabular}
+  \item \begin{tabular}{|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||}
+          \hline
+          \texttt{ID} & \texttt{=} & \texttt{ID} & \texttt{(} & \texttt{[} & \texttt{ID} & \texttt{(} & \texttt{ID} & \texttt{]} & \texttt{for} & \texttt{ID} & \texttt{in} & \texttt{ID} & \texttt{)} & \texttt{)} \\\hline
+  \end{tabular}
+  \item \begin{tabular}{|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||}
+          \hline
+%          \texttt{ID} & \texttt{=} & \texttt{ID} & \texttt{(} & \texttt{[} & \texttt{ID} & \texttt{(} & \texttt{ID} & \texttt{]} & \texttt{for} & \texttt{ID} & \texttt{in} & \texttt{ID} & \texttt{)} & \texttt{)} \\\hline
+          \cellcolor{black!15}\texttt{\_} & \texttt{=} & \cellcolor{black!15}\texttt{\_} & \texttt{(} & \texttt{[} & \texttt{ID} & \texttt{(} & \texttt{ID} & \texttt{]} & \texttt{for} & \texttt{ID} & \texttt{in} & \texttt{ID} & \texttt{)} & \cellcolor{black!15}\texttt{\_} \\\hline
+%          & & & & & & & & & & & & & & \\\hline
+  \end{tabular}\\
+  \begin{tabular}{|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||}
+          \hline
+          \texttt{ID} & \cellcolor{black!15}\texttt{\_} & \texttt{ID} & \texttt{(} & \texttt{[} & \cellcolor{black!15}\texttt{\_} & \texttt{(} & \texttt{ID} & \texttt{]} & \texttt{for} & \texttt{ID} & \cellcolor{black!15}\texttt{\_} & \texttt{ID} & \texttt{)} & \texttt{)} \\\hline
+%          \cellcolor{black!15}\texttt{\_} & \texttt{=} & \cellcolor{black!15}\texttt{\_} & \texttt{(} & \texttt{[} & \texttt{ID} & \texttt{(} & \texttt{ID} & \texttt{]} & \texttt{for} & \texttt{ID} & \texttt{in} & \texttt{ID} & \texttt{)} & \cellcolor{black!15}\texttt{\_} \\\hline
+%          & & & & & & & & & & & & & & \\\hline
+  \end{tabular}\\
+  \ldots
+  \item \begin{tabular}{|||c|||c||c|c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||}
+          \hline
+%          \texttt{ID} & \texttt{=} & & \texttt{ID} & \texttt{(} & \texttt{[} & \texttt{ID} & \texttt{(} & \texttt{ID} & \texttt{]} & \texttt{for} & \texttt{ID} & \texttt{in} & \texttt{ID} & \texttt{)} & \texttt{)} \\\hline
+          \texttt{ID} & \texttt{=} & \cellcolor{black!15}\texttt{\_} & \texttt{ID} & \texttt{(} & \texttt{[} & \texttt{ID} & \texttt{(} & \texttt{ID} & \cellcolor{black!15}\texttt{\_} & \texttt{for} & \texttt{ID} & \texttt{in} & \texttt{ID} & \cellcolor{black!15}\texttt{\_} & \texttt{)} \\\hline
+          & & \cellcolor{green!25}\texttt{+} & & & & & & & \cellcolor{orange!25}\texttt{)} & & & & & \cellcolor{orange!25}\texttt{]} & \\\hline
+  \end{tabular}
+  \item \texttt{d = \hlgreen{+}sum([foo(i\hlorange{)} for i in vals\hlorange{]})}
+  \item \texttt{d = sum([foo(i\hlorange{)} for i in vals\hlorange{]})}
+\end{enumerate}
+
+The initial broken string, \texttt{d = sum([foo(i\err{]} for i in vals))} (1), is first tokenized using a lexer to obtain the sequence in (2). Lexical tokens containing identifiers are abstracted in step (3), and interleaved with the empty token in step (4). We then sample hole configurations without replacement in step (5), many of which will have no admissible solutions. Eventually, the solver will discover an admissible solution, as seen in step (6). This solution is then used to generate a patch, which is applied to the original string in step (7), then reduced to its minimal form in step (8), and sampling is repeated until all possibilities are exhausted or a predetermined timeout expires.
+
+Optionally, we may bias the sampler toward previously discovered repairs by adding successful patches to a replay buffer ranked by likelihood. This buffer is then stochastically resampled using a Dirichlet process with stepwise decaying exploration to encourage diversity. As we will show in \S~\ref{sec:experiments}, this approach is significantly more sample-efficient with respect to language membership and yields much higher precision and repair throughput under low-latency constraints.
+
+\subsection{Design criteria}
+
+During the conception of this work, a number of design choices were made to increase its utility as a real-time programming assistant. To support these design goals, we aim to provide accurate and continuous feedback while the user is typing across a variety of practical programming languages. Our use case motivates a number of optimality criteria, which were taken into account when designing various components and evaluating their performance.
 
 \begin{itemize}
   \item First and foremost, the framework must be \textbf{sound} and \textbf{complete}. That is, the parser-generator must (1) accept arbitrary conjunctive grammars, and (2) generate a parser which accepts all and only syntactically valid strings and (3) when a string is invalid, our synthesizer must eventually generate every syntactically valid string within a fixed distance from it.
@@ -69,24 +129,22 @@ We now present a number of optimality criteria for the parsing framework. These 
   \item Finally, the framework must be \textbf{flexible} and \textbf{extensible}. Intended as a general-purpose tool for generating syntax repairs in a wide variety of programming languages, end-users should be able to extend the framework with their own custom grammars and side-constraints.
 \end{itemize}
 
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.9\linewidth]{../figures/architecture_overview.pdf}
-  \caption{Our framework consists of several components, which work together to repair strings. An invalid string and grammar (1) are first compiled into a Boolean tensor (2), representing a linear system of equations whose fixed points characterize the admisisble set. The system can be solved directly, yielding a set of strings which are then ranked using a suitable scoring function (4). Optionally, we may introduce stochastic edits to the string using the Levenshtein ball sampler (3) and decode the admissible set incrementally by resampling (5). When the langauge edit distance and solutions are time-sensitive, (5) is typically more efficient.}
-  \label{fig:overview}
-\end{figure}
+Despite the fact that these criteria are not all mutually compatible, we will argue that our framework is able to satisfy most of them simultaneously. In particular, discuss some of the trade-offs made in the design of our framework in \S~\ref{sec:discussion}.
 
-\subsection{Natural language explanation}
+\subsection{Research questions}
 
-Our architecture accepts a grammar and a string, which may contain any arbitrary characters. We tokenize the string into nonterminals and attempt to parse using Valiant's algorithm~\cite{valiant1979completeness}. If the string is syntactically valid, we return the parse forest, otherwise, we return the partial parse forest and a small set of edits that would make the string syntactically valid. This set is always guaranteed to exist, by overwriting the invalid string with the shortest string in the language.
+Among the many questions that arise from this work, we focus on the following four:
 
-If the string is invalid, we first form a bijection between edits and the Levenshtein ball using a combinatorial number system, sample without replacement using an LFSR with leapfrog partitioning to distribute the work across cores, and decode the resulting bitvectors to enumerate edit templates. This sequence can be viewed as a permutation of a space-filling curve over the space of strings within a fixed edit distance of the original, invalid, string.
+\begin{enumerate}
+  \item \textbf{What are the theoretical guarantees?} (e.g. soundness, completeness, optimality)
+  \item \textbf{How well does it perform in practice?} (e.g., precision, throughput, wall-clock latency)
+  \item \textbf{How does it compare with existing approaches?} (e.g., neural language models)
+  \item \textbf{What are the limitations of this technique?} (e.g., how many errors can it handle?)
+\end{enumerate}
 
-We then use each edit template, in conjunction with the grammar to search for admissible repairs. This is done by encoding the template and grammar as a matrix equivalence relation and solving for the least fixpoint using a linear system of equations over a finite field. We describe this process in more detail in Section~\ref{sec:matrix}. The resulting samples will all be syntactically valid according to the grammar. These are reranked according to a statistical distance metric, and we output the most likely samples to the user. This whole process is illustrated in Figure~\ref{fig:overview}.
+These questions are answered in the following sections of this paper. We begin by describing the theoretical foundations of our approach in \S~\ref{sec:matrix}, followed by a description of our parser in \S~\ref{sec:parsing}. We then evaluate the end-to-end performance of our framework in \S~\ref{sec:experiments}, and discuss the results in \S~\ref{sec:discussion}. Finally, we conclude with a summary of our contributions and future work in \S~\ref{sec:conclusion}.
 
-%A number of important details are omitted from this overview. For example, we do not discuss the details of the combinatorial number system, the LFSR, or the statistical distance metric. We also do not discuss the details of the matrix equivalence relation, the linear system of equations, or the least fixpoint. We defer these details to the rest of the paper.
-
-\section{Problem Statement}
+\section{Problem Statement}\label{sec:problem}
 
 The problem of syntax error correction under a finite number of typographic errors is reducible to the bounded Levenshtein CFL reachability problem, which can be formally stated as follows:
 
@@ -94,14 +152,14 @@ The problem of syntax error correction under a finite number of typographic erro
   The language edit distance (LED) is the minimum number of edits required to transform an invalid string into a valid one, where validity is defined as containment in a context-free language, $\ell: \mathcal{L}$, i.e., $\Delta^*(\err{\sigma}, \ell) \coloneqq \min_{\sigma \in \ell}\Delta(\err{\sigma}, \sigma)$, and $\Delta$ is the Levenshtein distance.
 \end{definition}
 
-We seek to find the set of strings $S$ such that $\forall \tilde{\sigma}\in S, \Delta(\err{\sigma}, \tilde{\sigma}) \leq k$, where $k$ is the maximum number of edits greater than or equal to the language edit distance. We call this set the \textit{Levenshtein ball} of $\err{\sigma}$ and denote it $\Delta_k(\err{\sigma})$. Since $1 \leq \Delta^*(\err{\sigma}, \ell) \leq k$, we have $1 \leq k$. We now consider an upper bound on $\Delta^*(\err{\sigma}, \ell)$, i.e., the greatest lower bound on $k$ such that $\Delta_k(\err{\sigma}) \cap \ell \neq \varnothing$.
+We seek to find the set of strings $S$ such that $\forall \tilde{\sigma}\in S, \Delta(\err{\sigma}, \tilde{\sigma}) \leq q$, where $q$ is the maximum number of edits greater than or equal to the language edit distance. We call this set the \textit{Levenshtein ball} of $\err{\sigma}$ and denote it $\Delta_q(\err{\sigma})$. Since $1 \leq \Delta^*(\err{\sigma}, \ell) \leq q$, we have $1 \leq q$. We now consider an upper bound on $\Delta^*(\err{\sigma}, \ell)$, i.e., the greatest lower bound on $q$ such that $\Delta_q(\err{\sigma}) \cap \ell \neq \varnothing$.
 
 \begin{lemma}\label{lemma:upper-bound}
-  For any nonempty language $\ell: \mathcal{L}(\mathcal{G})$ and invalid string $\err{\sigma}: \Sigma^n$, there exists an $(\tilde{\sigma}, m)$ such that $\tilde{\sigma} \in \ell\cap\Sigma^m$ and $0 < \Delta(\err{\sigma}, \ell) \leq \max(m, n) < \infty$.\\
+  For any nonempty language $\ell: \mathcal{L}$ and invalid string $\err{\sigma}: \Sigma^n \cap \ell^\complement$, there exists an $(\tilde{\sigma}, m)$ such that $\tilde{\sigma} \in \ell\cap\Sigma^m$ and $0 < \Delta(\err{\sigma}, \ell) \leq \max(m, n) < \infty$.\\
 \end{lemma}
 
 \begin{proof}
-  Since $\ell$ is nonempty, it must have at least one inhabitant $\sigma \in \ell$. Let $\tilde{\sigma}$ be the smallest such member. Since $\tilde{\sigma}$ is a valid sentence in $\ell$, by definition it must be that $|\tilde{\sigma}|<\infty$. Let $m:=|\tilde{\sigma}|$. Since we know $\err{\sigma} \notin \ell$, it follows that $0 < \Delta(\err{\sigma}, \ell)$. Let us consider two cases, either $\tilde{\sigma} = \varepsilon$, or $0 < |\tilde{\sigma}|$:
+  Since $\ell$ is nonempty, it must have at least one inhabitant $\sigma \in \ell$. Let $\tilde{\sigma}$ be the smallest such member. Since $\tilde{\sigma}$ is a valid sentence in $\ell$, by definition it must be that $|\tilde{\sigma}|<\infty$. Let $m\coloneqq|\tilde{\sigma}|$. Since we know $\err{\sigma} \notin \ell$, it follows that $0 < \Delta(\err{\sigma}, \ell)$. Let us consider two cases, either $\tilde{\sigma} = \varepsilon$, or $0 < |\tilde{\sigma}|$:
 
   \begin{itemize}
     \item If $\tilde{\sigma} = \varepsilon$, then $\Delta(\err{\sigma}, \tilde{\sigma}) = n$ by full erasure of $\err{\sigma}$, or
@@ -111,19 +169,19 @@ We seek to find the set of strings $S$ such that $\forall \tilde{\sigma}\in S, \
   In either case, it follows $\Delta(\err{\sigma}, \ell) \leq \max(m, n)$ and $\ell$ is always reachable via a finite nonempty set of Levenshtein edits, i.e., $0 < \Delta(\err{\sigma}, \ell) < \infty$.
 \end{proof}
 
-Let us now consider the maximum growth rate of the admissible set, $A \coloneq \Delta_k(\err{\sigma}) \cap \ell$, as a function of $k$ and $n$. Let $\ell \coloneq \err{\sigma}$. Since $\ell$ is finite and thus regular, $\bar\ell = \Delta_k(\err{\sigma}) \setminus \{\err{\sigma}\}$ is regular by closure of regular languages under complementation, and thus context-free a fortiori. Since $\bar\ell$ accepts every string except $\err{\sigma}$, it represents the worst CFL in terms of asymptotic growth of $A$.
+Let us now consider the maximum growth rate of the admissible set, $A \coloneq \Delta_q(\err{\sigma}) \cap \ell$, as a function of $q$ and $n$. Let $\ell \coloneq \err{\sigma}$. Since $\ell$ is finite and thus regular, $\bar\ell = \Delta_q(\err{\sigma}) \setminus \{\err{\sigma}\}$ is regular by closure of regular languages under complementation, and thus context-free a fortiori. Since $\bar\ell$ accepts every string except $\err{\sigma}$, it represents the worst CFL in terms of asymptotic growth of $A$.
 
 \begin{lemma}
-  The complexity of searching $A$ is upper bounded by $\mathcal{O}\left(\sum_{c=1}^k{{cn + n + 1} \choose c}(|\Sigma| + 1)^c\right)$.
+  The complexity of searching $A$ is upper bounded by $\mathcal{O}\left(\sum_{c=1}^q{{cn + n + 1} \choose c}(|\Sigma| + 1)^c\right)$.
 \end{lemma}
 
 \begin{proof}
-  We can overestimate the size of $A$ by considering the number of unique ways to insert, delete, or substitute $c$ terminals into a string $|\err{\sigma}|$ of size $n$. This can be overaproximated by interleaving $\varepsilon^c$ around every token, i.e., $\err{\sigma}'\coloneq \left(\varepsilon^c\err{\sigma}_i\right)_{i=1}^n\varepsilon^c$, where $|\err{\sigma}'| = cn + n + 1$, and only considering substitution. We augment $\Sigma_\varepsilon \coloneq \Sigma \cup \{\varepsilon\}$ so that deletions and insertions may be considered as special cases of substitution. Thus, we have $cn + n + 1$ positions to substitute $(|\Sigma_\varepsilon|)$ tokens, i.e., ${{cn + n + 1} \choose c}(|\Sigma_\varepsilon|)^c$ ways to edit $\err{\sigma}'$ for each $c \in [1, k]$. This upper bound is not tight, as overcounts many identical edits w.r.t. $\err{\sigma}$. Nonetheless, it is sufficient to show $|A| < \sum_{c=1}^k{{cn + n + 1} \choose c}(|\Sigma_\varepsilon|)^c$.
+  We can overestimate the size of $A$ by considering the number of unique ways to insert, delete, or substitute $c$ terminals into a string $|\err{\sigma}|$ of size $n$. This can be overaproximated by interleaving $\varepsilon^c$ around every token, i.e., $\err{\sigma}'\coloneq \left(\varepsilon^c\err{\sigma}_i\right)_{i=1}^n\varepsilon^c$, where $|\err{\sigma}'| = cn + n + 1$, and only considering substitution. We augment $\Sigma_\varepsilon \coloneq \Sigma \cup \{\varepsilon\}$ so that deletions and insertions may be treated as special cases of substitution. Thus, we have $cn + n + 1$ positions to substitute $(|\Sigma_\varepsilon|)$ tokens, i.e., ${{cn + n + 1} \choose c}|\Sigma_\varepsilon|^c$ ways to edit $\err{\sigma}'$ for each $c \in [1, q]$. This upper bound is not tight, as overcounts many identical edits w.r.t. $\err{\sigma}$. Nonetheless, it is sufficient to show $|A| < \sum_{c=1}^q{{cn + n + 1} \choose c}|\Sigma_\varepsilon|^c$.
 \end{proof}
 
-We note that the above bound applies to all strings and languages, and relates to the Hamming bound on $H_k(\err{\sigma})$, which only considers substitutions. In practice, much tighter bounds may be obtained by considering the structure of $\ell$ and $\err{\sigma}$. For example, based on an empirical evaluation from a dataset of human errors and repairs in Python code snippets ($|\Sigma| = 50, |\err{\sigma}| < 40, \Delta(\err{\sigma}, \ell) \in [1, 3]$), we estimate the \textit{filtration ratio}, i.e., the density of the admissible set relative to the Levenshtein ball, $D=|A|/|\Delta_k(\err{\sigma})|$ to have empirical mean $E_\sigma[D] \approx 2.6\times 10^{-4}$, and variance $\mathrm{Var}_\sigma[D] \approx 3.8\times10^{-7}$.
+We note that the above bound applies to all strings and languages, and relates to the Hamming bound on $H_q(\err{\sigma})$, which only considers substitutions. In practice, much tighter bounds may be obtained by considering the structure of $\ell$ and $\err{\sigma}$. For example, based on an empirical evaluation from a dataset of human errors and repairs in Python code snippets ($|\Sigma| = 50, |\err{\sigma}| < 40, \Delta(\err{\sigma}, \ell) \in [1, 3]$), we estimate the \textit{filtration ratio}, i.e., the density of the admissible set relative to the Levenshtein ball, $D=|A|/|\Delta_q(\err{\sigma})|$ to have empirical mean $E_\sigma[D] \approx 2.6\times 10^{-4}$, and variance $\mathrm{Var}_\sigma[D] \approx 3.8\times10^{-7}$.
 
-In practice, this problem is ill-posed even when $k = \Delta^*(\err{\sigma}, \ell) \approx 1$. For example, consider the language of ursine dietary preferences. Although $\err{\sigma}\coloneq$ ``Bears like to eat tomatoes'' is not in the language, e.g., $\tilde{\sigma}\coloneq$``Bears like to eat'' is valid $(\Delta^*=1)$, however there are many other variations with the same or similar edit distance, e.g., or ``Bears like to eat \{\hlorange{berries}, \hlorange{honey}, \hlorange{fish}\}'', or ``\{\hlgreen{Polar}, \hlgreen{Panda}\} bears like to eat \{\hlgreen{seals}, \hlgreen{bamboo}\}''. In general, there are many valid strings within a fixed Levenshtein distance of $\err{\sigma}$, and we seek to find among them, the set of strings that are both syntactically valid and semantically plausible within a short amount of time.
+In practice, this problem is ill-posed even when $q = \Delta^*(\err{\sigma}, \ell) \approx 1$. For example, consider the language of ursine dietary preferences. Although $\err{\sigma}\coloneq$ ``Bears like to eat tomatoes'' is not in the language, e.g., $\tilde{\sigma}\coloneq$``Bears like to eat'' is valid $(\Delta^*=1)$, however there are many other variations with the same or similar edit distance, e.g., or ``Bears like to eat \{\hlorange{berries}, \hlorange{honey}, \hlorange{fish}\}'', or ``\{\hlgreen{Polar}, \hlgreen{Panda}\} bears like to eat \{\hlgreen{seals}, \hlgreen{bamboo}\}''. In general, there are many valid strings within a fixed Levenshtein distance of $\err{\sigma}$, and we seek to find among them, the set of strings that are both syntactically valid and semantically plausible within a short amount of time.
 
 \section{Matrix Theory}\label{sec:matrix}
 
@@ -131,20 +189,20 @@ Recall that a CFG is a quadruple consisting of terminals $(\Sigma)$, nonterminal
 
 \begin{table}[H]
 \begin{tabular}{llll}
-$\mathcal{G}:=\big\{\;S \rightarrow S\:S \mid (\:S\:) \mid (\:)\;\big\} \Longrightarrow \mathcal{G}'=\big\{\;S\rightarrow Q\:R \mid S\:S \mid L\:R,$ & $R \rightarrow\:),$ & $L \rightarrow (,$ & $Q\rightarrow L\:S\;\big\}$
+$\mathcal{G}\coloneqq\big\{\;S \rightarrow S\:S \mid (\:S\:) \mid (\:)\;\big\} \Longrightarrow \mathcal{G}'=\big\{\;S\rightarrow Q\:R \mid S\:S \mid L\:R,$ & $R \rightarrow\:),$ & $L \rightarrow (,$ & $Q\rightarrow L\:S\;\big\}$
 \end{tabular}
 \end{table}\vspace{-8pt}
 
 \noindent Given a CFG, $\mathcal{G}' : \mathbb{G} = \langle \Sigma, V, P, S\rangle$ in CNF, we can construct a recognizer $R: \mathbb{G} \rightarrow \Sigma^n \rightarrow \mathbb{B}$ for strings $\sigma: \Sigma^n$ as follows. Let $2^V$ be our domain, $0$ be $\varnothing$, $\oplus$ be $\cup$, and $\otimes$ be defined as:\vspace{-10pt}
 
 \begin{align}
-X \otimes Z := \big\{\;w \mid \langle x, z\rangle \in X \times Z, (w\rightarrow xz) \in P\;\big\}
+X \otimes Z \coloneqq \big\{\;w \mid \langle x, z\rangle \in X \times Z, (w\rightarrow xz) \in P\;\big\}
 \end{align}
 
-\noindent If we define $\sigma_r^{\shur} \coloneqq \{w \mid (w \rightarrow \sigma_r) \in P\}$, then construct a matrix with nonterminals on the superdiagonal representing each token, $M^0_{r+1=c}(\mathcal{G}', e) := \;\sigma_r^{\shur}$ and solve for the fixpoint $M^* = M + M^2$,\vspace{-10pt}
+\noindent If we define $\sigma_r^{\shur} \coloneqq \{w \mid (w \rightarrow \sigma_r) \in P\}$, then construct a matrix with nonterminals on the superdiagonal representing each token, $M^0_{r+1=c}(\mathcal{G}', e) \coloneqq \;\sigma_r^{\shur}$ and solve for the fixpoint $M^* = M + M^2$,\vspace{-10pt}
 
 \begin{align*}
-M^0:=
+M^0\coloneqq
 \begin{pNiceMatrix}[nullify-dots,xdots/line-style=loosely dotted]
    \varnothing & \sigma_1^\shri & \varnothing & \Cdots & \varnothing \\
    \Vdots      & \Ddots         & \Ddots      & \Ddots & \Vdots\\
@@ -168,13 +226,21 @@ M^0:=
 \end{pNiceMatrix}
 \end{align*}
 
-\noindent we obtain the recognizer, $R(\mathcal{G}', \sigma) := [S \in \Lambda^*_\sigma] \Leftrightarrow [\sigma \in \mathcal{L}(\mathcal{G})]$~\footnote{Hereinafter, we shall use Iverson brackets to denote the indicator function of a predicate, i.e., $[P] \Leftrightarrow \mathds{1}(P)$.}.
+\noindent we obtain the recognizer, $R(\mathcal{G}', \sigma) \coloneqq [S \in \Lambda^*_\sigma] \Leftrightarrow [\sigma \in \mathcal{L}(\mathcal{G})]$~\footnote{Hereinafter, we use Iverson brackets to denote the indicator function of a predicate with free variables, i.e., $[P] \Leftrightarrow \mathds{1}(P)$.}.
 
 Since $\bigoplus_{c = 1}^n M_{r,c} \otimes M_{c,r}$ has cardinality bounded by $|V|$, it can be represented as $\mathbb{Z}_2^{|V|}$ using the characteristic function, $\mathds{1}$. Note that any encoding which respects linearity $\varphi(\Lambda \circledast \Lambda') \equiv \varphi(\Lambda) \circledast \varphi(\Lambda')$ is suitable -- this particular representation shares the same algebraic structure, but is more widely studied in error correction, and readily compiled into circuits and BLAS primitives. Furthermore, it enjoys the benefit of complexity-theoretic speedups to matrix multiplication.
 
 Details of the bisimilarity between parsing and matrix multiplication can be found in Valiant~\cite{valiant1975general}, who first realized its time complexity was subcubic $\mathcal{O}(n^\omega)$ where $\omega$ is the asymptotic lower bound for Boolean matrix multiplication ($\omega < 2.77$), and Lee~\cite{lee2002fast}, who shows that speedups to CFL parsing were realizable by Boolean matrix multiplication algorithms. While more efficient specialized parsers are known to exist for restricted CFGs, this technique is typically lineararithmic under sparsity and believed to be the most efficient general procedure for CFL parsing.
 
-Valiant's decision procedure can be abstracted by lifting into the domain of bitvector variables, i.e., linear equations over finite fields, where each nonterminal inhabitant of the northeasternmost bitvector $\mathcal{T}$ will instead become an algebraic expression whose solutions correspond to valid parse forests for an incomplete string on the superdiagonal. This yields a novel interpretation of Valiant's algorithm as an equational theory over finite fields, allowing us to solve for admissible completions and their parse forests. In particular, $\boxplus$ and $\boxtimes$ are defined so the following diagram commutes,\footnote{Hereinafter, we use gray highlighting to denote types and functions defined over strings and binary constants only.}
+\subsection{Parsing with holes}
+
+Valiant's algorithm can be abstracted by lifting into the domain of bitvector variables, i.e., linear equations over finite fields, where each nonterminal inhabitant of the northeasternmost bitvector $\mathcal{T}$ is instead an algebraic expression whose solutions correspond to valid parse forests for an incomplete string on the superdiagonal (our work). This yields a novel interpretation of Valiant's algorithm as an equational theory over finite fields, allowing us to solve for admissible completions of a porous string and their parse forests. More formally, we solve the following problem:
+
+\begin{definition}[Parsing with holes]
+Let $\underline\Sigma \coloneq \Sigma \cup \{\_\}$, whose holes denote free variables. Given a CFG, $\mathcal{G}: \mathbb{G}$, and a \textit{porous string}, $\sigma: \underline\Sigma^n, n: \mathbb{N}^{\geq 2}$, it is possible to encode the function $[S \in \Lambda^*_\sigma]$ as a polynomial over a finite field, $p: \mathbb{Z}_2^{|V|}\rightarrow\mathbb{Z}_2$, whose zeros correspond to valid completions.
+\end{definition}
+
+\noindent The precise encoding is immaterial, as long as $\langle\boxplus, \boxtimes\rangle$ are defined so the diagram below commutes,\footnote{Hereinafter, we use gray highlighting to denote types and functions defined over strings and binary constants only.}
 
 \begin{figure}[H]
   \adjustbox{center}{%
@@ -193,16 +259,16 @@ So far, we have only considered the syntactic theory of breadth-bounded CFLs wit
 
 \subsection{Linear conjunctive reachability}\label{sec:lclreach}
 
-While generally quite expressive, CFLs are themselves not closed under intersection and have other practical limitations, i.e., are unable to express indentation or variable binding. These limitations motivate us towards more expressive yet still efficiently parsable formalisms. In the case of intersection, let us consider the traditional example, $\mathcal{L}_\cap := \mathcal{L}(\mathcal{G}_1) \cap \mathcal{L}(\mathcal{G}_2)$ defined as follows:
+While generally quite expressive, CFLs are themselves not closed under intersection and have other practical limitations, i.e., are unable to express indentation or variable binding. These limitations motivate us towards more expressive yet still efficiently parsable formalisms. In the case of intersection, let us consider the traditional example, $\mathcal{L}_\cap \coloneqq \mathcal{L}(\mathcal{G}_1) \cap \mathcal{L}(\mathcal{G}_2)$ defined as follows:
 
 \begin{table}[H]
   \begin{tabular}{llll}
-    $P_1 := \big\{\;S \rightarrow L\:R,$ & $\:L \rightarrow a\:b \mid a\:L\:b,$ & $R \rightarrow c \mid c \:R\;\big\}$\vspace{5pt}\\
-    $P_2 := \big\{\;S \rightarrow L\:R,$ & $\:R \rightarrow b\:c \mid b\:R\:c,$ & $L \rightarrow a \mid a \:L\;\big\}$
+    $P_1 \coloneqq \big\{\;S \rightarrow L\:R,$ & $\:L \rightarrow a\:b \mid a\:L\:b,$ & $R \rightarrow c \mid c \:R\;\big\}$\vspace{5pt}\\
+    $P_2 \coloneqq \big\{\;S \rightarrow L\:R,$ & $\:R \rightarrow b\:c \mid b\:R\:c,$ & $L \rightarrow a \mid a \:L\;\big\}$
   \end{tabular}
 \end{table}
 
-\noindent Note that $\mathcal{L}_\cap$ generates the language $\big\{\;a^d b^d c^d \mid d > 0\;\big\}$, which according to the pumping lemma is not context-free. However, we can encode the intersection between two or more languages as a single SAT formula by representing  each upper-triangular matrix $\bigcap_{i=1}^c \mathcal{L}(\mathcal{G}_i)$ as a polygonal prism with upper-triangular matrices adjoined to each rectangular face. More precisely, we intersect all terminals $\Sigma_\cap := \bigcap_{i=1}^c \Sigma_i$, then for each $t_\cap \in \Sigma_\cap$ and CFG, construct an equivalence class $E(t_\cap, \mathcal{G}_i) = \{ w_i \mid (w_i \rightarrow t_\cap) \in P_i\}$ and bind them together using conjunction:\vspace{-5pt}
+\noindent Note that $\mathcal{L}_\cap$ generates the language $\big\{\;a^d b^d c^d \mid d > 0\;\big\}$, which according to the pumping lemma is not context-free. However, we can encode the intersection between two or more languages as a single SAT formula by representing  each upper-triangular matrix $\bigcap_{i=1}^c \mathcal{L}(\mathcal{G}_i)$ as a polygonal prism with upper-triangular matrices adjoined to each rectangular face. More precisely, we intersect all terminals $\Sigma_\cap \coloneqq \bigcap_{i=1}^c \Sigma_i$, then for each $t_\cap \in \Sigma_\cap$ and CFG, construct an equivalence class $E(t_\cap, \mathcal{G}_i) = \{ w_i \mid (w_i \rightarrow t_\cap) \in P_i\}$ and bind them together using conjunction:\vspace{-5pt}
 
 \begin{align}
   \bigwedge_{t\in\Sigma_\cap}\bigwedge_{j = 1}^{c-1}\bigwedge_{i=1}^{|\sigma|} E(t_{\cap}, \mathcal{G}_j) \equiv_{\sigma_i} E(t_{\cap}, \mathcal{G}_{j+1})
@@ -217,7 +283,7 @@ While generally quite expressive, CFLs are themselves not closed under intersect
   \caption{Orientations of a $\bigcap_{i = 1}^4 \mathcal{L}(\mathcal{G}_i) \cap \Sigma ^6$ configuration. As $c \rightarrow \infty$, this shape approximates a circular cone whose symmetric axis joins $\sigma_i$ with orthonormal unit productions $w_i \rightarrow t_\cap$, and $[S_i \in \Lambda^*_{\sigma}]$ represented by the outermost bitvector inhabitants. Equations of this form are equiexpressive with the family of CSLs realizable by finite CFL intersection.}
 \end{figure}
 
-Following Okhotin~\cite{okhotin2001conjunctive}, we extend our grammar DSL with one additional operator for combining CFGs, $\land: \mathbb{G}^+\times\mathbb{G}^+\rightarrow\mathbb{G}^+$, where $\mathbb{G}^+$ is a conjunctive grammar (CG). In our setting, CGs naturally subsume CFGs, and observe the following denotational semantics:
+Following Okhotin~\cite{okhotin2001conjunctive}, we then extend our grammar DSL with one additional operator for combining CFGs, $\land: \mathbb{G}^+\times\mathbb{G}^+\rightarrow\mathbb{G}^+$, where $\mathbb{G}^+$ is a conjunctive grammar (CG). In our setting, CGs naturally subsume CFGs, and in so doing, observe the following denotational semantics:
 
 \begin{prooftree}
   \hskip -0.2em
@@ -243,11 +309,11 @@ Following Okhotin~\cite{okhotin2001conjunctive}, we extend our grammar DSL with 
   \DisplayProof
 \end{prooftree}
 
-Given two CFLs $\mathcal{L}(\mathcal{G}), \mathcal{L}(\mathcal{G}')$, we can compute their intersection $\mathcal{L}(\mathcal{G})\cap\mathcal{L}(\mathcal{G}')\cap\Sigma^d$ by encoding $[\mathbf{M}_\mathcal{G}^* \equiv_\sigma \mathbf{M}_{\mathcal{G}'}^*]$. With this feature, we now have the ability to compute the language intersection between two or more CFLs, which will be useful for solving bounded Levenshtein reachability.
+Given two CFLs $\mathcal{L}(\mathcal{G}), \mathcal{L}(\mathcal{G}')$, we can compute their intersection $\mathcal{L}(\mathcal{G})\cap\mathcal{L}(\mathcal{G}')\cap\Sigma^d$ by encoding $[M_{\mathcal{G}, \sigma}^* \equiv_\sigma M_{\mathcal{G}', \sigma}^*]$. With this feature, we now have the ability to compute the language intersection between two or more CFLs, which will be used to encode bounded Levenshtein CFL reachability.
 
 %For example, we can solve $\Sigma^d \cap \overline{\mathcal{L}_\mathcal{G}}$ by enumerating $\{\beta\sigma'\gamma \mid \sigma' \in \Sigma^d, \beta = \gamma = \_^k\}$, overapproximating the prefix and suffix (padding left and right), and checking for UNSAT to underapproximate \textit{impossible substrings}, strings which cannot appear in any $\{\sigma \in \mathcal{L}_\mathcal{G}\}$. Precomputing impossible substrings for a given grammar allows us to quickly eliminate inadmissible repairs and localize syntax errors in candidate strings.
 
-%Using the technique from Sec.~\ref{sec:levenshtein}, we can also compute language edit distance, the minimum number of Levenshtein edits required to fix a syntactically invalid string. Language intersection is significantly faster than approximating the gradient via sampling.
+%Using the technique from \S~\ref{sec:levenshtein}, we can also compute language edit distance, the minimum number of Levenshtein edits required to fix a syntactically invalid string. Language intersection is significantly faster than approximating the gradient via sampling.
 
 %We can also build a set of grammars of increasing granularity, like a lattice structure. Basically, we can build up a lattice (in the order theoretic sense), consisting of grammars of increasing granularity. All programming languages require balanced parentheses, but some have additional constraints. So we can combine grammars, count and do bounded linear integer arithmetic.
 
@@ -261,10 +327,10 @@ Given two CFLs $\mathcal{L}(\mathcal{G}), \mathcal{L}(\mathcal{G}')$, we can com
 %
 %\noindent where $\mu_A$ and $\mu_B$ are the discrete distributions corresponding to strings $A$ and $B$, respectively. A single transportation plan, $\pi$, can be viewed as a sequence of Levenshtein edits, and $\Pi(\mu_A, \mu_B)$ is the set of all transport plans with marginals $\mu_A$ and $\mu_B$. Finally, the Levenshtein distance between $A$ and $B$ is then the minimum cost over all transportation plans, i.e., edit sequences $\pi \in \Pi(\mu_A, \mu_B)$.
 
-The Levenshtein ball is finite and therefor context-free, however materializing this set directly is almost always intractable. Instead, we dynamically instantiate a CFG that will recognize and generate the members of $\Delta_d(\err{\sigma})$ for any arbitrary $d: \mathbb{N}, \sigma \in \Sigma^*$. This approach follows from a straightforward extension of Levenshtein automata~\cite{schulz2002fast}.
+The Levenshtein ball is finite and therefor context-free, however materializing this set is intractable for all but the smallest radii and alphabets. Instead, we dynamically instantiate a CFG that can recognize and generate the members of $\Delta_d(\err{\sigma})$ for any arbitrary $d: \mathbb{N}, \sigma: \Sigma^*$. This approach follows from a straightforward extension of Levenshtein automata~\cite{schulz2002fast}.
 
 \begin{wrapfigure}{r}{0.5\textwidth}
-  \vspace{-10pt}
+  \vspace{-5pt}
   \resizebox{.5\textwidth}{!}{\input{nfa_cfg.tex}}
   \caption{Levenshtein reachability from $\Sigma^n$ can be described as an NFA, or a left-linear CFG.}
 \end{wrapfigure}
@@ -273,7 +339,7 @@ In the case where $\sigma$ and $\sigma'$ are both fixed strings, Levenshtein dis
 
 Levenshtein reachability, then, is recognizable by the nondeterministic infinite automaton (NIA) whose topology $\mathcal{L} = \knightkingarrow$ factorizes into a product of (a) the monotone Chebyshev topology $\kingarrow$, equipped with horizontal transitions accepting $\sigma_{i}$ and vertical transitions accepting Kleene stars, and (b) the monotone knight's topology $\knightarrow$, equipped with transitions accepting $\sigma_{i+2}$. The structure of this space is approximated by an acyclic NFA, populated by accept states within radius $k$ of $q_{n,0}$, or equivalently, a left-linear CFG whose productions bisimulate the NFA.
 
-\subsection{Bounded Levenshtein Reachability}\label{sec:editreach}
+\subsection{Bounded Levenshtein reachability}\label{sec:editreach}
 
 %Assume a hypothetical $\Phi(\mathcal{G}': \mathbb{G}, \err{\sigma}: \Sigma^*)\mapsto \tilde{\sigma}: \mathcal{L}(\mathcal{G}')$ which takes a CFG, $\mathcal{G}'$, generating an arbitrary nonempty CFL, and an unparseable string, $\err{\sigma}$, and which returns element(s) of $\mathcal{L}(\mathcal{G}')$ most similar to $\err{\sigma}$ according to their Levenshtein distance $\Delta(\err{\sigma}, \cdot)$.
 
@@ -283,11 +349,11 @@ Levenshtein reachability, then, is recognizable by the nondeterministic infinite
   \caption{LED is computed gradually by incrementing $d$ until $\mathcal{L}^\cap_{d}\neq \varnothing$.}
 \end{wrapfigure}
 
-Let $G(\err{\sigma}: \Sigma^*, d: \mathbb{N}^+) \mapsto \mathbb{G}$ be the specific construction described in Sec.~\ref{sec:levenshtein} which accepts a string, $\err{\sigma}$, and an edit distance, $d$, and returns a grammar representing the NFA that recognizes the language of all strings within Levenshtein radius $d$ of $\err{\sigma}$. To find the language edit distance and corresponding least-distance edits, we must find the smallest $d$ such that $\mathcal{L}^\cap_d$ is nonempty, where $\mathcal{L}^\cap_d$ is defined as $\mathcal{L}\bigl(G(\err\sigma, d)\bigr) \cap \mathcal{L}(\mathcal{G}')$. In other words, we seek $\tilde{\sigma}$ and $d^*$ under which three criteria are all satisfied:\linebreak (1) $\tilde{\sigma}\in\mathcal{L}(\mathcal{G}')$, and (2) $\Delta(\err{\sigma}, \tilde{\sigma}) \leq d^* \Longleftrightarrow \tilde{\sigma} \in \mathcal{L}\bigl(G(\err{\sigma}, d^*)\bigr)$, and (3) $\not\exists \sigma' \in \mathcal{L}(\mathcal{G}').\bigl[\Delta(\err{\sigma}, \sigma') < d^*\bigr]$. To satisfy these criteria, it suffices to check $d \in (1, d^*]$ by encoding the Levenshtein automata and the original grammar as a single SAT formula, call it, $\varphi_d(\cdot)$, and gradually admitting new acceptance states at increasing radii. If $\varphi_d(\cdot)$ returns UNSAT, $d$ is increased until either (1) a satisfying assignment is found or (2) $d^*$ is attained. Following~\ref{lemma:upper-bound}, this procedure is guaranteed to terminate in at most either (1) the number of steps required to overwrite every symbol in $\err{\sigma}$, or (2) the length of the shortest string in $\mathcal{L}(\mathcal{G}')$, whichever is greater. When $\mathcal{L}(\mathcal{G}')$ is context-free, the language intersection is provably context-free using the Bar-Hillel construction~\cite{bar1961formal}, however in general, the resulting intersection is a conjunctive language.
+Let $G(\err{\sigma}: \Sigma^*, d: \mathbb{N}^+) \mapsto \mathbb{G}$ be the specific construction described in \S~\ref{sec:levenshtein} which accepts a string, $\err{\sigma}$, and an edit distance, $d$, and returns a grammar representing the NFA that recognizes the language of all strings within Levenshtein radius $d$ of $\err{\sigma}$. To find the language edit distance and corresponding least-distance edits, we must find the smallest $d$ such that $\mathcal{L}^\cap_d$ is nonempty, where $\mathcal{L}^\cap_d$ is defined as $\mathcal{L}\bigl(G(\err\sigma, d)\bigr) \cap \mathcal{L}(\mathcal{G}')$. In other words, we seek $\tilde{\sigma}$ and $d^*$ under which three criteria are all satisfied:\linebreak (1) $\tilde{\sigma}\in\mathcal{L}(\mathcal{G}')$, and (2) $\Delta(\err{\sigma}, \tilde{\sigma}) \leq d^* \Longleftrightarrow \tilde{\sigma} \in \mathcal{L}\bigl(G(\err{\sigma}, d^*)\bigr)$, and (3) $\not\exists \sigma' \in \mathcal{L}(\mathcal{G}').\bigl[\Delta(\err{\sigma}, \sigma') < d^*\bigr]$. To satisfy these criteria, it suffices to check $d \in (1, d^*]$ by encoding the Levenshtein automata and the original grammar as a single SAT formula, call it, $\varphi_d(\cdot)$, and gradually admitting new acceptance states at increasing radii. If $\varphi_d(\cdot)$ returns UNSAT, $d$ is increased until either (1) a satisfying assignment is found or (2) $d^*$ is attained. Following~\ref{lemma:upper-bound}, this procedure is guaranteed to terminate in at most either (1) the number of steps required to overwrite every symbol in $\err{\sigma}$, or (2) the length of the shortest string in $\mathcal{L}(\mathcal{G}')$, whichever is greater. When $\mathcal{L}(\mathcal{G}')$ is context-free, the language intersection is provably context-free using the Bar-Hillel construction~\cite{bar1961formal}, however in general, the resulting intersection is a conjunctive language.
 %More precisely, we can define $\varphi_d(\cdot)$ as follows:
 %
 %\begin{equation}
-%\varphi_{d+1}(\mathcal{G}', \err{\sigma}) := \begin{cases}
+%\varphi_{d+1}(\mathcal{G}', \err{\sigma}) \coloneqq \begin{cases}
 %\varphi\bigl[\tilde{\sigma}\in\mathcal{L}\bigl(G(\err\sigma, d)\bigr) \land \tilde{\sigma}\in \mathcal{L}(\mathcal{G}')\bigr] & \text{if $d=1$ or $\varphi_d(\cdot)$ is SAT}.\\
 %\varphi_{d} \oplus \bigoplus_{\{q \in Q \mid \delta(q, q_{n,0}) = d+1\}}\varphi[S \rightarrow q] & \text{if $d \leq \max(|\err{\sigma}|, \min_{\sigma \in \mathcal{L}(\mathcal{G}')}|\sigma|)$}.
 %\end{cases}
@@ -300,6 +366,45 @@ Let $G(\err{\sigma}: \Sigma^*, d: \mathbb{N}^+) \mapsto \mathbb{G}$ be the speci
 %By intersection with a CFG, $\mathcal{G}'$, Bar-Hillel ensures the resulting language will remain context-free.
 %
 %We then intersect that language with $\Sigma^n$ and $\mathcal{L}(\mathcal{G})$, the original grammar, to obtain a finite set.
+
+\subsection{Sparsification}
+
+Although we can encode $[\mathcal{M}_\sigma = \mathcal{M}^2_\sigma]$ explicitly, na\"ively encoding the formula as a dense constraint system is highly suboptimal. A considerably more sparse but logically equivalent representation can be achieved by analyzing the structure of the grammar and string in question. For starters, we can always ignore all lower-triangular comparisons $\{\mathcal{M}_{ij} \mid i \geq j\}$. Since we are typically interested in strings with some bound variables, $\{\sigma: (\Sigma \cup \{\_\})^* \mid \exists i.\sigma_i \in \Sigma\}$, there will also be many upper-triangular nonterminals $(v, i, j) \subset V\times\{i, j \mid 0 \leq i \leq j \leq |\sigma|)\}$ that are incompatible with the surrounding structure, i.e., which cannot influence $[S \in \Lambda_\sigma^*]$ based on neighboring entries regardless of which values they assume. By analyzing the grammar and upper-triangular structure of $\mathcal{M}_\sigma$, it is often possible to avoid many elementwise comparisons in the equivalence relation.
+
+\begin{definition}[Hole subsumption]
+  Let $\underline\Sigma \coloneqq \Sigma \cup \{\_\}$, where $\_$ represents a hole. We denote $\sqsubseteq: \underline\Sigma^n \times \Sigma^n$ as the relation $\{\langle\sigma, \sigma'\rangle \mid \sigma_i \in \Sigma \implies \sigma_i = \sigma_i'\}$ and the set of all $\{\sigma' \mid \sigma' \sqsubseteq \sigma\}$ as $\text{H}(\sigma)$.
+\end{definition}
+
+\begin{definition}[Impossible nonterminals]
+  Given $\sigma: \underline\Sigma^*$ and $\mathcal{G}: \mathbb{G}$, an impossible nonterminal is a triple $\langle v, i, j\rangle: V\times\{i, j \mid 0 \leq i \leq j \leq |\sigma|)\}$ such that $\forall \sigma': \Sigma^{j-i}, \sigma' \in \text{H}(\sigma_i\ldots\sigma_j) \implies v\notin\Lambda^*_{\sigma'}$.
+\end{definition}
+
+%Given $\mathcal{G}: \mathbb{G}$, the nonterminal cover of $v: V$ is the set of all nonterminals $v$ can derive by zero or more applications of the production rules in $\mathcal{G}$. Formally,
+
+%\begin{definition}[Nonterminal cover]
+%The nonterminal cover of $v$, denoted $C(v)$, is defined as:
+%
+%  \[
+%    \text{C}(v) = \{ u \in V : v \Rightarrow^*_{\mathcal{G}} X_1uX_2, \text{ for some } X_1, X_2 \in (V \cup \Sigma)^* \}
+%  \]
+%
+%where $\Rightarrow^*_{\mathcal{G}}$ denotes the reflexive transitive closure of the relation $\Rightarrow_{\mathcal{G}}$ defined by the production rules of $\mathcal{G}$.
+%\end{definition}
+%
+%In this revised definition, $X_1$ and $X_2$ denote any strings in $(V \cup \Sigma)^*$. Hence, $\text{NC}(v)$ includes all nonterminal symbols $u$ that can appear anywhere in a string derived from $v$.
+
+\begin{definition}[Terminal closure]
+  Let $\Rightarrow^*_\mathcal{G}$ be the reflexive transitive closure defined in the usual way.
+  The terminal closure, denoted $\text{T}(v)$, is the set $\{\sigma: \Sigma \mid \exists\:\alpha, \beta: (V\cup\Sigma)^*, v \Rightarrow^*_\mathcal{G} \alpha u \beta\}$.
+\end{definition}
+
+Let $p: \underline\Sigma^*\rightarrow\mathbb{N}^{|\Sigma|}$ be the Parikh vector~\cite{parikh1966context} over some string. We define the Parikh image of as the set of all terminals indexed by a nonzero element of the Parikh vector. More formally,
+
+\begin{definition}[Parikh image]
+  We define the Parikh image of a porous string $\sigma: \underline\Sigma^*$, as $\Pi(\sigma)\coloneq\{v \in V \mid 0 < p(\sigma)[v]\}$ and the minimal Parikh image, $\Pi^*(\sigma)\coloneqq \max_{\sigma' \in \text{H}(\sigma)}\Pi(\sigma')$.
+\end{definition}
+
+We can underapproximate the set of impossible nonterminals for a candidate triple $v, i, j$ by computing the minimal Parikh image of $\sigma_i\ldots\sigma_j$, and comparing it with the terminal closure of $v$ under $\mathcal{G}$. If the terminal closure is not a cover of the minimal Parikh image, then the triple is impossible. We leave the exercise of computing the minimal Parikh image to the reader.
 
 \subsection{Coarsening and simplification}
 
@@ -330,36 +435,38 @@ Let $G(\err{\sigma}: \Sigma^*, d: \mathbb{N}^+) \mapsto \mathbb{G}$ be the speci
 \begin{wrapfigure}{r}{0.4\textwidth}
   \vspace{-20pt}
   \resizebox{0.4\textwidth}{!}{\input{expr_simpl.tex}}
-  \caption{When is this reduction admissible?}
+  \caption{When is this reduction admissible?}\label{fig:mat_simpl}
   \resizebox{0.35\textwidth}{!}{\input{mat_simpl.tex}}
   \caption{We can inspect $\bm\Lambda_\alpha^\shri, \bm\Lambda_\alpha^\shup$ to find out.}
 \end{wrapfigure}
 
-Depicted right is a SAT tensor representing \hlgray{$\sigma_1\:\sigma_2\:\sigma_3$}$\:\_\:\ldots\:\_$ where shaded regions demarcate known bitvector literals $\mathcal{L}_{r,c}$ (i.e., representing established nonterminal forests) and unshaded regions correspond to bitvector variables $\mathcal{V}_{r,c}$ (i.e., representing seeded nonterminal forests to be solved) for an incomplete string. Since $\mathcal{L}_{r,c}$ are fixed, we precompute them outside the SAT solver.
+Depicted right is a SAT tensor representing \hlgray{$\sigma_1\:\sigma_2\:\sigma_3$}$\:\_\:\ldots\:\_$ where shaded regions demarcate known bitvector literals $\mathcal{L}_{r,c}$ (i.e., representing established nonterminal forests) and unshaded regions correspond to bitvector variables $\mathcal{V}_{r,c}$ (i.e., representing unknown nonterminal forests to be solved) for an incomplete string. Since $\mathcal{L}_{r,c}$ are fixed, we precompute them outside the SAT solver.
 
-Clearly, solving complexity is heavily dependent on the string length. For the sake of complexity, it would be highly advantageous if well-formed subexpressions could be collapsed into a single nonterminal, or multiple nonterminals (in case of ambiguity), to simplify source code snippets without resorting to ad-hoc program slicing techniques. Naturally, this raises the question of when can partial derivations be simplified, i.e., under what circumstances is the following reduction admissible?
+Clearly, solving complexity is heavily dependent on the string length. For the sake of complexity, it would be highly advantageous if well-formed subexpressions could be collapsed into a single nonterminal, or multiple nonterminals (in case of ambiguity), to simplify source code snippets without resorting to ad-hoc program slicing techniques. Naturally, this raises the question of when can partial derivations be simplified, i.e., under what circumstances is the reduction in Fig.~\ref{fig:mat_simpl} admissible?
 
-This transformation is admissible when the subexpression is ``complete'', i.e., its derivation cannot be altered by appending or prepending text. For example, the string \texttt{( - b )} is morally \textit{complete} in the sense that inserting adjacent text should not alter the interior derivation, whilst \texttt{- b} is not, as introducing adjacent text (e.g., \texttt{a - b}) may alter the derivation of its contents depending on the structure of the CFG. This question can be reduced to a quotient: Does there exist another nonterminal, when so adjoined that will ``strip away'' any tokens, leading to another derivation?
+This transformation is admissible when the subexpression is ``complete'', i.e., its derivation cannot be altered by appending or prepending text. For example, the string \texttt{( - b )} is morally \textit{complete} in the sense that inserting adjacent text should not alter the interior derivation, whilst \texttt{- b} is not, as introducing adjacent text (e.g., \texttt{\hlgreen{a} - b}) may alter the derivation of its contents depending on the structure of the CFG. This question can be reduced to a quotient: Does there exist another nonterminal, when so adjoined that will ``strip away'' any tokens, leading to another derivation?
 
-More formally, given an arbitrary (potentially ambiguous) context free grammar $\mathcal{G}: \mathbb{G}$, and string $\alpha: \Sigma^\ast$, is there a decision procedure that returns whether appending and/or prepending symbols can alter the parse forest of $\alpha$? In other words, we want a function $F: (\mathbb{G} \times \Sigma^\ast) \rightarrow \mathbb{B}$ that returns whether $\alpha$'s parse forest according to $\mathcal{G}$ is unique over $\beta\alpha\gamma$, for all $\beta, \gamma: \Sigma^\ast$.
+More formally, given an arbitrary (potentially ambiguous) context free grammar $\mathcal{G}: \mathbb{G}$, and string $\alpha: \Sigma^\ast$, is there a decision procedure that returns whether appending and/or prepending symbols can alter the parse forest of $\alpha$? In other words, we want a function $F: (\mathbb{G} \times \Sigma^\ast) \rightarrow \mathbb{B}$ that returns whether $\alpha$'s parse forest according to $\mathcal{G}$ is unique over $\beta\alpha\gamma$, for all $\beta, \gamma: \Sigma^\ast$. Specifically,
 
-Specifically, let $\Lambda_\alpha$ denote the set of all parse trees that are generated by the string $\alpha$ using $\mathcal{G}$, and consider $\bm\Lambda_{\alpha}$, the union of all parse trees and their subtrees that (1) can be generated by $\beta\alpha\gamma$ using $\mathcal{G}$ for arbitrary $\beta, \gamma \in \Sigma^\ast$, and (2) have a leaf in $\alpha$. We call the parse forest $\Lambda_\alpha$ \textit{unique} iff $\forall t \in \bm\Lambda_{\alpha}\exists t' \in \Lambda_\alpha$, such that $t$ is either a subtree of $t'$, or $t'$ is a proper subtree of $t$.
+\begin{definition}[Isolation]
+Let $T_\alpha$ denote the set of all parse trees that are generated by the string $\alpha$ using $\mathcal{G}$, and consider $\mathbf{T}_{\alpha}$, the union of all parse trees and their subtrees that (1) can be generated by $\beta\alpha\gamma$ using $\mathcal{G}$ for arbitrary $\beta, \gamma \in \Sigma^\ast$, and (2) have a leaf in $\alpha$. We call the parse forest $T_\alpha$ \textit{isolated} iff $\forall t \in \mathbf{T}_{\alpha}\exists t' \in T_\alpha$, such that $t$ is either a subtree of $t'$, or $t'$ is a proper subtree of $t$.
+\end{definition}
 
-%Let $\bm\Lambda_{\alpha}^{\shur}$ be defined as $\bm\Lambda_{\alpha}^{\shur}:=\bm\Lambda_{\alpha}^\shup\cup\bm\Lambda_{\alpha}^\shri$, the union of all right- and left-quotients of $\alpha$.
+If we can identify an $\alpha: \Sigma$ where $\alpha = \sigma_i\ldots\sigma_j$ for some $i, j: \mathbb{N}^{<|\sigma|}$, such that $\alpha$ has an isolated parse forest, then we can safely replace $\sigma_i\ldots\sigma_j \mapsto \Lambda_\alpha^*$. For bounded-length strings, this can be solved by padding $\alpha$ with adjacent holes $(\_)^n\alpha(\_)^n$ for sufficiently large $n$, and checking $\bm\Lambda_{\alpha}^{\shur}$, the union of all right- and left-quotients of $\alpha$ for emptiness, i.e., $[\varnothing = \bm\Lambda_{\alpha}^\shup\cup\bm\Lambda_{\alpha}^\shri]$. A general solution for arbitrary CFGs, $\mathcal{G}: \mathbb{G}$ and $\beta, \gamma \in \Sigma^\ast$ is more difficult, but would greatly extend the context window and remove the need for ad hoc preprocessing. We leave this as an open problem for future work.
 %
 %Claim #1: The parse forest for $\alpha$ is unique when $\bm\Lambda_{\alpha}^{\shur} = \varnothing$.
 %
 %Question: Claim #1 is sufficient, but is it necessary?
 
-\subsection{Sampling without replacement}\label{sec:dsi}
+\pagebreak\subsection{Sampling without replacement}\label{sec:dsi}
 
-Now that we have a reliable method to synthesize admissible completions for strings containing holes, i.e., fix \textit{localized} errors, $S: \mathcal{G} \times (\Sigma\cup\{\varepsilon, \texttt{\_}\})^n \rightarrow \{\Sigma^n\}\subseteq \mathcal{L}(\mathcal{G})$, how can we use $S$ to repair some unparseable string, i.e., $\err{\sigma_1\ldots\:\sigma_n}: \highlight{\Sigma}^n \cap\overline{\mathcal{L}(\mathcal{G})}$ where the holes' locations are unknown? Three questions stand out in particular: how many holes are needed to repair the string, where should we put those holes, and how ought we fill them to obtain a parseable $\tilde{\sigma} \in \mathcal{L}(\mathcal{G})$?
+Now that we have a reliable method to synthesize admissible completions for strings containing holes, i.e., fix \textit{localized} errors, $S: \mathcal{G} \times (\Sigma\cup\{\varepsilon, \_\})^n \rightarrow \{\Sigma^n\}\subseteq \mathcal{L}(\mathcal{G})$, how can we use $S$ to repair some unparseable string, i.e., $\err{\sigma_1\ldots\:\sigma_n}: \highlight{\Sigma}^n \cap\mathcal{L}(\mathcal{G})^\complement$ where the holes' locations are unknown? Three questions stand out in particular: how many holes are needed to repair the string, where should we put those holes, and how ought we fill them to obtain a parseable $\tilde{\sigma} \in \mathcal{L}(\mathcal{G})$?
 
 One plausible approach would be to draw samples with a PCFG, minimizing tree-edit distance, however these are computationally expensive metrics and approximations may converge poorly. A more efficient strategy is to sample string perturbations, $\bm{\sigma}\sim\Sigma^{n\pm q}\cap\Delta_{q}(\err{\sigma})$, from the Levenshtein q-ball centered on $\err{\sigma}$, i.e., the space of all admissible edits with Levenshtein distance $\leq q$, loosely analogous to a finite difference approximation over words in a finite language.
 
 %To implement this strategy, we carefully construct a bijection between Levenshtein edits to a known string and the integers, sample integer vectors without replacement using a characteristic polynomial over a finite field, then decode vectors into repairs using a combinatorial indexing scheme that puts integer vectors into one-to-one correspondence with Levenshtein edits. We find this approach computationally more tractable while yielding a steady stream of admissible edits throughout the solving process, regardless of the grammar or string under repair.
 
-More specifically, we employ a pair of [un]tupling functions $\kappa, \rho: \mathbb{N}^k \leftrightarrow \mathbb{N}$ which are (1) bijective (2) maximally compact (3) computationally tractable (i.e., closed form inverses). $\kappa$ will be used to index $\stirlingii{n}{k}$\footnote[2]{\text{Following Stirling, we use the notation $\stirlingii{n}{d}$ to denote the set of all $d$-element subsets of $\{1,\ldots, n\}$.}}-combinations via the Maculay representation~\cite{knuth2005taocp}. $\rho$ will index $\Sigma^k$ tuples, but is slightly more tricky to define. To maximize compactness, there is an elegant pairing function courtesy of Szudzik~\cite{szudzik2006elegant}, which enumerates concentric square shells over the plane $\mathbb{N}^2$ and can be generalized to hypercubic shells in $\mathbb{N}^k$. For our purposes, this generalization will suffice.
+More specifically, we employ a pair of [un]tupling functions $\kappa, \rho: \mathbb{N}^k \leftrightarrow \mathbb{N}$ which are (1) bijective (2) maximally compact (3) computationally tractable (i.e., closed form inverses). $\kappa$ will be used to index $\stirlingii{n}{k}$\footnote[2]{\text{Following Stirling, we use the notation $\stirlingii{n}{d}$ to denote the set of all $d$-element subsets of $\{1,\ldots, n\}$.}}-combinations via the Maculay representation~\cite{knuth2005taocp} and $\rho$ will index $\Sigma^k$ tuples, but is slightly more tricky to define. To maximize compactness, there is an elegant pairing function courtesy of Szudzik~\cite{szudzik2006elegant}, which enumerates concentric square shells over the plane $\mathbb{N}^2$ and can be generalized to hypercubic shells in $\mathbb{N}^k$. For our purposes, this generalization will suffice.
 
 Although $\langle\kappa, \rho\rangle$ could be used directly to exhaustively search the Levenshtein ball, they are temporally biased samplers due to lexicographic ordering. Rather, we would prefer a path that uniformly visits every fertile subspace of the Levenshtein ball over time regardless of the grammar or string in question: subsequences of $\langle\kappa, \rho\rangle$ should discover valid repairs with frequency roughly proportional to the filtration rate, i.e., the density of the admissible set relative to the Levenshtein ball. These additional constraints give rise to two more criteria: (1) ergodicity and (2) periodicity.
 
@@ -385,11 +492,11 @@ Although $\langle\kappa, \rho\rangle$ could be used directly to exhaustively sea
   \end{minipage}
 \end{wrapfigure}
 
-To achieve ergodicity, we permute the elements of $\stirlingii{n}{k}\times\Sigma^k$ using a finite field with a characteristic polynomial $C$ of degree $m:=\lceil \log_p {n \choose k}|\Sigma_\varepsilon|^k \rceil$. By choosing $C$ to be some irreducible polynomial, one ensures the path has the mixing properties we desire, e.g., suppose $U: \mathbb{Z}_2^{m\times m}$ is a matrix whose structure is depicted to the right, wherein $C$ represents a primitive polynomial over $\mathbb{Z}_2^m$ with known coefficients $C_{1\ldots m}$ and semiring operators $\oplus := + \pmod 2, \otimes := \land, \top := 1, \circ:=0$. Since $C$ is primitive, the sequence $\mathbf{S} = (U^{0 \ldots 2^m-1}V)$ must have \textit{full periodicity}, i.e., for all $i, j \in[0, 2^m)$, ${\mathbf{S}_i = \mathbf{S}_j \Rightarrow i = j}$. To uniformly sample $\bm\sigma$ without replacement, we construct a partial surjective function from the finite field onto the Levenshtein ball, $\mathbb{Z}_2^m\rightharpoonup\stirlingii{n}{d}\times\Sigma_\varepsilon^{d}$, cycle over $\mathbf{S}$, then discard samples which no witness in $\stirlingii{n}{d}\times\Sigma_\varepsilon^{d}$.
+To achieve ergodicity, we permute the elements of $\stirlingii{n}{k}\times\Sigma^k$ using a finite field with a characteristic polynomial $C$ of degree $m\coloneqq\lceil \log_p {n \choose k}|\Sigma_\varepsilon|^k \rceil$. By choosing $C$ to be some irreducible polynomial, one ensures the path has the mixing properties we desire, e.g., suppose $U: \mathbb{Z}_2^{m\times m}$ is a matrix whose structure is depicted to the right, wherein $C$ represents a primitive polynomial over $\mathbb{Z}_2^m$ with known coefficients $C_{1\ldots m}$ and semiring operators $\oplus \coloneqq + \pmod 2, \otimes \coloneqq \land, \top \coloneqq 1, \circ\coloneqq0$. Since $C$ is primitive, the sequence $\mathbf{S} = (U^{0 \ldots 2^m-1}V)$ must have \textit{full periodicity}, i.e., for all $i, j \in[0, 2^m)$, ${\mathbf{S}_i = \mathbf{S}_j \Rightarrow i = j}$. To uniformly sample $\bm\sigma$ without replacement, we construct a partial surjective function from $\mathbb{Z}_2^m$ onto the Levenshtein ball, $\mathbb{Z}_2^m\rightharpoonup\stirlingii{n}{d}\times\Sigma_\varepsilon^{d}$, cycle over $\mathbf{S}$, then discard samples which have no witness in $\stirlingii{n}{d}\times\Sigma_\varepsilon^{d}$.
 
-This procedure requires $\widetilde{\mathcal O}(1)$ per sample and roughly ${n \choose d}|\Sigma_\varepsilon|^{d}$ samples to exhaustively search $\stirlingii{n}{d}\times\Sigma_\varepsilon^{d}$. Its acceptance rate $2^{-m}{n \choose d}|\Sigma_\varepsilon|^{d}$ can be slightly improved with a more suitable base $p$, however this introduces some additional complexity and so we elected to defer this optimization.
+This procedure requires $\widetilde{\mathcal O}(1)$ per sample and roughly ${n \choose d}|\Sigma_\varepsilon|^{d}$ samples to exhaustively search $\stirlingii{n}{d}\times\Sigma_\varepsilon^{d}$. Its acceptance rate $p^{-m}{n \choose d}|\Sigma_\varepsilon|^{d}$ can be slightly improved with a more suitable base $p$, however this introduces some additional complexity and so we elected to defer this optimization.
 
-In addition to its statistically desirable properties, our sampler has the practical benefit of being trivially parallelizable using the leapfrog method, i.e., given $p$ independent processors, each one can independently check $[\langle\kappa, \rho\rangle^{-1}(\mathbf{S}_{i}) \in \mathcal{L}(\mathcal{G})]$ where $i \equiv p_j \pmod p$. This procedure linearly scales with the number of processors, exhaustively searching $\Delta_{q}(\err{\sigma})$ in $p^{-1}$ of the time required by a single processor, or alternately drawing $p$ times as many samples in the same amount of time.
+In addition to its statistically desirable properties, our sampler has the practical benefit of being trivially parallelizable using the leapfrog method, i.e., given $p$ independent processors, each one can independently check $[\varphi^{-1}(\langle\kappa, \rho\rangle^{-1}(\mathbf{S}_{i}), \err{\sigma}) \in \mathcal{L}(\mathcal{G})]$ where $i \equiv p_j \pmod p$. This procedure linearly scales with the number of processors, exhaustively searching $\Delta_{q}(\err{\sigma})$ in $p^{-1}$ of the time required by a single processor, or alternately drawing $p$ times as many samples in the same amount of time.
 
 To admit variable-length edits, we first define a $\varepsilon^+$-production and introduce it to the right- and left-hand side of each terminal in a unit production:\vspace{5pt}
 
@@ -422,7 +529,7 @@ Finally, to sample $\bm{\sigma}\sim\Delta_{q}(\err{\sigma})$, we enumerate templ
     \end{cases}
 \end{align*}
 
-\noindent This approach is tractable for $n \lesssim 100, q \lesssim 3$, however more complex repairs require a more efficient density estimator. We will now discuss an approach that uses an adaptive sampler (Sec.~\ref{sec:holes}) and another based on Levenshtein reachability (Sec.~\ref{sec:levenshtein}).
+\noindent This approach is tractable for $n \lesssim 100, q \lesssim 3$, however more complex repairs require a more efficient density estimator. We will now discuss an approach that uses an adaptive sampler (\S~\ref{sec:holes}).
 
 \subsection{Probabilistic reachability}\label{sec:holes}
 
@@ -432,7 +539,7 @@ Since there are $\Sigma_{d=1}^q{n \choose d}$ total sketch templates, each with 
     \item Retrieve the most recent grammar, $\mathcal{G}$, and string, $\err{\sigma}$, from the editor.
 %    \item Lazily enumerate edit templates, $i_{1\ldots d} \in \stirlingii{n}{d}$, for increasing values of $d \geq 1$.
 %    \item Rerank edit templates according to the distribution $\int\mathcal{F}_\theta(\cdot \mid i_{1\ldots d})d\theta$.
-    \item Sample completions for each template from $\bm{\sigma}_i\sim \stirlingii{n}{d}\times\Sigma^{n\pm q}\cap\Delta_{q}(\err{\sigma})$ WoR using Eq.~\ref{eq:lfsr}.
+    \item Draw samples $\bm{\sigma}_i\sim \stirlingii{n}{d}\times\Sigma^{n\pm q}\cap\Delta_q(\err{\sigma})$ without replacement using Eq.~\ref{sec:dsi}.
     \item Filter completions by admissibility with respect to the grammar, $\bm{\sigma}_i \cap \mathcal{L}_{\mathcal{G}}$.
     \item Rerank admissible repairs by the edit cost model, $C(\err{\sigma}, \tilde{\sigma})$.
     \item Display the top-k repairs by edit cost found within p-seconds to the user.
@@ -460,13 +567,13 @@ Suppose we are given an invalid string, $\err{\sigma}: \Sigma^{90}$ and $\mathca
 %  \node [xshift=142pt, yshift=7pt] {\footnotesize $P_2(X)$};
 %  \node [xshift=227pt, yshift=7pt] {\footnotesize $P_3(X)$};
     \end{tikzpicture}
-    \caption{The distribution $\int\mathcal{F}_{\theta}(\cdot \mid i_{1\ldots d})d\theta$, projected onto the invalid string, suggests edit locations most likely to yield admissible repairs, from which we draw subsets of size $d$.}
+    \caption{The distribution $\int\mathcal{F}_{\theta}(\cdot \mid \sigma)d\theta$, projected onto the invalid string, suggests edit locations most likely to yield admissible repairs, from which we draw subsets of size $d$.}
 \end{figure}
 %
 %Morally, we would prefer sketch templates likely to yield repairs that are (1) admissible (i.e., grammatically correct) and (2) plausible (i.e., likely to have been written by a human author). To do so, we draw holes and rank admissible repairs using a distance metric over $\Delta_q(\err{\sigma})$. One such metric, the Kantorovich--Rubinstein (KR) metric, $\delta_{KR}$, can be viewed as an optimal transport problem minimizing $\Pi(\mu, \nu)$, the set of all mass-conserving transportation plans between two probability distributions $\mu$ and $\nu$ over a metric space $\Omega$:
 %
 %\begin{align}
-%    \delta_{\textsc{KR}}(\mu, \nu) := \inf_{\pi\in \Pi(\mu, \nu)}\int_{\Omega\times \Omega} \delta(x, y)d\pi(x, y)
+%    \delta_{\textsc{KR}}(\mu, \nu) \coloneqq \inf_{\pi\in \Pi(\mu, \nu)}\int_{\Omega\times \Omega} \delta(x, y)d\pi(x, y)
 %\end{align}
 
 More specifically in our setting, we want to sample from a discrete product space that factorizes into (1) the specific edit locations (e.g., informed by caret position, historical edit locations, or a static analyzer), (2) probable completions (e.g., from a Markov chain or neural language model) and (3) an accompanying \textit{cost model}, $C: (\Sigma^* \times \Sigma^*) \rightarrow \mathbb{R}$, which may be any number of suitable distance metrics, such as language edit distance, finger travel distance on a physical keyboard, weighted Levenshtein distance, or stochastic contextual edit distance~\cite{cotterell+al.acl14} in the case of probabilistic edits. Our goal then, is to discover repairs which minimize $C(\err{\sigma}, \tilde{\sigma})$, subject to the given grammar and latency constraints.
@@ -503,7 +610,7 @@ More specifically in our setting, we want to sample from a discrete product spac
 
 Suppose we have a string, \texttt{\err{a ( b}}, and discover the patch, $\tilde{\sigma}=$ \texttt{\hlgreen{(} a \hlorange{+} b \hlgreen{)}}. Although $\tilde{\sigma}$ is syntactically admissible, it is not minimal. To minimize a patch, we consider the set of all of its constituent subpatches, namely, \texttt{\err{\hlgreen{(} a \hlorange{+} b}}, \texttt{\err{\hlgreen{(} a ( b \hlgreen{)}}}, \texttt{\err{a \hlorange{+} b \hlgreen{)}}}, \texttt{\err{\hlgreen{(} a ( b}}, \texttt{a \hlorange{+} b}, and \texttt{a \hlgreen{(} b \hlgreen{)}}, then retain only the smallest syntactically valid instance(s) by Levenshtein distance. This forms a so-called \textit{patch powerset}, which can be lazily enumerated from the top-down using the Maculay representation, after which we take all valid elements from the lowest level containing at least one admissible element, i.e., \texttt{a \hlorange{+} b} and \texttt{a \hlgreen{(} b \hlgreen{)}}. When patches are very large, minimization can be used in tandem with the delta debugging technique~\cite{zeller2002isolating} to first simplify contiguous edits, then apply the patch powerset construction. Minimization is often useful for estimating the language edit distance: given a single valid repair of arbitrary size, minimization lets us quickly approximate an upper-bound on $\Delta(\err{\sigma}, \ell)$ -- much tighter than indicated by Lemma~\ref{lemma:upper-bound}.
 
-\section{Parsing}
+\section{Parsing}\label{sec:parsing}
 
 Although parsing is not the primary objective of this work, it is an integral component of the repair process, and one of the advantages of using a matrix representation is its excellent error recovery properties. Unlike traditional parsers which fail on a error, matrix-based parsers support parsing invalid strings. In this section, we will describe how to parse strings using matrix powering, and how those results inform the repair process.
 
@@ -515,7 +622,7 @@ Although parsing is not the primary objective of this work, it is an integral co
 Our parser emits a binary forest consisting of parse trees for the candidate string which are constructed bottom-up using a variant of $\otimes$ called $\hat{\otimes}$, which simply records backpointers:
 
 \begin{align}
-  X\:\hat{\otimes}\:Z := \big\{\;w\hphantom{.}^{\nearrow}_{\searrow}\nobarfrac{x}{z} \mid \langle x, z\rangle \in X \times Z, (w\rightarrow xz) \in P\;\big\}
+  X\:\hat{\otimes}\:Z \coloneqq \big\{\;w\hphantom{.}^{\nearrow}_{\searrow}\nobarfrac{x}{z} \mid \langle x, z\rangle \in X \times Z, (w\rightarrow xz) \in P\;\big\}
 \end{align}
 
 Due to Chomsky normalization however, the resulting forests are full of trees that are thin and crooked. To restore the natural shape of the tree, we first construct the parse forests bottom-up, then prune away synthetic nonterminals top-down by recursively grafting denormalized grandchildren onto the root. This transformation is purely cosmetic and only used when rendering the parse trees.
@@ -580,10 +687,12 @@ The process of parsing the string $S + S = S$ by matrix powering is depicted bel
     \includegraphics[width=3.298cm]{../figures/parse2.png}
     \includegraphics[width=3.3cm]{../figures/parse3.png}
     \includegraphics[width=3.32cm]{../figures/parse4.png}
-  \caption{The parse forest for the string $S + S = S$ is constructed incrementally by computing $M^2 + M = M$.}
+  \caption{The parse forest for the string $S + S = S$ is constructed incrementally by computing $M_\sigma^2 + M_\sigma = M_\sigma$.}
 \end{figure}
 
-Our algorithm produces set of concrete syntax trees (CSTs) for a given valid string. Otherwise, if the string is invalid, the algorithm generates a set of admissible corrections, alongside their CSTs.
+Our algorithm produces set of concrete syntax trees (CSTs) for a given valid string. Otherwise, if the string is invalid, the algorithm generates a set of admissible corrections, alongside their CSTs. The fixpoint search is sure to converge in at most $|\sigma| - 1$ steps, as each iteration will solve for a single diagonal of the matrix, each entry of which may contain up to $|V_\varepsilon|$ rooted subtrees.
+
+In the case of repair where entries are SAT variables, we can encode the equivalence relation $\varphi[M_\sigma=M_\sigma^2]$ directly, instead of solving the fixed point iteratively. Instead of trying to decode the trees directly from the SAT solver, the satisfying models are decoded as strings then fed back into the parser to obtain the parse forest, which is guaranteed to exist if the system is satisfiable.
 
 \pagebreak\subsection{Incrementalization}\label{sec:incrementalization}
 
@@ -596,9 +705,9 @@ Our algorithm produces set of concrete syntax trees (CSTs) for a given valid str
 
 When a parsed string is altered, we can reuse prior work by only recomputing affected submatrices, yielding a reparser whose complexity is location-dependent, i.e., at worst quadratic in terms of $|\Sigma^*|$ assuming $\mathcal{O}(1)$ cost for each CNF-nonterminal subset join, $V_1'\otimes V_2'$. Letting shaded nodes represent observed or bound variables and unshaded nodes as free variables, we depict the worst-case post-editing state of the parse trellis in Fig.~\ref{fig:incremental}.
 
-The problem of incremental parsing is closely related to \textit{dynamic matrix inversion} in the linear algebra setting, and \textit{incremental transitive closure} with vertex updates in the graph setting. By carefully encoding the matrix relation from Sec.~\ref{sec:matrix} and employing an incremental SAT solver, we can gradually update SAT constraints as new keystrokes are received to eliminate redundancy.
+The problem of incremental parsing is closely related to \textit{dynamic matrix inversion} in the linear algebra setting, and \textit{incremental transitive closure} with vertex updates in the graph setting. By carefully encoding the matrix relation from \S~\ref{sec:matrix} and employing an incremental SAT solver, we can gradually update SAT constraints as new keystrokes are received to eliminate redundancy.
 
-We can use an incremental SAT solver to encode the constraints. To do so, we encode the matrix equivalence relation and use the incremental SAT solver to update the constraints as new keystrokes are received. The incremental SAT solver will eliminate redundancy as it is introduced. Once a solution is found, we can use the algorithm from Sec.~\ref{sec:denormalization} to recover the parse tree, then introduce a new constraint to block the solution and continue searching for other solutions.
+We can use an incremental SAT solver to encode the constraints. To do so, we encode the matrix equivalence relation and use the incremental SAT solver to update the constraints as new keystrokes are received. The incremental SAT solver will eliminate redundancy as it is introduced. Once a solution is found, we can use the algorithm from \S~\ref{sec:denormalization} to recover the parse tree, then introduce a new constraint to block the solution and continue searching for other solutions.
 
 \subsection{Error Recovery}\label{sec:error}
 
@@ -752,21 +861,21 @@ There is related work on string constraint solving in the constraint programing 
 
 \subsection{Error Correction}
 
-Our work focuses on errors arising from human factors in computer programming, in particular \textit{syntax error correction}, which is the problem of fixing partially corrupted programs. Modern research on error correction however can be traced back to the early days of coding theory, when researchers designed \textit{error-correcting codes} (ECCs) to denoise transmission errors induced by external interference, e.g., collision with a high-energy proton, manipulation by an adversary or even typographical mistake. In this context, \textit{code} can be any logical representation for communicating information between two parties (such as a human and a computer), and an ECC is a carefully-designed which ensures that even if some portion of the message should become corrupted, one can still recover the original message by solving a linear system of equations. When designing ECCs, one typically assumes a noise model over a certain event space, such as the Hamming~\cite{titsias2017hamming, dong2023number} or Levenshtein~\cite{becerra2008learning, barlev2021levenshtein} balls, from which we draw inspiration for our work.
+Our work focuses on errors arising from human factors in computer programming, in particular \textit{syntax error correction}, which is the problem of fixing partially corrupted programs. Modern research on error correction, however, can be traced back to the early days of coding theory when researchers designed \textit{error-correcting codes} (ECCs) to denoise transmission errors induced by external interference, e.g., collision with a high-energy proton, manipulation by an adversary or even typographical mistake. In this context, \textit{code} can be any logical representation for communicating information between two parties (such as a human and a computer), and an ECC is a carefully-designed which ensures that even if some portion of the message should become corrupted, one can still recover the original message by solving a linear system of equations. When designing ECCs, one typically assumes a noise model over a certain event space, such as the Hamming~\cite{titsias2017hamming, dong2023number} or Levenshtein~\cite{becerra2008learning, barlev2021levenshtein} balls, from which we draw inspiration for our work.
 
-\section{Experimental Setup}
+\section{Experimental Setup}\label{sec:experiments}
 
 To evaluate our model, we primarily use two datasets. We first evaluate it on 5,600 pairs of (broken, fixed) Python code snippets from Wong et al.'s StackOverflow dataset~\cite{wong2019syntax} shorter than 40 lexical tokens, whose minimized patch sizes shorter than four lexical tokens ($|\Sigma| = 50, |\err{\sigma}| < 40, \Delta(\err{\sigma}, \ell) < 4$). Minimization uses the Delta debugging~\cite{zeller2002isolating} technique to isolate the smallest lexical patch that repairs a broken Python snippet.
 
 In the first set of experiments, we uniformly sample without replacement from the Levenshtein edit ball using a LFSR over $\mathbb{Z}_2^n$, and measure the Precision@k of our repair procedure against human repairs of varying edit distances and latency cutoffs. This provides a baseline for the relative density of the admissible set, and an upper bound on the latency of attaining a given precision.
 
-In the second set of experiments, we use an adaptive sampler that stochastically resamples using a Chinese Restaurant Process (CRP). With this technique, repairs are scored and placed into a ranked cache, and new edits are sampled with exponentially decaying probability relative to their perplexity and additive noise is introduced. Initially, the sampler draws uniformly but is gradually biased towards the most likely repairs.
+In the second set of experiments, we use an adaptive sampler that stochastically resamples edits using a Dirichlet process. Repairs are scored and placed into a ranked buffer, from which new edits are resampled with frequency relative to their perplexity, and additive noise is introduced. Initially, the sampler draws uniformly but is gradually biased towards more likely repairs.
 
 To train the adaptive sampler we use a length-5 variable-order Markov (VOM) chain on 55 million StackOverflow tokens from the BIFI~\cite{yasunaga2021break} dataset, which takes roughly 10 minutes on 40 Intel Skylake cores running at 2.4 GHz. Sequences are scored using negative log likliehood with Laplace smoothing, or Levenshtein edits when no dataset is available. Evaluation measures the Precision@\{1, 5, 10, All\} for samples at varying latency cutoffs.
 
 Both sets of experiments use 40 Intel Skylake cores, running at 2.4 GHz, with 16 GB of RAM. We measure the precision on an exact lexical match abstract repair, following the Seq2Parse~\cite{sakkas2022seq2parse} evaluation, and give a baseline for their approach on the same dataset. Unlike Seq2Parse, our approach does not require a training corpus, and can be used to repair arbitrary context-free and linear conjunctive languages.
 
-\subsection{Uniform Sampling Benchmark}\label{sec:human}
+\subsection{Uniform Sampling benchmark}\label{sec:human}
 
 Below, we plot the results of a human repair benchmark measuring the Precision@k of our repair procedure against human repairs of varying edit distances and latency cutoffs.% across 1233 distinct Python snippets $(\Delta_1 = 649, \Delta_2 = 384, \Delta_3 = 200)$ from the StackOverflow dataset~\cite{wong2019syntax}.
 
@@ -837,7 +946,19 @@ In the following benchmark, we measure the Precision@k of our repair procedure a
 \caption{Adaptive sampling repairs. The red line indicates Seq2Parse precision@1 on the same dataset. Since it only supports generating one repair, we do not report precision@k or the intermediate latency cutoffs.}\label{fig:adaptive}
 \end{figure}
 
-\subsection{Latency Benchmark}\label{sec:latency}
+\subsection{Throughput benchmark}
+
+\begin{wrapfigure}{r}{0.4\textwidth}
+  \vspace{-10pt}
+  \resizebox{.4\textwidth}{!}{\input{throughput.tex}}
+  \label{fig:throughput}
+\end{wrapfigure}
+
+We evaluate throughput by sampling edits across invalid strings of varying length, measuring the total number of syntactically valid strings discovered, and the human patch size. Each trial is terminated after 10 seconds, and the experiment is repeated across 7.3k total repairs.
+
+While the sampler is able to saturate the admissible set for 1- and 2-edit repairs before the timeout elapses, 3-edit throughput is heavily constrained by compute around 16 lexical tokens, when Python's Levenshtein ball has a volume of roughly $6\times 10^8$ edits. This bottleneck can be relaxed with a longer timeout or additional CPU cores. Despite the high computational cost of sampling multi-edit repairs, our Precision@All remains competitive with the Seq2Parse baseline at the same latency.
+
+\subsection{Synthetic repair benchmark}\label{sec:latency}
 
 In the following benchmarks, we measure the wall clock time required to synthesize solutions to length-50 strings sampled from various Dyck languages, where Dyck-n is the Dyck language containing n different types of balanced parentheses.
 
@@ -907,8 +1028,6 @@ error bars/y explicit
 \end{figure}
 
 \noindent In the second experiment, we sample a random valid string as before, but delete p tokens at random and rather than provide the location(s), ask our model to solve for both the location(s) and repair by sampling uniformly from all n-token HCs, then measure the total time required to decode the first admissible repair. Note the logarithmic scale on the y-axis.
-
-\subsection{Accuracy Benchmark}
 
 In the following benchmark, we analyze bracketing errors in a dataset of Java and Python code snippets mined from open-source repositories on GitHub. For Java, we sample valid single-line statements with bracket nesting more than two levels deep, synthetically delete one bracket uniformly at random, repair using Tidyparse\footnote{Using the Dyck-n grammar augmented with \texttt{D1} {\color{blue}\texttt{->}} \texttt{w} {\color{blue}\texttt{|}} \texttt{D1}. Contiguous non-bracket tokens are substituted with a single placeholder token, \texttt{w}, and restored verbatim after bracket repair.}, then take the top-1 repair after $t$ seconds, and validate using ANTLR's Java 8 parser.
 
@@ -1007,17 +1126,18 @@ error bars/y explicit
 
 While error correction with a few errors is tolerable, latency can vary depending on many factors including string length and grammar size. If errors are localized to the beginning or end of a string, then latency is typically below 500ms. We observe that errors are typically concentrated nearby historical edit locations, which can be retrieved from the IDE or version control.
 
-Tidyparse in its current form has a number of technical shortcomings: firstly it does not incorporate any neural language modeling technology at present, an omission we hope to address in the near future. Training a language model to predict likely repair locations and rank admissible results could lead to lower overall latency and more natural repairs.
+The primary advantage and limitation of our tool is the Levenshtein edit distance supported. This is an advantage, because in the absence of any contextual or statistical information, syntax and Levenshtein edits are often sufficiently constrained to determine a small number of valid repairs. This is also a limitation, because as the number of edits grows, the admissible set grows rapidly and the number of valid repairs may become too large to be useful depending on the language and snippet under repair.
+
+Tidyparse in its current form has several other technical shortcomings: firstly it does not incorporate any neural language modeling technology at present, an omission we hope to address in the near future. Training a language model to predict likely repair locations and rank admissible results could lead to lower overall latency and more natural repairs. We also hope to explore the use of Metropolis-Hastings sampling to generate a diverse set of repairs, which could be useful for code completion and other applications.
 
 Secondly, our current method generates sketch templates using a na\"ive enumerative search, feeding them individually to the SAT solver, which has the tendency to duplicate prior work and introduces unnecessary thrashing. Considering recent extensions of Boolean matrix-based parsing to linear context-free rewriting systems (LCFRS)~\cite{cohen2016parsing}, it may be feasible to search through these edits within the SAT solver, leading to yet unrealized and possibly significant speedups.
 
-Lastly and perhaps most significantly, Tidyparse does not incorporate any semantic constraints, so its repairs whilst syntactically admissible, are not guaranteed to be semantically valid. We note however, that it is possible to encode type-based semantic constraints into the solver and intend to explore this direction more fully in future work.
+Lastly and perhaps most significantly, Tidyparse does not incorporate any semantic constraints, so its repairs whilst syntactically admissible, are not guaranteed to be semantically valid. This can be partly alleviated by filtering the results through an incremental compiler or linter, however the latency introduced may be non-negligible. It is also possible to encode type-based semantic constraints into the solver and intend to explore this direction more fully in future work.
 
-Not only is linear algebra over finite fields an expressive language for inference, but also an efficient framework for inference on languages themselves. We illustrate a few of its applications for parsing incomplete strings and repairing syntax errors in context- free and sensitive languages. In contrast with LL and LR-style parsers, our technique can recover partial forests from invalid strings by examining the structure of $M^*$ and handles arbitrary context-free languages. In future work, we hope to extend our method to more natural grammars like PCFG and LCFRS.
 
 We envision three primary use cases: (1) helping novice programmers become more quickly familiar with a new programming language (2) autocorrecting common typos among proficient but forgetful programmers and (3) as a prototyping tool for PL designers and educators. Featuring a grammar editor and built-in SAT solver, Tidyparse helps developers navigate the language design space, visualize syntax trees, debug parsing errors and quickly generate simple examples and counterexamples for testing. %Although the algorithm may seem esoteric at first glance, in our experience it is much more interpretable than classical parsers, which exhibit poor error-recovery and diagnostics.
 
-\section{Conclusion}
+\section{Conclusion}\label{sec:conclusion}
 
 The great compromise in program synthesis is one of efficiency versus expressiveness: the more expressive a language, the more concise and varied the programs it can represent, but the harder those programs are to synthesize without resorting to domain-specific heuristics. Likewise, the simpler a language is to synthesize, the weaker its concision and expressive power.
 
@@ -1026,6 +1146,8 @@ Most existing work on program synthesis focus on general $\lambda$-calculi, or v
 The second great compromise in program synthesis is that of reusability versus specialization. In programming, as in human affairs, there is a vast constellation of languages, each requiring specialized generators and interpreters. Are these languages truly irreconcilable? Or, as Noam Chomsky argues, are these merely dialects of a universal language? \textit{Synthesis} then, might be a misnomer, and more aptly called \textit{recognition}, in the analytic tradition.
 
 In our work, we argue these two compromises are not mutually exclusive, but complementary and reciprocal. Programs and the languages they inhabit are indeed synthetic, but can be analyzed and reused in the metalanguage of context-free grammars closed under conjunction. Not only does this admit an efficient synthesis algorithm, but allows users to introduce additional constraints without breaking compositionality, one of the most sacred tenets in programming language design.
+
+Not only is linear algebra over finite fields an expressive language for inference, but also an efficient framework for inference on languages themselves. We illustrate a few of its applications for parsing incomplete strings and repairing syntax errors in context- free and sensitive languages. In contrast with LL and LR-style parsers, our technique can recover partial forests from invalid strings by examining the structure of $M^*$ and handles arbitrary context-free languages. In future work, we hope to extend our method to more natural grammars like PCFG and LCFRS.
 
 Furthermore, we argue it is possible to improve the efficiency of human programmers without sacrificing expressiveness by considering latency to synthesize an acceptable completion. In contrast with program synthesizers that require intermediate programs to be well-formed, our synthesizer is provably sound and complete up to a Levenshtein distance bound, and attempts to minimize total edits, but does not impose any constraints on the code itself being written.
 
@@ -1037,14 +1159,14 @@ From a practical standpoint, we have implemented our approach as an IDE plugin a
 
 \appendix
 
-\section{Example Repairs}
+\pagebreak\section{Example Repairs}
 
 We give some example human repairs that were correctly predicted from the StackOverflow dataset.
 
 \begin{figure}[H]
   \begin{center}
     \begin{tabular}{|m{6.5cm}|m{6.5cm}|}
-      \hline \rule{0pt}{2.5ex}\textbf{Original method}\rule[-1ex]{0pt}{2ex} &  \rule{0pt}{2.5ex}\textbf{Fixed Repair}\rule[-1ex]{0pt}{2ex} \\\hline
+      \hline \rule{0pt}{2.5ex}\textbf{Original method}\rule[-1ex]{0pt}{2ex} &  \rule{0pt}{2.5ex}\textbf{Human repair}\rule[-1ex]{0pt}{2ex} \\\hline
       \begin{lstlisting}[basicstyle=\ttfamily\lst@ifdisplaystyle\footnotesize\fi, language=kotlin]
 
   (*@\hlorange{form}@*) sympy import *
