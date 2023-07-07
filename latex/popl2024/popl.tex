@@ -257,7 +257,7 @@ Let $\underline\Sigma \coloneq \Sigma \cup \{\_\}$, where holes denote free vari
   }
 \end{figure}
 
-\noindent where $\mathcal{V}$ is a function $\mathbb{Z}_2^{|V|}\rightarrow\mathbb{Z}_2$. Note that while always possible to encode $\mathbb{Z}_2^{|V|} \rightarrow \mathcal{V}$ using the identity function, an arbitrary $\mathcal{V}$ might have zero, one, or in general, multiple solutions in $\mathbb{Z}_2^{|V|}$. In practice, this means that a language equation can be unsatisfiable or underconstrained, however if a solution exists, it can always be decoded into a valid sentence and parse forest in the language.
+\noindent where $\mathcal{V}$ is a function $\mathbb{Z}_2^{|V|}\rightarrow\mathbb{Z}_2$. Note that while always possible to encode $\mathbb{Z}_2^{|V|} \rightarrow \mathcal{V}$ using the identity function, an arbitrary $\mathcal{V}$ might have zero, one, or in general, multiple solutions in $\mathbb{Z}_2^{|V|}$. In practice, this means that a language equation can be unsatisfiable or underconstrained, however if a solution exists, it can always be decoded into a valid sentence in the language $\mathcal{L}(\mathcal{G})$.
 
 So far, we have only considered the syntactic theory of breadth-bounded CFLs with holes, however, our construction can be easily extended to handle the family of CFLs closed under conjunction. The additional expressivity afforded by the language conjunction will be indispensable when considering more practical program repair scenarios that may not be context-free.
 
@@ -373,38 +373,26 @@ Let $G(\err{\sigma}: \Sigma^*, d: \mathbb{N}^+) \mapsto \mathbb{G}$ be the speci
 
 \subsection{Tensor sparsification}
 
-Although we can encode $[\mathcal{M}_\sigma = \mathcal{M}^2_\sigma]$ explicitly, na\"ively encoding the formula as a dense constraint system is highly suboptimal. A considerably more sparse but logically equivalent representation can be achieved by analyzing the structure of the grammar and string in question. For starters, we can always ignore all lower-triangular comparisons $\{\mathcal{M}_{ij} \mid i \geq j\}$. Since we are typically interested in strings with some bound variables, $\{\sigma: (\Sigma \cup \{\_\})^* \mid \exists i.\sigma_i \in \Sigma\}$, there will also be many upper-triangular nonterminals $\langle v, i, j\rangle \subset V\times\{i, j \mid 0 \leq i \leq j \leq |\sigma|)\}$ that are incompatible with the surrounding structure, i.e., which cannot influence $[S \in \Lambda_\sigma^*]$ based on neighboring entries regardless of which values they assume. By analyzing the grammar and upper-triangular structure of $\mathcal{M}_\sigma$, it is often possible to avoid many elementwise comparisons in the equivalence relation.
+Although we can encode $[\mathcal{M}_\sigma = \mathcal{M}^2_\sigma]$ explicitly, na\"ively encoding the formula as a dense constraint system is highly suboptimal. A considerably more sparse but logically equivalent representation can be achieved by analyzing the structure of the grammar and string in question. For starters, we can always ignore all lower-triangular comparisons $\{\mathcal{M}_{ij} \mid i \geq j\}$. Since we are typically interested in strings with some bound variables, $\{\sigma: \underline\Sigma^* \mid \exists i.\sigma_i \in \Sigma\}$, there will also be many upper-triangular nonterminals $\langle v, i, j\rangle \subset V\times\{i, j \mid 0 \leq i \leq j \leq |\sigma|)\}$ that are incompatible with $\sigma$, i.e., which cannot influence $[S \in \Lambda_\sigma^*]$ based on neighboring entries regardless of which values they assume. By analyzing the grammar and upper-triangular structure of $\mathcal{M}_\sigma$, it is often possible to avoid many elementwise comparisons in the equivalence relation.
 
 \begin{definition}[Impossible nonterminals]
-  Given $\sigma: \underline\Sigma^*$ and $\mathcal{G}: \mathbb{G}$, an impossible nonterminal is a triple $\langle v, i, j\rangle: V\times\{i, j \mid 0 \leq i \leq j \leq |\sigma|)\}$ such that $\forall \sigma': \Sigma^{j-i}, \sigma' \in \text{H}(\sigma_i\ldots\sigma_j) \implies v\notin\Lambda^*_{\sigma'}$.
+  Given $\sigma: \underline\Sigma^*$ and $\mathcal{G}: \mathbb{G}$, an impossible nonterminal is a triple $\langle v, i, j\rangle: V\times\{i, j \mid 0 \leq i \leq j \leq |\sigma|)\}$ such that $\forall \sigma': \Sigma^{j-i}, \sigma' \in \text{H}(\sigma_{i\ldots j }) \implies v\notin\Lambda^*_{\sigma'}$.
 \end{definition}
-
-%Given $\mathcal{G}: \mathbb{G}$, the nonterminal cover of $v: V$ is the set of all nonterminals $v$ can derive by zero or more applications of the production rules in $\mathcal{G}$. Formally,
-
-%\begin{definition}[Nonterminal cover]
-%The nonterminal cover of $v$, denoted $C(v)$, is defined as:
-%
-%  \[
-%    \text{C}(v) = \{ u \in V : v \Rightarrow^*_{\mathcal{G}} X_1uX_2, \text{ for some } X_1, X_2 \in (V \cup \Sigma)^* \}
-%  \]
-%
-%where $\Rightarrow^*_{\mathcal{G}}$ denotes the reflexive transitive closure of the relation $\Rightarrow_{\mathcal{G}}$ defined by the production rules of $\mathcal{G}$.
-%\end{definition}
-%
-%In this revised definition, $X_1$ and $X_2$ denote any strings in $(V \cup \Sigma)^*$. Hence, $\text{NC}(v)$ includes all nonterminal symbols $u$ that can appear anywhere in a string derived from $v$.
 
 \begin{definition}[Terminal closure]
-  Let $\Rightarrow^*_\mathcal{G}$ be the reflexive transitive closure defined in the usual way.
-  The terminal closure, denoted $\text{T}(v)$, is the set $\{\sigma: \Sigma \mid \exists\:\alpha, \beta: (V\cup\Sigma)^*, v \Rightarrow^*_\mathcal{G} \alpha \sigma \beta\}$.
+  Let $\Rightarrow^*_\mathcal{G}$ be the reflexive transitive closure under $\mathcal{G}$ defined in the usual way. The terminal closure, denoted $T(v)$, is the set $\{\sigma: \Sigma \mid \exists\:\alpha, \beta: (V\cup\Sigma)^*, v \Rightarrow^*_\mathcal{G} \alpha \sigma \beta\}$.
 \end{definition}
-
-Let $p: \underline\Sigma^*\rightarrow\mathbb{N}^{|\Sigma|}$ be the Parikh vector~\cite{parikh1966context} over some string. We define the Parikh image of as the set of all terminals indexed by a nonzero element of the Parikh vector. More formally,
 
 \begin{definition}[Parikh image]
-  We define the Parikh image of a porous string $\sigma: \underline\Sigma^*$, as $\Pi(\sigma)\coloneq\{v \in V \mid 0 < p(\sigma)[v]\}$ and the minimal Parikh image, $\Pi^*(\sigma)\coloneqq \max_{\sigma' \in \text{H}(\sigma)}\Pi(\sigma')$.
+  Let $\pi: \underline\Sigma^*\rightarrow\mathbb{N}^{|\Sigma|}$ be the Parikh vector~\cite{parikh1966context}, which counts the number of times each terminal appears in a string. We define the Parikh image as the set of all terminals indexed a nonzero element of the Parikh vector, i.e.,
+$\Pi(\sigma:\underline\Sigma^*) \coloneq \{\sigma': \Sigma \mid 0 < \pi(\sigma)[\sigma']\}$. %Ordered by inclusion, the set of all minimal Parikh images, $\Pi^*(\sigma)\coloneqq \min_{\bm\sigma : 2^V \mid \forall \sigma' \in \bm\sigma \sigma' \in \text{H}(\sigma) \text{ and } }$ forms a partial order.
 \end{definition}
 
-We can underapproximate the set of impossible nonterminals for a candidate triple $\langle v, i, j\rangle$ by computing the minimal Parikh image of $\sigma_i\ldots\sigma_j$, and comparing it with the terminal closure of $v$ under $\mathcal{G}$. If the terminal closure is not a cover of the minimal Parikh image, then the triple is impossible. We leave the exercise of computing the minimal Parikh image to the reader.
+\begin{lemma}
+  Given $\sigma, \mathcal{G}, \langle v, i, j \rangle$, then $\Pi(\sigma_{i\ldots j}) \not\subseteq T(v)$ implies $v\not\Rightarrow^* \sigma_{i\ldots j}$ and $\langle v, i, j \rangle$ is impossible.
+\end{lemma}
+
+We overapproximate set of possible nonterminals by eliminating impossible nonterminal triples $\langle v, i, j \rangle$. If we compare the minimal Parikh image of $\sigma_{i\ldots j}$ with the terminal closure of $v$ under $\mathcal{G}$ and $T(v)$ does not cover the Parikh image, then $\sigma_{i\ldots j}$ cannot derive $v$ and it may be safely ignored.
 
 \subsection{Coarsening and simplification}
 
@@ -452,7 +440,7 @@ More formally, given an arbitrary (potentially ambiguous) context free grammar $
 Let $T_\alpha$ denote the set of all parse trees that are generated by the string $\alpha$ using $\mathcal{G}$, and consider $\mathbf{T}_{\alpha}$, the union of all parse trees and their subtrees that (1) can be generated by $\beta\alpha\gamma$ using $\mathcal{G}$ for arbitrary $\beta, \gamma \in \Sigma^\ast$, and (2) have a leaf in $\alpha$. We call the parse forest $T_\alpha$ \textit{isolated} iff $\forall t \in \mathbf{T}_{\alpha}\exists t' \in T_\alpha$, such that $t$ is either a subtree of $t'$, or $t'$ is a proper subtree of $t$.
 \end{definition}
 
-If we can identify an $\alpha: \Sigma$ where $\alpha = \sigma_i\ldots\sigma_j$ for some $i, j: \mathbb{N}^{<|\sigma|}$, such that $\alpha$ has an isolated parse forest, then we can safely replace $\sigma_i\ldots\sigma_j \mapsto \Lambda_\alpha^*$. For bounded-length strings, this can be solved by padding $\alpha$ with adjacent holes $(\_)^n\alpha(\_)^n$ for sufficiently large $n$, and checking $\bm\Lambda_{\alpha}^{\shur}$, the union of all right- and left-quotients of $\alpha$ for emptiness, i.e., $[\varnothing = \bm\Lambda_{\alpha}^\shup\cup\bm\Lambda_{\alpha}^\shri]$. A general solution for arbitrary CFGs, $\mathcal{G}: \mathbb{G}$ and $\beta, \gamma \in \Sigma^\ast$ is more difficult, but would greatly extend the context window and remove the need for ad hoc preprocessing. We leave this as an open problem for future work.
+If we can identify an $\alpha: \Sigma$ where $\alpha = \sigma_{i\ldots j}$ for some $i, j: \mathbb{N}^{<|\sigma|}$, such that $\alpha$ has an isolated parse forest, then we can safely replace $\sigma_{i\ldots j} \mapsto \Lambda_\alpha^*$. For bounded-length strings, this can be solved by padding $\alpha$ with adjacent holes $(\_)^n\alpha(\_)^n$ for sufficiently large $n$, and checking $\bm\Lambda_{\alpha}^{\shur}$, the union of all right- and left-quotients of $\alpha$ for emptiness, i.e., $[\varnothing = \bm\Lambda_{\alpha}^\shup\cup\bm\Lambda_{\alpha}^\shri]$. A general solution for arbitrary CFGs, $\mathcal{G}: \mathbb{G}$ and $\beta, \gamma \in \Sigma^\ast$ is more difficult, but would greatly extend the context window and remove the need for ad hoc preprocessing. We leave this as an open problem for future work.
 %
 %Claim #1: The parse forest for $\alpha$ is unique when $\bm\Lambda_{\alpha}^{\shur} = \varnothing$.
 %
