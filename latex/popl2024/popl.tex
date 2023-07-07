@@ -234,17 +234,17 @@ Details of the bisimilarity between parsing and matrix multiplication can be fou
 
 \subsection{Parsing with holes}
 
-Valiant's algorithm can be abstracted by lifting it into the domain of linear equations over finite fields, where each bitvector in the upper triangular matrix instead contains polynomials whose solutions identify nonterminals participating in the parse forest of a \textit{porous string} on the superdiagonal (our work). This interpretation of Valiant's algorithm as an equational theory offers a novel polytime reduction from language equations onto XORSAT. More formally, we solve the following problem:% e.g., langauge membership, langauge quotient, and reachability
+Valiant's algorithm can be abstracted by lifting it into the domain of linear equations over finite fields, where each bitvector in the upper triangular matrix instead contains polynomials whose solutions identify nonterminals participating in the parse forest of a \textit{porous string} on the superdiagonal (our work). This interpretation of Valiant's algorithm as an equational theory offers a novel polynomial reduction from language equations onto XORSAT. More formally, we solve the following problem:% e.g., langauge membership, langauge quotient, and reachability
 
 \begin{definition}[Hole subsumption]
   Let $\underline\Sigma \coloneqq \Sigma \cup \{\_\}$, where $\_$ represents a hole. We denote $\sqsubseteq: \underline\Sigma^n \times \Sigma^n$ as the relation $\{\langle\sigma, \sigma'\rangle \mid \sigma_i \in \Sigma \implies \sigma_i = \sigma_i'\}$ and the set of all $\{\sigma' \mid \sigma' \sqsubseteq \sigma\}$ as $\text{H}(\sigma)$.
 \end{definition}
 
 \begin{definition}[Parsing with holes]
-Let $\underline\Sigma \coloneq \Sigma \cup \{\_\}$, whose holes denote free variables. Given a CFG, $\mathcal{G}: \mathbb{G}$, and a \textit{porous string}, $\sigma: \underline\Sigma^{n-1}, n: \mathbb{N}^{\geq 3}$, it is possible to extract the set $\text{H}(\sigma)\cap\mathcal{L}(\mathcal{G})$ by constructing a bijective function $\varphi: 2^{\underline V} \leftrightarrow (\mathbb{Z}_2^{|V|}\rightarrow\mathbb{Z}_2)$ to encode an idempotent matrix over a finite field, $\mathcal{M}\coloneqq (\mathbb{Z}_2^{|V|}\rightarrow\mathbb{Z}_2^{|V|})^{n \times n}$, whose fixedpoints $[\mathcal{M}_\sigma = \mathcal{M}_\sigma^2]$ represent all $\sigma' \in \text{H}(\sigma)\cap\mathcal{L}(\mathcal{G})$.
+Let $\underline\Sigma \coloneq \Sigma \cup \{\_\}$, where holes denote free variables over $\Sigma$. Given a CFG, $\mathcal{G}: \mathbb{G}$, and a \textit{porous string}, $\sigma: \underline\Sigma^{n-1}, n: \mathbb{N}^{\geq 3}$, let us define $A(\sigma, \mathcal{G})\coloneqq\text{H}(\sigma)\cap\mathcal{L}(\mathcal{G})$. We can extract $A(\sigma, \mathcal{G})$ by encoding $\langle\sigma, \mathcal{G}\rangle$ as an idempotent matrix, $\mathcal{M}_\sigma\coloneqq (\mathbb{Z}_2^{|V|}\rightarrow\mathbb{Z}_2^{|V|})^{n \times n}$, and solving for its fixedpoints $[\mathcal{M}_\sigma = \mathcal{M}_\sigma^2]$, which are then decoded into $\sigma' \in A(\sigma, \mathcal{G})$.
 \end{definition}
 
-\noindent The precise encoding is immaterial, as long as $\langle\boxplus, \boxtimes\rangle$ are defined so the diagram below commutes,\footnote{Hereinafter, we use gray highlighting to denote types and functions defined over strings and binary constants only.}
+\noindent The precise encoding is immaterial, so long as $\langle\boxplus, \boxtimes\rangle$ are defined so the diagram below commutes,\footnote{Hereinafter, we use gray highlighting to denote types and functions defined over strings and binary constants only.}
 
 \begin{figure}[H]
   \adjustbox{center}{%
@@ -343,7 +343,7 @@ In the case where $\sigma$ and $\sigma'$ are both fixed strings, Levenshtein dis
 
 Levenshtein reachability, then, is recognizable by the nondeterministic infinite automaton (NIA) whose topology $\mathcal{L} = \knightkingarrow$ factorizes into a product of (a) the monotone Chebyshev topology $\kingarrow$, equipped with horizontal transitions accepting $\sigma_{i}$ and vertical transitions accepting Kleene stars, and (b) the monotone knight's topology $\knightarrow$, equipped with transitions accepting $\sigma_{i+2}$. The structure of this space is approximated by an acyclic NFA, populated by accept states within radius $k$ of $q_{n,0}$, or equivalently, a left-linear CFG whose productions bisimulate the NFA.
 
-\subsection{Bounded Levenshtein reachability}\label{sec:editreach}
+\subsection{Bounded Levenshtein CFL reachability}\label{sec:editreach}
 
 %Assume a hypothetical $\Phi(\mathcal{G}': \mathbb{G}, \err{\sigma}: \Sigma^*)\mapsto \tilde{\sigma}: \mathcal{L}(\mathcal{G}')$ which takes a CFG, $\mathcal{G}'$, generating an arbitrary nonempty CFL, and an unparseable string, $\err{\sigma}$, and which returns element(s) of $\mathcal{L}(\mathcal{G}')$ most similar to $\err{\sigma}$ according to their Levenshtein distance $\Delta(\err{\sigma}, \cdot)$.
 
@@ -371,10 +371,9 @@ Let $G(\err{\sigma}: \Sigma^*, d: \mathbb{N}^+) \mapsto \mathbb{G}$ be the speci
 %
 %We then intersect that language with $\Sigma^n$ and $\mathcal{L}(\mathcal{G})$, the original grammar, to obtain a finite set.
 
-\subsection{Sparsification}
+\subsection{Tensor sparsification}
 
 Although we can encode $[\mathcal{M}_\sigma = \mathcal{M}^2_\sigma]$ explicitly, na\"ively encoding the formula as a dense constraint system is highly suboptimal. A considerably more sparse but logically equivalent representation can be achieved by analyzing the structure of the grammar and string in question. For starters, we can always ignore all lower-triangular comparisons $\{\mathcal{M}_{ij} \mid i \geq j\}$. Since we are typically interested in strings with some bound variables, $\{\sigma: (\Sigma \cup \{\_\})^* \mid \exists i.\sigma_i \in \Sigma\}$, there will also be many upper-triangular nonterminals $\langle v, i, j\rangle \subset V\times\{i, j \mid 0 \leq i \leq j \leq |\sigma|)\}$ that are incompatible with the surrounding structure, i.e., which cannot influence $[S \in \Lambda_\sigma^*]$ based on neighboring entries regardless of which values they assume. By analyzing the grammar and upper-triangular structure of $\mathcal{M}_\sigma$, it is often possible to avoid many elementwise comparisons in the equivalence relation.
-
 
 \begin{definition}[Impossible nonterminals]
   Given $\sigma: \underline\Sigma^*$ and $\mathcal{G}: \mathbb{G}$, an impossible nonterminal is a triple $\langle v, i, j\rangle: V\times\{i, j \mid 0 \leq i \leq j \leq |\sigma|)\}$ such that $\forall \sigma': \Sigma^{j-i}, \sigma' \in \text{H}(\sigma_i\ldots\sigma_j) \implies v\notin\Lambda^*_{\sigma'}$.
