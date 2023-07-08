@@ -373,25 +373,31 @@ Let $G(\err{\sigma}: \Sigma^*, d: \mathbb{N}^+) \mapsto \mathbb{G}$ be the speci
 
 \subsection{Tensor sparsification}
 
-Although we can encode $[\mathcal{M}_\sigma = \mathcal{M}^2_\sigma]$ explicitly, na\"ively encoding the formula as a dense constraint system is highly suboptimal. For starters, we can always ignore all lower-triangular comparisons $\{\mathcal{M}_{ij} \mid i \geq j\}$. A considerably sparser but logically equivalent representation that avoids many elementwise comparisons in the upper-triangular region can be achieved by analyzing the specific string and grammar in question. Since we are typically interested in strings with at least some bound variables, $\{\sigma: \underline\Sigma^* \mid \exists \sigma_i \in \Sigma\}$, there is likely to be many upper-triangular nonterminals $\langle v, i, j\rangle \subset V\times\{i, j \mid 0 \leq i \leq j \leq |\sigma|)\}$ that are incompatible with $\sigma$, i.e., which cannot influence $[S \in \Lambda_\sigma^*]$ regardless of which values they assume. We call these elements \textit{impossible nonterminals}.
+Although we can encode $[\mathcal{M}_\sigma = \mathcal{M}^2_\sigma]$ explicitly, na\"ively encoding the formula as a dense constraint system is highly suboptimal. For starters, we can always ignore all lower-triangular comparisons $\{\mathcal{M}_{ij} \mid i \geq j\}$. A considerably sparser but logically equivalent representation that avoids many elementwise comparisons in the upper-triangular region can be achieved by analyzing the specific string and grammar in question. Since we are typically interested in strings with at least some bound variables, $\{\sigma: \underline\Sigma^n \mid \exists \sigma_i \in \Sigma\}$, there is likely to be many upper-triangular nonterminals $\langle v, i, j\rangle \subset V\times\{i, j \mid 0 \leq i \leq j \leq |\sigma|)\}$ that are incompatible with $\sigma$, i.e., which are unreachable from $\sigma_{i\ldots j}$ regardless of which values they assume. We call these elements \textit{impossible nonterminals}.
 
 \begin{definition}[Impossible nonterminals]
-  Given $\sigma: \underline\Sigma^*$ and $\mathcal{G}: \mathbb{G}$, an impossible nonterminal is a triple $\langle v, i, j\rangle: V\times\{i, j \mid 0 \leq i \leq j \leq |\sigma|)\}$ such that $\forall \sigma': \Sigma^{j-i}, \sigma' \in \text{H}(\sigma_{i\ldots j }) \implies v\notin\Lambda^*_{\sigma'}$.
+  Given $\sigma: \underline\Sigma^n$ and $\mathcal{G}: \mathbb{G}$, an impossible nonterminal is a triple $\langle v, i, j\rangle: V\times\{i, j \mid 0 \leq i \leq j \leq |\sigma|)\}$ such that $\forall \sigma': \Sigma^{j-i}, \sigma' \in \text{H}(\sigma_{i\ldots j}) \implies v\notin\Lambda^*_{\sigma'}$.
 \end{definition}
 
 \begin{definition}[Terminal closure]
-  Let $\Rightarrow^*_\mathcal{G}$ be the reflexive transitive closure under $\mathcal{G}$ defined in the usual way. The terminal closure, denoted $T(v)$, is the set $\{\sigma: \Sigma \mid \exists\:\alpha, \beta: (V\cup\Sigma)^*, v \Rightarrow^*_\mathcal{G} \alpha \sigma \beta\}$.
+  Let $\Rightarrow^*_\mathcal{G}$ be the reflexive transitive closure under $\mathcal{G}$ defined in the usual way. The terminal closure, denoted $T^*(v)$, is the set $\{\sigma: \Sigma \mid \exists\:\alpha, \beta: (V\cup\Sigma)^*, v \Rightarrow^*_\mathcal{G} \alpha \sigma \beta\}$.
 \end{definition}
 
+\begin{lemma}
+  Given $n, \mathcal{G}, \langle v, i, j \rangle$, if $v \notin T^{j-i}(\Sigma)$ holds, this implies $v\not\Rightarrow^{j-i} \Sigma^{j-i}$ and therefor $\langle v, i, j \rangle$ is impossible. Furthermore, if $v \notin T^{n-j-i}(S)$, then $S\not\Rightarrow^{n-j-i} v$ and therefor $\langle v, i, j \rangle$ is impossible.
+\end{lemma}
+
+Regardless of $\sigma$, it is always possible to discharge nonterminals inhabiting $\Lambda_{i, j}$ bitvectors outside the $(n-j-i)$-step transitive closure of $S$, or the $(j-i)$-step transitive closure of any terminal due to unreachability. This constrains several of the least- and greatest- upper diagonals of $\mathcal{M}_\sigma$. Further improvements to sparsity can be achieved by considering the specific structure of $\sigma$ and $\mathcal{G}$.
+
 \begin{definition}[Parikh image]
-  Let $\pi: \underline\Sigma^*\rightarrow\mathbb{N}^{|\Sigma|}$ be the Parikh vector~\cite{parikh1966context}, which counts the number of times each terminal appears in a string. We define the Parikh image as the set of all terminals indexed a nonzero element of the Parikh vector, i.e., $\Pi(\sigma:\underline\Sigma^*) \coloneq \{\sigma': \Sigma \mid 0 < \pi(\sigma)[\sigma']\}$. %Ordered by inclusion, the set of all minimal Parikh images, $\Pi^*(\sigma)\coloneqq \min_{\bm\sigma : 2^V \mid \forall \sigma' \in \bm\sigma \sigma' \in \text{H}(\sigma) \text{ and } }$ forms a partial order.
+  Let $\pi: \underline\Sigma^n\rightarrow\mathbb{N}^{|\Sigma|}$ be the Parikh vector~\cite{parikh1966context}, which counts the number of times each terminal appears in a string. We define the Parikh image as the set of all terminals indexed a nonzero element of the Parikh vector, i.e., $\Pi(\sigma:\underline\Sigma^*) \coloneq \{\sigma': \Sigma \mid 0 < \pi(\sigma)[\sigma']\}$. %Ordered by inclusion, the set of all minimal Parikh images, $\Pi^*(\sigma)\coloneqq \min_{\bm\sigma : 2^V \mid \forall \sigma' \in \bm\sigma \sigma' \in \text{H}(\sigma) \text{ and } }$ forms a partial order.
 \end{definition}
 
 \begin{lemma}
   Given $\sigma, \mathcal{G}, \langle v, i, j \rangle$, then $\Pi(\sigma_{i\ldots j}) \not\subseteq T(v)$ implies $v\not\Rightarrow^* \sigma_{i\ldots j}$ and $\langle v, i, j \rangle$ is impossible.
 \end{lemma}
 
-We can overapproximate the set of possible nonterminals by comparing the Parikh image of $\sigma_{i\ldots j}$ with the terminal closure of $v$ and eliminating impossible nonterminal triples $\langle v, i, j \rangle$. If $\Pi(\sigma_{i\ldots j}) \not\subseteq T(v)$, then we know $\sigma_{i\ldots j}$ cannot derive $v$ and $\left[(\mathcal{M}_{\sigma} = \mathcal{M}_{\sigma}^2)_{i, j, v}\right]$ may be safely ignored. Note that a tighter approximation can be achieved by considering the minimal Parikh vectors of all $\sigma: \Sigma^*$ such that $v \Rightarrow_\mathcal{G}^* \sigma \in \text{H}(\sigma_{i\ldots j})$ rather than just the image on $V$, however this is more expensive and $\Pi(\sigma)$ already discharges a large fraction of impossible nonterminals in practice.
+We can overapproximate the set of possible nonterminals by comparing the Parikh image of $\sigma_{i\ldots j}$ with the terminal closure of $v$, and discharging impossible nonterminal triples $\langle v, i, j \rangle$. If $\Pi(\sigma_{i\ldots j}) \not\subseteq T(v)$, then we know $\sigma_{i\ldots j}$ cannot derive $v$ and $\left[(\mathcal{M}_{\sigma} = \mathcal{M}_{\sigma}^2)_{i, j, v}\right]$ may be safely ignored. Note that a tighter approximation can be achieved by considering the minimal Parikh vectors of all $\sigma: \Sigma^n$ such that $v \Rightarrow_\mathcal{G}^* \sigma \in \text{H}(\sigma_{i\ldots j})$ rather than just the image on $V$, however this is more expensive and $\Pi(\sigma)$ already discharges a large fraction of impossible nonterminals in practice.
 
 \subsection{Isolation}
 
@@ -427,11 +433,11 @@ We can overapproximate the set of possible nonterminals by comparing the Parikh 
   \caption{We can inspect $\bm\Lambda_\alpha^\shri, \bm\Lambda_\alpha^\shup$ to find out.}
 \end{wrapfigure}
 
-Depicted right is a SAT tensor representing \hlgray{$\sigma_1\:\sigma_2\:\sigma_3$}$\:\_\:\ldots\:\_$ where shaded regions demarcate known bitvector literals $\mathcal{L}_{r,c}$ (i.e., representing established nonterminal forests) and unshaded regions correspond to bitvector variables $\mathcal{V}_{r,c}$ (i.e., representing unknown nonterminal forests to be solved) for an incomplete string. Since $\mathcal{L}_{r,c}$ are fixed, we precompute them outside the SAT solver.
+Depicted right is a SAT tensor representing \hlgray{$\sigma_1\:\sigma_2\:\sigma_3$}$\:\_\:\ldots\:\_$ where shaded regions demarcate known bitvector literals $\highlight{\Lambda_{r,c}}$ (i.e., representing established nonterminal forests) and unshaded regions correspond to bitvector variables $\Lambda_{r,c}$ (i.e., representing unknown nonterminal forests to be solved) for an incomplete string. Since $\highlight\Lambda_{r,c}$ are fixed, we precompute them outside the SAT solver.
 
 Clearly, formula complexity is heavily dependent on overall string length. For the sake of complexity, it would be highly advantageous if well-formed subexpressions could be collapsed into a single nonterminal, or multiple nonterminals (in case of ambiguity), to simplify source code snippets without needing to use ad hoc program slicing techniques. Naturally, this raises the question of when can partial derivations be simplified, i.e., under what circumstances is the reduction in Fig.~\ref{fig:mat_simpl} admissible?
 
-This transformation is admissible when the subexpression is ``complete'', i.e., its derivation cannot be altered by appending or prepending text. For example, the string \texttt{( - b )} is morally \textit{complete} in the sense that inserting adjacent text should not alter the interior derivation, whilst \texttt{- b} is not, as introducing adjacent text (e.g., \texttt{\hlgreen{a} - b}) may alter the derivation of its contents depending on the structure of the CFG. This question can be reduced to a quotient: Does there exist another nonterminal, when so adjoined that will ``strip away'' any tokens, leading to another derivation?
+This transformation is admissible when the subexpression is ``isolated'', i.e., its derivation cannot be altered by appending or prepending text. For example, the string \texttt{( - b )} is \textit{isolated} in the sense that adjoining text should not alter the interior derivation, whilst \texttt{- b} is not, as adjacent text (e.g., \texttt{\hlgreen{a} - b}) may alter the derivation of its contents. This question can be reduced to a quotient: Does there exist any string, when so adjoined that will ``strip away'' any nonterminals, leading to another derivation?
 
 More formally, given an arbitrary (potentially ambiguous) context free grammar $\mathcal{G}: \mathbb{G}$, and string $\alpha: \Sigma^*$, is there a decision procedure that returns whether appending and/or prepending symbols can alter the parse forest of $\alpha$? In other words, we want a function $F: (\mathbb{G} \times \Sigma^*) \rightarrow \mathbb{B}$ that returns whether $\alpha$'s parse forest according to $\mathcal{G}$ is unique over $\beta\alpha\gamma$, for all $\beta, \gamma: \underline\Sigma^*$. Specifically,
 
@@ -445,7 +451,7 @@ If we can identify an $\alpha: \Sigma^*$ where $\alpha = \sigma_{i\ldots j}$ for
 %
 %Question: Claim #1 is sufficient, but is it necessary?
 
-\pagebreak\subsection{Sampling without replacement}\label{sec:dsi}
+\subsection{Sampling without replacement}\label{sec:dsi}
 
 Now that we have a reliable method to synthesize admissible completions for strings containing holes, i.e., fix \textit{localized} errors, $S: \mathcal{G} \times (\Sigma\cup\{\varepsilon, \_\})^n \rightarrow \{\Sigma^n\}\subseteq \mathcal{L}(\mathcal{G})$, how can we use $S$ to repair some unparseable string, i.e., $\err{\sigma_1\ldots\:\sigma_n}: \Sigma^n \cap\mathcal{L}(\mathcal{G})^\complement$ where the holes' locations are unknown? Three questions stand out in particular: how many holes are needed to repair the string, where should we put those holes, and how ought we fill them to obtain a parseable $\tilde{\sigma} \in \mathcal{L}(\mathcal{G})$?
 
@@ -802,13 +808,15 @@ if <Vexp> _ _ _ _ _(*@\caret{ }@*)
 
 Three important questions arise when repairing syntax errors: (1) is the program broken in the first place? (2) if so, where are the errors located? (3) how should those locations then be altered? In the case of syntax correction, those questions are addressed by three related research areas, (1) parsing, (2) language equations and (3) repair. We survey each of those areas in turn.
 
-\subsection{CFL Parsing}
+\subsection{Parsing}
 
 Context-free language (CFL) parsing is the well-studied problem of how to turn a string into a unique tree, with many different algorithms and implementations (e.g., shift-reduce, recursive-descent, LR). Many of those algorithms expect grammars to be expressed in a certain form (e.g., left- or right- recursive) or are optimized for a narrow class of grammars (e.g., regular, linear).
 
 General CFL parsing allows ambiguity (non-unique trees) and be formulated as a dynamic programming problem, as shown by Cocke-Younger-Kasami (CYK)~\cite{sakai1961syntax}, Earley~\cite{earley1970efficient} and others. These parsers have roughly cubic time complexity with respect to the length of the input string.
 
 As shown by Valiant~\cite{valiant1975general}, Lee~\cite{lee2002fast} and others, general CFL recognition is in some sense equivalent to binary matrix multiplication, another well-studied combinatorial problem with broad applications, known to be at worst subcubic. This realization unlocks the door to a wide range of complexity-theoretic and practical speedups to CFL recognition and fast general parsing algorithms.
+
+Okhotin (2001)~\cite{okhotin2001conjunctive} extends CFGs with language conjunction in \textit{conjunctive grammars} in 2001, followed by Zhang \& Su (2017) who apply conjunctive language reachability to dataflow analysis.
 
 % Cover matrix multiplication-based parsing
 
@@ -830,7 +838,7 @@ In this paper, we restrict our attention to language equations over context-free
 
 In finite languages, syntax repair corresponds to spelling correction, a more restrictive and largely solved problem. Schulz and Stoyan~\cite{schulz2002fast} construct a finite automaton that returns the nearest dictionary entry by Levenshtein edit distance. Though considerably simpler than syntax correction, their work shares similar challenges and offers insights for handling more general repair scenarios.
 
-When a sentence is grammatically invalid, parsing grows more challenging. Like spelling, the problem is to find the minimum number of edits required to transform an arbitrary string into a syntactically valid one, where validity is defined as containment in a (typically) context-free language. Early work, including Aho~\cite{irons1963error, aho1972minimum} propose a dynamic programming algorithm to computes the minimum number of edits required to fix invalid string. Prior work on error correcting parsing only considers the shortest edit(s), and does not study multiple edits or the Levenshtein ball, in which the problem of actually generating the repairs is not well-posed, as there are often many valid strings that can be obtained within a given number of edits. We instead focus on bounded Levenshtein reachability, which is the problem of finding useful repairs within a fixed Levenshtein distance of the broken string, which requires language intersection.
+When a sentence is grammatically invalid, parsing grows more challenging. Like spelling, the problem is to find the minimum number of edits required to transform an arbitrary string into a syntactically valid one, where validity is defined as containment in a (typically) context-free language. Early work, including Irons~\cite{irons1963error} and Aho~\cite{aho1972minimum} propose a dynamic programming algorithm to computes the minimum number of edits required to fix invalid string. Prior work on error correcting parsing only considers the shortest edit(s), and does not study multiple edits or the Levenshtein ball, in which the problem of actually generating the repairs is not well-posed, as there are often many valid strings that can be obtained within a given number of edits. We instead focus on bounded Levenshtein reachability, which is the problem of finding useful repairs within a fixed Levenshtein distance of the broken string, which requires language intersection.
 
 %Bar-Hillel~\cite{bar1961formal} establishes the closure of CFLs under intersection with regular languages, and can be used to construct the corresponding minimum-cost CFG in a straightforward manner. However while generally quite expressive, CFLs are themselves not closed under intersection and have other practical limitations, i.e., are unable to express indentation or variable binding. These limitations motivate us towards more expressive yet still efficiently parsable formalisms.
 
@@ -844,7 +852,7 @@ When a sentence is grammatically invalid, parsing grows more challenging. Like s
 
 \subsection{Program Synthesis}
 
-There is related work on string constraint solving in the constraint programing literature, featuring solvers like CFGAnalyzer and HAMPI~\cite{kiezun2009hampi}, which consider bounded context free grammars and intersections thereof. Axelson et al. (2008)~\cite{axelsson2008analyzing} has some work on incremental SAT encoding but does not exploit the linear-algebraic structure of parsing nor provide real-time guarantees. Finally, Loris D'Antoni did some great work on \textit{symbolic automata}~\cite{dantoni2014minimization}, a generalization of finite automata which allow allow infinite alphabets and symbolic expressions over them. In none of the constraint programming literature we surveyed do any of the approaches employ matrix-based parsing, and therefor do not enjoy the optimality guarantees of Valiant's parser. Our solver can handle CFGs and conjunctive grammars with finite alphabets and does not require any special grammar encoding. The matrix encoding makes it particularly amenable to parallelization.
+There is related work on string constraint solving in the constraint programing literature, featuring solvers like CFGAnalyzer and HAMPI~\cite{kiezun2009hampi}, which consider bounded context free grammars and intersections thereof. Axelson et al. (2008)~\cite{axelsson2008analyzing} has some work on incremental SAT encoding but does not exploit the linear-algebraic structure of parsing, conjunctive reachability nor provide real-time guarantees. D'Antoni et al. (2014) introduces \textit{symbolic automata}~\cite{dantoni2014minimization}, a generalization of finite automata which allow allow infinite alphabets and symbolic expressions over them. In none of the constraint programming literature we surveyed do any of the approaches employ matrix-based parsing, and therefor do not enjoy the optimality guarantees of Valiant's parser. Our solver can handle CFGs and conjunctive grammars with finite alphabets and does not require any special grammar encoding. The matrix encoding makes it particularly amenable to parallelization.
 
 \subsection{Error Correction}
 
