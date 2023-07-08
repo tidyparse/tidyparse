@@ -379,25 +379,27 @@ Although we can encode $[\mathcal{M}_\sigma = \mathcal{M}^2_\sigma]$ explicitly,
   Given $\sigma: \underline\Sigma^n$ and $\mathcal{G}: \mathbb{G}$, an impossible nonterminal is a triple $\langle v, i, j\rangle: V\times\{i, j \mid 0 \leq i \leq j \leq |\sigma|)\}$ such that $\forall \sigma': \Sigma^{j-i}, \sigma' \in \text{H}(\sigma_{i\ldots j}) \implies v\notin\Lambda^*_{\sigma'}$.
 \end{definition}
 
-\begin{definition}[Terminal closure]
-  Let $\Rightarrow^*_\mathcal{G}$ be the reflexive transitive closure under $\mathcal{G}$ defined in the usual way. The terminal closure, denoted $T^*(v)$, is the set $\{\sigma: \Sigma \mid \exists\:\alpha, \beta: (V\cup\Sigma)^*, v \Rightarrow^*_\mathcal{G} \alpha \sigma \beta\}$.
+\begin{definition}[CFG reachability]
+%  Let $\Rightarrow^*_\mathcal{G}$ be the reflexive transitive closure under $\mathcal{G}$ defined in the usual way.
+  Let us define a reachability relation $R(\nu, \mu, n)$ over CFGs as $\{\langle\mu, \nu, n\rangle: (\Sigma \cup V)^2\times\mathbb{N} \mid \exists\:\alpha, \beta: (V\cup\Sigma)^*, \nu \Rightarrow^n_\mathcal{G} \alpha \mu \beta\}$. We write $T^n(S)$ to denote the set of all $t: V\cup\Sigma$ where there exists $s\in S$ such that $R(t, s, n)$, and likewise $T^{-n}(S)$ to denote ``\ldots'' $R(s, t, n)$.
+  %$R(\mu, \nu, n)$ and $R(\nu, \mu, n)$ respectively
 \end{definition}
 
 \begin{lemma}
-  Given $n, \mathcal{G}, \langle v, i, j \rangle$, if $v \notin T^{j-i}(\Sigma)$ holds, this implies $v\not\Rightarrow^{j-i} \Sigma^{j-i}$ and therefor $\langle v, i, j \rangle$ is impossible. Furthermore, if $v \notin T^{n-j-i}(S)$, then $S\not\Rightarrow^{n-j-i} v$ and therefor $\langle v, i, j \rangle$ is impossible.
+  Given $n, \langle v, i, j \rangle$, if $v \notin T^{i-j}(\Sigma)$, this implies that $v\not\Rightarrow^{j-i} \Sigma^{j-i}$ and therefor $\langle v, i, j \rangle$ is impossible. Furthermore, if $v \notin T^{n-j-i}(S)$, then $S\not\Rightarrow^{n-j-i} v$ and therefor $\langle v, i, j \rangle$ is impossible.
 \end{lemma}
 
-Regardless of $\sigma$, it is always possible to discharge nonterminals inhabiting $\Lambda_{i, j}$ bitvectors outside the $(n-j-i)$-step transitive closure of $S$, or the $(j-i)$-step transitive closure of any terminal due to unreachability. This constrains several of the least- and greatest- upper diagonals of $\mathcal{M}_\sigma$. Further improvements to sparsity can be achieved by considering the specific structure of $\sigma$ and $\mathcal{G}$.
+Regardless of $\sigma$, it is always possible to discharge nonterminals inhabiting $\Lambda_{i, j}$ bitvectors outside the $(n-j-i)$-step neighborhood of $S$, or the $(j-i)$-step neighborhood of any terminal due to unreachability. This constrains several of the least- and greatest- upper diagonals of $\mathcal{M}_\sigma$. Further improvements to sparsity can be achieved by considering the specific structure of $\sigma$ and $\mathcal{G}$.
 
 \begin{definition}[Parikh image]
   Let $\pi: \underline\Sigma^n\rightarrow\mathbb{N}^{|\Sigma|}$ be the Parikh vector~\cite{parikh1966context}, which counts the number of times each terminal appears in a string. We define the Parikh image as the set of all terminals indexed a nonzero element of the Parikh vector, i.e., $\Pi(\sigma:\underline\Sigma^*) \coloneq \{\sigma': \Sigma \mid 0 < \pi(\sigma)[\sigma']\}$. %Ordered by inclusion, the set of all minimal Parikh images, $\Pi^*(\sigma)\coloneqq \min_{\bm\sigma : 2^V \mid \forall \sigma' \in \bm\sigma \sigma' \in \text{H}(\sigma) \text{ and } }$ forms a partial order.
 \end{definition}
 
 \begin{lemma}
-  Given $\sigma, \mathcal{G}, \langle v, i, j \rangle$, then $\Pi(\sigma_{i\ldots j}) \not\subseteq T(v)$ implies $v\not\Rightarrow^* \sigma_{i\ldots j}$ and $\langle v, i, j \rangle$ is impossible.
+  Given $\sigma, \langle v, i, j \rangle$, then $\Pi(\sigma_{i\ldots j}) \not\subseteq T^\infty(\{v\})$ implies $v\not\Rightarrow^* \sigma_{i\ldots j}$ and $\langle v, i, j \rangle$ is impossible.
 \end{lemma}
 
-We can overapproximate the set of possible nonterminals by comparing the Parikh image of $\sigma_{i\ldots j}$ with the terminal closure of $v$, and discharging impossible nonterminal triples $\langle v, i, j \rangle$. If $\Pi(\sigma_{i\ldots j}) \not\subseteq T(v)$, then we know $\sigma_{i\ldots j}$ cannot derive $v$ and $\left[(\mathcal{M}_{\sigma} = \mathcal{M}_{\sigma}^2)_{i, j, v}\right]$ may be safely ignored. Note that a tighter approximation can be achieved by considering the minimal Parikh vectors of all $\sigma: \Sigma^n$ such that $v \Rightarrow_\mathcal{G}^* \sigma \in \text{H}(\sigma_{i\ldots j})$ rather than just the image on $V$, however this is more expensive and $\Pi(\sigma)$ already discharges a large fraction of impossible nonterminals in practice.
+We can overapproximate the set of possible nonterminals by comparing the Parikh image of $\sigma_{i\ldots j}$ with the closure of $v$, then discharging impossible nonterminal triples $\langle v, i, j \rangle$. If $\Pi(\sigma_{i\ldots j}) \not\subseteq T^\infty(\{v\})$, then we know $\sigma_{i\ldots j}$ cannot derive $v$ and $\left[(\mathcal{M}_{\sigma} = \mathcal{M}_{\sigma}^2)_{i, j, v}\right]$ may be safely ignored. Note that a tighter approximation can be achieved by considering the minimal Parikh vectors of all $\sigma: \Sigma^n$ such that $v \Rightarrow_\mathcal{G}^* \sigma \in \text{H}(\sigma_{i\ldots j})$ rather than just the image on $V$, however this would be more computationally expensive and $\Pi(\sigma)$ already discharges a large fraction of impossible nonterminals in practice.
 
 \subsection{Isolation}
 
