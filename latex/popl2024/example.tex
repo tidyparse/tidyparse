@@ -5,7 +5,7 @@ Suppose we are given the following context-free grammar:
 S -> S and S | S xor S | ( S ) | true | false | ! S(*@\caret{ }@*)
 \end{wholetidyinput}
 
-\noindent For reasons that will become clear in Sec.~\ref{sec:matrix}, this will automatically be rewritten into the grammar:
+\noindent As described in Sec.~\ref{sec:matrix}, this is automatically be rewritten into the grammar:
 
 \begin{verbatim}
  F.! → !     S.) → S F.)  and.S → F.and S   S → F.! S     S → false    S → S ε+

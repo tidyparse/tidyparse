@@ -47,7 +47,7 @@ In this work, we illustrate how to lower context-free language recognition onto 
 
 \section{Introduction}
 
-In programming, most errors initially manifest as syntax errors, and though often cosmetic, manual repair can present a significant challenge for novice programmers. \textit{Syntax correction} is the problem of repairing a syntactically incorrect program so that it parses. This problem is challenging because well-formed programs have many extra-syntactic constraints, increasing the complexity of repair, but also because the problem is highly under-determined: repairs must be consistent with the surrounding context, and the correct repair is seldom unique, even assuming minimality.
+In programming, most errors initially manifest as syntax errors, and though often cosmetic, manual repair can present a significant challenge for novice programmers. \textit{Syntax correction} is the problem of repairing a syntactically incorrect program so that it parses. This problem is challenging because well-formed programs have additional semantic constraints, increasing the complexity of repair, but also because the problem is highly under-determined: repairs must be consistent with the surrounding context, and the correct repair is seldom unique, even assuming minimality.
 
 The majority of prior work on syntax correction can be separated into one of two high-level categories: (1) \textit{formal methods}, which use handcrafted rules to identify and correct common syntax errors (e.g.,~\cite{aho1972minimum}), and (2) \textit{machine learning}, which typically use neural language models to repair code (e.g.~\cite{sakkas2022seq2parse}). The formal approach can be effective but only produces one repair, while the latter generates more natural edits, but is more costly to train and difficult to incorporate new constraints.
 
@@ -63,8 +63,6 @@ Our paper is structured as follows: we present two high-level approaches to synt
   \caption{Our framework consists of three components, namely (2) a solver, (4) ranker and (3) sampler. Given an invalid string and grammar (1), we first compile them into a Boolean tensor (2) representing a multilinear system of equations whose fixed points characterize the admisisble set. The system can be solved directly, yielding a set of repairs that are ranked using a suitable scoring function (4). Optionally, we may introduce stochastic edits to the string using the Levenshtein ball sampler (3) and extract the solutions by $\epsilon$-decreasing resampling (5). When the langauge edit distance and solutions are time-sensitive, (5) is typically more efficient.}
   \label{fig:overview}
 \end{figure}
-
-\section{Overview}
 
 Our primary contributions in this work are twofold: (1) is a novel reduction from conjunctive language membership with bounded-length string variables to Boolean matrix completion, which we use to develop an algebraic theory of syntax correction, (2) is a randomized algorithm for quickly suggesting syntax repairs to real-world programming errors. We show how to solve this problem exactly and approximately, and implement it in a real-time editor called Tidyparse.
 
@@ -128,7 +126,7 @@ During the conception of this work, a number of design choices were made to incr
   \item Finally, the framework must be \textbf{flexible} and \textbf{extensible}. Intended as a general-purpose tool for generating syntax repairs in a wide variety of programming languages, end-users should be able to extend the framework with their own custom grammars and side-constraints.
 \end{itemize}
 
-Despite the fact that these criteria are not all mutually compatible, we will argue that our framework is able to satisfy most of them simultaneously. In particular, discuss some of the trade-offs made in the design of our framework in \S~\ref{sec:discussion}.
+As we demonstrate both formally and experimentally, our framework is able to satisfy most of these criteria simultaneously, while attaining state-of-the-art performance in terms of precision, throughput and wall-clock latency. However, there are still several open problems that remain to be solved to realize its full potential as an everyday programming tool. In particular, we will discuss some of the open problems (e.g.,~\ref{def:isolation}) and design trade-offs our approach takes(\S~\ref{sec:discussion}).
 
 \subsection{Research questions}
 
@@ -440,7 +438,7 @@ Clearly, formula complexity is heavily dependent on $|\sigma|$ and for the sake 
 
 More formally, given an arbitrary (potentially ambiguous) context free grammar $\mathcal{G}: \mathbb{G}$, and string $\alpha: \Sigma^*$, is there a decision procedure that returns whether appending and/or prepending symbols can alter the parse forest of $\alpha$? In other words, we want a function $F: (\mathbb{G} \times \Sigma^*) \rightarrow \mathbb{B}$ that returns whether $\alpha$'s parse forest according to $\mathcal{G}$ is unique over $\beta\alpha\gamma$, for all $\beta, \gamma: \underline\Sigma^*$. Specifically,
 
-\begin{definition}[Isolation]
+\begin{definition}[Isolation]\label{def:isolation}
 Let $T_\alpha$ denote the set of all parse trees that are generated by the string $\alpha$ using $\mathcal{G}$, and consider $\mathbf{T}_{\alpha}$, the union of all parse trees and their subtrees that can be generated by $\beta\alpha\gamma$ using $\mathcal{G}$ for arbitrary $\beta, \gamma \in \underline\Sigma^*$, and have a leaf in $\alpha$. We call the parse forest $T_\alpha$ \textit{isolated} iff for all $t \in \mathbf{T}_{\alpha}$, there exists $t' \in T_\alpha$, such that $t$ is either a subtree of $t'$, or $t'$ is a proper subtree of $t$.
 \end{definition}
 
@@ -523,6 +521,26 @@ Finally, to sample $\bm{\sigma}\sim\Delta_{q}(\err{\sigma})$, we enumerate templ
 
 \noindent This approach is tractable for $n \lesssim 100, q \lesssim 3$, however more complex repairs require a more efficient density estimator. We will now discuss an approach that uses an adaptive sampler (\S~\ref{sec:holes}).
 
+\subsection{Patch minimization}
+
+\begin{wrapfigure}{r}{0.4\textwidth}
+  \vspace{-14pt}
+  \resizebox{.4\textwidth}{!}{
+    $$
+    \def\arl{\ar@{-}}
+    \xymatrix{
+      & \texttt{\hlgreen{(} a \hlorange{+} b \hlgreen{)}}\arl[dl]\arl[d]\arl[dr] & \\
+      \texttt{\vphantom{)}\err{\hlgreen{(} a \hlorange{+} b}}\arl[d]\arl[dr] & \texttt{\vphantom{(}\err{\hlgreen{(} a ( b \hlgreen{)}}}\arl[dl]|\hole\arl[dr]|\hole & \texttt{\vphantom{(}\err{a \hlorange{+} b \hlgreen{)}}}\arl[dl]\arl[d] \\
+      \texttt{\vphantom{(}\err{\hlgreen{(} a ( b}}\arl[dr]   & \texttt{a \hlorange{+} b}\arl[d]   & \texttt{\vphantom{)}a ( b \hlgreen{)}}\arl[dl] \\
+      & \texttt{\vphantom{)}\err{a ( b}} \\
+    }
+    $$
+  }
+  \caption{Patch powerset of $\tilde{\sigma}=$ \texttt{\hlgreen{(} a \hlorange{+} b \hlgreen{)}}.}
+\end{wrapfigure}
+
+Suppose we have a string, \texttt{\err{a ( b}}, and discover the patch, $\tilde{\sigma}=$ \texttt{\hlgreen{(} a \hlorange{+} b \hlgreen{)}}. Although $\tilde{\sigma}$ is syntactically admissible, it is not minimal. To minimize a patch, we consider the set of all of its constituent subpatches, namely, \texttt{\err{\hlgreen{(} a \hlorange{+} b}}, \texttt{\err{\hlgreen{(} a ( b \hlgreen{)}}}, \texttt{\err{a \hlorange{+} b \hlgreen{)}}}, \texttt{\err{\hlgreen{(} a ( b}}, \texttt{a \hlorange{+} b}, and \texttt{a \hlgreen{(} b \hlgreen{)}}, then retain only the smallest syntactically valid instance(s) by Levenshtein distance. This forms a so-called \textit{patch powerset}, which can be lazily enumerated from the top-down using the Maculay representation, after which we take all valid elements from the lowest level containing at least one admissible element, i.e., \texttt{a \hlorange{+} b} and \texttt{a \hlgreen{(} b \hlgreen{)}}. When patches are very large, minimization can be used in tandem with the delta debugging technique~\cite{zeller2002isolating} to first simplify contiguous edits, then apply the patch powerset construction. Minimization is often useful for estimating the language edit distance: given a single valid repair of arbitrary size, minimization lets us quickly approximate an upper-bound on $\Delta(\err{\sigma}, \ell)$ -- much tighter than indicated by Lemma~\ref{lemma:upper-bound}.
+
 \subsection{Probabilistic reachability}\label{sec:holes}
 
 Since there are $\Sigma_{d=1}^q{n \choose d}$ total hole templates, each with $(|\Sigma| + 1)^{d}$ individual edits to check, if $n$ and $q$ are large, this space can be intractable to exhaustively search and a uniform prior may be highly sample-inefficient. Furthermore, na\"ively sampling $\bm{\sigma}_i\sim\Sigma^{n\pm q}\cap\Delta_{q}(\err{\sigma})$ is likely to produce a large number of unnatural edits. To rapidly rank and render relevant repair recommendations, we prioritize candidate edits according to the following nine-step procedure:
@@ -533,9 +551,9 @@ Since there are $\Sigma_{d=1}^q{n \choose d}$ total hole templates, each with $(
 %    \item Rerank edit templates according to the distribution $\int\mathcal{F}_\theta(\cdot \mid i_{1\ldots d})d\theta$.
     \item Draw samples $\hat\sigma \sim \stirlingii{n}{d}\times\Sigma^{n\pm q}\cap\Delta_q(\err{\sigma})$ in parallel without replacement using Eq.~\ref{sec:dsi}.
     \item Score by perplexity $PP(\hat\sigma)$ using a pretrained variable order Markov chain (VOMC)~\cite{schulz2008vomc}.
-    \item Resample using a concurrent version of the A-Res~\cite{efraimidis2015weighted} online weighted reservoir sampler.
-    \item Filter edit suggestions by admissibility with respect to the grammar, $[\hat\sigma \in \mathcal{L}(\mathcal{G})]$.
-    \item Store admissible repairs to a concurrent priority queue, $\mathcal{Q} \leftarrow \tilde\sigma$, ranked by perplexity.
+    \item Resample using a concurrent variant of the A-Res~\cite{efraimidis2015weighted} online weighted reservoir sampler.
+    \item Filter Levenshtein edits by admissibility with respect to the grammar, i.e., $[\hat\sigma \in \mathcal{L}(\mathcal{G})]$.
+    \item Minimize and store admissible repairs to a priority queue, $\mathcal{Q} \leftarrow \tilde\sigma$, ranked by perplexity.
     \item Repeat steps (2)-(6), alternately sampling from the LFSR/VOMC-reweighted online resevoir sampler with probability $\epsilon$ or stochastically resampled $\mathcal{Q}$ with probability $(1-\epsilon)$, where $\epsilon$ decreases from $1$ to $0$ according to a stepwise schedule relative to the time remaining.
     \item Render the top-k repairs found within p-seconds, ranked by $\Delta(\err{\sigma}, \tilde{\sigma})$, then by $PP(\hat\sigma)$.
 \end{enumerate}
@@ -585,25 +603,7 @@ More specifically in our setting, we want to sample from a discrete product spac
 %
 %  This is needed because of the doubly-ambiguous nature of tree search: a single string may have a parse forest, and an incomplete string simultaneously occupies a superposition of possible parse forests. When we encounter two adjacent parse forests which cannot be joined, we know that either (1) the left derivation must change (2) the right derivation must change or (3) there must be a hole in the middle which joins the two together. When recursing over the state space, we must simultaneously consider all three possibilities.
 
-\subsection{Patch minimization}
 
-\begin{wrapfigure}{r}{0.4\textwidth}
-  \vspace{-14pt}
-  \resizebox{.4\textwidth}{!}{
-    $$
-    \def\arl{\ar@{-}}
-    \xymatrix{
-      & \texttt{\hlgreen{(} a \hlorange{+} b \hlgreen{)}}\arl[dl]\arl[d]\arl[dr] & \\
-      \texttt{\vphantom{)}\err{\hlgreen{(} a \hlorange{+} b}}\arl[d]\arl[dr] & \texttt{\vphantom{(}\err{\hlgreen{(} a ( b \hlgreen{)}}}\arl[dl]|\hole\arl[dr]|\hole & \texttt{\vphantom{(}\err{a \hlorange{+} b \hlgreen{)}}}\arl[dl]\arl[d] \\
-      \texttt{\vphantom{(}\err{\hlgreen{(} a ( b}}\arl[dr]   & \texttt{a \hlorange{+} b}\arl[d]   & \texttt{\vphantom{)}a ( b \hlgreen{)}}\arl[dl] \\
-      & \texttt{\vphantom{)}\err{a ( b}} \\
-    }
-    $$
-  }
-  \caption{Patch powerset of $\tilde{\sigma}=$ \texttt{\hlgreen{(} a \hlorange{+} b \hlgreen{)}}.}
-\end{wrapfigure}
-
-Suppose we have a string, \texttt{\err{a ( b}}, and discover the patch, $\tilde{\sigma}=$ \texttt{\hlgreen{(} a \hlorange{+} b \hlgreen{)}}. Although $\tilde{\sigma}$ is syntactically admissible, it is not minimal. To minimize a patch, we consider the set of all of its constituent subpatches, namely, \texttt{\err{\hlgreen{(} a \hlorange{+} b}}, \texttt{\err{\hlgreen{(} a ( b \hlgreen{)}}}, \texttt{\err{a \hlorange{+} b \hlgreen{)}}}, \texttt{\err{\hlgreen{(} a ( b}}, \texttt{a \hlorange{+} b}, and \texttt{a \hlgreen{(} b \hlgreen{)}}, then retain only the smallest syntactically valid instance(s) by Levenshtein distance. This forms a so-called \textit{patch powerset}, which can be lazily enumerated from the top-down using the Maculay representation, after which we take all valid elements from the lowest level containing at least one admissible element, i.e., \texttt{a \hlorange{+} b} and \texttt{a \hlgreen{(} b \hlgreen{)}}. When patches are very large, minimization can be used in tandem with the delta debugging technique~\cite{zeller2002isolating} to first simplify contiguous edits, then apply the patch powerset construction. Minimization is often useful for estimating the language edit distance: given a single valid repair of arbitrary size, minimization lets us quickly approximate an upper-bound on $\Delta(\err{\sigma}, \ell)$ -- much tighter than indicated by Lemma~\ref{lemma:upper-bound}.
 
 \section{Parsing}\label{sec:parsing}
 
