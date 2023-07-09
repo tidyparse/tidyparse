@@ -101,8 +101,7 @@ Below is an example illustrating how our repair procedure works on a real Python
           \texttt{ID} & \cellcolor{black!15}\texttt{\_} & \texttt{ID} & \texttt{(} & \texttt{[} & \cellcolor{black!15}\texttt{\_} & \texttt{(} & \texttt{ID} & \texttt{]} & \texttt{for} & \texttt{ID} & \cellcolor{black!15}\texttt{\_} & \texttt{ID} & \texttt{)} & \texttt{)} \\\hline
 %          \cellcolor{black!15}\texttt{\_} & \texttt{=} & \cellcolor{black!15}\texttt{\_} & \texttt{(} & \texttt{[} & \texttt{ID} & \texttt{(} & \texttt{ID} & \texttt{]} & \texttt{for} & \texttt{ID} & \texttt{in} & \texttt{ID} & \texttt{)} & \cellcolor{black!15}\texttt{\_} \\\hline
 %          & & & & & & & & & & & & & & \\\hline
-  \end{tabular}\\
-  \ldots
+  \end{tabular}\\$\cdots$
   \item \begin{tabular}{|||c|||c||c|c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||}
           \hline
 %          \texttt{ID} & \texttt{=} & & \texttt{ID} & \texttt{(} & \texttt{[} & \texttt{ID} & \texttt{(} & \texttt{ID} & \texttt{]} & \texttt{for} & \texttt{ID} & \texttt{in} & \texttt{ID} & \texttt{)} & \texttt{)} \\\hline
@@ -381,27 +380,27 @@ Although we can encode $[\mathcal{M}_\sigma = \mathcal{M}^2_\sigma]$ explicitly,
 
 \begin{definition}[CFG reachability]
 %  Let $\Rightarrow^*_\mathcal{G}$ be the reflexive transitive closure under $\mathcal{G}$ defined in the usual way.
-  Let us define a reachability relation $R(\nu, \mu, n)$ over CFGs as $\{\langle\mu, \nu, n\rangle: (\Sigma \cup V)^2\times\mathbb{N} \mid \exists\:\alpha, \beta: (V\cup\Sigma)^*, \nu \Rightarrow^n_\mathcal{G} \alpha \mu \beta\}$. We write $T^n(S)$ to denote the set of all $t: V\cup\Sigma$ where there exists $s\in S$ such that $R(t, s, n)$, and likewise $T^{-n}(S)$ to denote ``\ldots'' $R(s, t, n)$.
+  Let us define a reachability relation $R(\nu, \mu, \eta)$ over CFGs as $\{\langle\nu, \mu, \eta\rangle: (\Sigma \cup V)^2\times\mathbb{N} \mid \exists\:\alpha, \beta: (V\cup\Sigma)^*, \nu \Rightarrow^{\leq \eta}_\mathcal{G} \alpha \mu \beta\}$. We write $T^\eta(U)$ to denote the set of all $t: \Sigma \cup V$ where there exists $u\in U$ such that $R(u, t, \eta)$, and likewise $T^{-\eta}(U)$ to denote ``\ldots'' $R(t, u, \eta)$.
   %$R(\mu, \nu, n)$ and $R(\nu, \mu, n)$ respectively
 \end{definition}
 
 \begin{lemma}
-  Given $n, \langle v, i, j \rangle$, if $v \notin T^{i-j}(\Sigma)$, this implies that $v\not\Rightarrow^{j-i} \Sigma^{j-i}$ and therefor $\langle v, i, j \rangle$ is impossible. Furthermore, if $v \notin T^{n-j-i}(S)$, then $S\not\Rightarrow^{n-j-i} v$ and therefor $\langle v, i, j \rangle$ is impossible.
+  Given $n, \langle v, i, j \rangle$, if $v \notin T^{i-j}(\Sigma)$, this implies $v\not\Rightarrow^{\leq j-i}_\mathcal{G} \Sigma^{j-i}$ and therefor $\langle v, i, j \rangle$ must be impossible. Furthermore, if $v \notin T^{n-j+i}(\{S\})$, then $S\not\Rightarrow^{\leq n-j+i}_\mathcal{G} v$ and therefor $\langle v, i, j \rangle$ must be impossible.
 \end{lemma}
 
-Regardless of $\sigma$, it is always possible to discharge nonterminals inhabiting $\Lambda_{i, j}$ bitvectors outside the $(n-j-i)$-step neighborhood of $S$, or the $(j-i)$-step neighborhood of any terminal due to unreachability. This constrains several of the least- and greatest- upper diagonals of $\mathcal{M}_\sigma$. Further improvements to sparsity can be achieved by considering the specific structure of $\sigma$ and $\mathcal{G}$.
+Regardless of $\sigma$, it is always possible to discharge nonterminals inhabiting $\Lambda_{i, j}$ bitvectors outside the $(n-j+i)$-step neighborhood of $S$, or the $(j-i)$-step neighborhood of any terminal due to unreachability. This constrains several of the least- and greatest- upper diagonals of $\mathcal{M}_\sigma$. Further improvements to sparsity can be achieved by considering the specific structure of $\sigma$ and $\mathcal{G}$.
 
 \begin{definition}[Parikh image]
-  Let $\pi: \underline\Sigma^n\rightarrow\mathbb{N}^{|\Sigma|}$ be the Parikh vector~\cite{parikh1966context}, which counts the number of times each terminal appears in a string. We define the Parikh image as the set of all terminals indexed a nonzero element of the Parikh vector, i.e., $\Pi(\sigma:\underline\Sigma^*) \coloneq \{\sigma': \Sigma \mid 0 < \pi(\sigma)[\sigma']\}$. %Ordered by inclusion, the set of all minimal Parikh images, $\Pi^*(\sigma)\coloneqq \min_{\bm\sigma : 2^V \mid \forall \sigma' \in \bm\sigma \sigma' \in \text{H}(\sigma) \text{ and } }$ forms a partial order.
+  Let $\pi: \underline\Sigma^*\rightarrow\mathbb{N}^{|\Sigma|}$ be the Parikh vector~\cite{parikh1966context}, which counts the number of times each terminal appears in a string. We define the Parikh image as the set of all terminals indexed a nonzero element of the Parikh vector, i.e., $\Pi(\sigma:\underline\Sigma^*) \coloneq \{\sigma': \Sigma \mid 0 < \pi(\sigma)[\sigma']\}$. %Ordered by inclusion, the set of all minimal Parikh images, $\Pi^*(\sigma)\coloneqq \min_{\bm\sigma : 2^V \mid \forall \sigma' \in \bm\sigma \sigma' \in \text{H}(\sigma) \text{ and } }$ forms a partial order.
 \end{definition}
 
 \begin{lemma}
-  Given $\sigma, \langle v, i, j \rangle$, then $\Pi(\sigma_{i\ldots j}) \not\subseteq T^\infty(\{v\})$ implies $v\not\Rightarrow^* \sigma_{i\ldots j}$ and $\langle v, i, j \rangle$ is impossible.
+Given $\sigma, \langle v, i, j \rangle$, then $\Pi(\sigma_{i\ldots j}) \not\subseteq T^\infty(\{v\})$ implies $v\not\Rightarrow^*_\mathcal{G} \sigma_{i\ldots j}$ and $\langle v, i, j \rangle$ is impossible.
 \end{lemma}
 
-We can overapproximate the set of possible nonterminals by comparing the Parikh image of $\sigma_{i\ldots j}$ with the closure of $v$, then discharging impossible nonterminal triples $\langle v, i, j \rangle$. If $\Pi(\sigma_{i\ldots j}) \not\subseteq T^\infty(\{v\})$, then we know $\sigma_{i\ldots j}$ cannot derive $v$ and $\left[(\mathcal{M}_{\sigma} = \mathcal{M}_{\sigma}^2)_{i, j, v}\right]$ may be safely ignored. Note that a tighter approximation can be achieved by considering the minimal Parikh vectors of all $\sigma: \Sigma^n$ such that $v \Rightarrow_\mathcal{G}^* \sigma \in \text{H}(\sigma_{i\ldots j})$ rather than just the image on $V$, however this would be more computationally expensive and $\Pi(\sigma)$ already discharges a large fraction of impossible nonterminals in practice.
+We can overapproximate the set of possible nonterminals by comparing the Parikh image of $\sigma_{i\ldots j}$ with the closure of $v$, then discharging impossible nonterminal triples $\langle v, i, j \rangle$. If $\Pi(\sigma_{i\ldots j}) \not\subseteq T^\infty(\{v\})$, then we know $\sigma_{i\ldots j}$ cannot derive $v$ and $\left[(\mathcal{M}_{\sigma} = \mathcal{M}_{\sigma}^2)_{i, j, v}\right]$ may be safely ignored. Note that a tighter approximation can be achieved by considering the minimal Parikh vectors of all $\sigma: \Sigma^\eta$ such that $v \Rightarrow_\mathcal{G}^* \sigma \in \text{H}(\sigma_{i\ldots j})$ rather than just the image on $V$, however this would be more computationally expensive and $\Pi(\sigma)$ already discharges a large fraction of impossible nonterminals in practice.
 
-\subsection{Isolation}
+\subsection{Isolation and reduction}
 
 \newcommand\ddd{\Ddots}
 \newcommand\vdd{\Vdots}
@@ -431,20 +430,18 @@ We can overapproximate the set of possible nonterminals by comparing the Parikh 
   \vspace{-20pt}
   \resizebox{0.4\textwidth}{!}{\input{expr_simpl.tex}}
   \caption{When is this reduction admissible?}\label{fig:mat_simpl}
-  \resizebox{0.35\textwidth}{!}{\input{mat_simpl.tex}}
+  \begin{center}\resizebox{0.35\textwidth}{!}{\input{mat_simpl.tex}}\end{center}
   \caption{We can inspect $\bm\Lambda_\alpha^\shri, \bm\Lambda_\alpha^\shup$ to find out.}
 \end{wrapfigure}
 
-Depicted right is a SAT tensor representing \hlgray{$\sigma_1\:\sigma_2\:\sigma_3$}$\:\_\:\ldots\:\_$ where shaded regions demarcate known bitvector literals $\highlight{\Lambda_{r,c}}$ (i.e., representing established nonterminal forests) and unshaded regions correspond to bitvector variables $\Lambda_{r,c}$ (i.e., representing unknown nonterminal forests to be solved) for an incomplete string. Since $\highlight\Lambda_{r,c}$ are fixed, we precompute them outside the SAT solver.
+Depicted right is a SAT tensor representing \hlgray{$\sigma_1\:\sigma_2\:\sigma_3$}$\:\_\:\ldots\:\_$ where shaded regions demarcate known bitvector literals $\highlight{\Lambda_{r,c}}$ (i.e., representing established nonterminal forests) and unshaded regions correspond to bitvector variables $\Lambda_{r,c}$ (i.e., representing unknown nonterminal forests to be solved) for an incomplete string. Since $\highlight{\Lambda_{r,c}}$ are fixed, we can precompute them outside of the SAT solver.
 
-Clearly, formula complexity is heavily dependent on overall string length. For the sake of complexity, it would be highly advantageous if well-formed subexpressions could be collapsed into a single nonterminal, or multiple nonterminals (in case of ambiguity), to simplify source code snippets without needing to use ad hoc program slicing techniques. Naturally, this raises the question of when can partial derivations be simplified, i.e., under what circumstances is the reduction in Fig.~\ref{fig:mat_simpl} admissible?
-
-This transformation is admissible when the subexpression is ``isolated'', i.e., its derivation cannot be altered by appending or prepending text. For example, the string \texttt{( - b )} is \textit{isolated} in the sense that adjoining text should not alter the interior derivation, whilst \texttt{- b} is not, as adjacent text (e.g., \texttt{\hlgreen{a} - b}) may alter the derivation of its contents. This question can be reduced to a quotient: Does there exist any string, when so adjoined that will ``strip away'' any nonterminals, leading to another derivation?
+Clearly, formula complexity is heavily dependent on $|\sigma|$ and for the sake of complexity, it would be highly advantageous if $\sigma$ were shorter. Naturally, this raises the question of when well-formed substrings can be collapsed, i.e., under what circumstances can the reduction in Fig.~\ref{fig:mat_simpl} be applied? This transformation is admissible when a subexpression is ``isolated'', i.e., its derivation cannot somehow be altered by appending or prepending text. For example, the string \texttt{( - b )} is \textit{isolated} in the sense that adjoining text should not alter the interior derivation, whilst \texttt{- b} is not, as adjacent text (e.g., \texttt{\hlgreen{a} - b}) may alter the derivation of its contents. This question can be reduced to a quotient: Does there exist any string, that when so adjoined will ``strip away'' any nonterminals, leading to another derivation?
 
 More formally, given an arbitrary (potentially ambiguous) context free grammar $\mathcal{G}: \mathbb{G}$, and string $\alpha: \Sigma^*$, is there a decision procedure that returns whether appending and/or prepending symbols can alter the parse forest of $\alpha$? In other words, we want a function $F: (\mathbb{G} \times \Sigma^*) \rightarrow \mathbb{B}$ that returns whether $\alpha$'s parse forest according to $\mathcal{G}$ is unique over $\beta\alpha\gamma$, for all $\beta, \gamma: \underline\Sigma^*$. Specifically,
 
 \begin{definition}[Isolation]
-Let $T_\alpha$ denote the set of all parse trees that are generated by the string $\alpha$ using $\mathcal{G}$, and consider $\mathbf{T}_{\alpha}$, the union of all parse trees and their subtrees that (1) can be generated by $\beta\alpha\gamma$ using $\mathcal{G}$ for arbitrary $\beta, \gamma \in \underline\Sigma^*$, and (2) have a leaf in $\alpha$. We call the parse forest $T_\alpha$ \textit{isolated} iff $\forall t \in \mathbf{T}_{\alpha}\exists t' \in T_\alpha$, such that $t$ is either a subtree of $t'$, or $t'$ is a proper subtree of $t$.
+Let $T_\alpha$ denote the set of all parse trees that are generated by the string $\alpha$ using $\mathcal{G}$, and consider $\mathbf{T}_{\alpha}$, the union of all parse trees and their subtrees that can be generated by $\beta\alpha\gamma$ using $\mathcal{G}$ for arbitrary $\beta, \gamma \in \underline\Sigma^*$, and have a leaf in $\alpha$. We call the parse forest $T_\alpha$ \textit{isolated} iff for all $t \in \mathbf{T}_{\alpha}$, there exists $t' \in T_\alpha$, such that $t$ is either a subtree of $t'$, or $t'$ is a proper subtree of $t$.
 \end{definition}
 
 If we can identify an $\alpha: \Sigma^*$ where $\alpha = \sigma_{i\ldots j}$ for some $i, j: \mathbb{N}^{<|\sigma|}$, such that $\alpha$ has an isolated parse forest, then we can safely replace $\sigma_{i\ldots j} \mapsto \Lambda_\alpha^*$. For bounded-length strings, this can be solved by padding $\alpha$ with adjacent holes $(\_)^n\alpha(\_)^n$ for sufficiently large $n$, and checking $\bm\Lambda_{\alpha}^{\shur}$, the union of all right- and left-quotients of $\alpha$ for emptiness, i.e., $[\varnothing = \bm\Lambda_{\alpha}^\shup\cup\bm\Lambda_{\alpha}^\shri]$. A general solution for arbitrary CFGs, $\mathcal{G}: \mathbb{G}$ and $\beta, \gamma \in \Sigma^*$ is more difficult, but could significantly extend the context window and remove the need for ad hoc preprocessing. We leave this as an open problem for future work.
