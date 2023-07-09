@@ -145,7 +145,7 @@ These questions are answered in the following sections of this paper. We begin b
 
 \section{Problem Statement}\label{sec:problem}
 
-The problem of syntax error correction under a finite number of typographic errors is reducible to the bounded Levenshtein CFL reachability problem, which can be formally stated as follows:
+The problem of syntax error correction under a finite number of typographic errors is reducible to the bounded Levenshtein-CFL reachability problem, which can be formally stated as follows:
 
 \begin{definition}
   The language edit distance (LED) is the minimum number of edits required to transform an invalid string into a valid one, where validity is defined as containment in a context-free language, $\ell: \mathcal{L}$, i.e., $\Delta^*(\err{\sigma}, \ell) \coloneqq \min_{\sigma \in \ell}\Delta(\err{\sigma}, \sigma)$, and $\Delta$ is the Levenshtein distance.
@@ -175,10 +175,10 @@ Let us now consider the maximum growth rate of the \textit{admissible set}, $A \
 \end{lemma}
 
 \begin{proof}
-  We can overestimate the size of $A$ by considering the number of unique ways to insert, delete, or substitute $c$ terminals into a string $\err{\sigma}$ of length $n$. This can be overaproximated by interleaving $\varepsilon^c$ around every token, i.e., $\err{\sigma}'\coloneq \left(\varepsilon^c\err{\sigma}_i\right)_{i=1}^n\varepsilon^c$, where $|\err{\sigma}'| = cn + n + 1$, and only considering substitution. We augment $\Sigma_\varepsilon \coloneq \Sigma \cup \{\varepsilon\}$ so that deletions and insertions may be treated as special cases of substitution. Thus, we have $cn + n + 1$ positions to substitute $(|\Sigma_\varepsilon|)$ tokens, i.e., ${{cn + n + 1} \choose c}|\Sigma_\varepsilon|^c$ ways to edit $\err{\sigma}'$ for each $c \in [1, q]$. This upper bound is not tight, as overcounts many identical edits w.r.t. $\err{\sigma}$. Nonetheless, it is sufficient to show $|A| < \sum_{c=1}^q{{cn + n + 1} \choose c}|\Sigma_\varepsilon|^c$.
+  We can overestimate the size of $A$ by considering the number of unique ways to insert, delete, or substitute $c$ terminals into a string $\err{\sigma}$ of length $n$. This can be overaproximated by interleaving $\varepsilon^c$ around every token, i.e., $\err{\sigma}_\varepsilon\coloneq \left(\varepsilon^c\err{\sigma}_i\right)_{i=1}^n\varepsilon^c$, where $|\err{\sigma}_\varepsilon| = cn + n + 1$, and only considering substitution. We augment $\Sigma_\varepsilon \coloneq \Sigma \cup \{\varepsilon\}$ so that deletions and insertions may be treated as special cases of substitution. Thus, we have $cn + n + 1$ positions to substitute $(|\Sigma_\varepsilon|)$ tokens, i.e., ${{cn + n + 1} \choose c}|\Sigma_\varepsilon|^c$ ways to edit $\err{\sigma}_\varepsilon$ for each $c \in [1, q]$. This upper bound is not tight, as overcounts many identical edits w.r.t. $\err{\sigma}$. Nonetheless, it is sufficient to show $|A| < \sum_{c=1}^q{{cn + n + 1} \choose c}|\Sigma_\varepsilon|^c$.
 \end{proof}
 
-We note that the above bound applies to all strings and languages, and relates to the Hamming bound on $H_q(\err{\sigma}')$, which only considers substitutions.~\footnote{This reflects our general approach, which builds a surjection from the interleaved Hamming ball onto the Levenshtein ball.} In practice, much tighter bounds may be obtained by considering the structure of $\ell$ and $\err{\sigma}$. For example, based on an empirical evaluation from a dataset of human errors and repairs in Python code snippets ($|\Sigma| = 50, |\err{\sigma}| < 40, \Delta(\err{\sigma}, \ell) \in [1, 3]$), we estimate the \textit{filtration rate}, i.e., the density of the admissible set relative to the Levenshtein ball, $D=|A|/|\Delta_q(\err{\sigma})|$ to have empirical mean $E_\sigma[D] \approx 2.6\times 10^{-4}$, and variance $\mathrm{Var}_\sigma[D] \approx 3.8\times10^{-7}$.
+We note that the above bound applies to all strings and languages, and relates to the Hamming bound on $H_q(\err{\sigma}_\varepsilon)$, which only considers substitutions.~\footnote{This reflects our general approach, which builds a surjection from the interleaved Hamming ball onto the Levenshtein ball.} In practice, much tighter bounds may be obtained by considering the structure of $\ell$ and $\err{\sigma}$. For example, based on an empirical evaluation from a dataset of human errors and repairs in Python code snippets ($|\Sigma| = 50, |\err{\sigma}| < 40, \Delta(\err{\sigma}, \ell) \in [1, 3]$), we estimate the \textit{filtration rate}, i.e., the density of the admissible set relative to the Levenshtein ball, $D=|A|/|\Delta_q(\err{\sigma})|$ to have empirical mean $E_\sigma[D] \approx 2.6\times 10^{-4}$, and variance $\mathrm{Var}_\sigma[D] \approx 3.8\times10^{-7}$.
 
 In practice, this problem is ill-posed even when $q = \Delta^*(\err{\sigma}, \ell) \approx 1$. For example, consider the language of ursine dietary preferences. Although $\err{\sigma}\coloneq$ ``Bears like to eat tomatoes'' is not a valid sentence, e.g., $\tilde{\sigma}\coloneq$``Bears like to eat'' is $(\Delta^*=1)$, however there are many others with roughly the same edit distance, e.g., ``Bears like to eat \{\hlorange{berries}, \hlorange{honey}, \hlorange{fish}\}'', or ``\{\hlgreen{Polar}, \hlgreen{Panda}\} bears like to eat \{\hlgreen{seals}, \hlgreen{bamboo}\}''. In general, there are usually many strings nearby $\err{\sigma}$, and we seek those among them which are both syntactically valid and semantically plausible within a short amount of time.
 
@@ -312,7 +312,7 @@ Following Okhotin~\cite{okhotin2001conjunctive}, we then extend our grammar DSL 
   \DisplayProof
 \end{prooftree}
 
-Given two CFLs $\mathcal{L}(\mathcal{G}), \mathcal{L}(\mathcal{G}')$, we can compute their intersection $\mathcal{L}(\mathcal{G})\cap\mathcal{L}(\mathcal{G}')\cap\Sigma^d$ by encoding $\left[(\mathcal{M}_{\mathcal{G}}^* \equiv_\sigma \mathcal{M}_{\mathcal{G}'}^*)_{i=j-1}\right]$. With this feature, we now have the ability to compute multiway intersections between two or more CFLs, which will be use to encode bounded Levenshtein CFL reachability.
+Given two CFGs $\mathcal{G}, \mathcal{G}'$, we can compute the language intersection $\mathcal{L}(\mathcal{G})\cap\mathcal{L}(\mathcal{G}')$ by encoding $\left[(\mathcal{M}_{\mathcal{G}}^* \equiv_\sigma \mathcal{M}_{\mathcal{G}'}^*)_{i=j-1}\right]$. With this feature, we can finally express multiway intersections between two or more CFLs, which will be used to encode the bounded Levenshtein-CFL reachability problem.
 
 %For example, we can solve $\Sigma^d \cap \overline{\mathcal{L}_\mathcal{G}}$ by enumerating $\{\beta\sigma'\gamma \mid \sigma' \in \Sigma^d, \beta = \gamma = \_^k\}$, overapproximating the prefix and suffix (padding left and right), and checking for UNSAT to underapproximate \textit{impossible substrings}, strings which cannot appear in any $\{\sigma \in \mathcal{L}_\mathcal{G}\}$. Precomputing impossible substrings for a given grammar allows us to quickly eliminate inadmissible repairs and localize syntax errors in candidate strings.
 
@@ -342,7 +342,7 @@ In the case where $\sigma$ and $\sigma'$ are both fixed strings, Levenshtein dis
 
 Levenshtein reachability, then, is recognizable by the nondeterministic infinite automaton (NIA) whose topology $\mathcal{L} = \knightkingarrow$ factorizes into a product of (a) the monotone Chebyshev topology $\kingarrow$, equipped with horizontal transitions accepting $\sigma_{i}$ and vertical transitions accepting Kleene stars, and (b) the monotone knight's topology $\knightarrow$, equipped with transitions accepting $\sigma_{i+2}$. The structure of this space is approximated by an acyclic NFA, populated by accept states within radius $k$ of $q_{n,0}$, or equivalently, a left-linear CFG whose productions bisimulate the NFA.
 
-\subsection{Bounded Levenshtein CFL reachability}\label{sec:editreach}
+\subsection{Bounded Levenshtein-CFL reachability}\label{sec:editreach}
 
 %Assume a hypothetical $\Phi(\mathcal{G}': \mathbb{G}, \err{\sigma}: \Sigma^*)\mapsto \tilde{\sigma}: \mathcal{L}(\mathcal{G}')$ which takes a CFG, $\mathcal{G}'$, generating an arbitrary nonempty CFL, and an unparseable string, $\err{\sigma}$, and which returns element(s) of $\mathcal{L}(\mathcal{G}')$ most similar to $\err{\sigma}$ according to their Levenshtein distance $\Delta(\err{\sigma}, \cdot)$.
 
@@ -398,7 +398,7 @@ Regardless of $\sigma$, it is always possible to discharge nonterminals inhabiti
 Given $\sigma, \langle v, i, j \rangle$, then $\Pi(\sigma_{i\ldots j}) \not\subseteq T^\infty(\{v\})$ implies $v\not\Rightarrow^*_\mathcal{G} \sigma_{i\ldots j}$ and $\langle v, i, j \rangle$ is impossible.
 \end{lemma}
 
-We can overapproximate the set of possible nonterminals by comparing the Parikh image of $\sigma_{i\ldots j}$ with the closure of $v$, then discharging impossible nonterminal triples $\langle v, i, j \rangle$. If $\Pi(\sigma_{i\ldots j}) \not\subseteq T^\infty(\{v\})$, then we know $\sigma_{i\ldots j}$ cannot derive $v$ and $\left[(\mathcal{M}_{\sigma} = \mathcal{M}_{\sigma}^2)_{i, j, v}\right]$ may be safely ignored. Note that a tighter approximation can be achieved by considering the minimal Parikh vectors of all $\sigma: \Sigma^\eta$ such that $v \Rightarrow_\mathcal{G}^* \sigma \in \text{H}(\sigma_{i\ldots j})$ rather than just the image on $V$, however this would be computationally more expensive and $\Pi(\sigma)$ already discharges a large fraction of impossible nonterminals in practice.
+We can overapproximate the set of possible nonterminals by comparing the Parikh image of $\sigma_{i\ldots j}$ with the closure of $v$, then discharging impossible nonterminal triples $\langle v, i, j \rangle$. If $\Pi(\sigma_{i\ldots j}) \not\subseteq T^\infty(\{v\})$, then we know $\sigma_{i\ldots j}$ cannot derive $v$ and $\left[(\mathcal{M}_{\sigma} = \mathcal{M}_{\sigma}^2)_{i, j, v}\right]$ may be safely ignored. Note that a tighter approximation can be achieved by considering the minimal Parikh vectors of all $\sigma: \Sigma^\eta$ such that $v \Rightarrow_\mathcal{G}^* \sigma \in \text{H}(\sigma_{i\ldots j})$, rather than just the image on $V$, however this would be computationally more expensive and $\Pi(\sigma)$ already discharges a large fraction of impossible nonterminals in practice.
 
 \subsection{Isolation and reduction}
 
@@ -450,11 +450,11 @@ If we can identify an $\alpha: \Sigma^*$ where $\alpha = \sigma_{i\ldots j}$ for
 %
 %Question: Claim #1 is sufficient, but is it necessary?
 
-\subsection{Sampling without replacement}\label{sec:dsi}
+\subsection{Levenshtein ball sampling without replacement in $\mathcal{O}(1)$}\label{sec:dsi}
 
 Now that we have a reliable method to synthesize admissible completions for strings containing holes, i.e., fix \textit{localized} errors, $F: (\mathcal{G} \times \underline\Sigma^n) \rightarrow \{\Sigma^n\}\subseteq \mathcal{L}(\mathcal{G})$, how can we use $F$ to repair some unparseable string, i.e., $\err{\sigma_1\ldots\:\sigma_n}: \Sigma^n \cap\mathcal{L}(\mathcal{G})^\complement$ where the holes' locations are unknown? Three questions stand out in particular: how many holes are needed to repair the string, where should we put those holes, and how ought we fill them to obtain a parseable $\tilde{\sigma} \in \mathcal{L}(\mathcal{G})$?
 
-One plausible approach would be to draw samples with a PCFG, minimizing tree-edit distance, however these are computationally expensive metrics and approximations may converge poorly. A more efficient strategy is to sample string perturbations, $\bm{\sigma}\sim\Sigma^{n\pm q}\cap\Delta_{q}(\err{\sigma})$, from the Levenshtein q-ball centered on $\err{\sigma}$, i.e., the space of all admissible edits with Levenshtein distance $\leq q$, loosely analogous to a finite difference approximation over words in a finite language.
+One plausible approach would be to draw samples with a PCFG, minimizing tree-edit distance, however these are computationally expensive metrics and approximations may converge poorly. A more efficient strategy is to sample string perturbations, $\bm{\sigma}\sim\Sigma^{n\pm q}\cap\Delta_{q}(\err{\sigma})$ uniformly across the Levenshtein q-ball centered on $\err{\sigma}$, i.e., the space of all admissible edits with Levenshtein distance $\leq q$, loosely analogous to a finite difference approximation over words in a finite language.
 
 %To implement this strategy, we carefully construct a bijection between Levenshtein edits to a known string and the integers, sample integer vectors without replacement using a characteristic polynomial over a finite field, then decode vectors into repairs using a combinatorial indexing scheme that puts integer vectors into one-to-one correspondence with Levenshtein edits. We find this approach computationally more tractable while yielding a steady stream of admissible edits throughout the solving process, regardless of the grammar or string under repair.
 
@@ -486,7 +486,7 @@ Although $\langle\kappa, \rho\rangle$ could be used directly to exhaustively sea
 
 To achieve ergodicity, we permute the elements of $\stirlingii{n}{k}\times\Sigma^k$ using a finite field with a characteristic polynomial $C$ of degree $m\coloneqq\lceil \log_p {n \choose k}|\Sigma_\varepsilon|^k \rceil$. By choosing $C$ to be some irreducible polynomial, one ensures the path has the mixing properties we desire, e.g., suppose $U: \mathbb{Z}_2^{m\times m}$ is a matrix whose structure is depicted to the right, wherein $C$ represents a primitive polynomial over $\mathbb{Z}_2^m$ with known coefficients $C_{1\ldots m}$ and semiring operators $\oplus \coloneqq + \pmod 2, \otimes \coloneqq \land, \top \coloneqq 1, \circ\coloneqq0$. Since $C$ is primitive, the sequence $\mathbf{R} = (U^{0 \ldots 2^m-1}V)$ must have \textit{full periodicity}, i.e., for all $i, j \in[0, 2^m)$, ${\mathbf{R}_i = \mathbf{R}_j \Rightarrow i = j}$. To uniformly sample $\bm\sigma$ without replacement, we construct a partial surjective function from $\mathbb{Z}_2^m$ onto the Levenshtein ball, $\mathbb{Z}_2^m\rightharpoonup\stirlingii{n}{d}\times\Sigma_\varepsilon^{d}$, cycle over $\mathbf{R}$, then discard samples which have no witness in $\stirlingii{n}{d}\times\Sigma_\varepsilon^{d}$.
 
-This procedure requires $\widetilde{\mathcal O}(1)$ per sample and roughly ${n \choose d}|\Sigma_\varepsilon|^{d}$ samples to exhaustively search $\stirlingii{n}{d}\times\Sigma_\varepsilon^{d}$. Its acceptance rate $p^{-m}{n \choose d}|\Sigma_\varepsilon|^{d}$ can be slightly improved with a more suitable base $p$, however this introduces some additional complexity and so we elected to defer this optimization.
+This procedure requires $\mathcal{O}(1)$ per sample and roughly ${n \choose d}|\Sigma_\varepsilon|^{d}$ samples to exhaustively search $\stirlingii{n}{d}\times\Sigma_\varepsilon^{d}$. Its acceptance rate $p^{-m}{n \choose d}|\Sigma_\varepsilon|^{d}$ can be slightly improved with a more suitable base $p$, however this introduces some additional complexity and so we elected to defer this optimization.
 
 In addition to its statistically desirable properties, our sampler has the practical benefit of being trivially parallelizable using the leapfrog method, i.e., given $p$ independent processors, each one can independently check $[\varphi^{-1}(\langle\kappa, \rho\rangle^{-1}(\mathbf{R}_{i}), \err{\sigma}) \in \mathcal{L}(\mathcal{G})]$ where $i \equiv p_j \pmod p$. This procedure linearly scales with the number of processors, exhaustively searching $\Delta_{q}(\err{\sigma})$ in $p^{-1}$ of the time required by a single processor, or alternately drawing $p$ times as many samples in the same amount of time.
 
@@ -525,19 +525,22 @@ Finally, to sample $\bm{\sigma}\sim\Delta_{q}(\err{\sigma})$, we enumerate templ
 
 \subsection{Probabilistic reachability}\label{sec:holes}
 
-Since there are $\Sigma_{d=1}^q{n \choose d}$ total sketch templates, each with $(|\Sigma| + 1)^{d}$ individual edits to check, if $n$ and $q$ are large, this space can be intractable to exhaustively search and a uniform prior may be highly sample-inefficient. Furthermore, na\"ively sampling $\bm{\sigma}_i\sim\Sigma^{n\pm q}\cap\Delta_{q}(\err{\sigma})$ is likely to produce a large number of unnatural edits. To provide rapid and relevant suggestions, we prioritize candidate repairs according to the following seven-step procedure:
+Since there are $\Sigma_{d=1}^q{n \choose d}$ total hole templates, each with $(|\Sigma| + 1)^{d}$ individual edits to check, if $n$ and $q$ are large, this space can be intractable to exhaustively search and a uniform prior may be highly sample-inefficient. Furthermore, na\"ively sampling $\bm{\sigma}_i\sim\Sigma^{n\pm q}\cap\Delta_{q}(\err{\sigma})$ is likely to produce a large number of unnatural edits. To rapidly rank and render relevant repair recommendations, we prioritize candidate edits according to the following nine-step procedure:
 
 \begin{enumerate}
     \item Retrieve the most recent grammar, $\mathcal{G}$, and string, $\err{\sigma}$, from the editor.
 %    \item Lazily enumerate edit templates, $i_{1\ldots d} \in \stirlingii{n}{d}$, for increasing values of $d \geq 1$.
 %    \item Rerank edit templates according to the distribution $\int\mathcal{F}_\theta(\cdot \mid i_{1\ldots d})d\theta$.
-    \item Draw samples $\bm{\sigma}_i\sim \stirlingii{n}{d}\times\Sigma^{n\pm q}\cap\Delta_q(\err{\sigma})$ without replacement using Eq.~\ref{sec:dsi}.
-    \item Filter completions by admissibility with respect to the grammar, $\bm{\sigma}_i \cap \mathcal{L}(\mathcal{G})$.
-    \item Rerank admissible repairs by the edit cost model, $C(\err{\sigma}, \tilde{\sigma})$.
-    \item Display the top-k repairs by edit cost found within p-seconds to the user.
+    \item Draw samples $\hat\sigma \sim \stirlingii{n}{d}\times\Sigma^{n\pm q}\cap\Delta_q(\err{\sigma})$ in parallel without replacement using Eq.~\ref{sec:dsi}.
+    \item Score by perplexity $PP(\hat\sigma)$ using a pretrained variable order Markov chain (VOMC)~\cite{schulz2008vomc}.
+    \item Resample using a concurrent version of the A-Res~\cite{efraimidis2015weighted} online weighted reservoir sampler.
+    \item Filter edit suggestions by admissibility with respect to the grammar, $[\hat\sigma \in \mathcal{L}(\mathcal{G})]$.
+    \item Store admissible repairs to a concurrent priority queue, $\mathcal{Q} \leftarrow \tilde\sigma$, ranked by perplexity.
+    \item Repeat steps (2)-(6), alternately sampling from the LFSR/VOMC-reweighted online resevoir sampler with probability $\epsilon$ or stochastically resampled $\mathcal{Q}$ with probability $(1-\epsilon)$, where $\epsilon$ decreases from $1$ to $0$ according to a stepwise schedule relative to the time remaining.
+    \item Render the top-k repairs found within p-seconds, ranked by $\Delta(\err{\sigma}, \tilde{\sigma})$, then by $PP(\hat\sigma)$.
 \end{enumerate}
 
-Suppose we are given an invalid string, $\err{\sigma}: \Sigma^{90}$ and $\mathcal{F}_\theta$, a distribution over possible edits locations provided by a probabilistic or neural language model, which we can use to localize admissible repairs. For example, by marginalizing onto $\err{\sigma}$, the distribution $\mathcal{F}_\theta$ could take the following form:
+Suppose we are given an invalid string, $\err{\sigma}: \Sigma^{90}$ and $\mathcal{Q}: [0, |\sigma_\varepsilon|) \times \Sigma^q_\varepsilon$, a distribution over previously successful edits, which we can use to localize admissible repairs. For example, by marginalizing onto $\err{\sigma}_\varepsilon$, the distribution $\mathcal{Q}(\err{\sigma}_\varepsilon)$ could take the following form:
 
 \begin{figure}[H]
     \hspace{-0.3cm}\begin{tikzpicture}[scale=0.4]
@@ -559,7 +562,7 @@ Suppose we are given an invalid string, $\err{\sigma}: \Sigma^{90}$ and $\mathca
 %  \node [xshift=142pt, yshift=7pt] {\footnotesize $P_2(X)$};
 %  \node [xshift=227pt, yshift=7pt] {\footnotesize $P_3(X)$};
     \end{tikzpicture}
-    \caption{The distribution $\int\mathcal{F}_{\theta}(\cdot \mid \sigma)d\theta$, projected onto the invalid string, suggests edit locations most likely to yield admissible repairs, from which we draw subsets of size $d$.}
+    \caption{The distribution $\mathcal{Q}$, projected onto the invalid string, suggests edit locations most likely to yield admissible repairs, from which we draw subsets of size $d$.}
 \end{figure}
 %
 %Morally, we would prefer sketch templates likely to yield repairs that are (1) admissible (i.e., grammatically correct) and (2) plausible (i.e., likely to have been written by a human author). To do so, we draw holes and rank admissible repairs using a distance metric over $\Delta_q(\err{\sigma})$. One such metric, the Kantorovich--Rubinstein (KR) metric, $\delta_{KR}$, can be viewed as an optimal transport problem minimizing $\Pi(\mu, \nu)$, the set of all mass-conserving transportation plans between two probability distributions $\mu$ and $\nu$ over a metric space $\Omega$:
@@ -1124,7 +1127,7 @@ The primary advantage and limitation of our tool is the Levenshtein edit distanc
 
 Tidyparse in its current form has several other technical shortcomings: firstly it does not incorporate any neural language modeling technology at present, an omission we hope to address in the near future. Training a language model to predict likely repair locations and rank admissible results could lead to lower overall latency and more natural repairs. We also hope to explore the use of Metropolis-Hastings sampling to generate a diverse set of repairs, which could be useful for code completion and other applications.
 
-Secondly, our current method generates sketch templates using a na\"ive enumerative search, feeding them individually to the SAT solver, which has the tendency to duplicate prior work and introduces unnecessary thrashing. Considering recent extensions of Boolean matrix-based parsing to linear context-free rewriting systems (LCFRS)~\cite{cohen2016parsing}, it may be feasible to search through these edits within the SAT solver, leading to yet unrealized and possibly significant speedups.
+Secondly, our current method generates hole templates using a na\"ive enumerative search, feeding them individually to the SAT solver, which has the tendency to duplicate prior work and introduces unnecessary thrashing. Considering recent extensions of Boolean matrix-based parsing to linear context-free rewriting systems (LCFRS)~\cite{cohen2016parsing}, it may be feasible to search through these edits within the SAT solver, leading to yet unrealized and possibly significant speedups.
 
 Lastly and perhaps most significantly, Tidyparse does not incorporate any semantic constraints, so its repairs whilst syntactically admissible, are not guaranteed to be semantically valid. This can be partly alleviated by filtering the results through an incremental compiler or linter, however the latency introduced may be non-negligible. It is also possible to encode type-based semantic constraints into the solver and intend to explore this direction more fully in future work.
 
