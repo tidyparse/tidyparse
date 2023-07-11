@@ -1,0 +1,24 @@
+\begin{algorithm}[H]
+  \caption{Probabilistic reachability}
+  \label{alg:adaptive}
+  \begin{algorithmic}[1]
+    \Require $\mathcal{G}$ grammar, $\err{\sigma}$ broken string, $p$ process ID, $c$ total CPU cores, $t_{\text{total}}$ timeout.
+    \State $\mathcal{Q} \gets \varnothing, \mathcal{R} \gets \varnothing, \varepsilon \gets 1, i \gets 0, Y \sim \mathbb{Z}_2^m$ \Comment{Initialize replay buffer $\mathcal{Q}$ and reservoir $\mathcal{R}$.}
+    \Repeat
+      \If {$\mathcal{Q} = \varnothing$ or \textbf{Rand}(0, 1) $< \varepsilon$}
+        \State $\hat\sigma \gets \varphi^{-1}(\langle\kappa, \rho\rangle^{-1}(U^{ci+p}Y), \err{\sigma}), i \gets i + 1$ \Comment{Sample WoR using the leapfrog method.}
+      \Else
+        \State $\hat\sigma \sim \mathcal{Q} + \textbf{Noise}(\mathcal{Q})$ \Comment{Sample previously successful patches with additive noise.}
+      \EndIf
+      \State $\mathcal{R} \gets \mathcal{R} + \langle PP(\hat\sigma), \hat\sigma \rangle$ \Comment{Insert candidate $\hat\sigma$ into reservoir $\mathcal{R}$, ranked by perplexity.}
+      \If{$|\mathcal{R}| \geq$ maximum reservoir size}
+        \State $\hat\sigma \gets \argmin_{\hat\sigma \in \mathcal{R}} PP(\hat\sigma)$ \Comment{Select the lowest perplexity repair candidate.}
+        \If{$\hat\sigma \in \mathcal{L}(\mathcal{G})$}
+          \State $\mathcal{Q} \gets \mathcal{Q} + \langle PP(\hat\sigma), \hat\sigma \rangle$ \Comment{Insert successful repair into $\mathcal{Q}$, ranked by perplexity.}
+        \EndIf
+      \EndIf
+      \State $\varepsilon \leftarrow \textbf{Schedule}\big((t_{\text{now}} - t_{\text{init}}) / t_{\text{total}}\big)$ \Comment{Update exploration/exploitation rate.}
+    \Until{$t_{\text{total}}$ elapses.}
+    \State \Return $\mathcal{Q}$
+  \end{algorithmic}
+\end{algorithm}

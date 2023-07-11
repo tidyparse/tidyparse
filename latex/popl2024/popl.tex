@@ -550,45 +550,63 @@ Since there are $\Sigma_{d=1}^q{n \choose d}$ total hole templates, each with $|
 %    \item Retrieve the most recent grammar, $\mathcal{G}$, and string, $\err{\sigma}$, from the editor.
 %    \item Lazily enumerate edit templates, $i_{1\ldots d} \in \stirlingii{n}{d}$, for increasing values of $d \geq 1$.
 %    \item Rerank edit templates according to the distribution $\int\mathcal{F}_\theta(\cdot \mid i_{1\ldots d})d\theta$.
-    \item Draw samples $\hat\sigma \sim \Delta_q(\err{\sigma})$ without replacement using \S\ref{sec:dsi} with leapfrog parallelization.
-    \item Score by perplexity $PP(\hat\sigma)$ using a pretrained variable-order Markov chain (VOMC)~\cite{schulz2008vomc}.
-    \item Resample using a concurrent variant of the A-Res~\cite{efraimidis2015weighted} online weighted reservoir sampler.
-    \item Filter Levenshtein edits by admissibility with respect to the grammar, i.e., $[\hat\sigma \in \mathcal{L}(\mathcal{G})]$.
-    \item Minimize and store admissible repairs to a priority queue, $\mathcal{Q} \leftarrow \tilde\sigma$, ranked by perplexity.
-    \item Repeat steps (2)-(6), alternately sampling from the LFSR/VOMC-reweighted online resevoir sampler with probability $\epsilon$ or stochastically resampled $\mathcal{Q}$ with probability $(1-\epsilon)$, where $\epsilon$ decreases from $1$ to $0$ according to a stepwise schedule relative to the time remaining.
-    \item Render the top-k repairs found within p-seconds, ranked by $\Delta(\err{\sigma}, \tilde{\sigma})$, then by $PP(\hat\sigma)$.
+    \vspace{5pt}\item Draw samples $\hat\sigma \sim \Delta_q(\err{\sigma})$ without replacement using \S\ref{sec:dsi} with leapfrog \vspace{2pt}parallelization.
+    \vspace{5pt}\item Score by perplexity $PP(\hat\sigma)$ using a pretrained variable-order Markov chain (VOMC)~\cite{schulz2008vomc}.
+    \vspace{5pt}\item Resample using a concurrent variant of the A-Res~\cite{efraimidis2015weighted} online weighted reservoir sampler.
+    \vspace{5pt}\item Filter Levenshtein edits by admissibility with respect to the grammar, i.e., $[\hat\sigma \in \mathcal{L}\vspace{2pt}(\mathcal{G})]$.
+    \vspace{5pt}\item Minimize and store admissible repairs to a replay buffer, $\mathcal{Q} \leftarrow \tilde\sigma$, ranked by perplexity.
+    \vspace{5pt}\item Repeat steps (1)-(5), alternately sampling from the LFSR/VOMC-reweighted online resevoir sampler with probability $\epsilon$ or stochastically resampled $\mathcal{Q}$ with probability $(1-\epsilon)$, where $\epsilon$ decreases from $1$ to $0$ according to a stepwise schedule relative to the time remaining.
+    \vspace{5pt}\item Render the top-k repairs found within p-seconds, ranked by $\Delta(\err{\sigma}, \tilde{\sigma})$, then by $PP(\hat\sigma)$.
 \end{enumerate}
 
-Suppose we are given an invalid string, $\err{\sigma}: \Sigma^{90}$ and $\mathcal{Q}: [0, |\sigma_\varepsilon|) \times \Sigma^q_\varepsilon$, a distribution over previously successful edits, which we can use to localize admissible repairs. For example, by marginalizing onto $\err{\sigma}_\varepsilon$, the distribution $\mathcal{Q}(\err{\sigma}_\varepsilon)$ could take the following form:
+\begin{wrapfigure}{r}{0.5\textwidth}
+  \vspace{-10pt}
+  \scalebox{0.5}{
+  \begin{minipage}{\textwidth}
+  \input{prob_reach.tex}
+  \end{minipage}
+  }
+\end{wrapfigure}
 
-\begin{figure}[H]
-    \hspace{-0.3cm}\begin{tikzpicture}[scale=0.4]
-        \begin{axis}[x=2cm, y=2cm, every axis plot post/.append style={mark=none,domain=-2:7.5,samples=50,smooth},
-            axis x line*=bottom, % no box around the plot, only x and y axis
-            ticks=none,
-            y axis line style={draw=none},
-            xticklabels={,,},
-            enlargelimits=upper] % extend the axes a bit to the right and top
-            \addplot[name path=F] {gauss(0.0,0.4)};
-            \addplot[name path=G] {gauss(3.0,0.5)};
-            \addplot[name path=H] {gauss(6.0,0.3)};
-            \addplot[name path=N] {nil(0)};
-            \addplot[pattern=vertical lines, pattern color=gray!50]fill between[of=F and N, soft clip={domain=-3:1}];
-            \addplot[pattern=vertical lines, pattern color=gray!50]fill between[of=G and N, soft clip={domain=1:5}];
-            \addplot[pattern=vertical lines, pattern color=gray!50]fill between[of=H and N, soft clip={domain=4:7.5}];
-        \end{axis}
-        \node [xshift=4.1cm, yshift=-7pt] {\footnotesize $\sigma_1\hspace{0.5cm}\sigma_{10}\err{\hspace{0.5cm}\sigma_{20}}\hspace{0.5cm}\sigma_{30}\hspace{0.5cm}\err{\sigma_{40}\hspace{0.5cm}\sigma_{50}}\hspace{0.5cm}\sigma_{60}\hspace{0.5cm}\err{\sigma_{70}\hspace{0.3cm}}\hspace{0.2cm}\sigma_{80}\hspace{0.5cm}\sigma_{90}$};
-%  \node [xshift=142pt, yshift=7pt] {\footnotesize $P_2(X)$};
-%  \node [xshift=227pt, yshift=7pt] {\footnotesize $P_3(X)$};
-    \end{tikzpicture}
-    \caption{The distribution $\mathcal{Q}$, projected onto the invalid string, suggests edit locations most likely to yield admissible repairs, from which we draw subsets of size $d$.}
-\end{figure}
+
+Initially, the replay buffer $\mathcal{Q}$ is empty and repairs are sampled uniformly without replacement from the Levenshtein ball, $\Delta_{q}(\err{\sigma})$. As time progresses, $\mathcal{Q}$  is gradually populated with admissible repairs and resampled with increasing probability, allowing the algorithm to initially explore, then exploit the most promising candidates. This is summarized in Algorithm~\ref{alg:adaptive}.
+
+We would prefer hole templates likely to yield repairs that are (1) admissible (i.e., grammatically correct) and (2) plausible (i.e., likely to have been written by a human author). To do so, we draw holes and rank admissible repairs using a probabilistic distance metric over $\Delta_q(\err{\sigma})$. For example, suppose we are given an invalid string, $\err{\sigma}_{\varepsilon}: \Sigma^{90}$ and $\mathcal{Q}: [0, |\sigma_\varepsilon|) \times \Sigma^q_\varepsilon$, a distribution over previously successful edits, which we can use to localize admissible repairs. By marginalizing onto $\err{\sigma}_\varepsilon$, the distribution $\mathcal{Q}(\err{\sigma}_\varepsilon)$ could take the form depicted in Fig.~\ref{fig:prob_reach}.
+
+%\begin{figure}[H]
+%    \hspace{-0.3cm}
+%\end{figure}
 %
 %Morally, we would prefer sketch templates likely to yield repairs that are (1) admissible (i.e., grammatically correct) and (2) plausible (i.e., likely to have been written by a human author). To do so, we draw holes and rank admissible repairs using a distance metric over $\Delta_q(\err{\sigma})$. One such metric, the Kantorovich--Rubinstein (KR) metric, $\delta_{KR}$, can be viewed as an optimal transport problem minimizing $\Pi(\mu, \nu)$, the set of all mass-conserving transportation plans between two probability distributions $\mu$ and $\nu$ over a metric space $\Omega$:
 %
 %\begin{align}
 %    \delta_{\textsc{KR}}(\mu, \nu) \coloneqq \inf_{\pi\in \Pi(\mu, \nu)}\int_{\Omega\times \Omega} \delta(x, y)d\pi(x, y)
 %\end{align}
+
+\begin{wrapfigure}{r}{0.5\textwidth}
+  \scalebox{0.8}{
+    \begin{tikzpicture}[scale=0.4]
+      \begin{axis}[x=2cm, y=2cm, every axis plot post/.append style={mark=none,domain=-2:7.5,samples=50,smooth},
+        axis x line*=bottom, % no box around the plot, only x and y axis
+        ticks=none,
+        y axis line style={draw=none},
+        xticklabels={,,},
+        enlargelimits=upper] % extend the axes a bit to the right and top
+        \addplot[name path=F] {gauss(0.0,0.4)};
+        \addplot[name path=G] {gauss(3.0,0.5)};
+        \addplot[name path=H] {gauss(6.0,0.3)};
+        \addplot[name path=N] {nil(0)};
+        \addplot[pattern=vertical lines, pattern color=gray!50]fill between[of=F and N, soft clip={domain=-3:1}];
+        \addplot[pattern=vertical lines, pattern color=gray!50]fill between[of=G and N, soft clip={domain=1:5}];
+        \addplot[pattern=vertical lines, pattern color=gray!50]fill between[of=H and N, soft clip={domain=4:7.5}];
+      \end{axis}
+      \node [xshift=4.1cm, yshift=-7pt] {\footnotesize $\sigma_1\hspace{0.5cm}\sigma_{10}\err{\hspace{0.5cm}\sigma_{20}}\hspace{0.5cm}\sigma_{30}\hspace{0.5cm}\err{\sigma_{40}\hspace{0.5cm}\sigma_{50}}\hspace{0.5cm}\sigma_{60}\hspace{0.5cm}\err{\sigma_{70}\hspace{0.3cm}}\hspace{0.2cm}\sigma_{80}\hspace{0.5cm}\sigma_{90}$};
+%  \node [xshift=142pt, yshift=7pt] {\footnotesize $P_2(X)$};
+%  \node [xshift=227pt, yshift=7pt] {\footnotesize $P_3(X)$};
+    \end{tikzpicture}
+  }
+  \caption{The distribution $\mathcal{Q}$, projected onto the invalid string, suggests edit locations likely to yield admissible repairs, from which we draw subsets of size $d$.}\label{fig:prob_reach}
+\end{wrapfigure}
 
 More specifically in our setting, we want to sample from a discrete product space that factorizes into (1) the specific edit locations (e.g., informed by caret position, historical edit locations, or a static analyzer), (2) probable completions (e.g., from a Markov chain or neural language model) and (3) an accompanying \textit{cost model}, $C: (\Sigma^* \times \Sigma^*) \rightarrow \mathbb{R}$, which may be any number of suitable distance metrics, such as language edit distance, finger travel distance on a physical keyboard, weighted Levenshtein distance, or stochastic contextual edit distance~\cite{cotterell+al.acl14} in the case of probabilistic edits. Our goal then, is to discover repairs which minimize $C(\err{\sigma}, \tilde{\sigma})$, subject to the given grammar and latency constraints.
 
@@ -716,7 +734,6 @@ The problem of incremental parsing is closely related to \textit{dynamic matrix 
 Not only is Tidyparse capable of suggesting repairs to invalid strings, it can also return partial trees for those same strings, which is often helpful for debugging purposes. Unlike LL- and LR-style parsers which require special rules for error recovery, Tidyparse can simply analyze the structure of $M^*$ to recover parse branches. If $S \notin  \Lambda^*_\sigma$, the upper triangular entries of $M^*$ will take the form of a jagged-shaped ridge whose peaks signify the roots of maximally-parsable substrings $\hat{\sigma}_{i, j}$.
 
 These branches are located on peaks of the upper triangular (UT) matrix ridge. As depicted in Fig.~\ref{fig:peaks}, we traverse the peaks by decreasing elevation to collect partial AST branches and display the highest nonoverlapping branches, in this case $T_C$ and $T_A$ to the user, to help them diagnose the parsing error and manually repair it.
-
 
 
 %When completing a bounded-width string, one finds it is often convenient to admit nonterminal stubs, representing unexpanded subexpressions. To enable this functionality, we introduce a synthetic production for each $v \in V$ using the $\langle\cdot\rangle\textsc{-int}$ rule. Users can interactively build up a complex expression by placing the caret over a stub, then pressing \keys{\ctrl + \SPACE}:
@@ -1084,7 +1101,7 @@ error bars/y explicit
 %Incoder
 %CarperAI?
 
-\pagebreak\section{Discussion}\label{sec:discussion}
+\section{Discussion}\label{sec:discussion}
 
 While error correction with a few errors is tolerable, latency can vary depending on many factors including string length and grammar size. If errors are localized to the beginning or end of a string, then latency is typically below 500ms. We observe that errors are typically concentrated nearby historical edit locations, which can be retrieved from the IDE or version control.
 
@@ -1112,7 +1129,7 @@ Not only is linear algebra over finite fields an expressive language for probabi
 
 Furthermore, we argue it is possible to improve the efficiency of human programmers without sacrificing expressiveness by considering latency to synthesize an acceptable completion. In contrast with program synthesizers that require intermediate programs to be well-formed, our synthesizer is provably sound and complete up to a Levenshtein distance bound, and attempts to minimize total edits, but does not impose any constraints on the code itself being written.
 
-Tidyparse accepts a set of CFGs and a string to parse. If the string is valid, it returns the parse forest, otherwise, it returns a set of repairs, ordered by their Levenshtein edit distance to the invalid string. Our method compiles each CFG and candidate string onto a matrix dynamical system using an extended version of Valiant's construction and solves for its fixedpoints using an incremental SAT solver. This approach to parsing has many advantages, enabling us to repair syntax errors, correct typos and generate parse trees for incomplete strings. By allowing the string to contain holes, repairs can contain either concrete tokens or nonterminals, which can be manually expanded by the user or a neural-guided search procedure. From a theoretical standpoint, this technique is particularly amenable to neural program synthesis and repair, naturally integrating with the masked-language-modeling task (MLM) used by transformer-based neural language models.
+Tidyparse accepts a set of CFGs and a string to parse. If the string is valid, it returns the parse forest, otherwise, it returns a set of repairs, ordered by perplexity. Our method compiles each CFG and candidate string onto a Boolean dynamical system and solves for its fixedpoints using an incremental SAT solver. This approach to parsing has many advantages, enabling us to repair syntax errors and generate parse trees for incomplete strings. This technique is particularly amenable to neural program synthesis and repair, naturally integrating with the masked-language-modeling task (MLM) used by transformer-based neural language models.
 
 From a practical standpoint, we have implemented our approach as an IDE plugin and demonstrated its viability as a tool for live programming. Tidyparse is capable of generating repairs for invalid code in a range of practical languages. We plan to continue expanding its grammar and autocorrection functionality to cover a broader range of languages and hope to conduct a more thorough user study to validate its effectiveness in the near future.
 
