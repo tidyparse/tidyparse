@@ -78,28 +78,26 @@ Tidyparse accepts an arbitrary CFG and a string, which we first attempt to parse
   \end{tabular}
   \item \begin{tabular}{|c|c|c|c|c|c|c|c|c|c|c|c|c|c|c|}
           \hline
-          \texttt{ID} & \texttt{=} & \texttt{ID} & \texttt{(} & \texttt{[} & \texttt{ID} & \texttt{(} & \texttt{ID} & \texttt{]} & \texttt{for} & \texttt{ID} & \texttt{in} & \texttt{ID} & \texttt{)} & \texttt{)} \\\hline
+          \texttt{w} & \texttt{=} & \texttt{w} & \texttt{(} & \texttt{[} & \texttt{w} & \texttt{(} & \texttt{w} & \texttt{]} & \texttt{for} & \texttt{w} & \texttt{in} & \texttt{w} & \texttt{)} & \texttt{)} \\\hline
   \end{tabular}
   \item \begin{tabular}{|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||}
           \hline
-          \texttt{ID} & \texttt{=} & \texttt{ID} & \texttt{(} & \texttt{[} & \texttt{ID} & \texttt{(} & \texttt{ID} & \texttt{]} & \texttt{for} & \texttt{ID} & \texttt{in} & \texttt{ID} & \texttt{)} & \texttt{)} \\\hline
+          \texttt{w} & \texttt{=} & \texttt{w} & \texttt{(} & \texttt{[} & \texttt{w} & \texttt{(} & \texttt{w} & \texttt{]} & \texttt{for} & \texttt{w} & \texttt{in} & \texttt{w} & \texttt{)} & \texttt{)} \\\hline
   \end{tabular}
   \item \begin{tabular}{|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||}
           \hline
-%          \texttt{ID} & \texttt{=} & \texttt{ID} & \texttt{(} & \texttt{[} & \texttt{ID} & \texttt{(} & \texttt{ID} & \texttt{]} & \texttt{for} & \texttt{ID} & \texttt{in} & \texttt{ID} & \texttt{)} & \texttt{)} \\\hline
-          \cellcolor{black!15}\texttt{\_} & \texttt{=} & \cellcolor{black!15}\texttt{\_} & \texttt{(} & \texttt{[} & \texttt{ID} & \texttt{(} & \texttt{ID} & \texttt{]} & \texttt{for} & \texttt{ID} & \texttt{in} & \texttt{ID} & \texttt{)} & \cellcolor{black!15}\texttt{\_} \\\hline
-%          & & & & & & & & & & & & & & \\\hline
+          \cellcolor{black!15}\texttt{\_} & \texttt{=} & \cellcolor{black!15}\texttt{\_} & \texttt{(} & \texttt{[} & \texttt{w} & \texttt{(} & \texttt{w} & \texttt{]} & \texttt{for} & \texttt{w} & \texttt{in} & \texttt{w} & \texttt{)} & \cellcolor{black!15}\texttt{\_} \\\hline
   \end{tabular}\\
   \begin{tabular}{|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||c|||}
     \hline
-    \texttt{ID} & \cellcolor{black!15}\texttt{\_} & \texttt{ID} & \texttt{(} & \texttt{[} & \cellcolor{black!15}\texttt{\_} & \texttt{(} & \texttt{ID} & \texttt{]} & \texttt{for} & \texttt{ID} & \cellcolor{black!15}\texttt{\_} & \texttt{ID} & \texttt{)} & \texttt{)} \\\hline
-%          \cellcolor{black!15}\texttt{\_} & \texttt{=} & \cellcolor{black!15}\texttt{\_} & \texttt{(} & \texttt{[} & \texttt{ID} & \texttt{(} & \texttt{ID} & \texttt{]} & \texttt{for} & \texttt{ID} & \texttt{in} & \texttt{ID} & \texttt{)} & \cellcolor{black!15}\texttt{\_} \\\hline
+    \texttt{w} & \cellcolor{black!15}\texttt{\_} & \texttt{w} & \texttt{(} & \texttt{[} & \cellcolor{black!15}\texttt{\_} & \texttt{(} & \texttt{w} & \texttt{]} & \texttt{for} & \texttt{w} & \cellcolor{black!15}\texttt{\_} & \texttt{w} & \texttt{)} & \texttt{)} \\\hline
+%          \cellcolor{black!15}\texttt{\_} & \texttt{=} & \cellcolor{black!15}\texttt{\_} & \texttt{(} & \texttt{[} & \texttt{w} & \texttt{(} & \texttt{w} & \texttt{]} & \texttt{for} & \texttt{w} & \texttt{in} & \texttt{w} & \texttt{)} & \cellcolor{black!15}\texttt{\_} \\\hline
 %          & & & & & & & & & & & & & & \\\hline
   \end{tabular}\\$\cdots$
   \item \begin{tabular}{|||c|||c|||c|||c|||c|||c|||c||c|c|||c|||c|||c|||c|||c|||c|||c|||}
           \hline
-%          \texttt{ID} & \texttt{=} & & \texttt{ID} & \texttt{(} & \texttt{[} & \texttt{ID} & \texttt{(} & \texttt{ID} & \texttt{]} & \texttt{for} & \texttt{ID} & \texttt{in} & \texttt{ID} & \texttt{)} & \texttt{)} \\\hline
-          \texttt{ID} & \texttt{=} & \texttt{ID} & \texttt{(} & \texttt{[} & \texttt{ID} & \texttt{(} & \cellcolor{black!15}\texttt{\_} &  \texttt{ID} & \cellcolor{black!15}\texttt{\_} & \texttt{for} & \texttt{ID} & \texttt{in} & \texttt{ID} & \cellcolor{black!15}\texttt{\_} & \texttt{)} \\\hline
+%          \texttt{w} & \texttt{=} & & \texttt{w} & \texttt{(} & \texttt{[} & \texttt{w} & \texttt{(} & \texttt{w} & \texttt{]} & \texttt{for} & \texttt{w} & \texttt{in} & \texttt{w} & \texttt{)} & \texttt{)} \\\hline
+          \texttt{w} & \texttt{=} & \texttt{w} & \texttt{(} & \texttt{[} & \texttt{w} & \texttt{(} & \cellcolor{black!15}\texttt{\_} &  \texttt{w} & \cellcolor{black!15}\texttt{\_} & \texttt{for} & \texttt{w} & \texttt{in} & \texttt{w} & \cellcolor{black!15}\texttt{\_} & \texttt{)} \\\hline
           & & & & & & & \cellcolor{green!25}\texttt{-} & & \cellcolor{orange!25}\texttt{)} & & & & & \cellcolor{orange!25}\texttt{]} & \\\hline
   \end{tabular}
   \item (a) \texttt{d = sum([foo(\hlgreen{-}i\hlorange{)} for i in vals\hlorange{]})} $\Longrightarrow$ (b) \texttt{d = sum([foo(i\hlorange{)} for i in vals\hlorange{]})}
@@ -128,7 +126,7 @@ With the above criteria in mind, the following paper addresses four primary rese
 \begin{enumerate}
   \item \textbf{What are the theoretical guarantees?} (e.g., upper bounds, soundness, completeness)
   \item \textbf{How do we reduce syntax repair onto finite fields?} (e.g., algorithms and data structures)
-  \item \textbf{How does Tidyparse compare with existing approaches?} (e.g., large language models)
+  \item \textbf{How does Tidyparse compare with existing approaches?} (e.g., neural program repair)
   \item \textbf{What are the limitations of this technique?} (e.g., precision, latency, error tolerance)
 \end{enumerate}
 
@@ -171,7 +169,7 @@ Let us now consider the maximum growth rate of the \textit{admissible set}, $A \
 
 We note that the above bound applies to all strings and languages, and relates to the Hamming bound on $H_q(\err{\sigma}_\varepsilon)$, which only considers substitutions.~\footnote{This reflects our general approach, which builds a surjection from the interleaved Hamming ball onto the Levenshtein ball.} In practice, much tighter bounds may be obtained by considering the structure of $\ell$ and $\err{\sigma}$. For example, based on an empirical evaluation from a dataset of human errors and repairs in Python code snippets ($|\Sigma| = 50, |\err{\sigma}| < 40, \Delta(\err{\sigma}, \ell) \in [1, 3]$), we estimate the \textit{filtration rate}, i.e., the density of the admissible set relative to the Levenshtein ball, $D=|A|/|\Delta_q(\err{\sigma})|$ to have empirical mean $E_\sigma[D] \approx 2.6\times 10^{-4}$, and variance $\mathrm{Var}_\sigma[D] \approx 3.8\times10^{-7}$.
 
-In practice, this problem is ill-posed even when $q = \Delta^*(\err{\sigma}, \ell) \approx 1$. For example, consider the language of ursine dietary preferences. Although $\err{\sigma}\coloneq$ ``Bears like to eat tomatoes'' is not a valid sentence, e.g., $\tilde{\sigma}\coloneq$``Bears like to eat'' is $(\Delta^*=1)$, however there are many others with roughly the same edit distance, e.g., ``Bears like to eat \{\hlorange{berries}, \hlorange{honey}, \hlorange{fish}\}'', or ``\{\hlgreen{Polar}, \hlgreen{Panda}\} bears like to eat \{\hlgreen{seals}, \hlgreen{bamboo}\}''. In general, there are usually many strings nearby $\err{\sigma}$, and we seek to find those among them which are both syntactically valid and semantically plausible as quickly as possible.
+In practice, this problem is ill-posed even when $q = \Delta^*(\err{\sigma}, \ell) \approx 1$. For example, consider the language of ursine dietary preferences. Although $\err{\sigma}\coloneq$ ``Bears like to eat plastic'' is not a valid sentence, e.g., $\tilde{\sigma}\coloneq$``Bears like to eat'' is $(\Delta^*=1)$, however there are many others with roughly the same edit distance, e.g., ``Bears like to eat \{\hlorange{berries}, \hlorange{honey}, \hlorange{fish}\}'', or ``\{\hlgreen{Polar}, \hlgreen{Panda}\} bears like to eat \{\hlgreen{seals}, \hlgreen{bamboo}\}''. In general, there are usually many strings nearby $\err{\sigma}$, and we seek to find those among them which are both syntactically valid and semantically plausible as quickly as possible.
 
 \section{Matrix Theory}\label{sec:matrix}
 
@@ -544,7 +542,7 @@ Suppose we have a string, \texttt{\err{a ( b}}, and discover the patch, $\tilde{
 
 \pagebreak\subsection{Probabilistic reachability}\label{sec:adaptive}
 
-Since there are $\Sigma_{d=1}^q{n \choose d}$ total hole templates, each with $|\Sigma_\varepsilon| ^d$ individual edits to check, if $n$ and $q$ are large, this space can be slow to exhaustively search and a uniform prior may be highly sample-inefficient. Furthermore, na\"ively sampling $\sigma\sim\Delta_{q}(\err{\sigma})$ is likely to produce a large number of unnatural edits and converge poorly on $\Delta_{q}(\err{\sigma})\cap\mathcal{L}(\mathcal{G})$. To rapidly rank and render relevant repair recommendations, we prioritize candidate edits according to the following seven-step procedure:
+Since there are $\Sigma_{d=1}^q{n \choose d}$ total hole templates, each with $|\Sigma_\varepsilon| ^d$ individual edits to check, if $n$ and $q$ are large, this space can be slow to exhaustively search and a uniform prior may be highly sample-inefficient. Furthermore, na\"ively sampling $\sigma\sim\Delta_{q}(\err{\sigma})$ is likely to produce a large number of unnatural edits and converge poorly on $\Delta_{q}(\err{\sigma})\cap\mathcal{L}(\mathcal{G})$. To rapidly rank and render relevant repair recommendations, we prioritize candidate edits according to the following six-step procedure:
 
 \begin{enumerate}
 %    \item Retrieve the most recent grammar, $\mathcal{G}$, and string, $\err{\sigma}$, from the editor.
@@ -556,7 +554,6 @@ Since there are $\Sigma_{d=1}^q{n \choose d}$ total hole templates, each with $|
     \vspace{5pt}\item Filter Levenshtein edits by admissibility with respect to the grammar, i.e., $[\hat\sigma \in \mathcal{L}\vspace{2pt}(\mathcal{G})]$.
     \vspace{5pt}\item Minimize and store admissible repairs to a replay buffer, $\mathcal{Q} \leftarrow \tilde\sigma$, ranked by perplexity.
     \vspace{5pt}\item Repeat steps (1)-(5), alternately sampling from the LFSR/VOMC-reweighted online resevoir sampler with probability $\epsilon$ or stochastically resampled $\mathcal{Q}$ with probability $(1-\epsilon)$, where $\epsilon$ decreases from $1$ to $0$ according to a stepwise schedule relative to the time remaining.
-    \vspace{5pt}\item Render the top-k repairs found within p-seconds, ranked by $\Delta(\err{\sigma}, \tilde{\sigma})$, then by $PP(\hat\sigma)$.
 \end{enumerate}
 
 \begin{wrapfigure}{r}{0.5\textwidth}
@@ -568,10 +565,9 @@ Since there are $\Sigma_{d=1}^q{n \choose d}$ total hole templates, each with $|
   }
 \end{wrapfigure}
 
+Initially, the replay buffer $\mathcal{Q}$ is empty and repairs are sampled uniformly without replacement from the Levenshtein ball, $\Delta_{q}(\err{\sigma})$. As time progresses, $\mathcal{Q}$  is gradually populated with admissible repairs and resampled with increasing probability, allowing the algorithm to initially explore, then exploit the most promising candidates. This is summarized in Algorithm~\ref{alg:adaptive} which is run in parallel across all available CPU cores.
 
-Initially, the replay buffer $\mathcal{Q}$ is empty and repairs are sampled uniformly without replacement from the Levenshtein ball, $\Delta_{q}(\err{\sigma})$. As time progresses, $\mathcal{Q}$  is gradually populated with admissible repairs and resampled with increasing probability, allowing the algorithm to initially explore, then exploit the most promising candidates. This is summarized in Algorithm~\ref{alg:adaptive}.
-
-We would prefer hole templates likely to yield repairs that are (1) admissible (i.e., grammatically correct) and (2) plausible (i.e., likely to have been written by a human author). To do so, we draw holes and rank admissible repairs using a probabilistic distance metric over $\Delta_q(\err{\sigma})$. For example, suppose we are given an invalid string, $\err{\sigma}_{\varepsilon}: \Sigma^{90}$ and $\mathcal{Q}: [0, |\sigma_\varepsilon|) \times \Sigma^q_\varepsilon$, a distribution over previously successful edits, which we can use to localize admissible repairs. By marginalizing onto $\err{\sigma}_\varepsilon$, the distribution $\mathcal{Q}(\err{\sigma}_\varepsilon)$ could take the form depicted in Fig.~\ref{fig:prob_reach}.
+We would prefer hole templates likely to yield repairs that are (1) admissible (i.e., grammatically correct) and (2) plausible (i.e., likely to have been written by a human author). To do so, we draw holes and rank admissible repairs using a probabilistic distance metric over $\Delta_q(\err{\sigma})$. For example, suppose we are given an invalid string, $\err{\sigma}_{\varepsilon}: \Sigma^{90}$ and $\mathcal{Q} \subseteq [0, |\sigma_\varepsilon|) \times \Sigma^q_\varepsilon$, a distribution over previously successful edits, which we can use to localize admissible repairs. By marginalizing onto $\err{\sigma}_\varepsilon$, the distribution $\mathcal{Q}(\err{\sigma}_\varepsilon)$ could take the form depicted in Fig.~\ref{fig:prob_reach}.
 
 %\begin{figure}[H]
 %    \hspace{-0.3cm}

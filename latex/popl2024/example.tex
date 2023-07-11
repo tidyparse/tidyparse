@@ -76,14 +76,14 @@ underlay unbroken and first={%
   \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
 }]
 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-v = [float(n for n in l.split(':')]
+d = sum([foo(i] for i in vals))
 \end{lstlisting}
 \tcblower
 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-v = [float(*@\hlred{(}@*)n for n in l.split(':')]
-v = [float((*@\hlgreen{)}@*)n for n in l.split(':')]
-v = [float((*@\hlorange{)}@*) for n in l.split(':')]
-v = [float(n(*@\hlgreen{)}@*) for n in l.split(':')]
+d = sum([foo(i(*@\hlorange{)}@*) for i in vals(*@\hlorange{]}@*))
+d = sum([(i(*@\hlorange{)}@*) for i in vals(*@\hlorange{]}@*))
+d = sum([foo(*@\hlorange{.}@*)i for i in vals(*@\hlorange{]}@*))
+d = sum([foo((*@\hlgreen{-}@*)i(*@\hlorange{)}@*) for i in vals(*@\hlorange{]}@*))
 \end{lstlisting}
 \end{tcolorbox}
 \end{minipage}
@@ -96,21 +96,21 @@ underlay unbroken and first={%
   \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
 }]
 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-w = [ w ( w w w w w . w ( w ) ]
+w = w ( [ w ( w ] for w in w ) )
 \end{lstlisting}
 \tcblower
 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-w = [ w (*@\hlred{(}@*) w w w w w . w ( w ) ]
-w = [ w ( (*@\hlgreen{)}@*) w w w w w . w ( w ) ]
-w = [ w ( (*@\hlorange{)}@*) w w w w . w ( w ) ]
-w = [ w ( w (*@\hlgreen{)}@*) w w w w . w ( w ) ]
+w = w ( [ w ( i (*@\hlorange{)}@*) for i in w (*@\hlorange{]}@*) )
+w = w ( [ (*@\hlred{w}@*) ( w (*@\hlorange{)}@*) for w in w (*@\hlorange{]}@*) )
+w = w ( [ w (*@\hlorange{.}@*) w (*@\hlred{)}@*)  for w in w (*@\hlorange{]}@*) )
+w = w ( [ w ( (*@\hlgreen{-}@*) w (*@\hlorange{)}@*) for w in w (*@\hlorange{)}@*) )
 \end{lstlisting}
 \end{tcolorbox}
 \end{minipage}
 
-This coarsening is done to reduce the number of possible corrections, and is admissible because CFLs are closed under homomorphisms. (If we wanted to provide a lexical expansion, this would be possible.) These candidates then reranked using a probability metric.
+This coarsening is done to reduce the number of possible corrections, and is admissible because CFLs are closed under homomorphisms. (If we wanted to provide a lexical expansion, this would be possible.) These candidates then reranked using a probability metric as describe in \S\ref{sec:adaptive}
 
-\hspace{-0.3cm}\begin{minipage}[t]{0.5\textwidth}
+\pagebreak\hspace{-0.3cm}\begin{minipage}[t]{0.5\textwidth}
                  \begin{tcolorbox}[left skip=0.7cm,
                  top=0.1cm,
                  middle=0mm,
@@ -151,76 +151,37 @@ w = [ w ( (*@\hlorange{)}@*) w w w w . w ( w ) ]
   \end{tcolorbox}
 \end{minipage}
 
-Finally, we eliminate everything which is not parsed by the official Python parser.
-
-\hspace{-0.3cm}\begin{minipage}[t]{0.5\textwidth}
-                 \begin{tcolorbox}[left skip=0.7cm,
-                 top=0.1cm,
-                 middle=0mm,
-                 boxsep=0mm,
-                 underlay unbroken and first={%
-                   \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
-                 }]
-                 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-v = [float(n for n in l.split(':')]
-                 \end{lstlisting}
-                 \tcblower
-                 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-v = [float(n(*@\hlgreen{)}@*) for n in l.split(':')]
-v = [float((*@\hlorange{)}@*) for n in l.split(':')]
-                 \end{lstlisting}
-                 \end{tcolorbox}
-\end{minipage}
-\begin{minipage}[t]{0.5\textwidth}
-  \begin{tcolorbox}[left skip=0.7cm,
-  top=0.1cm,
-  middle=0mm,
-  boxsep=0mm,
-  underlay unbroken and first={%
-    \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
-  }]
-  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-w = [ w ( w w w w w . w ( w ) ]
-  \end{lstlisting}
-  \tcblower
-  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-w = [ w ( w (*@\hlgreen{)}@*) w w w w . w ( w ) ]
-w = [ w ( (*@\hlorange{)}@*) w w w w . w ( w ) ]
-  \end{lstlisting}
-  \end{tcolorbox}
-\end{minipage}
-
-Tidyparse requires a grammar, which can either be provided by the user or ingested from a BNF specification. The following grammar represents a slightly more realistic programming language:
-
-\begin{tcolorbox}[left skip=0.7cm,
-top=0.1cm,
-middle=0mm,
-boxsep=0mm,
-underlay unbroken and first={%
-  \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
-}]
-\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-S -> A | V | ( X , X ) | X X | ( X )
-A -> Fun | F | L | L in X
-Fun -> fun V (*@`@*)->(*@`@*) X
-F -> if X then X else X
-L -> let V = X | let rec V = X
-V -> Vexp | ( Vexp ) | Vexp Vexp
-Vexp -> VarName | FunName | Vexp VO Vexp | ( VarName , VarName ) | Vexp Vexp
-VarName -> a | b | c | d | e | ... | z
-FunName -> foldright | map | filter | curry | uncurry
-VO ->  + | - | * | / | > | = | < | (*@`@*)||(*@`@*) | &&
----
-let curry f = ( fun x y -> f ( _ _ _(*@\caret{ }@*)) )
-\end{lstlisting}
-\tcblower
-\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-let curry f = ( fun x y -> f ( (*@\hlorange{<X>}@*) ) )
-let curry f = ( fun x y -> f ( (*@\hlorange{<FunName>}@*) ) )
-let curry f = ( fun x y -> f ( (*@\hlorange{curry}@*) (*@\hlorange{<X>}@*) ) )
-...
-\end{lstlisting}
-\end{tcolorbox}
+%Tidyparse requires a grammar, which can either be provided by the user or ingested from a BNF specification. The following grammar represents a slightly more realistic programming language:
+%
+%\begin{tcolorbox}[left skip=0.7cm,
+%top=0.1cm,
+%middle=0mm,
+%boxsep=0mm,
+%underlay unbroken and first={%
+%  \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+%}]
+%\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+%S -> A | V | ( X , X ) | X X | ( X )
+%A -> Fun | F | L | L in X
+%Fun -> fun V (*@`@*)->(*@`@*) X
+%F -> if X then X else X
+%L -> let V = X | let rec V = X
+%V -> Vexp | ( Vexp ) | Vexp Vexp
+%Vexp -> VarName | FunName | Vexp VO Vexp | ( VarName , VarName ) | Vexp Vexp
+%VarName -> a | b | c | d | e | ... | z
+%FunName -> foldright | map | filter | curry | uncurry
+%VO ->  + | - | * | / | > | = | < | (*@`@*)||(*@`@*) | &&
+%---
+%let curry f = ( fun x y -> f ( _ _ _(*@\caret{ }@*)) )
+%\end{lstlisting}
+%\tcblower
+%\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+%let curry f = ( fun x y -> f ( (*@\hlorange{<X>}@*) ) )
+%let curry f = ( fun x y -> f ( (*@\hlorange{<FunName>}@*) ) )
+%let curry f = ( fun x y -> f ( (*@\hlorange{curry}@*) (*@\hlorange{<X>}@*) ) )
+%...
+%\end{lstlisting}
+%\end{tcolorbox}
 
 \noindent We can also handle error correction and completion in the untyped \lambda-calculus, as shown below:
 
@@ -248,6 +209,44 @@ var -> a | b | c | f | x | y | z
 \end{tcolorbox}
 
 \noindent Name resolution and scope checking is also possible but requires a more sophisticated grammar.
+
+\subsection{Nonterminal stubs}
+
+Tidyparse augments CFGs with two additional rules, which are desugared into a vanilla CFG before parsing. The first rule, $\alpha\textsc{-sub}$, allows the user to define a nonterminal parameterized by $\alpha$, a non-recursive nonterminal in the same the CFG representing some finite type and its inhabitants. $\alpha\textsc{-sub}$ replaces all productions containing $\langle\alpha\rangle$ with the terminals in their transitive closure, $\alpha \rightarrow^* \beta$. The second rule, $\alpha\textsc{-int}$, introduces homonymous terminals for each user-defined nonterminal.
+
+\begin{figure}[H]
+  \begin{prooftree}
+    \AxiomC{$\mathcal{G} \vdash (w\langle\alpha\rangle \rightarrow x z) \in P$}
+    \AxiomC{$\alpha^* : \{\beta \mid (\alpha \rightarrow^* \beta) \in P\}$}
+    \RightLabel{$\alpha\textsc{-sub}$}
+    \BinaryInfC{$\mathcal{G} \vdash \forall \beta \in \alpha^*.(w\langle\alpha\rangle \rightarrow x z)[\beta/\alpha] \in P'$}
+    \DisplayProof
+    \hskip 1.5em
+    \AxiomC{$\mathcal{G} \vdash v \in V$}
+    \RightLabel{$\langle\cdot\rangle\textsc{-int}$}
+    \UnaryInfC{$\mathcal{G} \vdash (v \rightarrow \langle v\rangle) \in P$}
+  \end{prooftree}
+\end{figure}
+
+Tidyparse can also perform a limited form of type checking. Typed expressions are automatically expanded into ordinary nonterminals using the $\alpha\textsc{-sub}$ rule, for example when parsing an expression of the form $x + y$, the grammar will recognize \texttt{true + false} and \texttt{1 + 2}, but not \texttt{1 + true}.
+
+\begin{tcolorbox}[left skip=0.7cm,
+top=0.1cm,
+middle=0mm,
+boxsep=0mm,
+underlay unbroken and first={%
+  \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+}]
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+E<X> -> E<X> + E<X> | E<X> * E<X> | ( E<X> )
+X -> Int | Bool
+\end{lstlisting}
+\tcblower
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+E<Int> -> E<Int> + E<Int> | E<Int> * E<Int>
+E<Bool> -> E<Bool> + E<Bool> | E<Bool> * E<Bool>
+\end{lstlisting}
+\end{tcolorbox}
 
 \subsection{Grammar Assistance}
 
@@ -317,12 +316,11 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _(*@\caret{ }@*)
 1.) a b c
 2.) a a b b c c
 3.) a a a b b b c c c
-4.) a a a a b b b b c c c c
 ...
 \end{lstlisting}
 \end{tcolorbox}
 
-\noindent Tidyparse uses the notation \texttt{G1} {\color{blue}\texttt{\&\&\&}} \texttt{G2} and \texttt{G1} {\color{blue}\texttt{|||}} \texttt{G2} to signify $\mathcal{L}_{\mathcal{G}_1}\cap\mathcal{L}_{\mathcal{G}_2}$ and $\mathcal{L}_{\mathcal{G}_1}\cup\mathcal{L}_{\mathcal{G}_2}$ respectively, i.e., the intersection or union of two or more grammars' languages. {Composition}, complementation and other operations on finite languages are also possible, although undocumented at present.
+\noindent Tidyparse uses the notation \texttt{G1} {\color{blue}\texttt{\&\&\&}} \texttt{G2} to signify $\mathcal{L}(\mathcal{G}_1)\cap\mathcal{L}(\mathcal{G}_2)$, i.e., the intersection of two more grammars' languages as described in \S\ref{sec:lclreach}.
 
 %There are some more examples too.
 %
