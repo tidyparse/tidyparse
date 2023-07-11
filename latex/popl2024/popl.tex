@@ -622,7 +622,7 @@ More specifically in our setting, we want to sample from a discrete product spac
 
 \pagebreak\section{Parsing}\label{sec:parsing}
 
-Although parsing is not the primary objective of this work, it is an integral component of the repair process, and one of the advantages of using a matrix representation is its excellent error recovery properties. Unlike traditional parsers which fail on a error, matrix-based parsers support parsing invalid strings. In this section, we will describe how to parse strings using matrix powering, and how those results inform the repair process.
+Although parsing is not the primary objective of this work, it is an integral component of the repair process, and one of the advantages of using a matrix representation is its excellent error recovery properties. Unlike traditional parsers which fail on a error, matrix-based parsers support parsing invalid strings. In this section, we will describe how to parse strings using matrix powering, and how we use those results aid human debugging and inform the repair process.
 
 \subsection{Tree denormalization}\label{sec:denormalization}
 
@@ -680,7 +680,7 @@ Due to Chomsky normalization however, the resulting forests are full of trees th
 
 \begin{wrapfigure}{r}{0.5\textwidth}
   \vspace{-15pt}
-  \resizebox{0.5\textwidth}{!}{\input{curtains.tex}}
+  \begin{center}\resizebox{0.45\textwidth}{!}{\input{curtains.tex}}\end{center}
   \caption{Parsing and repair share the same grammar.}
 \end{wrapfigure}
 
@@ -697,10 +697,10 @@ The process of parsing the string $S + S = S$ by matrix powering is depicted bel
     \includegraphics[width=3.298cm]{../figures/parse2.png}
     \includegraphics[width=3.3cm]{../figures/parse3.png}
     \includegraphics[width=3.32cm]{../figures/parse4.png}
-  \caption{The parse forest for the string $S + S = S$ is constructed incrementally by computing $M_\sigma^2 + M_\sigma = M_\sigma$.}
+  \caption{The parse forest for the string $S + S = S$ is constructed incrementally by computing $M_\sigma^2 + M_\sigma = M_\sigma$. Each iteration computes a single diagonal of the matrix by computing the dot product of the row-wise entries to the left and columnar entiries beneath it, and the process terminates when a fixpoint is reached.}
 \end{figure}
 
-Our algorithm produces set of concrete syntax trees (CSTs) for a given valid string. Otherwise, if the string is invalid, the algorithm generates a set of admissible corrections, alongside their CSTs. The fixpoint search is sure to converge in at most $|\sigma| - 1$ steps, as each iteration will solve for a single diagonal of the matrix, each entry of which may contain up to $|V_\varepsilon|$ rooted subtrees.
+Our algorithm produces set of concrete syntax trees (CSTs) for a given valid string. Otherwise, if the string is invalid, the algorithm generates a set of admissible corrections, alongside their CSTs. The fixpoint search is sure to converge in at most $|\sigma| - 1$ steps, as each iteration will solve for a single diagonal of the matrix, whose entries may each contain up to $|V_\varepsilon|$ rooted subtrees.
 
 %When encoding the repair using a SAT solver, we can directly encode matrix idempotency $[\mathcal{M}_\sigma=\mathcal{M}_\sigma^2]$, instead of solving Valiant's fixpoint $M_\sigma = M_\sigma + M^2_\sigma$. Rather than decode the parse forest directly from the sovler, the satisfying models are decoded as strings then fed back into the parser to obtain the parse forest, which is guaranteed to exist if the system is satisfiable.
 
