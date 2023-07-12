@@ -40,7 +40,7 @@
 %% Title information
 \title{Syntax Error Correction as Idempotent Matrix Completion}
 \begin{abstract}
-In this work, we illustrate how to lower context-free language recognition onto a tensor algebra over finite fields. In addition to its theoretical value, this connection has yielded surprisingly useful applications in incremental parsing, code completion and program repair. To accelerate code completion, we design and implement a novel incremental parser-synthesizer that transforms CFGs onto a dynamical system over finite field arithmetic, enabling us to suggest syntax repairs in-between keystrokes. Our approach attains state-of-the-art repair precision@$\@\{5, 10\}$ on a dataset of human Python repairs at a fraction of the time and cost of existing methods. Unlike prior work, our approach does not employ neural networks, and is therefore highly flexible to additional constraints and readily extensible to new programming languages.
+In this work, we illustrate how syntax error correction with bounded errors is closely related to context-free language reachability and demonstrate a novel reduction onto a multilinear system of equations over finite fields. In addition to its theoretical value, this connection has demonstrated empirical speedups on real-world syntax repair tasks. To accelerate code completion and repair, we design and implement a novel incremental parser-synthesizer that transforms CFL intersections, enabling us to suggest syntax repairs in-between keystrokes. Our approach attains state-of-the-art repair precision@$\@\{5, 10\}$ on a human repair dataset at a fraction of the time and cost of existing methods. Our approach does not employ neural networks, and is therefore highly flexible to additional constraints and readily extensible to new programming languages.
 \end{abstract}
 
 \maketitle
@@ -49,7 +49,7 @@ In this work, we illustrate how to lower context-free language recognition onto 
 
 \section{Introduction}
 
-When writing a program, nearly all of the intermediate editing states are invalid. Manual repair, though fairly routine, introduces friction to the development process by steadily siphoning attention, a programmer's most precious and fickle resource. \textit{Syntax correction} is the problem of automatically repairing a syntactically invalid program so that it is no longer invalid. This problem may sound trivial but can be quite challenging, as well-formed programs have many semantic constraints, but also because the problem itself is under-determined: although repairs by definition must be valid, even assuming a tiny number of modifications, the set of possible repairs can be vast indeed.
+When writing a program, nearly all of the intermediate editing states are invalid. Manual repair, though fairly routine, adds friction to the development process by sporadically diverting attention, a programmer's most precious and fickle resource. \textit{Syntax correction} is the problem of automatically repairing a syntactically invalid program so that it is no longer invalid. This problem may sound trivial but can be quite challenging, as well-formed programs have many semantic constraints, but also because the problem itself is under-determined: although repairs by definition must be valid, even assuming a tiny number of modifications, the search space of possible repairs can be vast.
 
 Most prior work on syntax correction can be divided into two high-level categories: (1) \textit{formal methods}, which use handcrafted rules to identify and correct common syntax errors (e.g.,~\cite{aho1972minimum}), and (2) \textit{machine learning}, which typically use neural language models to repair code (e.g.~\cite{sakkas2022seq2parse}). The former can be effective but typically produces a single minimal repair, while the latter generates more natural edits, but is costly to train and difficult to incorporate new constraints thereafter.
 
@@ -57,7 +57,7 @@ In this work, we offer a new technique for repairing real-world syntax errors fr
 
 Grounded in formal language theory, our approach borrows insights from Boolean matrix parsing~\cite{valiant1975general} and conjunctive language reachability~\cite{zhang2017context} to unify \textit{parsing}, \textit{code completion}, \textit{error correction} under a simple algebraic framework. We provide exact and approximate algorithms for repairing real-world syntax errors, and implement them in a real-time editor called Tidyparse. This tool features a state-of-the-art fast repair procedure that is provably sound and complete up to a Levenshtein bound. We show how it can be used to complete unfinished code, parse incomplete code, and repair unparseable syntax fragments in arbitrary context-free and conjunctive languages.
 
-This paper presents two high-level approaches to syntax correction: one that that uses equational reasoning to find the satisfying assignments to a multilinear system of equations over finite fields (Theory 1, model-theoretic), and another that samples random edits and accepts only those which parse (Theory 2, probabilistic correction). Finally, we show how these two approaches can be combined to attain human-level precision and state-of-the-art wall clock latency on a dataset of human syntax errors and repairs -- without using a neural language model.
+This paper presents two high-level approaches to syntax error correction: one that that uses equational reasoning to find the satisfying assignments to a multilinear system of equations over finite fields (Theory 1, model-theoretic), and a second which samples random edits and accepts only those which parse (Theory 2, probabilistic correction). Finally, we show how these two approaches can be combined to attain human-level precision and state-of-the-art wall clock latency on a dataset of human syntax errors and repairs -- all without using a neural language model.
 
 \section{Overview}
 
@@ -100,7 +100,7 @@ Tidyparse accepts an arbitrary CFG and a string, which we first attempt to parse
           \texttt{w} & \texttt{=} & \texttt{w} & \texttt{(} & \texttt{[} & \texttt{w} & \texttt{(} & \cellcolor{black!15}\texttt{\_} &  \texttt{w} & \cellcolor{black!15}\texttt{\_} & \texttt{for} & \texttt{w} & \texttt{in} & \texttt{w} & \cellcolor{black!15}\texttt{\_} & \texttt{)} \\\hline
           & & & & & & & \cellcolor{green!25}\texttt{-} & & \cellcolor{orange!25}\texttt{)} & & & & & \cellcolor{orange!25}\texttt{]} & \\\hline
   \end{tabular}
-  \item (a) \texttt{d = sum([foo(\hlgreen{-}i\hlorange{)} for i in vals\hlorange{]})} $\Longrightarrow$ (b) \texttt{d = sum([foo(i\hlorange{)} for i in vals\hlorange{]})}
+  \item (a) \texttt{d = sum([foo(\hlgreen{+}i\hlorange{)} for i in vals\hlorange{]})} $\Longrightarrow$ (b) \texttt{d = sum([foo(i\hlorange{)} for i in vals\hlorange{]})}
 \end{enumerate}
 
 The initial broken string, \texttt{d = sum([foo(i\err{]} for i in vals))} (1), is first tokenized using a lexer to obtain the sequence in (2). Lexical tokens containing identifiers are abstracted in step (3), and interleaved with the empty token in step (4). We then sample hole configurations without replacement in step (5), many of which will have no admissible solutions. Eventually, the solver will discover an admissible solution, as seen in step (6). This solution is then used to generate a patch, which is applied to the original string in step (7a), then reduced to its minimal form in step (7b), and sampling is repeated until all possibilities are exhausted or a predetermined timeout expires.
@@ -124,10 +124,10 @@ As we demonstrate both formally and experimentally, our framework is able to sat
 With the above criteria in mind, the following paper addresses four primary research questions:
 
 \begin{enumerate}
-  \item \textbf{What are the theoretical guarantees?} (e.g., upper bounds, soundness, completeness)
-  \item \textbf{How do we reduce syntax repair onto finite fields?} (e.g., algorithms and data structures)
-  \item \textbf{How does Tidyparse compare with existing approaches?} (e.g., neural program repair)
-  \item \textbf{What are the limitations of this technique?} (e.g., precision, latency, error tolerance)
+  \item \textbf{What theoretical guarantees do we offer?} (i.e., complexity, soundness and completeness)
+  \item \textbf{How do we reduce syntax repair onto finite fields?} (i.e., algorithms and data structures)
+  \item \textbf{How does Tidyparse compare with existing approaches?} (i.e., neural program repair)
+  \item \textbf{What are the limitations of this technique?} (i.e., precision, latency and error tolerance)
 \end{enumerate}
 
 We will begin by precisely defining the Levenshtein-CFL reachability problem (\S\ref{sec:problem}), then construct an algebraic theory of syntax correction (\S\ref{sec:matrix}), followed by a corollary description of the parsing algorithm (\S\ref{sec:parsing}). After presenting some practical examples of the tool's features (\S\ref{sec:examples}) and taking a short detour into the related literature on syntax repair (\S\ref{sec:related}), we will then empirically evaluate the end-to-end performance on a dataset of human syntax errors and repairs in (\S\ref{sec:experiments}). Finally, we will discuss the results (\S\ref{sec:discussion}) and conclude with a summary of our contributions and future work (\S\ref{sec:conclusion}).
@@ -251,7 +251,7 @@ So far, we have only considered the syntactic theory of breadth-bounded CFLs wit
 
 \subsection{Linear conjunctive reachability}\label{sec:lclreach}
 
-While generally quite expressive, CFLs are themselves not closed under intersection and have other practical limitations, i.e., are unable to express indentation or variable binding. These limitations motivate us towards more expressive yet still efficiently parsable formalisms. In the case of intersection, let us consider the traditional example, $\mathcal{L}_\cap \coloneqq \mathcal{L}(\mathcal{G}_1) \cap \mathcal{L}(\mathcal{G}_2)$ defined as follows:
+While generally quite expressive, CFLs are themselves not closed under intersection and have other practical limitations, i.e., are unable to express indentation or variable binding. These limitations motivate us toward more expressive yet still efficiently parsable formalisms. In the case of intersection, let us consider the traditional example, $\mathcal{L}_\cap \coloneqq \mathcal{L}(\mathcal{G}_1) \cap \mathcal{L}(\mathcal{G}_2)$ defined as follows:
 
 \begin{table}[H]
   \begin{tabular}{llll}
@@ -359,7 +359,7 @@ Let $G(\err{\sigma}: \Sigma^*, d: \mathbb{N}^+) \mapsto \mathbb{G}$ be the speci
 %
 %We then intersect that language with $\Sigma^n$ and $\mathcal{L}(\mathcal{G})$, the original grammar, to obtain a finite set.
 
-\subsection{Tensor sparsification}
+\subsection{Tensor sparsification}\label{sec:sparsity}
 
 Although we can encode $[\mathcal{M}_\sigma = \mathcal{M}^2_\sigma]$ explicitly, na\"ively encoding the formula as a dense constraint system is highly suboptimal. For starters, we can always ignore all lower-triangular comparisons $\{\mathcal{M}_{ij} \mid i \geq j\}$. A considerably sparser but logically equivalent representation that avoids many elementwise comparisons in the upper-triangular region can be achieved by analyzing the specific string and grammar in question. Since we are typically interested in strings with at least some bound variables, $\{\sigma: \underline\Sigma^n \mid \exists \sigma_i \in \Sigma\}$, there is likely to be many upper-triangular nonterminals $\langle v, i, j\rangle \subset V\times\{i, j \mid 0 \leq i \leq j \leq |\sigma|)\}$ that are incompatible with $\sigma$, i.e., which are unreachable from $\sigma_{i\ldots j}$ regardless of which values they assume. We call these elements \textit{impossible nonterminals}.
 
@@ -680,7 +680,7 @@ Due to Chomsky normalization however, the resulting forests are full of trees th
   \caption{Parsing and repair share the same grammar.}
 \end{wrapfigure}
 
-Parsing and repair are intimately related: parsing tells us roughly where the repairs should occur and repair is aided by the results of parsing: parseable subtrees can be used to guide the repair process. Although reparsing may be avoided after repair, it is not straightforward how to decode the solution to the matrix equivalence relation as a parse forest, so we resort to decoding the generating string, then reparsing to obtain the CSTs.
+Parsing and repair are intimately related: parsing tells us roughly where the repairs should occur and repair is aided by the results of parsing: parseable subtrees can be used to guide the repair process. Although reparsing may be avoided after repair, it is not straightforward how to decode the solution to the matrix equivalence relation as a parse forest, so we resort to decoding the generating string, then reparsing it to obtain the concrete syntax trees (CSTs).
 
 %\noindent The compactness of this representation can be improved via a combinatorial number system without loss of generality, although $\mathds{1}$ is a convenient encoding for SAT.
 
@@ -693,12 +693,10 @@ The process of parsing the string $S + S = S$ by matrix powering is depicted bel
     \includegraphics[width=3.298cm]{../figures/parse2.png}
     \includegraphics[width=3.3cm]{../figures/parse3.png}
     \includegraphics[width=3.32cm]{../figures/parse4.png}
-  \caption{The parse forest for the string $S + S = S$ is constructed incrementally by computing $M_\sigma^2 + M_\sigma = M_\sigma$. Each iteration computes a single diagonal of the matrix by computing the dot product of the row-wise entries to the left and columnar entiries beneath it, and the process terminates when a fixpoint is reached.}
+  \caption{The parse forest for the string $S + S = S$ is constructed incrementally by computing $M_\sigma^2 + M_\sigma = M_\sigma$.}% Each iteration computes a single diagonal of the matrix by computing the dot product of the row-wise entries to the left and columnar entiries beneath it, and the process terminates when a fixpoint is reached.}
 \end{figure}
 
-Our algorithm produces set of concrete syntax trees (CSTs) for a given valid string. Otherwise, if the string is invalid, the algorithm generates a set of admissible corrections, alongside their CSTs. The fixpoint search is sure to converge in at most $|\sigma| - 1$ steps, as each iteration will solve for a single diagonal of the matrix, whose entries may each contain up to $|V_\varepsilon|$ rooted subtrees.
-
-%When encoding the repair using a SAT solver, we can directly encode matrix idempotency $[\mathcal{M}_\sigma=\mathcal{M}_\sigma^2]$, instead of solving Valiant's fixpoint $M_\sigma = M_\sigma + M^2_\sigma$. Rather than decode the parse forest directly from the sovler, the satisfying models are decoded as strings then fed back into the parser to obtain the parse forest, which is guaranteed to exist if the system is satisfiable.
+For valid strings, the fixpoint search is sure to converge in at most $|\sigma| - 1$ steps, as each iteration will solve for a single diagonal of the matrix. Matrix entries may each contain up to $|V_\varepsilon|$ rooted subtrees, although in practice, this is typically much smaller for unambiguous grammars. If the string is invalid, the algorithm produces a set of admissible corrections, alongside their CSTs. An interesting consequence of repairing with a SAT solver is that we can directly encode matrix idempotency $[\mathcal{M}_\sigma=\mathcal{M}_\sigma^2]$, instead of solving Valiant's fixpoint $M_\sigma = M_\sigma + M^2_\sigma$.
 
 \subsection{Incrementalization}\label{sec:incrementalization}
 
@@ -840,19 +838,19 @@ The recent success of deep learning has lead to a variety of work on neural prog
 
 \pagebreak\section{Experimental setup}\label{sec:experiments}
 
-To evaluate our model, we primarily use two datasets. We first evaluate it on 5,600 pairs of (broken, fixed) Python code snippets from Wong et al.'s StackOverflow dataset~\cite{wong2019syntax} shorter than 40 lexical tokens, whose minimized patch sizes shorter than four lexical tokens ($|\Sigma| = 50, |\err{\sigma}| < 40, \Delta(\err{\sigma}, \ell) < 4$). Minimization uses the Delta debugging~\cite{zeller2002isolating} technique to isolate the smallest lexical patch that repairs a broken Python snippet.
+To evaluate our model, we primarily use 5,600 pairs of (broken, fixed) Python code snippets from Wong et al.'s StackOverflow dataset~\cite{wong2019syntax} shorter than 40 lexical tokens, whose minimized patch sizes are shorter than four lexical tokens ($|\Sigma| = 50, |\err{\sigma}| \leq 40, \Delta(\err{\sigma}, \ell) < 4$), and adapt the Python grammar from SeqParse. Minimization uses the Delta debugging~\cite{zeller2002isolating} technique to isolate the smallest lexical patch that repairs a broken Python snippet.
 
 In the first set of experiments, we uniformly sample without replacement from the Levenshtein edit ball using a LFSR over $\mathbb{Z}_2^m$, and measure the Precision@k of our repair procedure against human repairs of varying edit distances and latency cutoffs. This provides a baseline for the relative density of the admissible set, and an upper bound on the latency of attaining a given precision.
 
-In the second set of experiments, we use an adaptive sampler that stochastically resamples edits using a Dirichlet process. Repairs are scored and placed into a ranked buffer, from which new edits are resampled with frequency relative to their perplexity, and additive noise is introduced. Initially, the sampler draws uniformly but is gradually biased towards more likely repairs.
+In the second set of experiments, we use an adaptive sampler that stochastically resample edits using a Dirichlet process. Repairs are scored and placed into a ranked buffer, from which new edits are resampled with frequency relative to their perplexity, and additive noise is introduced. The adaptive sampler is described in further detail in \S\ref{sec:adaptive}.
 
-To train the adaptive sampler we use a length-5 variable-order Markov (VOM) chain on 55 million StackOverflow tokens from the BIFI~\cite{yasunaga2021break} dataset, which takes roughly 10 minutes to train on 40 Intel Skylake cores running at 2.4 GHz. Sequences are scored using negative log likliehood with Laplace smoothing, or Levenshtein edits when no dataset is available. Evaluation measures the Precision@\{1, 5, 10, All\} for samples at varying latency cutoffs.
+To train the scoring function, we use a length-5 variable-order Markov (VOM) chain implemented using a count-min sketch based on Apache Datasketches~\cite{apache2022datasketches}. Training on 55 million StackOverflow tokens from the BIFI~\cite{yasunaga2021break} dataset took roughly 10 minutes, after which calculating perplexity is nearly instantaneous. Sequences are scored using negative log likelihood with Laplace smoothing and our evaluation measures the Precision@\{1, 5, 10, All\} for samples at varying latency cutoffs.
 
-Both sets of experiments use 40 Intel Skylake cores, running at 2.4 GHz, with 16 GB of RAM. We measure the precision on an exact lexical match abstract repair, following the Seq2Parse~\cite{sakkas2022seq2parse} evaluation, and give a baseline for their approach on the same dataset. Unlike Seq2Parse, our approach does not require a training corpus, and can be used to repair arbitrary context-free and linear conjunctive languages.
+Both sets of experiments were conducted on 40 Intel Skylake cores running at 2.4 GHz, with 16 GB of RAM, running bytecode compiled for JVM 17.0.2. We measure the precision using abstract lexical matching, following the Seq2Parse~\cite{sakkas2022seq2parse} evaluation, and give a baseline for their approach on the same dataset.
 
 \subsection{Uniform sampling benchmark}\label{sec:uniform}
 
-Below, we plot the results of a human repair benchmark measuring the Precision@k of our repair procedure against human repairs of varying edit distances and latency cutoffs.% across 1233 distinct Python snippets $(\Delta_1 = 649, \Delta_2 = 384, \Delta_3 = 200)$ from the StackOverflow dataset~\cite{wong2019syntax}.
+Below, we plot the precision of the uniform sampling procedure described in \S\ref{sec:dsi} against human repairs of varying edit distances and latency cutoffs. Repairs discovered before the latency cutoff are reranked based on their tokenwise perplexity and compared for an exact lexical match with the human repair at or below rank k. We note that the uniform sampling procedure is not intended to be used in practice, but rather provides a baseline for the empirical density of the admissible set, and an upper bound on the latency required to attain a given precision.
 
 \begin{figure}[H]
 \resizebox{.3\textwidth}{!}{\input{repair1-3_plot.tex}}
@@ -860,58 +858,58 @@ Below, we plot the results of a human repair benchmark measuring the Precision@k
 \resizebox{.3\textwidth}{!}{\input{repair2_plot.tex}}
 %\resizebox{.3\textwidth}{!}{\input{repair1_plot.tex}}
 %\resizebox{.307\textwidth}{!}{\input{repair2_plot.tex}}
-%\caption{Human repair benchmark. Note the y-axis across different edit distance plots has varying ranges.}\label{fig:human}
+\caption{Human repair benchmark. Note the y-axis across different edit distance plots has varying ranges.}\label{fig:human}
 \end{figure}
 
-For comparison below are the results from Seq2Parse on the same dataset. Seq2Parse only supports Precision@1 repairs, and so we only report precision@1 from the StackOverflow benchmark for comparison. Unlike our approach which only produces syntactically correct repairs, Seq2Parse also produces syntactically incorrect repairs and so we report the percentage of syntactically correct repairs (Syntactic), as well as the precision of the abstract tokens repairs (AbstractEval), and the exact character match precision (CharMatch).
+Despite the high-latency, this demonstrates a uniform prior with post-timeout reranking is still able to achieve competitive precision@k using a relatively cheap ranking metric. This suggests that we can use the metric to bias the sampler towards more likely repairs, which we will now do.
 
-\begin{figure}[h]
-\resizebox{0.3\textwidth}{!}{
-\begin{tikzpicture}
-\begin{axis}[
-ybar,
-enlarge x limits=0.15,
-legend style={fill opacity=0.8, draw opacity=1, text opacity=1, draw=lightgray204, legend pos=outer north east},
-ylabel={Precision@1},
-xtick={1,2,3},
-xlabel={Edit Distance},
-xtick=data,
-nodes near coords,
-nodes near coords align={vertical},
-ymin=0,ymax=1,
-]
-\addplot coordinates {(1, 0.9) (2, 0.857) (3, 0.794)};
-\addplot coordinates {(1, 0.454) (2, 0.162) (3, 0.096)};
-\addplot coordinates {(1, 0.005) (2, 0.004) (3, 0.0)};
-\legend{Syntactic, AbstractEval, CharMatch}
-\end{axis}
-\end{tikzpicture}
-}
-\resizebox{0.3\textwidth}{!}{
-\begin{tikzpicture}
-\begin{axis}[
-ybar,
-enlarge x limits=0.15,
-legend style={fill opacity=0.8, draw opacity=1, text opacity=1, draw=lightgray204, legend pos=outer north east},
-ylabel={Latency (ms)},
-xtick={1,2,3},
-xlabel={Edit Distance},
-xtick=data,
-nodes near coords,
-nodes near coords align={vertical},
-ymin=0,ymax=3000,
-]
-\phantom{\legend{Syntactic, AbstractEval, CharMatch}}
-\addplot coordinates {(1, 1585.465) (2, 1953.56) (3, 2744.887)};
-\end{axis}
-\end{tikzpicture}
-}
-\caption{Seq2Parse precision@1 and latency on the StackOverflow dataset.}
-\end{figure}
+%\begin{figure}[h]
+%\resizebox{0.3\textwidth}{!}{
+%\begin{tikzpicture}
+%\begin{axis}[
+%ybar,
+%enlarge x limits=0.15,
+%legend style={fill opacity=0.8, draw opacity=1, text opacity=1, draw=lightgray204, legend pos=outer north east},
+%ylabel={Precision@1},
+%xtick={1,2,3},
+%xlabel={Edit Distance},
+%xtick=data,
+%nodes near coords,
+%nodes near coords align={vertical},
+%ymin=0,ymax=1,
+%]
+%\addplot coordinates {(1, 0.9) (2, 0.857) (3, 0.794)};
+%\addplot coordinates {(1, 0.454) (2, 0.162) (3, 0.096)};
+%\addplot coordinates {(1, 0.005) (2, 0.004) (3, 0.0)};
+%\legend{Syntactic, AbstractEval, CharMatch}
+%\end{axis}
+%\end{tikzpicture}
+%}
+%\resizebox{0.3\textwidth}{!}{
+%\begin{tikzpicture}
+%\begin{axis}[
+%ybar,
+%enlarge x limits=0.15,
+%legend style={fill opacity=0.8, draw opacity=1, text opacity=1, draw=lightgray204, legend pos=outer north east},
+%ylabel={Latency (ms)},
+%xtick={1,2,3},
+%xlabel={Edit Distance},
+%xtick=data,
+%nodes near coords,
+%nodes near coords align={vertical},
+%ymin=0,ymax=3000,
+%]
+%\phantom{\legend{Syntactic, AbstractEval, CharMatch}}
+%\addplot coordinates {(1, 1585.465) (2, 1953.56) (3, 2744.887)};
+%\end{axis}
+%\end{tikzpicture}
+%}
+%\caption{Seq2Parse precision@1 and latency on the StackOverflow dataset.}
+%\end{figure}
 
 \subsection{Repair with an adaptive sampler}
 
-In the following benchmark, we measure the Precision@k of our repair procedure against human repairs of varying edit distances and latency cutoffs, using an adaptive resampling procedure. This sampler maintains a buffer of successful repairs ranked by perplexity and uses stochastic local search to resample edits within a neighborhood. Initially, edits are sampled uniformly at random. Over time and as the admissible set grows, it prioritizes edits nearby low-perplexity repairs. This technique offers a significant advantage in the low-latency setting.
+In the following benchmark, we measure the Precision@k of our repair procedure against human repairs of varying edit distances and latency cutoffs, using an adaptive resampling procedure described in \S\ref{sec:adaptive}. This sampler maintains a buffer of successful repairs ranked by perplexity and uses stochastic local search to resample edits within a neighborhood. Initially, edits are sampled uniformly at random. Over time and as the admissible set grows, it prioritizes edits nearby low-perplexity repairs. This technique offers a significant advantage in the low-latency setting.
 
 \begin{figure}[H]
 \resizebox{.24\textwidth}{!}{\input{repair1-3_10s_plot.tex}}
@@ -921,21 +919,23 @@ In the following benchmark, we measure the Precision@k of our repair procedure a
 \caption{Adaptive sampling repairs. The red line indicates Seq2Parse precision@1 on the same dataset. Since it only supports generating one repair, we do not report precision@k or the intermediate latency cutoffs.}\label{fig:adaptive}
 \end{figure}
 
+We also evaluate Seq2Parse on the same dataset. Seq2Parse only supports Precision@1 repairs, and so we only report Seq2parse precision@1 from the StackOverflow benchmark for comparison. Unlike our approach which only produces syntactically correct repairs, Seq2Parse also produces syntactically incorrect repairs and so we report the percentage of repairs matching the human repair for both our method and Seq2Parse. Seq2Parse latency varies depending on the length of the repair, averaging 1.5s for $\Delta=1$ to 2.7s for $\Delta=3$, across the entire StackOverflow dataset.
+
+While the sampler is able to saturate the admissible set for 1- and 2-edit repairs before the timeout elapses, 3-edit throughput is heavily constrained by compute around 16 lexical tokens, when Python's Levenshtein ball has a volume of roughly $6\times 10^8$ edits. This bottleneck can be relaxed with a longer timeout or additional CPU cores. Despite the high computational cost of sampling multi-edit repairs, our Precision@All remains competitive with the Seq2Parse neurosymbolic baseline at the same latency. We provide some qualitative examples of repairs in Table~\ref{sec:appendix}.
+
 \subsection{Throughput benchmark}
 
-\begin{wrapfigure}{r}{0.4\textwidth}
-  \vspace{-10pt}
-  \resizebox{.4\textwidth}{!}{\input{throughput.tex}}
+\begin{wrapfigure}{r}{0.3\textwidth}
+  \vspace{-15pt}
+  \resizebox{.3\textwidth}{!}{\input{throughput.tex}}
   \label{fig:throughput}
 \end{wrapfigure}
 
-We evaluate throughput by sampling edits across invalid strings of varying length, measuring the total number of syntactically valid strings discovered, and the human patch size. Each trial is terminated after 10 seconds, and the experiment is repeated across 7.3k total repairs.
-
-While the sampler is able to saturate the admissible set for 1- and 2-edit repairs before the timeout elapses, 3-edit throughput is heavily constrained by compute around 16 lexical tokens, when Python's Levenshtein ball has a volume of roughly $6\times 10^8$ edits. This bottleneck can be relaxed with a longer timeout or additional CPU cores. Despite the high computational cost of sampling multi-edit repairs, our Precision@All remains competitive with the Seq2Parse neurosymbolic baseline at the same latency.
+End-to-end throughput varies significantly with the edit distance of the repair. Some errors are trivial to fix, while others require a large number of edits to be sampled before a syntactically valid edit is discovered. We evaluate throughput by sampling edits across invalid strings $|\err\sigma| \leq 40$ from the StackOverflow dataset of varying length, and measure the total number of syntactically valid edits discovered, as a function of string length and language edit distance $\Delta\in[1, 3]$. Each trial is terminated after 10 seconds, and the experiment is repeated across 7.3k total repairs. Note the y-axis is log-scaled, as the number of admissible repairs increases sharply with language edit distance. Our approach discovers a large number of syntactically valid repairs in a relatively short amount of time, and is able to quickly saturate the admissible set for 1- and 2-edit repairs before timeout. As the Seq2Parse baseline is unable to generate more than one syntactically valid repair per string, we do not report its throughput.
 
 \subsection{Synthetic repair benchmark}\label{sec:latency}
 
-In the following benchmarks, we measure the wall clock time required to synthesize solutions to length-50 strings sampled from various Dyck languages, where Dyck-n is the Dyck language containing n different types of balanced parentheses.
+In addition to the StackOverflow dataset, we also evaluate our approach on two datasets containing synthetic strings generated by a Dyck language, and bracketing errors of synthetic and organic provenance in organic source code. The first dataset contains length-50 strings sampled from various Dyck languages, i.e., the Dyck language containing n different types of balanced parentheses. The second contains abstracted Java and Python source code mined from GitHub repositories. The Dyck languages used in the remaining experiments are defined by the following context-free grammar(s):
 
 \begin{wholetidyinput}
 Dyck-1 -> ( ) | ( Dyck-1 ) | Dyck-1 Dyck-1
@@ -943,14 +943,21 @@ Dyck-2 -> Dyck-1 | [ ] | ( Dyck-2 ) | [ Dyck-2 ] | Dyck-2 Dyck-2
 Dyck-3 -> Dyck-2 | { } | ( Dyck-3 ) | [ Dyck-3 ] | { Dyck-3 } | Dyck-3 Dyck-3
 \end{wholetidyinput}
 
-\noindent In the first experiment, we sample a random valid string $\sigma \sim \Sigma^{50} \cap \mathcal{L}_{\text{Dyck-n}}$, then replace a fixed number of tokens with holes and measure the average time required to decode ten syntactically-admissible repairs across 100 trial runs.
+\noindent In experiment (1a), we sample a random valid string $\sigma \sim \Sigma^{50} \cap \mathcal{L}_{\text{Dyck-n}}$, then replace a fixed number of indices in $[0, |\sigma|)$ with holes and measure the average time required to decode ten syntactically-admissible repairs across 100 trial runs. In experiment (1b), we sample a random valid string as before, but delete p tokens at random and rather than provide their location(s), ask our model to solve for both the location(s) and repair by sampling uniformly from all n-token HCs, then measure the total time required to decode the first admissible repair. Note the logarithmic scale on the y-axis.
 
 \begin{figure}[H]
-\hspace{-0.25cm}\begin{tikzpicture}[scale=0.8]
+\begin{minipage}{.48\textwidth}
+\begin{center}\footnotesize\textbf{Synthetic bracket langauge}\end{center}
+\end{minipage}
+\begin{minipage}{.48\textwidth}
+\begin{center}\footnotesize\textbf{Organic bracket langauge}\end{center}
+\end{minipage}\\
+\vspace{10pt}
+\hspace{-0.25cm}\begin{tikzpicture}[scale=0.41]
 \begin{axis}[
 width=8.3cm,
-height=6cm,
-title={\hspace{-1cm}\textbf{Latency with known locations}},
+height=7cm,
+title={\hspace{-1cm}\textbf{(1a) Latency with known locations}},
 ybar,
 bar width=6pt,
 xlabel={Number of holes},
@@ -973,11 +980,11 @@ error bars/y explicit
 \legend{Dyck-1, Dyck-2, Dyck-3, Dyck-4}
 \end{axis}
 \end{tikzpicture}
-\begin{tikzpicture}[scale=0.8]
+\begin{tikzpicture}[scale=0.41]
 \begin{axis}[
 width=8.3cm,
-height=6cm,
-title={\hspace{-1cm}\textbf{Latency with unknown locations}},
+height=7cm,
+title={\hspace{-1cm}\textbf{(1b) Latency with unknown locations}},
 ybar,
 bar width=20pt,
 xlabel={Number of errors},
@@ -1000,116 +1007,88 @@ error bars/y explicit
 \legend{Dyck-1, Dyck-2, Dyck-3}
 \end{axis}
 \end{tikzpicture}
-\end{figure}
-
-\noindent In the second experiment, we sample a random valid string as before, but delete p tokens at random and rather than provide the location(s), ask our model to solve for both the location(s) and repair by sampling uniformly from all n-token HCs, then measure the total time required to decode the first admissible repair. Note the logarithmic scale on the y-axis.
-
-In the following benchmark, we analyze bracketing errors in a dataset of Java and Python code snippets mined from open-source repositories on GitHub. For Java, we sample valid single-line statements with bracket nesting more than two levels deep, synthetically delete one bracket uniformly at random, repair using Tidyparse\footnote{Using the Dyck-n grammar augmented with \texttt{D1} {\color{blue}\texttt{->}} \texttt{w} {\color{blue}\texttt{|}} \texttt{D1}. Contiguous non-bracket tokens are substituted with a single placeholder token, \texttt{w}, and restored verbatim after bracket repair.}, then take the top-1 repair after $t$ seconds, and validate using ANTLR's Java 8 parser.
-
-\begin{figure}[H]
-\vspace{0.25cm}
-%\adjustbox{scale=0.48,center}{%
-\begin{tikzpicture}[scale=0.8]
-\begin{axis}[
-width=8.3cm,
-height=6.6cm,
+\hspace{20pt}
+\begin{tikzpicture}[scale=0.41]
+  \begin{axis}[
+  width=8.3cm,
+  height=7cm,
 %    title={\hspace{-1cm}\textbf{Java Brackets}},
-ybar,
-bar width=10pt,
-xlabel={$|\Sigma^*|$},
-ylabel={Parser acceptance},
-title={\textbf{Synthetic error correction accuracy}},
-xtick=data,
-axis x line*=bottom,
-axis y line*=left,
-enlarge x limits={abs=0.5},
-ytick pos=left,
-xticklabels from table={\syntheticerrors}{len},
-ymajorgrids,
-legend pos=north east,
-legend columns=3,
-error bars/y dir=both,
-error bars/y explicit
-]
-\addplot table [x expr=\coordindex, y=10s]{\syntheticerrors};
-\addplot table [x expr=\coordindex, y=30s]{\syntheticerrors};
-\addplot table [x expr=\coordindex, y=60s]{\syntheticerrors};
-\legend{10s, 30s, 60s}
-\end{axis}
+  ybar,
+  bar width=10pt,
+  xlabel={$|\Sigma^*|$},
+  ylabel={Top-1 parser acceptance},
+  title={\textbf{(2a) Synthetic Java bracket error correction}},
+  xtick=data,
+  axis x line*=bottom,
+  axis y line*=left,
+  enlarge x limits={abs=0.5},
+  ytick pos=left,
+  xticklabels from table={\syntheticerrors}{len},
+  ymajorgrids,
+  legend pos=north east,
+  legend columns=3,
+  error bars/y dir=both,
+  error bars/y explicit
+  ]
+  \addplot table [x expr=\coordindex, y=10s]{\syntheticerrors};
+  \addplot table [x expr=\coordindex, y=30s]{\syntheticerrors};
+  \addplot table [x expr=\coordindex, y=60s]{\syntheticerrors};
+  \legend{10s, 30s, 60s}
+  \end{axis}
 \end{tikzpicture}
-\begin{tikzpicture}[scale=0.8]
-\begin{axis}[
-width=8.3cm,
-height=6.6cm,
-title={\textbf{Organic error correction accuracy}},
-ybar,
-bar width=10pt,
-xlabel={$|\Sigma^*|$},
+\begin{tikzpicture}[scale=0.41]
+  \begin{axis}[
+  width=8.3cm,
+  height=7cm,
+  title={\textbf{(2b) Organic Python bracket error correction}},
+  ybar,
+  bar width=10pt,
+  xlabel={$|\Sigma^*|$},
 %ylabel={Parser acceptance},
-xtick=data,
-axis x line*=bottom,
-axis y line*=left,
-enlarge x limits={abs=0.5},
-ytick pos=left,
-xticklabels from table={\naturalerrors}{len},
-ymajorgrids,
-y tick label style={/pgf/number format/.cd,%
-scaled y ticks = false,
-set thousands separator={},
-fixed},
-legend pos=north east,
-legend columns=3,
-error bars/y dir=both,
-error bars/y explicit
-]
-\addplot table [x expr=\coordindex, y=10s]{\naturalerrors};
-\addplot table [x expr=\coordindex, y=30s]{\naturalerrors};
-\addplot table [x expr=\coordindex, y=60s]{\naturalerrors};
-\legend{10s, 30s, 60s}
-\end{axis}
+  xtick=data,
+  axis x line*=bottom,
+  axis y line*=left,
+  enlarge x limits={abs=0.5},
+  ytick pos=left,
+  xticklabels from table={\naturalerrors}{len},
+  ymajorgrids,
+  y tick label style={/pgf/number format/.cd,%
+  scaled y ticks = false,
+  set thousands separator={},
+  fixed},
+  legend pos=north east,
+  legend columns=3,
+  error bars/y dir=both,
+  error bars/y explicit
+  ]
+  \addplot table [x expr=\coordindex, y=10s]{\naturalerrors};
+  \addplot table [x expr=\coordindex, y=30s]{\naturalerrors};
+  \addplot table [x expr=\coordindex, y=60s]{\naturalerrors};
+  \legend{10s, 30s, 60s}
+  \end{axis}
 \end{tikzpicture}
+  \caption{Benchmarking bracket correction latency and accuracy across two bracketing langauges, one generated from Dyck-n, and the second uses an abstracted source code snippet with imbalanced parentheses.}
 \end{figure}
 
-\noindent For Python, we sample invalid code fragments uniformly from the imbalanced bracket category of the Break-It-Fix-It (BIFI) dataset~\cite{yasunaga2021break}, a dataset of organic Python errors, repair using Tidyparse, take the top-1 repair after $t$ seconds, and validate repairs using Python's \texttt{ast.parse()} method.
-
-%As expected, accuracy on organic errors in Python is lower.
-%
-%\subsection{Task Difficulty}
-%
-%\noindent\textbf{Level \textonehalf} - Incomplete code (all missing tokens at end)
-%
-%\noindent\textbf{Level 1} - Known number of errors at known locations
-%
-%\noindent\textbf{Level 2} - Known number of errors at unknown locations
-%
-%\noindent\textbf{Level 3} - Unknown number of errors at unknown locations
-%
-%\subsection{Repair Datasets}
-%Synthetic - Synthetic errors in natural code snippets\\
-%Natural - Natural errors and fixes mined from Git history
-%\subsection{Evaluation Metrics}
-%Syntactic validity - Only considers whether the repair parses\\
-%Repair alignment - Measures string distance to true fix
-%\subsection{Model configurations}
-%Model configurations - LLM, ECP, ECP + LLM
-%GraphCodeBERT
-%RobertA
-%Incoder
-%CarperAI?
+In the second set of experiments, we analyze bracketing errors in a dataset of Java and Python code snippets mined from open-source repositories on GitHub using the Dyck-nw\footnote{Using the Dyck-n grammar augmented with a single additional production, \texttt{D1} {\color{blue}\texttt{->}} \texttt{w} {\color{blue}\texttt{|}} \texttt{D1}. Contiguous non-bracket characters are substituted with a single placeholder token, \texttt{w}, and restored verbatim after bracket repair.}, in which all source code tokens except brackets are replaced with a \texttt{w} token. For Java (2a), we sample valid single-line statements with bracket nesting more than two levels deep, synthetically delete one bracket uniformly at random, and repair using Tidyparse, then take the top-1 repair after $t$ seconds, and validate using ANTLR's Java 8 parser. For Python (2b), we sample invalid code fragments uniformly from the imbalanced bracket category of the Break-It-Fix-It (BIFI) dataset~\cite{yasunaga2021break}, a dataset of organic Python errors, which we repair using Tidyparse, take the top-1 repair after $t$ seconds, and validate repairs using Python's \texttt{ast.parse()} method. Since the Java and Python datasets do not have a ground-truth human fix, we report the percentage of repairs that are accepted by the language's official parser for repairs generated under a fixed time cutoff. Although the Java and Python datasets are not directly comparable, we observe that Tidyparse can detect and repair a significant fraction of bracket errors in both languages with a relatively unsophisticated grammar.
 
 \section{Discussion}\label{sec:discussion}
 
-While error correction with a few errors is tolerable, latency can vary depending on many factors including string length and grammar size. If errors are localized to the beginning or end of a string, then latency is typically below 500ms. We observe that errors are typically concentrated nearby historical edit locations, which can be retrieved from the IDE or version control.
+The main lesson we draw from our experiments is that it is possible to leverage compute to compete with large language models on practical program repair tasks. Though extremely sample-efficient, their size comes at the cost of higher latency, and domain adaptation requires fine-tuning or retraining on pairwise repairs. Our approach uses a tiny grammar and a relatively cheap ranking metric to achieve comparable accuracy at the same latency. This allows us to repair errors in languages with little to no training data and provides far more flexibility and controllability.
 
-The primary advantage and limitation of our tool is the Levenshtein edit distance supported. This is an advantage, because in the absence of any contextual or statistical information, syntax and Levenshtein edits are often sufficiently constrained to determine a small number of valid repairs. This is also a limitation, because as the number of edits grows, the admissible set grows rapidly and the number of valid repairs may become too large to be useful depending on the language and snippet under repair.
+Our primary insight leading to SoTA precision@{5,10} is that repairs are typically concentrated near a small number of edit locations, and by biasing the search toward previously successful edit locations, we can achieve a significant speedup over a na\"ive search. We note this heuristic may not be applicable to all grammars, and it may be possible to construct less natural counterexamples where this heuristic fails, although we consider these unlikely in practice.
 
-Tidyparse in its current form has several other technical shortcomings: firstly it does not incorporate any neural language modeling technology at present, an omission we hope to address in the near future. Training a language model to predict likely repair locations and rank admissible results could lead to lower overall latency and more natural repairs. We also hope to explore the use of Metropolis-Hastings sampling to generate a diverse set of repairs, which could be useful for code completion and other applications.
+Latency can vary depending on many factors including string length and grammar size, and critically the Levenshtein edit distance. This can be an advantage because in the absence of any contextual or statistical information, syntax and Levenshtein edits are often sufficiently constrained to determine a small number of valid repairs. It is also a limitation because as the number of edits grows, the admissible set grows rapidly and the number of valid repairs may become too large to be useful without a good metric, depending on the language and source code snippet under repair.
 
-Secondly, our current method does not specialize language intersection to the grammar family, nor employ Bar-Hillel's~\cite{bar1961formal} construction for REG-CFL intersection, which would lead to a more efficient encoding. Furthermore, considering recent extensions of Boolean matrix-based parsing to linear context-free rewriting systems (LCFRS)~\cite{cohen2016parsing}, it may be feasible to search through still richer language families within the SAT solver.
+Although possible to further reduce constraint size by preprocessing techniques such as those posed in \S\ref{sec:sparsity}, the length of the string under repair is by far the dominating factor in formula size. For this reason, the isolation problem posed in Def.~\ref{def:isolation} is a critical obstacle to overcome. A general solution would allow us to collapse well-formed substrings and handle much larger code fragments than are currently supported. We consider this a promising direction for future work.
 
-Lastly and perhaps most significantly, Tidyparse does not incorporate any semantic constraints, so its repairs whilst syntactically admissible, are not guaranteed to be semantically valid. This can be partly alleviated by filtering the results through an incremental compiler or linter, however the latency introduced may be non-negligible. It is also possible to encode type-based semantic constraints into the solver and we intend to explore this direction more fully in future work.
+Tidyparse in its current form has several other technical shortcomings: firstly, it does not incorporate any neural language modeling technology at present, an omission we hope to address. Training a language model to predict likely repair locations and rank admissible results could lead to lower overall latency and more natural repairs. We also hope to explore the use of Metropolis-Hastings and determinantal point processes to encourage sampling diversity.
 
-We envision three primary use cases: (1) helping novice programmers become more quickly familiar with a new programming language (2) autocorrecting common typos among proficient but forgetful programmers and (3) as a prototyping tool for PL designers and educators. Featuring a grammar editor and built-in SAT solver, Tidyparse helps developers navigate the language design space, visualize syntax trees, debug parsing errors and quickly generate simple examples and counterexamples for testing. %Although the algorithm may seem esoteric at first glance, in our experience it is much more interpretable than classical parsers, which exhibit poor error-recovery and diagnostics.
+Secondly, our current method does not specialize language intersection to the grammar family, nor employ Bar-Hillel's~\cite{bar1961formal} construction for REG-CFL intersection, which would lead to a more efficient encoding of the Levenshtein-CFL reachability. Furthermore, considering recent extensions of Boolean matrix-based parsing to linear context-free rewriting systems (LCFRS)~\cite{cohen2016parsing}, it may be feasible to search through richer language families within the SAT solver without employing an external stochastic search to generate and validate candidate repairs.
+
+Lastly and perhaps most significantly, Tidyparse does not incorporate any semantic constraints, so its repairs whilst syntactically admissible, are not guaranteed to be semantically valid. This can be partly alleviated by filtering the results through an incremental compiler or linter, however, the latency introduced may be non-negligible. It is also possible to encode type-based semantic constraints into the solver and we intend to explore this direction more fully in future work.
+
+We envision a few primary use cases for our tool: (1) helping novice programmers become more quickly familiar with a new programming language, (2) autocorrecting common typos among proficient but forgetful programmers, (3) as a prototyping tool for PL designers and educators, and (4) as a pluggable library or service for parser-generators and language servers. Featuring a grammar editor and built-in SAT solver, Tidyparse helps developers navigate the language design space, visualize syntax trees, debug parsing errors and quickly generate simple examples and counterexamples for benchmarking and testing.
 
 \section{Conclusion}\label{sec:conclusion}
 
@@ -1123,17 +1102,17 @@ In our work, we argue these two compromises are not mutually exclusive, but comp
 
 Not only is linear algebra over finite fields an expressive language for probabilistic inference, but also an efficient framework for inference on languages themselves. We illustrate a few of its applications for parsing incomplete strings and repairing syntax errors in context- free and sensitive languages. In contrast with LL and LR-style parsers, our technique can recover partial forests from invalid strings by examining the structure of $M^*$, and can handle arbitrary conjunctive languages. In future work, we hope to extend our method to more natural grammars like PCFG and LCFRS.
 
-Furthermore, we argue it is possible to improve the efficiency of human programmers without sacrificing expressiveness by considering latency to synthesize an acceptable completion. In contrast with program synthesizers that require intermediate programs to be well-formed, our synthesizer is provably sound and complete up to a Levenshtein distance bound, and attempts to minimize total edits, but does not impose any constraints on the code itself being written.
+Syntax correction tools should be as user-friendly and widely-accessible as autocorrection tools in word processors. From a practical standpoint, we argue it is possible to reduce disruption from manual syntax repair and improve the efficiency of working programmers by driving down the latency needed to synthesize an acceptable repair. In contrast with program synthesizers that require intermediate editor states to be well-formed, our synthesizer does not impose any constraints on the code itself being written and can be used in a live programming environment.
 
-Tidyparse accepts a set of CFGs and a string to parse. If the string is valid, it returns the parse forest, otherwise, it returns a set of repairs, ordered by perplexity. Our method compiles each CFG and candidate string onto a Boolean dynamical system and solves for its fixed points using an incremental SAT solver. This approach to parsing has many advantages, enabling us to repair syntax errors and generate parse trees for incomplete strings. This technique is particularly amenable to neural program synthesis and repair, naturally integrating with the masked-language-modeling task (MLM) used by transformer-based neural language models.
+Despite its computational complexity, the design of the tool itself is relatively simple. Tidyparse accepts a set of CFGs and a string to parse. If the string is valid, it returns the parse forest, otherwise, it returns a set of repairs, ordered by perplexity. Our method compiles each CFG and candidate string onto a Boolean dynamical system and solves for its fixed points using an incremental SAT solver. This approach to parsing has many advantages, enabling us to repair syntax errors and generate parse trees for incomplete strings to provide syntax highlighting and aid manual debugging. It is also particularly amenable to neural program synthesis and repair, naturally integrating with the masked-language-modeling task (MLM) used by Transformer-based large language models.
 
-From a practical standpoint, we have implemented our approach as an IDE plugin and demonstrated its viability as a tool for live programming. Tidyparse is capable of generating repairs for invalid code in a range of practical languages. We plan to continue expanding its grammar and autocorrection functionality to cover a broader range of languages and hope to conduct a more thorough user study to validate its effectiveness in the near future.
+We have implemented our approach as an IDE plugin and demonstrated its viability as a practical tool for realtime programming. A considerable amount of effort was devoted to supporting fast error correction functionality. Tidyparse is capable of generating repairs for invalid code in a range of practical languages with very little downstream language integration required. We plan to continue expanding its grammar and autocorrection functionality to cover a broader range of languages and hope to conduct a more thorough user study to validate its effectiveness.
 
 \pagebreak\bibliography{acmart}
 
 \appendix
 
-\pagebreak\section{Example Repairs}
+\pagebreak\section{Example Repairs}\label{sec:appendix}
 
 We give some example human repairs that were correctly predicted from the StackOverflow dataset.
 
