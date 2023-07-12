@@ -76,12 +76,12 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
     val repairs = (
       if ("_" !in tokens) bijectiveRepair(
         promptTokens = tokens.intersperse(),
-        fillers = cfg.terminals,
+        deck = cfg.terminals.toList(),
         maxEdits = 2.also { println("Using bijective sampler with $it edits") },
         admissibilityFilter = { this in cfg.language },
         takeMoreWhile = takeMoreWhile,
 //        diagnostic = { println(it.result); /*updateProgress(it.result, this)*/ }
-      ).map { it.result }.take(maxResults).toList()
+      ).map { it.result.joinToString(" ") }.take(maxResults).toList()
       else sanitized.synthesizeIncrementally(
         cfg = cfg,
         variations = variations,
