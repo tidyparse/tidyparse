@@ -193,6 +193,7 @@
 
 \newtcblisting{halftidyinput}[1][]{%
   left skip=0.7cm,
+  left=0.35cm,
   width=6cm,
 %  left=-0.01cm,
   top=-0.1cm,
@@ -216,6 +217,7 @@
 
 \newtcblisting{wholetidyinput}[1][]{%
   left skip=0.7cm,
+  left=0.35cm,
   top=0.1cm,
   middle=0mm,
   boxsep=0mm,
@@ -340,10 +342,20 @@
 \newcommand{\shur}{\shup\hspace{-5pt}\shri}
 
 \makeatletter
-\def\squiggly{\bgroup \markoverwith{\textcolor{red}{\lower3\p@\hbox{\sixly \char58}}}\ULon}
+\def\squigglyred{\bgroup \markoverwith{\textcolor{red}{\lower3\p@\hbox{\sixly \char58}}}\ULon}
 \makeatother
 
-\newcommand{\err}[1]{\smash{\squiggly{#1}{}}}
+\makeatletter
+\def\squigglyblu{\bgroup \markoverwith{\textcolor{blue}{\lower3\p@\hbox{\sixly \char58}}}\ULon}
+\makeatother
+
+\makeatletter
+\def\squigglyora{\bgroup \markoverwith{\textcolor{orange}{\lower3\p@\hbox{\sixly \char58}}}\ULon}
+\makeatother
+
+\newcommand{\err}[1]{\smash{\squigglyred{#1}{}}}
+\newcommand{\erb}[1]{\smash{\squigglyblu{#1}{}}}
+\newcommand{\ero}[1]{\smash{\squigglyora{#1}{}}}
 \newcommand{\stirlingii}{\genfrac{\{}{\}}{0pt}{}}
 
 %======== Arrows =========

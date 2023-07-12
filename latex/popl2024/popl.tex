@@ -57,14 +57,14 @@ In this work, we offer a new technique for repairing real-world syntax errors fr
 
 Grounded in formal language theory, our approach borrows insights from Boolean matrix parsing~\cite{valiant1975general} and conjunctive language reachability~\cite{zhang2017context} to unify \textit{parsing}, \textit{code completion}, \textit{error correction} under a simple algebraic framework. We provide exact and approximate algorithms for repairing real-world syntax errors, and implement them in a real-time editor called Tidyparse. This tool features a state-of-the-art fast repair procedure that is provably sound and complete up to a Levenshtein bound. We show how it can be used to complete unfinished code, parse incomplete code, and repair unparseable syntax fragments in arbitrary context-free and conjunctive languages.
 
-Our paper is structured as follows: we present two high-level approaches to syntax correction: one that that uses equational reasoning to find the satisfying assignments to a multilinear system of equations over finite fields (Theory 1, model-theoretic) and another that samples random edits and accepts only those which parse (Theory 2, probabilistic correction). Finally, we show how these two approaches can be combined to attain human-level precision and state-of-the-art wall clock latency on a dataset of human syntax errors and repairs -- without using a neural language model.
+This paper presents two high-level approaches to syntax correction: one that that uses equational reasoning to find the satisfying assignments to a multilinear system of equations over finite fields (Theory 1, model-theoretic), and another that samples random edits and accepts only those which parse (Theory 2, probabilistic correction). Finally, we show how these two approaches can be combined to attain human-level precision and state-of-the-art wall clock latency on a dataset of human syntax errors and repairs -- without using a neural language model.
 
 \section{Overview}
 
 \begin{figure}
   \centering
   \includegraphics[width=\linewidth]{../figures/architecture_overview.pdf}
-  \caption{Our framework consists of three components, namely (2) a solver, (4) ranker and (3) sampler. Given an invalid string and grammar (1), we first compile them into a Boolean tensor (2) representing a multilinear system of equations whose fixed points characterize the admisisble set. The system can be solved directly, yielding a set of repairs that are ranked using a suitable scoring function (4). Optionally, we may introduce stochastic edits to the string using the Levenshtein ball sampler (3) and extract the solutions incrementally (5). When the langauge edit distance and solutions are time-sensitive, (5) is typically more efficient.}
+  \caption{Our framework consists of three components, namely (2) a solver, (4) ranker and (3) sampler. Given an invalid string and grammar (1), we first compile them into a Boolean tensor (2) representing a multilinear system of equations whose fixed points characterize the admissible set. The system can be solved directly, yielding a set of repairs that are ranked using a suitable scoring function (4). Optionally, we may introduce stochastic edits to the string using the Levenshtein ball sampler (3) and extract the solutions incrementally (5). When the langauge edit distance and solutions are time-sensitive, (5) is typically more efficient.}
   \label{fig:overview}
 \end{figure}
 
@@ -119,7 +119,7 @@ During the conception of this work, a number of design choices were made to incr
   \item Finally, the framework must be \textbf{flexible} and \textbf{extensible}. Intended as a general-purpose tool for generating syntax repairs in a wide variety of programming languages, end-users should be able to extend the framework with their own custom grammars and side-constraints.
 \end{itemize}
 
-As we demonstrate both formally and experimentally, our framework is able to satisfy most of these criteria simultaneously, while attaining state-of-the-art performance in terms of precision, throughput and wall-clock latency. However, there are still some open problems that remain to be solved to realize its full potential as an everyday programming tool. In particular, we will discuss some of those open problems (e.g.,~\ref{def:isolation}) and design trade-offs (\S\ref{sec:discussion}) that were taken in its construction.
+As we demonstrate both formally and experimentally, our framework is able to satisfy most of these criteria simultaneously, while attaining state-of-the-art performance in terms of precision, throughput and wall clock latency. However, there are still some open problems that remain to be solved to realize its full potential as an everyday programming tool. In particular, we will discuss some of those open problems (e.g.,~\ref{def:isolation}) and design trade-offs (\S\ref{sec:discussion}) that were taken in its construction.
 
 With the above criteria in mind, the following paper addresses four primary research questions:
 
@@ -715,7 +715,7 @@ The problem of incremental parsing is closely related to \textit{dynamic matrix 
 
 %We can use an incremental SAT solver to encode the constraints. To do so, we encode the matrix equivalence relation and use the incremental SAT solver to update the constraints as new keystrokes are received. The incremental SAT solver will eliminate redundancy as it is introduced. Once a solution is found, we can use the algorithm from \S\ref{sec:denormalization} to recover the parse tree, then introduce a new constraint to block the solution and continue searching for other solutions.
 
-\subsection{Error recovery}\label{sec:error}
+\subsection{Error recovery}\label{sec:error_recovery}
 
 \begin{wrapfigure}{R}{0.4\textwidth}
   \vspace{-20pt}
@@ -780,7 +780,7 @@ These branches are located on peaks of the upper triangular (UT) matrix ridge. A
 
 \input{example.tex}
 
-\section{Related Work}\label{sec:related}
+\pagebreak\section{Related Work}\label{sec:related}
 
 Three important questions arise when repairing syntax errors: (1) is the program broken in the first place? (2) if so, where are the errors located? (3) how should those locations then be altered? In the case of syntax correction, those questions are addressed by three related research areas, (1) parsing, (2) language equations and (3) repair. We survey each of those areas in turn.
 
@@ -1113,9 +1113,9 @@ We envision three primary use cases: (1) helping novice programmers become more 
 
 \section{Conclusion}\label{sec:conclusion}
 
-The great compromise in program synthesis is one of efficiency versus expressiveness: the more expressive a language, the more concise and varied the programs it can represent, but the harder those programs are to synthesize without resorting to domain-specific heuristics. Likewise, the simpler a language is to synthesize, the weaker its concision and expressive power.
+The great compromise in program synthesis is one of efficiency versus expressiveness. The more expressive a language, the more concise and varied the programs it can represent, but the harder those programs are to synthesize without resorting to domain-specific heuristics. Likewise, the simpler a language is to synthesize, the weaker its concision and expressive power.
 
-Most existing work on program synthesis focus on general $\lambda$-calculi, or very narrow languages such as finite automata or regular expressions. The former are too expressive to be efficiently synthesized or verified, whilst the latter are too restrictive to be useful. In our work, we focus on context-free and mildly context-sensitive grammars, which are expressive enough to capture a variety of useful programming language features, but not so expressive as to be unsynthesizable.
+Most existing work on program synthesis has focused on general $\lambda$-calculi, or narrow languages such as finite sets or regular expressions. The former are too expressive to be efficiently synthesized or verified, whilst the latter are too restrictive to be useful. In our work, we focus on context-free and mildly context-sensitive grammars, which are expressive enough to capture a variety of useful programming language features, but not so expressive as to be unsynthesizable.
 
 The second great compromise in program synthesis is that of reusability versus specialization. In programming, as in human communications, there is a vast constellation of languages, each requiring specialized generators and interpreters. Are these languages truly irreconcilable? Or, as Noam Chomsky argues, are these merely dialects of a universal language? \textit{Synthesis} then, might be a misnomer, and more aptly called \textit{recognition}, in the analytic tradition.
 
@@ -1125,7 +1125,7 @@ Not only is linear algebra over finite fields an expressive language for probabi
 
 Furthermore, we argue it is possible to improve the efficiency of human programmers without sacrificing expressiveness by considering latency to synthesize an acceptable completion. In contrast with program synthesizers that require intermediate programs to be well-formed, our synthesizer is provably sound and complete up to a Levenshtein distance bound, and attempts to minimize total edits, but does not impose any constraints on the code itself being written.
 
-Tidyparse accepts a set of CFGs and a string to parse. If the string is valid, it returns the parse forest, otherwise, it returns a set of repairs, ordered by perplexity. Our method compiles each CFG and candidate string onto a Boolean dynamical system and solves for its fixedpoints using an incremental SAT solver. This approach to parsing has many advantages, enabling us to repair syntax errors and generate parse trees for incomplete strings. This technique is particularly amenable to neural program synthesis and repair, naturally integrating with the masked-language-modeling task (MLM) used by transformer-based neural language models.
+Tidyparse accepts a set of CFGs and a string to parse. If the string is valid, it returns the parse forest, otherwise, it returns a set of repairs, ordered by perplexity. Our method compiles each CFG and candidate string onto a Boolean dynamical system and solves for its fixed points using an incremental SAT solver. This approach to parsing has many advantages, enabling us to repair syntax errors and generate parse trees for incomplete strings. This technique is particularly amenable to neural program synthesis and repair, naturally integrating with the masked-language-modeling task (MLM) used by transformer-based neural language models.
 
 From a practical standpoint, we have implemented our approach as an IDE plugin and demonstrated its viability as a tool for live programming. Tidyparse is capable of generating repairs for invalid code in a range of practical languages. We plan to continue expanding its grammar and autocorrection functionality to cover a broader range of languages and hope to conduct a more thorough user study to validate its effectiveness in the near future.
 

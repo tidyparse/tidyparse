@@ -1,4 +1,3 @@
-
 Suppose we are given the following context-free grammar:
 
 \begin{wholetidyinput}
@@ -35,10 +34,10 @@ true _ _ _ ( false _ ( _ _ _ _ ! _ _ ) _ _ _ _(*@\caret{ }@*)
   \end{lstlisting}
   \tcblower
   \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-true (*@\hlorange{xor}@*) (*@\hlorange{!}@*) ( false (*@\hlorange{xor}@*) ( <S> (*@\hlorange{)}@*) or ! (*@\hlorange{<S>}@*) ) (*@\hlorange{xor}@*) (*@\hlorange{<S>}@*)
-true (*@\hlorange{xor}@*) (*@\hlorange{!}@*) ( false (*@\hlorange{and}@*) ( <S> (*@\hlorange{)}@*) or ! (*@\hlorange{<S>}@*) ) (*@\hlorange{xor}@*) (*@\hlorange{<S>}@*)
-true (*@\hlorange{xor}@*) (*@\hlorange{!}@*) ( false (*@\hlorange{and}@*) ( <S> (*@\hlorange{)}@*) and ! (*@\hlorange{<S>}@*) ) (*@\hlorange{xor}@*) (*@\hlorange{<S>}@*)
-true (*@\hlorange{xor}@*) (*@\hlorange{!}@*) ( false (*@\hlorange{and}@*) ( <S> (*@\hlorange{)}@*) and ! (*@\hlorange{<S>}@*) ) (*@\hlorange{and}@*) (*@\hlorange{<S>}@*)
+1. true (*@\hlorange{xor}@*) (*@\hlorange{!}@*) ( false (*@\hlorange{xor}@*) ( (*@\hlorange{<S>}@*) (*@\hlorange{)}@*) (*@\hlorange{or}@*) ! (*@\hlorange{<S>}@*) ) (*@\hlorange{xor}@*) (*@\hlorange{<S>}@*)
+2. true (*@\hlorange{xor}@*) (*@\hlorange{!}@*) ( false (*@\hlorange{and}@*) ( (*@\hlorange{<S>}@*) (*@\hlorange{)}@*) (*@\hlorange{or}@*) ! (*@\hlorange{<S>}@*) ) (*@\hlorange{xor}@*) (*@\hlorange{<S>}@*)
+3. true (*@\hlorange{xor}@*) (*@\hlorange{!}@*) ( false (*@\hlorange{and}@*) ( (*@\hlorange{<S>}@*) (*@\hlorange{)}@*) (*@\hlorange{and}@*) ! (*@\hlorange{<S>}@*) ) (*@\hlorange{xor}@*) (*@\hlorange{<S>}@*)
+4. true (*@\hlorange{xor}@*) (*@\hlorange{!}@*) ( false (*@\hlorange{and}@*) ( (*@\hlorange{<S>}@*) (*@\hlorange{)}@*) (*@\hlorange{and}@*) ! (*@\hlorange{<S>}@*) ) (*@\hlorange{and}@*) (*@\hlorange{<S>}@*)
 ...
   \end{lstlisting}
 \end{tcolorbox}
@@ -57,38 +56,45 @@ true and ( false or and true false(*@\caret{ }@*)
 \end{lstlisting}
 \tcblower
 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-1.) true and ( false or (*@\hlorange{!}@*) true (*@\hlorange{)}@*)
-2.) true and ( false or (*@\hlgreen{<S>}@*) and true (*@\hlorange{)}@*)
-3.) true and ( false or (*@\hlorange{(}@*) true (*@\hlorange{)}@*) (*@\hlgreen{)}@*)
+1. true and ( false or (*@\hlorange{!}@*) true (*@\hlorange{)}@*)
+2. true and ( false or (*@\hlgreen{<S>}@*) and true (*@\hlorange{)}@*)
+3. true and ( false or (*@\hlorange{(}@*) true (*@\hlorange{)}@*) (*@\hlgreen{)}@*)
 ...
-9.) true and ( false or (*@\hlgreen{!}@*) (*@\hlgreen{<S>}@*) (*@\hlgreen{)}@*) and true (*@\hlred{false} @*)
+9. true and ( false or (*@\hlgreen{!}@*) (*@\hlgreen{<S>}@*) (*@\hlgreen{)}@*) and true (*@\hlred{false} @*)
 \end{lstlisting}
 \end{tcolorbox}
 
-\noindent Given an invalid string, the tool will first map the string to a coarsened version and generate edits:
+\noindent Although CFLs are closed under homomorphisms allowing unified lexing and parsing, most languages explicitly define a separate lexer, which we can use to abstract over named identifiers. Given an invalid string, the tool will first map the string, then generate edits over abstracted space, and finally map the successful repairs back to the original space, as shown below:
 
-\hspace{-0.3cm}\begin{minipage}[t]{0.5\textwidth}
-\begin{tcolorbox}[left skip=0.7cm,
+\hspace{-0.4cm}\begin{minipage}[t]{0.485\textwidth}
+\begin{tcolorbox}[
+left skip=0.7cm,
+left=0.35cm,
+right=0cm,
 top=0.1cm,
 middle=0mm,
 boxsep=0mm,
 underlay unbroken and first={%
   \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
 }]
-\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-d = sum([foo(i] for i in vals))
+\begin{lstlisting} [hbox, language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+d = sum([foo(i] for i in vals))(*@\caret{ }@*)
 \end{lstlisting}
 \tcblower
-\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-d = sum([foo(i(*@\hlorange{)}@*) for i in vals(*@\hlorange{]}@*))
-d = sum([(i(*@\hlorange{)}@*) for i in vals(*@\hlorange{]}@*))
-d = sum([foo(*@\hlorange{.}@*)i for i in vals(*@\hlorange{]}@*))
-d = sum([foo((*@\hlgreen{-}@*)i(*@\hlorange{)}@*) for i in vals(*@\hlorange{]}@*))
+\begin{lstlisting} [hbox, language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+1. d = sum([foo(i(*@\hlorange{)}@*) for i in vals(*@\hlorange{]}@*))
+2. d = sum([(i(*@\hlorange{)}@*) for i in vals(*@\hlorange{]}@*))
+3. d = sum([foo(*@\hlorange{.}@*)i for i in vals(*@\hlorange{]}@*))
+4. d = sum([foo((*@\hlgreen{-}@*)i(*@\hlorange{)}@*) for i in vals(*@\hlorange{]}@*))
 \end{lstlisting}
 \end{tcolorbox}
 \end{minipage}
-\begin{minipage}[t]{0.5\textwidth}
-\begin{tcolorbox}[left skip=0.7cm,
+\hspace{0.05cm}
+\begin{minipage}[t]{0.51\textwidth}
+\begin{tcolorbox}[
+left skip=0.7cm,
+left=0.35cm,
+right=0cm,
 top=0.1cm,
 middle=0mm,
 boxsep=0mm,
@@ -100,56 +106,15 @@ w = w ( [ w ( w ] for w in w ) )
 \end{lstlisting}
 \tcblower
 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-w = w ( [ w ( i (*@\hlorange{)}@*) for i in w (*@\hlorange{]}@*) )
-w = w ( [ (*@\hlred{w}@*) ( w (*@\hlorange{)}@*) for w in w (*@\hlorange{]}@*) )
-w = w ( [ w (*@\hlorange{.}@*) w (*@\hlred{)}@*)  for w in w (*@\hlorange{]}@*) )
-w = w ( [ w ( (*@\hlgreen{-}@*) w (*@\hlorange{)}@*) for w in w (*@\hlorange{)}@*) )
+1. w = w ( [ w ( i (*@\hlorange{)}@*) for i in w (*@\hlorange{]}@*) )
+2. w = w ( [ (*@\hlred{w}@*) ( w (*@\hlorange{)}@*) for w in w (*@\hlorange{]}@*) )
+3. w = w ( [ w (*@\hlorange{.}@*) w (*@\hlred{)}@*)  for w in w (*@\hlorange{]}@*) )
+4. w = w ( [ w ( (*@\hlgreen{-}@*) w (*@\hlorange{)}@*) for w in w (*@\hlorange{)}@*) )
 \end{lstlisting}
 \end{tcolorbox}
 \end{minipage}
 
-This coarsening is done to reduce the number of possible corrections, and is admissible because CFLs are closed under homomorphisms. (If we wanted to provide a lexical expansion, this would be possible.) These candidates then reranked using a probability metric as describe in \S\ref{sec:adaptive}
-
-\pagebreak\hspace{-0.3cm}\begin{minipage}[t]{0.5\textwidth}
-                 \begin{tcolorbox}[left skip=0.7cm,
-                 top=0.1cm,
-                 middle=0mm,
-                 boxsep=0mm,
-                 underlay unbroken and first={%
-                   \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
-                 }]
-                 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-v = [float(n for n in l.split(':')]
-                 \end{lstlisting}
-                 \tcblower
-                 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-v = [float(n(*@\hlgreen{)}@*) for n in l.split(':')]
-v = [float(*@\hlred{(}@*)n for n in l.split(':')]
-v = [float((*@\hlgreen{)}@*)n for n in l.split(':')]
-v = [float((*@\hlorange{)}@*) for n in l.split(':')]
-                 \end{lstlisting}
-                 \end{tcolorbox}
-\end{minipage}
-\begin{minipage}[t]{0.5\textwidth}
-  \begin{tcolorbox}[left skip=0.7cm,
-  top=0.1cm,
-  middle=0mm,
-  boxsep=0mm,
-  underlay unbroken and first={%
-    \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
-  }]
-  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-w = [ w ( w w w w w . w ( w ) ]
-  \end{lstlisting}
-  \tcblower
-  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-w = [ w ( w (*@\hlgreen{)}@*) w w w w . w ( w ) ]
-w = [ w (*@\hlred{(}@*) w w w w w . w ( w ) ]
-w = [ w ( (*@\hlgreen{)}@*) w w w w w . w ( w ) ]
-w = [ w ( (*@\hlorange{)}@*) w w w w . w ( w ) ]
-  \end{lstlisting}
-  \end{tcolorbox}
-\end{minipage}
+This coarsening reduces the number of possible corrections. We rerank valid completions using a probability metric as described in \S\ref{sec:adaptive}.
 
 %Tidyparse requires a grammar, which can either be provided by the user or ingested from a BNF specification. The following grammar represents a slightly more realistic programming language:
 %
@@ -193,22 +158,106 @@ underlay unbroken and first={%
   \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
 }]
 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-sxp -> λ var . sxp | sxp sxp | var | ( sxp ) | const
-const -> 1 | 2 | 3 | 4 | 5 | 6
+sxp -> λ var . sxp | sxp sxp | var | ( sxp )
 var -> a | b | c | f | x | y | z
 ---
 ( λ f . ( λ x . f ( x x ) ) ( λ x . f ( x x ) (*@\caret{ }@*)
 \end{lstlisting}
 \tcblower
 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-1.) ( λ f . ( λ x . f ( x x ) ) (*@\hlorange{)}@*) λ x . f ( x x )
-2.) ( λ f . ( λ x . f ( x x ) ) (*@\hlorange{x}@*) (*@\hlgreen{)}@*) λ x . f ( x x )
-3.) ( λ f . ( λ x . f ( x x ) ) ( λ x . f ( x(*@\hlred{ }@*)) (*@\hlgreen{)}@*) (*@\hlgreen{)}@*)
-...
+1. ( λ f . ( λ x . f ( x x ) ) (*@\hlorange{)}@*) λ x . f ( x x )
+2. ( λ f . ( λ x . f ( x x ) ) (*@\hlorange{x}@*) (*@\hlgreen{)}@*) λ x . f ( x x )
+3. ( λ f . ( λ x . f ( x x ) ) ( λ x . f ( x(*@\hlred{ }@*)) (*@\hlgreen{)}@*) (*@\hlgreen{)}@*)
 \end{lstlisting}
 \end{tcolorbox}
 
 \noindent Name resolution and scope checking is also possible but requires a more sophisticated grammar.
+
+\subsection{Syntax highlighting}
+
+We use the parse forest from \S\ref{sec:error_recovery} to segment maximally parseable regions. Subsequences which can be partly parseable are underlined in blue. Alphabetic tokens which cannot be joined are marked orange. All other tokens are marked red.
+
+\begin{tcolorbox}[left skip=0.7cm,
+top=0.1cm,
+middle=0mm,
+boxsep=0mm,
+underlay unbroken and first={%
+  \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+}]
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+(*@\erb{( true xor false ) and true}@*) (*@\ero{xor}@*)  (*@\ero{and}@*)  (*@\err{not}@*) (*@\ero{false}@*)
+\end{lstlisting}
+\end{tcolorbox}
+
+\subsection{Grammar assistance}
+
+Tidyparse uses a CFG to parse the CFG, so it can provide assistance while the user is designing the CFG. For example, if the CFG does not parse, will suggest possible fixes.% In the future, we intend to use this functionality to perform example-based codesign and grammar induction.
+
+\hspace{-0.4cm}\begin{minipage}[t]{0.485\textwidth}
+\begin{tcolorbox}[
+left skip=0.7cm,
+left=0.35cm,
+right=0cm,
+top=0.1cm,
+middle=0mm,
+boxsep=0mm,
+underlay unbroken and first={%
+ \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+}]
+\begin{lstlisting} [hbox, language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+START -> CFG
+CFG -> PRD | CFG \n CFG
+PRD -> VAR '->' RHS
+VAR -> ${names.joinToString(" | ")}
+RHS -> VAR | RHS RHS | RHS '|' RHS
+\end{lstlisting}
+\end{tcolorbox}
+\end{minipage}
+\hspace{0.05cm}
+\begin{minipage}[t]{0.51\textwidth}
+  \begin{tcolorbox}[
+  left skip=0.7cm,
+  left=0.35cm,
+  right=0cm,
+  top=0.1cm,
+  middle=0mm,
+  boxsep=0mm,
+  underlay unbroken and first={%
+    \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+  }]
+  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+B ::= true | false | (*@\caret{ }@*)
+  \end{lstlisting}
+  \tcblower
+  \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+1. B (*@\hlorange{->}@*) true | false (*@\hlred{ }@*)
+2. B (*@\hlorange{->}@*) true | false (*@\hlorange{<RHS>}@*)
+3. B (*@\hlorange{->}@*) true | false | (*@\hlgreen{<RHS>}@*)
+  \end{lstlisting}
+  \end{tcolorbox}
+\end{minipage}
+
+\subsection{Interactive nonterminal expansion}
+
+Users can interactively build up a complex expression by placing the caret over a nonterminal they wish to expand, then pressing \keys{\ctrl + \SPACE}:
+
+\begin{tcolorbox}[left skip=0.7cm,
+top=0.1cm,
+middle=0mm,
+boxsep=0mm,
+underlay unbroken and first={%
+  \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+}]
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+true and ( false or <(*@\caret{S}@*)> and true )
+\end{lstlisting}
+\tcblower
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+1. true and ( false or (*@\hlorange{true}@*) and true )
+2. true and ( false or (*@\hlorange{false}@*) and true )
+3. true and ( false or (*@\hlorange{! <S>}@*) and true )
+\end{lstlisting}
+\end{tcolorbox}
 
 \subsection{Nonterminal stubs}
 
@@ -248,56 +297,48 @@ E<Bool> -> E<Bool> + E<Bool> | E<Bool> * E<Bool>
 \end{lstlisting}
 \end{tcolorbox}
 
-\subsection{Grammar Assistance}
-
-Tidyparse uses a CFG to parse the CFG, so it can provide assistance while the user is designing the CFG. For example, if the CFG does not parse, it will suggest possible fixes. In the future, we intend to use this functionality to perform example-based codesign and grammar induction.
-
-\begin{tcolorbox}[left skip=0.7cm,
-top=0.1cm,
-middle=0mm,
-boxsep=0mm,
-underlay unbroken and first={%
-  \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
-}]
-\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-B -> true | false | (*@\caret{ }@*)
-\end{lstlisting}
-\tcblower
-\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-B -> true | false (*@\hlred{ }@*)
-B -> true | false (*@\hlorange{<RHS>}@*)
-B -> true | false | (*@\hlgreen{<RHS>}@*)
-...
-\end{lstlisting}
-\end{tcolorbox}
-
-\subsection{Interactive Nonterminal Expansion}
-
-Users can interactively build up a complex expression by placing the caret over a stub they wish to expand, then pressing \keys{\ctrl + \SPACE}:
-
-\begin{tcolorbox}[left skip=0.7cm,
-top=0.1cm,
-middle=0mm,
-boxsep=0mm,
-underlay unbroken and first={%
-  \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
-}]
-\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-if <(*@\caret{V}@*)exp> X then <Vexp> else <Vexp>
-\end{lstlisting}
-\tcblower
-\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-if (*@\hlorange{map}@*) X then <Vexp> else <Vexp>
-if (*@\hlorange{uncurry}@*) X then <Vexp> else <Vexp>
-if (*@\hlorange{foldright}@*) X then <Vexp> else <Vexp>
-...
-\end{lstlisting}
-\end{tcolorbox}
-
-\subsection{Conjunctive Grammars}
+\subsection{Conjunctive grammars}
 
 Many natural and programming languages exhibit context-sensitivity, such as Python indentation. Unlike traditional parser-generators, Tidyparse can encode CFL intersection, allowing it to detect and correct errors in a more expressive family of languages than would ordinarily be possible using CFGs alone. For example, consider the grammar from Sec.~\ref{sec:lclreach}:
 
+\hspace{-0.4cm}\begin{minipage}[t]{0.485\textwidth}
+\begin{tcolorbox}[
+left skip=0.7cm,
+left=0.35cm,
+right=0cm,
+top=0.1cm,
+middle=0mm,
+boxsep=0mm,
+underlay unbroken and first={%
+\path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+}]
+\begin{lstlisting} [hbox, language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+S -> LEFT RIGHT
+LEFT -> a b | a LEFT b
+RIGHT -> c | c RIGHT
+\end{lstlisting}
+\end{tcolorbox}
+\end{minipage}
+\hspace{0.05cm}
+\begin{minipage}[t]{0.51\textwidth}
+\begin{tcolorbox}[
+left skip=0.7cm,
+left=0.35cm,
+right=0cm,
+top=0.1cm,
+middle=0mm,
+boxsep=0mm,
+underlay unbroken and first={%
+\path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
+}]
+\begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
+S -> LEFT RIGHT
+RIGHT -> b c | b RIGHT c
+LEFT -> a | a LEFT
+\end{lstlisting}
+\end{tcolorbox}
+\end{minipage}
+
 \begin{tcolorbox}[left skip=0.7cm,
 top=0.1cm,
 middle=0mm,
@@ -306,16 +347,13 @@ underlay unbroken and first={%
   \path[draw=none] (interior.north west) rectangle node[white]{\includegraphics[width=4mm]{../figures/tidyparse_logo.png}} ([xshift=-10mm,yshift=-9mm]interior.north west);
 }]
 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-S -> L R    L -> a b | a L b    R -> c | c R    &&&
-S -> L R    R -> b c | b R c    L -> a | a L
----
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _(*@\caret{ }@*)
 \end{lstlisting}
 \tcblower
 \begin{lstlisting} [language=tidy, basicstyle=\ttfamily\small, escapeinside={(*@}{@*)}]
-1.) a b c
-2.) a a b b c c
-3.) a a a b b b c c c
+1. a b c
+2. a a b b c c
+3. a a a b b b c c c
 ...
 \end{lstlisting}
 \end{tcolorbox}
