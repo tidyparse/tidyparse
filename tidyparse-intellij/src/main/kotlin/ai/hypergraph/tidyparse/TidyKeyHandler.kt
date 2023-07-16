@@ -3,7 +3,8 @@ package ai.hypergraph.tidyparse
 import ai.hypergraph.kaliningraph.parsing.TIMEOUT_MS
 import com.intellij.codeInsight.editorActions.BackspaceHandlerDelegate
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
-import com.intellij.openapi.application.runReadAction
+import com.intellij.codeInsight.editorActions.TypedHandlerDelegate.Result.CONTINUE
+import com.intellij.openapi.application.*
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
@@ -18,7 +19,7 @@ class TidyKeyHandler : TypedHandlerDelegate() {
 //    }, project, editor, file)
 
   override fun charTyped(c: Char, project: Project, editor: Editor, file: PsiFile): Result =
-    TypedHandlerDelegate.Result.CONTINUE.also {
+    CONTINUE.also {
       fontScalingRatio = (editor.colorsScheme.editorFontSize / 16.0).coerceAtLeast(1.0)
 
       IJTidyEditor(editor, file).handle()

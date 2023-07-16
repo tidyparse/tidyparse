@@ -6,7 +6,6 @@ import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.sat.*
 import bijectiveRepair
-import bijectiveRepairST
 import com.github.difflib.text.DiffRow.Tag.*
 import com.github.difflib.text.DiffRowGenerator
 import com.intellij.openapi.application.*
@@ -59,7 +58,7 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
 //          )
 //        }
 
-    val tokens: List<String> = str.tokenizeByWhitespace().map { if (it in cfg.terminals) it else "_" }
+    val tokens: List<String> = str.tokenizeByWhitespace()//.map { if (it in cfg.terminals) it else "_" }
     val sanitized: String = tokens.joinToString(" ")
     println("Sanitized: $sanitized")
     val maxResults = 20
@@ -74,16 +73,15 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
     val startTime = System.currentTimeMillis()
 
     updateProgress(sanitized, this)
-    val repairs = (
-        (if ("_" !in tokens) bijectiveRepairST(
+    val repairs = (if ("_" !in tokens) bijectiveRepair(
         promptTokens = tokens.intersperse(),
         deck = cfg.terminals.toList(),
         maxEdits = 2.also { println("Using bijective sampler with $it edits") },
+        parallelize = false,
         admissibilityFilter = { this in cfg.language },
         takeMoreWhile = takeMoreWhile,
 //        diagnostic = { println(it.result); /*updateProgress(it.result, this)*/ }
-      )
-        .map { it.result.joinToString(" ") }
+      ).map { it.result.joinToString(" ") }
       else sanitized.synthesizeIncrementally(
         cfg = cfg,
         variations = variations,
@@ -100,7 +98,6 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
           writeDisplayText(render(cfg, htmlSolutions, this, stubs = renderedStubs, reason = reason))
           updateProgress(query.last(), this)
         }.take(maxResults).lastOrNull() ?: emptyList()
-    )
 
     println("Finished in ${System.currentTimeMillis() - startTime}ms")
 
