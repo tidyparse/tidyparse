@@ -6,6 +6,7 @@ import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.sat.*
 import bijectiveRepair
+import bijectiveRepairST
 import com.github.difflib.text.DiffRow.Tag.*
 import com.github.difflib.text.DiffRowGenerator
 import com.intellij.openapi.application.*
@@ -74,21 +75,21 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
 
     updateProgress(sanitized, this)
     val repairs = (
-      if ("_" !in tokens) bijectiveRepair(
+        (if ("_" !in tokens) bijectiveRepairST(
         promptTokens = tokens.intersperse(),
         deck = cfg.terminals.toList(),
         maxEdits = 2.also { println("Using bijective sampler with $it edits") },
         admissibilityFilter = { this in cfg.language },
         takeMoreWhile = takeMoreWhile,
 //        diagnostic = { println(it.result); /*updateProgress(it.result, this)*/ }
-      ).map { it.result.joinToString(" ") }.take(maxResults).toList()
+      )
+        .map { it.result.joinToString(" ") }
       else sanitized.synthesizeIncrementally(
         cfg = cfg,
         variations = variations,
         takeMoreWhile = { takeMoreWhile() && hasMemoryLeft() && !Thread.interrupted() },
         synthesizer = { asCJL.synthesize(it) }
-      )
-        .retainOnlySamplesWithDistinctEditSignature(sanitized)
+      ).retainOnlySamplesWithDistinctEditSignature(sanitized))
         .runningFold(emptyList<Σᐩ>()) { acc, next -> acc + next }
         .filter { it.isNotEmpty() }
         .onEach { query ->
@@ -154,11 +155,11 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
     val editorText = document.text
     val highlightManager = editor.markupModel
 
-    highlightManager.removeAllHighlighters()
-
-    getOrComputeSegmentations(cfg, editorText).forEachIndexed { i, seg ->
-      seg.highlightLine(document.getLineStartOffset(i), highlightManager)
-    }
+//    highlightManager.removeAllHighlighters()
+//
+//    getOrComputeSegmentations(cfg, editorText).forEachIndexed { i, seg ->
+//      seg.highlightLine(document.getLineStartOffset(i), highlightManager)
+//    }
   }
 
   fun Segmentation.highlightLine(lineStart: Int, highlightManager: MarkupModel) {
