@@ -39,7 +39,7 @@ lambda_expr -> lambda parameters : expression
 parameters -> id | ( id_list )
 ---
 
-id = ( ( int + ( int ) * int ) / int ) - int
+id = ( ( int + ( int ) * int ) / int ) int
 
 id = ( ( int + ( int * int ) + bool - / int ) - int
 

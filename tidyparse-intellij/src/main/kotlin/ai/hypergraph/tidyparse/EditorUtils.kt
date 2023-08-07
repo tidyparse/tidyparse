@@ -74,30 +74,30 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
 
     updateProgress(sanitized, this)
     val repairs = (if ("_" !in tokens) bijectiveRepair(
-        promptTokens = tokens.intersperse(),
-        deck = cfg.terminals.toList(),
-        maxEdits = 2.also { println("Using bijective sampler with $it edits") },
-        parallelize = false,
-        admissibilityFilter = { this in cfg.language },
-        takeMoreWhile = takeMoreWhile,
-//        diagnostic = { println(it.result); /*updateProgress(it.result, this)*/ }
-      ).map { it.result.joinToString(" ") }
-      else sanitized.synthesizeIncrementally(
-        cfg = cfg,
-        variations = variations,
-        takeMoreWhile = { takeMoreWhile() && hasMemoryLeft() && !Thread.interrupted() },
-        synthesizer = { asCJL.synthesize(it) }
-      ).retainOnlySamplesWithDistinctEditSignature(sanitized))
-        .runningFold(emptyList<Σᐩ>()) { acc, next -> acc + next }
-        .filter { it.isNotEmpty() }
-        .onEach { query ->
-          val htmlSolutions = query
-            .sortedWith(compareBy { levenshtein(tokens, it.tokenizeByWhitespace()) })
-            .renderToHTML(tokens, calculateDiffs = false)
+          promptTokens = tokens.intersperse(),
+          deck = cfg.terminals.toList(),
+          maxEdits = 2.also { println("Using bijective sampler with $it edits") },
+          parallelize = false,
+          admissibilityFilter = { this in cfg.language },
+          takeMoreWhile = takeMoreWhile,
+  //        diagnostic = { println(it.result); /*updateProgress(it.result, this)*/ }
+        ).map { it.result.joinToString(" ") }.distinct()
+        else sanitized.synthesizeIncrementally(
+          cfg = cfg,
+          variations = variations,
+          takeMoreWhile = { takeMoreWhile() && hasMemoryLeft() && !Thread.interrupted() },
+          synthesizer = { asCJL.synthesize(it) }
+        ).retainOnlySamplesWithDistinctEditSignature(sanitized))
+      .runningFold(emptyList<Σᐩ>()) { acc, next -> acc + next }
+      .filter { it.isNotEmpty() }
+      .onEach { query ->
+        val htmlSolutions = query
+          .sortedWith(compareBy { levenshtein(tokens, it.tokenizeByWhitespace()) })
+          .renderToHTML(tokens, calculateDiffs = false)
 
-          writeDisplayText(render(cfg, htmlSolutions, this, stubs = renderedStubs, reason = reason))
-          updateProgress(query.last(), this)
-        }.take(maxResults).lastOrNull() ?: emptyList()
+        writeDisplayText(render(cfg, htmlSolutions, this, stubs = renderedStubs, reason = reason))
+        updateProgress(query.last(), this)
+      }.take(maxResults).lastOrNull() ?: emptyList()
 
     println("Finished in ${System.currentTimeMillis() - startTime}ms")
 

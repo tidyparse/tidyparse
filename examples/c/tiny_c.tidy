@@ -19,8 +19,8 @@ id = int ;
 
 int < int ;
 
-while ( <term> ) ;
+while ( <term> ) ; _ _ _ _
 
-while ( <expr> ) <statement>
+while ( <expr> ) <statement> _ _ _ _
 
 id = int + int - <term>

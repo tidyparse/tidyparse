@@ -23,7 +23,7 @@ if ( true and false ) then if true <BO> true then <I> else  1 else 1
 
 ( true and false )
 
-if ( true or false ) <BO> <B> then true else true
+if ( true or false ) xor  <B> then true else true
 if ( true or false ) then true else ! false
 
 _ true
