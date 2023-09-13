@@ -28,7 +28,7 @@ if ( true or false ) then true else ! false
 
 _ true
 
-( true or true ) or p 
+( true or true ) or p
 
 _ true _ _ _ _
 
