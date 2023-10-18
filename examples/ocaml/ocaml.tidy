@@ -37,7 +37,7 @@ let rec map f l = match l with | [] -> [] | h :: t -> ( f h ) :: ( map f t )
 
 let rec foldright f l b = match l with | [] -> b | h :: t -> f h ( foldright a b )
 
-let rec a = _ _ _ _ _ _ _
+let rec a = _ _ _ _ _ _ _ 
 
 let curry f = ( fun x y -> f ( _ _ _ ) )
 

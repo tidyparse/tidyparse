@@ -5,7 +5,7 @@ import org.jetbrains.changelog.markdownToHTML
 
 plugins {
   kotlin("jvm")
-  id("org.jetbrains.intellij") version "1.15.0"
+  id("org.jetbrains.intellij") version "1.16.0"
   id("org.jetbrains.changelog") version "2.2.0"
 }
 
@@ -101,9 +101,7 @@ tasks {
     }
   }
 
-  runPluginVerifier {
-    ideVersions = listOf("2023.2.1")
-  }
+  runPluginVerifier { ideVersions = listOf("2023.2.3") }
 
   runIde {
     maxHeapSize = "4g"

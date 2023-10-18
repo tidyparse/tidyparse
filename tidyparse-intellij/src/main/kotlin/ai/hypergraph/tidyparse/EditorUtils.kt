@@ -73,22 +73,23 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
     val startTime = System.currentTimeMillis()
 
     updateProgress(sanitized, this)
-    val repairs = (if ("_" !in tokens) bijectiveRepair(
+    val repairs = (
+        if ("_" !in tokens) bijectiveRepair(
           promptTokens = tokens.intersperse(),
           deck = cfg.terminals.toList(),
           maxEdits = 2.also { println("Using bijective sampler with $it edits") },
           parallelize = false,
           admissibilityFilter = { this in cfg.language },
           takeMoreWhile = takeMoreWhile,
-  //        diagnostic = { println(it.result); /*updateProgress(it.result, this)*/ }
+    //      diagnostic = { println(it.result); /*updateProgress(it.result, this)*/ }
         ).map { it.result.joinToString(" ") }.distinct()
         else sanitized.synthesizeIncrementally(
           cfg = cfg,
-          variations = variations,
+//          variations = variations,
           takeMoreWhile = { takeMoreWhile() && hasMemoryLeft() && !Thread.interrupted() },
-          synthesizer = { asCJL.synthesize(it) }
-        ).retainOnlySamplesWithDistinctEditSignature(sanitized))
-      .runningFold(emptyList<Σᐩ>()) { acc, next -> acc + next }
+          synthesizer = { enumSeq(it) }
+        ).retainOnlySamplesWithDistinctEditSignature(sanitized)
+      ).runningFold(emptyList<Σᐩ>()) { acc, next -> acc + next }
       .filter { it.isNotEmpty() }
       .onEach { query ->
         val htmlSolutions = query

@@ -54,7 +54,7 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
           .forEachIndexed { i, it -> result.addElement(createLookupElement(it, i, surroundingNonterminal)) }
       } else synchronized(cfg) {
         try {
-          synthCache[currentLine.sanitized() to cfg]?.map { it.dehtmlify() }
+          synthCache[currentLine.sanitized() to cfg]?.map { it.dehtmlify().tokenizeByWhitespace().joinToString(" ") }
             ?.forEachIndexed { i, it -> result.addElement(createLookupElement(it, i, null)) }
         } catch (e: Exception) {
           e.printStackTrace()
