@@ -30,7 +30,7 @@ _ true
 
 ( true or true ) or p
 
-_ true _ _ _ _
+_ _ _ _ true _ _ _ _
 
 if ( true or false ) + + then q true else 2
 

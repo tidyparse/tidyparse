@@ -23,7 +23,6 @@
             <option value="$PROJECT_DIR$/tidyparse-core" />
             <option value="$PROJECT_DIR$/tidyparse-intellij" />
             <option value="$PROJECT_DIR$/tidyparse-web-frontend" />
-            <option value="$PROJECT_DIR$/tidyparse-web-worker" />
           </set>
         </option>
       </GradleProjectSettings>

@@ -29,10 +29,10 @@ fun HTMLTextAreaElement.getCurrentLine() = value.substring(0, getEndOfLineIdx())
 fun HTMLTextAreaElement.isCursorInsideGrammar() = "---" in value.substring(0, inputField.selectionStart!!)
 
 fun processEditorContents() {
-//  ongoingWork?.cancel()
-//  ongoingWork = updateRecommendations()
+  ongoingWork?.cancel()
+  ongoingWork = updateRecommendations()
   preprocessGrammar()
-  GlobalScope.async { workerPool() }
+//  GlobalScope.async { workerPool() }
 }
 
 fun updateRecommendations() = GlobalScope.async { handleInput() }
@@ -62,7 +62,7 @@ fun CoroutineScope.handleInput() {
     repair(
       prompt = line,
       cfg = cfg!!,
-      synthesizer = { it.solve(cfg!!, takeMoreWhile = { isActive }) },
+      synthesizer = { enumSeq(it) },
       updateProgress = { updateProgress(it) }
     )
       .also { println("Found ${it.size} repairs") }

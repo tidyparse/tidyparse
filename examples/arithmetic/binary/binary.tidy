@@ -23,7 +23,7 @@ true and ( false _ _ _ _ _ _ _
 
 true _ ( false _ ( _ ! _ _ _ a
 
-true or ! ( false and ( <S> ) or ( ! ! false ) )
+true or ! ( false and ( <S> ) or ( ! ! false )
 
 true and true ! and false or true ! true and false
 

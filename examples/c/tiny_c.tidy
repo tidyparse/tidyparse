@@ -19,7 +19,7 @@ id = int ;
 
 int < int ;
 
-while ( <term> ) ; _ _ _ _
+while ( _ _ _ _ _ _ _ _ _ _
 
 while ( <expr> ) <statement> _ _ _ _
 

@@ -47,6 +47,9 @@ kotlin {
 //  }
 }
 
+// To deploy, run:
+//  ./gradlew browserProductionWebpack
+
 //tasks.register<Copy>("copyJsTask") {
 ////  dependsOn("browserDistribution")
 //  val worker = "tidyparse-web-worker"
@@ -69,4 +72,4 @@ Then run:
 
 ./gradlew :tidyparse-web-frontend:browserDevelopmentRun --continuous
  */
-tasks["processResources"].dependsOn.add(":tidyparse-web-worker:copyJsTask")
+//tasks["processResources"].dependsOn.add(":tidyparse-web-worker:copyJsTask")

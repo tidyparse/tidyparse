@@ -148,7 +148,7 @@ fun TidyEditor.reconcile() {
   var debugText: String
   if ("_" in currentLine.tokenizeByWhitespace()) {
     currentLine.synthesizeCachingAndDisplayProgress(this, cfg).let {
-      debugText = "<pre><b>🔍 Found ${it.size} admissible solutions!</b>\n\n" +
+      debugText = "<pre><b>🔍 Found ${it.size}${if(it.size == MAX_SAMPLE)"+" else ""} admissible solutions!</b>\n\n" +
           it.joinToString("\n", "\n", "\n") + "</pre>"
     }
   } else {
