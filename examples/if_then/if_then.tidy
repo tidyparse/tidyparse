@@ -1,6 +1,7 @@
  START -> X
- X -> I | F | P
- P -> I O I
+ X -> I | F | P | Q
+ P -> I O I | P O I
+ Q -> B BO B | Q O B
  F -> IF | BF
 IF -> if B then I else I
 BF -> if B then B else B
@@ -28,7 +29,7 @@ if ( true or false ) then true else ! false
 
 _ true
 
-( true or true ) or p
+if ( true or true ) then 1 else 1
 
 _ _ _ _ true _ _ _ _
 
@@ -54,3 +55,4 @@ _ _ _ _ _ _ _ _ _ _ _
 
 if ( true or false ) then true else 1
 if true then if true then 1 else 2 else 3
+_ true _ _ false _ _ true _ _

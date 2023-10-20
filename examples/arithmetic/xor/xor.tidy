@@ -15,3 +15,5 @@ false xor false xor false xor false xor true xor ! false
 false xor false xor true xor ( false xor true and ( true xor false ) ) xor true
 
 false xor false xor true and ( ! false and ( true xor false ) )
+
+_ ( _ _ false _ _ true _ _

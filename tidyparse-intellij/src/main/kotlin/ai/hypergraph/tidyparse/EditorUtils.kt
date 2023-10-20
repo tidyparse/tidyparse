@@ -103,7 +103,7 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
     println("Finished in ${System.currentTimeMillis() - startTime}ms")
 
     return repairs
-      .sortedWith(compareBy { levenshtein(tokens, it.tokenizeByWhitespace()) })
+      .sortedWith(compareBy<Σᐩ> { levenshtein(tokens, it.tokenizeByWhitespace()) }.thenBy { it.tokenizeByWhitespace().size })
       .renderToHTML(tokens, calculateDiffs = true)
   }
 
