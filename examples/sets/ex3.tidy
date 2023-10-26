@@ -1,0 +1,8 @@
+START -> A B
+A -> a A b | ε
+B -> b B c | ε
+
+{ a^i b^j c^k | i, j, k ≥ 0 and i + k = j }
+---
+
+_ _ _ _ _ _ _ _ _ _ _ _ _ _

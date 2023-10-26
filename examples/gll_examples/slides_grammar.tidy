@@ -1,0 +1,23 @@
+S -> a b X X c | a b c
+X -> a | #
+---
+
+a b a a
+~>
+a b a a c
+a b c
+a b a # c
+a b # a c
+a b <X> a c
+a b a <X> c
+
+b a c
+~>
+a b a a c
+a b c
+a b a # c
+a b # a c
+a b <X> a c
+a b a <X> c
+
+c b a a
