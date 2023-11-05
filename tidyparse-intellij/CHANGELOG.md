@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.21.0
+
+- New multicore repair procedure
+- Improved performance on ambiguous grammars
+- Reduced roundtrip latency
+- Added more examples
+
 ## 0.20.0
 
 - Implement a slew of performance improvements resulting in massive speedups
