@@ -10,6 +10,8 @@ import ai.hypergraph.kaliningraph.types.*
 import kotlin.math.*
 import kotlin.time.*
 
+val CFG.renderedHTML by cache { renderCFGToHTML() }
+
 fun CFG.renderCFGToHTML(tokens: Set<Σᐩ> = emptySet()): String =
   (listOf(originalForm.summarize("Original form")) +
       (if (originalForm == nonparametricForm) listOf()
@@ -79,6 +81,27 @@ fun List<Tree>.renderStubs(): String =
           }.toHtmlTable()
     }
 
+fun renderLite(
+  solutions: List<String>,
+  editor: TidyEditor,
+  reason: String? = null,
+  prompt: String? = null,
+  stubs: String? = null,
+  template: String = prompt ?: editor.readDisplayText()
+    .substringAfter("Solving: ").substringBefore("\n")
+): String = """
+  <html>
+  <body>
+  <pre>${reason ?: "Synthesizing...\n"}
+  """.trimIndent() +
+    // TODO: legend
+    solutions.joinToString("\n", "\n", "\n") + """🔍 Solving: $template
+  
+  ${if (reason != null) legend else ""}</pre>${stubs ?: ""}
+  </body>
+  </html>
+  """.trimIndent()
+
 fun render(
   cfg: CFG,
   solutions: List<String>,
@@ -96,7 +119,7 @@ fun render(
     // TODO: legend
     solutions.joinToString("\n", "\n", "\n") + """🔍 Solving: $template
   
-  ${if (reason != null) legend else ""}</pre>${stubs ?: ""}${cfg.renderCFGToHTML(template.tokenizeByWhitespace().toSet())}
+  ${if (reason != null) legend else ""}</pre>${stubs ?: ""}${cfg.renderedHTML}
   </body>
   </html>
   """.trimIndent()
@@ -164,7 +187,7 @@ fun TidyEditor.reconcile() {
   }
 
   // Append the CFG only if parse succeeds
-  debugText += cfg.renderCFGToHTML(currentLine.tokenizeByWhitespace().toSet())
+  debugText += cfg.renderedHTML//cfg.renderCFGToHTML(currentLine.tokenizeByWhitespace().toSet())
 
 //  println(cfg.original.graph.toString())
 //  println(cfg.original.graph.toDot())

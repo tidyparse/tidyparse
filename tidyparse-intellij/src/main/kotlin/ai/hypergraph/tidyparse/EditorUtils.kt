@@ -61,7 +61,8 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
     val tokens: List<String> = str.tokenizeByWhitespace()//.map { if (it in cfg.terminals) it else "_" }
     val sanitized: String = tokens.joinToString(" ")
     println("Sanitized: $sanitized")
-    val maxResults = 20
+    MAX_SAMPLE = 40
+    TIMEOUT_MS = 10_000
     // TODO: think about whether we really want to solve for variations in every case
 
     val takeMoreWhile: () -> Boolean = TimeSource.Monotonic.markNow().run { { hasTimeLeft() } }
@@ -70,20 +71,38 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
     else cfg.parseWithStubs(sanitized).second.renderStubs()
     val reason = if (str.containsHole()) null else no
     writeDisplayText(render(cfg, emptyList(), this, stubs = renderedStubs, reason = reason))
-    val startTime = System.currentTimeMillis()
+    val startTime = currentTimeMillis()
 
     updateProgress(sanitized, this)
-    val repairs = (
-        if ("_" !in tokens) bijectiveRepair(
+    fun Collection<Σᐩ>.topNByLevenshtein(n: Int) =
+      sortedWith(compareBy<Σᐩ> { levenshtein(tokens, it.tokenizeByWhitespace()) }.thenBy { it.length }).take(n)
+    val repairs =
+      if ("_" !in tokens) {
+        var runningRepairs = setOf<Σᐩ>()
+        var sortedRepairsP = listOf<Σᐩ>()
+        var lastRender = currentTimeMillis() - 40
+        bijectiveRepair(
           promptTokens = tokens.intersperse(),
           deck = cfg.terminals.toList(),
           maxEdits = 2.also { println("Using bijective sampler with $it edits") },
           parallelize = false,
           admissibilityFilter = { this in cfg.language },
-          takeMoreWhile = takeMoreWhile,
-    //      diagnostic = { println(it.result); /*updateProgress(it.result, this)*/ }
-        ).map { it.result.joinToString(" ") }.distinct()
-        else sanitized.synthesizeIncrementally(
+          takeMoreWhile = { takeMoreWhile() && hasMemoryLeft() && !Thread.interrupted() },
+          diagnostic = {
+            runningRepairs += it.result.joinToString(" ")
+            val sortedRepairs = runningRepairs.toList().topNByLevenshtein(MAX_SAMPLE)
+            if (sortedRepairs != sortedRepairsP && currentTimeMillis() - lastRender > 40) {
+              lastRender = currentTimeMillis()
+              println(it.result.joinToString(" "))
+              sortedRepairsP = sortedRepairs
+              invokeLater {
+                val htmlSolutions = sortedRepairs.renderToHTML(tokens, calculateDiffs = true)
+                writeDisplayText(renderLite(htmlSolutions, this, stubs = renderedStubs, reason = reason))
+              }
+            }
+          }
+        ).map { it.result.joinToString(" ") }.distinct().toList()
+      } else (sanitized.synthesizeIncrementally(
           cfg = cfg,
 //          variations = variations,
           takeMoreWhile = { takeMoreWhile() && hasMemoryLeft() && !Thread.interrupted() },
@@ -91,16 +110,16 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
         ).retainOnlySamplesWithDistinctEditSignature(sanitized)
       ).runningFold(emptyList<Σᐩ>()) { acc, next -> acc + next }
       .filter { it.isNotEmpty() }
-      .onEach { query ->
-        val htmlSolutions = query
+      .onEach { runningSolutions ->
+        val htmlSolutions = runningSolutions
           .sortedWith(compareBy { levenshtein(tokens, it.tokenizeByWhitespace()) })
           .renderToHTML(tokens, calculateDiffs = false)
 
-        writeDisplayText(render(cfg, htmlSolutions, this, stubs = renderedStubs, reason = reason))
-        updateProgress(query.last(), this)
-      }.take(maxResults).lastOrNull() ?: emptyList()
+        writeDisplayText(renderLite(htmlSolutions, this, stubs = renderedStubs, reason = reason))
+        updateProgress(runningSolutions.last(), this)
+      }.take(MAX_SAMPLE).lastOrNull() ?: emptyList()
 
-    println("Finished in ${System.currentTimeMillis() - startTime}ms")
+    println("Finished in ${currentTimeMillis() - startTime}ms")
 
     return repairs
       .sortedWith(compareBy<Σᐩ> { levenshtein(tokens, it.tokenizeByWhitespace()) }.thenBy { it.tokenizeByWhitespace().size })
@@ -117,9 +136,9 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
     }
 
   // Cache value every 10 seconds
-  private var lastMemCheck = System.currentTimeMillis()
+  private var lastMemCheck = currentTimeMillis()
   private fun hasMemoryLeft() =
-    !(System.currentTimeMillis().let { it - lastMemCheck > 10000 && true.apply { lastMemCheck = it } } &&
+    !(currentTimeMillis().let { it - lastMemCheck > 10000 && true.apply { lastMemCheck = it } } &&
         0.7 < ManagementFactory.getMemoryMXBean().heapMemoryUsage.let { it.used.toDouble() / it.max })
 
   override fun diffAsHtml(l1: List<Σᐩ>, l2: List<Σᐩ>): Σᐩ =
