@@ -170,7 +170,7 @@ fun TidyEditor.reconcile() {
 
   var debugText: String
   if ("_" in currentLine.tokenizeByWhitespace()) {
-    currentLine.synthesizeCachingAndDisplayProgress(this, cfg).let {
+    currentLine.synthesizeCachingAndDisplayProgress(this, cfg).take(MAX_SAMPLE).let {
       debugText = "<pre><b>🔍 Found ${it.size}${if(it.size == MAX_SAMPLE)"+" else ""} admissible solutions!</b>\n\n" +
           it.joinToString("\n", "\n", "\n") + "</pre>"
     }
@@ -181,7 +181,8 @@ fun TidyEditor.reconcile() {
       if (parseForest.size == 1) "<pre>$ok\n🌳" + parseForest.first().prettyPrint() + "</pre>"
       else "<pre>$ambig\n🌳" + parseForest.joinToString("\n\n") { it.prettyPrint() } + "</pre>"
     } else {
-      val repairs = currentLine.synthesizeCachingAndDisplayProgress(this, cfg).joinToString("\n", "\n", "\n")
+      val repairs = currentLine.synthesizeCachingAndDisplayProgress(this, cfg)
+        .take(MAX_SAMPLE).joinToString("\n", "\n", "\n")
       "<pre>$no" + repairs + "\n$legend</pre>" + stubs.renderStubs()
     }
   }

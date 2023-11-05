@@ -4,7 +4,6 @@ import java.lang.System.currentTimeMillis
 import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.kaliningraph.sat.*
 import bijectiveRepair
 import com.github.difflib.text.DiffRow.Tag.*
 import com.github.difflib.text.DiffRowGenerator
@@ -17,6 +16,7 @@ import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiFile
 import com.intellij.ui.JBColor
 import com.intellij.util.concurrency.AppExecutorUtil
+import com.jetbrains.rd.util.concurrentMapOf
 import java.awt.Color
 import java.lang.management.ManagementFactory
 import java.util.concurrent.*
@@ -44,86 +44,72 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
 
   @OptIn(ExperimentalTime::class)
   override fun repair(cfg: CFG, str: Σᐩ): List<Σᐩ> {
-    val variations: List<Mutator> =
-//        if (str.containsHole())
-      listOf(
-        { a, b -> a.randomDeletions(b) },
-//          { a, b -> a.randomSingleSubtitutions(exclusions = b) },
-        { a, b -> a.randomDoubleSubstitutions(numberOfEdits = MAX_REPAIR, exclusions = b) }
-      )
-//        else listOf { a, b ->
-//          a.multiTokenSubstitutionsAndInsertions(
-//            numberOfEdits = 3,
-//            exclusions = b,
-//          )
-//        }
-
-    val tokens: List<String> = str.tokenizeByWhitespace()//.map { if (it in cfg.terminals) it else "_" }
+    val tokens: List<String> = str.tokenizeByWhitespace()
     val sanitized: String = tokens.joinToString(" ")
     println("Sanitized: $sanitized")
     MAX_SAMPLE = 40
     TIMEOUT_MS = 10_000
-    // TODO: think about whether we really want to solve for variations in every case
 
+    val startTime = currentTimeMillis()
     val takeMoreWhile: () -> Boolean = TimeSource.Monotonic.markNow().run { { hasTimeLeft() } }
 
     val renderedStubs = if (str.containsHole()) null
     else cfg.parseWithStubs(sanitized).second.renderStubs()
     val reason = if (str.containsHole()) null else no
     writeDisplayText(render(cfg, emptyList(), this, stubs = renderedStubs, reason = reason))
-    val startTime = currentTimeMillis()
 
     updateProgress(sanitized, this)
-    fun Collection<Σᐩ>.topNByLevenshtein(n: Int) =
-      sortedWith(compareBy<Σᐩ> { levenshtein(tokens, it.tokenizeByWhitespace()) }.thenBy { it.length }).take(n)
-    val repairs =
-      if ("_" !in tokens) {
-        var runningRepairs = setOf<Σᐩ>()
-        var sortedRepairsP = listOf<Σᐩ>()
-        var lastRender = currentTimeMillis() - 40
+    val renderFrequencyMillis = 20
+    var lastRenderTime = currentTimeMillis() - renderFrequencyMillis
+
+    val runningRepairs = concurrentMapOf<Σᐩ, Int>()
+    var sortedRepairsP = listOf<Σᐩ>()
+
+    fun topRunningRepairs(toTake: Int = MAX_SAMPLE) =
+      runningRepairs.entries.sortedWith(
+        compareBy<MutableMap.MutableEntry<Σᐩ, Int>> { it.value }
+          .thenBy { it.key.tokenizeByWhitespace().size }
+      ).take(toTake).map { it.key }
+
+    fun renderUpdates() {
+      val sortedRepairs = topRunningRepairs()
+      if (currentTimeMillis() - lastRenderTime > renderFrequencyMillis && sortedRepairs != sortedRepairsP) {
+        lastRenderTime = currentTimeMillis()
+        sortedRepairsP = sortedRepairs
+        if (takeMoreWhile() && hasMemoryLeft() && !Thread.interrupted()) invokeLater {
+          val htmlSolutions = sortedRepairs.renderToHTML(tokens, calculateDiffs = true)
+          writeDisplayText(renderLite(htmlSolutions, this, stubs = renderedStubs, reason = reason))
+        }
+      }
+    }
+
+    if ("_" !in tokens)
+      (2..maxOf(5, tokens.size)).firstNotNullOf { numEdits ->
         bijectiveRepair(
           promptTokens = tokens.intersperse(),
           deck = cfg.terminals.toList(),
-          maxEdits = 2.also { println("Using bijective sampler with $it edits") },
+          maxEdits = numEdits.also { println("Using bijective sampler with $it edits") },
           parallelize = false,
           admissibilityFilter = { this in cfg.language },
           takeMoreWhile = { takeMoreWhile() && hasMemoryLeft() && !Thread.interrupted() },
-          diagnostic = {
-            runningRepairs += it.result.joinToString(" ")
-            val sortedRepairs = runningRepairs.toList().topNByLevenshtein(MAX_SAMPLE)
-            if (sortedRepairs != sortedRepairsP && currentTimeMillis() - lastRender > 40) {
-              lastRender = currentTimeMillis()
-              println(it.result.joinToString(" "))
-              sortedRepairsP = sortedRepairs
-              invokeLater {
-                val htmlSolutions = sortedRepairs.renderToHTML(tokens, calculateDiffs = true)
-                writeDisplayText(renderLite(htmlSolutions, this, stubs = renderedStubs, reason = reason))
-              }
-            }
+          diagnostic = { rep ->
+            runningRepairs[rep.result.joinToString(" ")] = levenshtein(tokens, rep.result)
+            renderUpdates()
           }
-        ).map { it.result.joinToString(" ") }.distinct().toList()
-      } else (sanitized.synthesizeIncrementally(
-          cfg = cfg,
-//          variations = variations,
-          takeMoreWhile = { takeMoreWhile() && hasMemoryLeft() && !Thread.interrupted() },
-          synthesizer = { enumSeq(it) }
-        ).retainOnlySamplesWithDistinctEditSignature(sanitized)
-      ).runningFold(emptyList<Σᐩ>()) { acc, next -> acc + next }
-      .filter { it.isNotEmpty() }
-      .onEach { runningSolutions ->
-        val htmlSolutions = runningSolutions
-          .sortedWith(compareBy { levenshtein(tokens, it.tokenizeByWhitespace()) })
-          .renderToHTML(tokens, calculateDiffs = false)
+        ).map { it.result.joinToString(" ") }.distinct().toList().ifEmpty { null }
+      }
+    else
+      cfg.enumSeq(sanitized.tokenizeByWhitespace())
+        .retainOnlySamplesWithDistinctEditSignature(sanitized)
+        .takeWhile { takeMoreWhile() && hasMemoryLeft() && !Thread.interrupted() }
+        .onEach { result ->
+          runningRepairs[result] = levenshtein(tokens, result.tokenizeByWhitespace())
+          renderUpdates()
+        }.toList()
 
-        writeDisplayText(renderLite(htmlSolutions, this, stubs = renderedStubs, reason = reason))
-        updateProgress(runningSolutions.last(), this)
-      }.take(MAX_SAMPLE).lastOrNull() ?: emptyList()
+    println("Found ${runningRepairs.size} total repairs in ${currentTimeMillis() - startTime}ms")
 
-    println("Finished in ${currentTimeMillis() - startTime}ms")
-
-    return repairs
-      .sortedWith(compareBy<Σᐩ> { levenshtein(tokens, it.tokenizeByWhitespace()) }.thenBy { it.tokenizeByWhitespace().size })
-      .renderToHTML(tokens, calculateDiffs = true)
+    return topRunningRepairs(runningRepairs.size).renderToHTML(tokens, calculateDiffs = true)
   }
 
   private fun List<Σᐩ>.renderToHTML(tokens: List<String>, calculateDiffs: Boolean = false) =

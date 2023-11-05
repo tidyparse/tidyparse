@@ -193,12 +193,13 @@ Yield_Arg -> From_Keyword Test | Testlist_Endcomma
 
 True OR True NEWLINE
 True OR True OR NEWLINE
+_ _ _ _ _ _ _ _ _ _ _ _ _
 <Stmts_Or_Newlines> <Small_Stmts> NAME + NAME NEWLINE NAME ( NAME ) NEWLINE NEWLINE
 <Stmts_Or_Newlines> <Testlist_Star_Expr> <Open_Paren> <Arglist> NEWLINE NEWLINE
 <Stmt_Or_Newline> <Testlist_Star_Expr> <Open_Paren> <Arglist> NEWLINE NEWLINE
-<Stmts_Or_Newlines> <Testlist_Star_Expr> <Open_Paren> NEWLINE NEWLINE 
+<Stmts_Or_Newlines> <Testlist_Star_Expr> <Open_Paren> NEWLINE NEWLINE
 
-_ _ _ _ _ _
+_ _ _ _ _ _ _ NEWLINE
 
 [ * ( NAME for [ [ ] [ : ] , * NUMBER ] in [ ( ( NAME , NAME ) , NUMBER ) ] ) ] NEWLINE
-( lambda * NAME : NAME ( NAME ) . NAME ( NAME ) ) ( * ( [ NAME ] * NUMBER ) ) == NUMBER NUMBER NEWLINE
+( lambda * NAME : NAME ( NAME ) . NAME ( NAME ) ) ( * ( [ NAME ] * NUMBER ) ) == NUMBER NUMBER NEWLINE 
