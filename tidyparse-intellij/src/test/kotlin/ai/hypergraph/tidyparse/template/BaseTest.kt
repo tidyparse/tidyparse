@@ -1,7 +1,6 @@
 package ai.hypergraph.tidyparse.template
 
-import ai.hypergraph.kaliningraph.parsing.parse
-import ai.hypergraph.kaliningraph.parsing.parseCFG
+import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.types.π2
 import ai.hypergraph.tidyparse.*
 import com.intellij.openapi.actionSystem.AnAction
@@ -10,6 +9,7 @@ import com.intellij.psi.PsiFile
 import com.intellij.testFramework.FileEditorManagerTestCase
 import com.intellij.util.ui.UIUtil
 import com.jetbrains.rd.util.measureTimeMillis
+import kotlin.test.assertNotNull
 
 abstract class BaseTest: FileEditorManagerTestCase() {
   companion object {
@@ -56,9 +56,9 @@ abstract class BaseTest: FileEditorManagerTestCase() {
 
   private fun String.checkCachedResultParses() {
     val key = lines().last().sanitized() to substringBefore("---").parseCFG()
-    synthCache[key]?.forEach {
+    synthCache[key]?.forEach { it ->
 //      println("Checking: ${it} (${synthCache[key]?.joinToString(",")})")
-      assertNotNull(it.dehtmlify(), key.π2.parse(it.dehtmlify()))
+      it.dehtmlify().let { assertNotNull(key.π2.parse(it)) { "Unrecognized: \"$it\"" } }
     }
   }
 

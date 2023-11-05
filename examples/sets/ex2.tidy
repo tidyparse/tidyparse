@@ -1,5 +1,5 @@
 START -> a START c | X
-X -> b X c | ε
+X -> b X c | b c
 
 { a^i b^j c^k | i, j, k ≥ 0, and i + j = k }
 ---

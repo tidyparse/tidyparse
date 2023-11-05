@@ -1,6 +1,6 @@
 START -> A B
-A -> a A b | ε
-B -> b B c | ε
+A -> a A b | a b
+B -> b B c | b c
 
 { a^i b^j c^k | i, j, k ≥ 0 and i + k = j }
 ---

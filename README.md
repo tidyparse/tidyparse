@@ -199,7 +199,15 @@ For further examples, please refer to the [`examples`](/examples) subdirectory.
 * Tidyparse treats contiguous non-whitespace characters as a single token and makes no distinction between lexical and syntactic analysis: tokens must be separated by one or more whitespace characters, and each terminal in the grammar corresponds to exactly one token.
 * Nonterminal stubs are surrounded by angle brackets, e.g., `<F>`. If the autocompletion dialog is invoked while the caret is surrounded by a nonterminal, Tidyparse will display a list of possible expansions.
 * Rendering is done on-the-fly but may not reflect the current state of the editor. To refresh the display, type an extra whitespace character.
-* Tidyparse adds ε-productions and terminal literals for each nonterminal in the CFG. For further details about these transformations and the repair procedure, please refer to our [whitepaper](https://github.com/breandan/galoisenne/blob/master/latex/tacas2023/tacas.pdf).
+* By default, Tidyparse adds ε-productions `{V} -> ε {V} | {V} ε` and terminal literals `{V} -> <V>` for each nonterminal `V` in the CFG. For further details about these transformations and the repair procedure, please refer to our [whitepaper](https://github.com/breandan/galoisenne/blob/master/latex/tacas2023/tacas.pdf).
+* The token `ε` is reserved and must not be used anywhere in the grammar, or the results are undefined.
+* Any token appearing on the left-hand size of a production is considered a nonterminal and all other tokens are considered terminals.
+* The strings `---` and `->` are reserved and should only be used in the following contexts:
+  * `---` is used to separate the CFG from the test cases.
+  * `->` is used to separate the nonterminal from the RHS of a production.
+* Any line in the grammar which does not contain `->` is considered a comment and will be ignored.
+* If the grammar does not contain a nonterminal named `START`, Tidyparse will add one with a production `START -> {V}` for every nonterminal `V` in the grammar.
+* BNF can be translated to Tidyparse by replacing `::=` with `->`, removing the enclosing angle brackets from nonterminals, and `"` from terminals.
 
 ## Acknowledgements
 

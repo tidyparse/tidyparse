@@ -1,10 +1,10 @@
 START -> X Y | W
-X -> a X b | ε
-Y -> c Y | ε
+X -> a X b | a b
+Y -> c Y | c
 W -> a W c | Z
-Z -> b Z | ε
+Z -> b Z | b
 
 { a^i b^j c^k | i, j, k ≥ 0, and i = j or i = k }
 ---
 
-_ _ _ _ _ _ _ _ _ _
+_ _ _ _ _ _ _ _ _ _ 
