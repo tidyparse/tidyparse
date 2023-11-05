@@ -1,8 +1,8 @@
 START -> X Y | W
 X -> a X b | ε
-Y → c Y | ε
-W → a W c | Z
-Z → b Z | ε
+Y -> c Y | ε
+W -> a W c | Z
+Z -> b Z | ε
 
 { a^i b^j c^k | i, j, k ≥ 0, and i = j or i = k }
 ---
