@@ -47,11 +47,12 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
     val tokens: List<String> = str.tokenizeByWhitespace()
     val sanitized: String = tokens.joinToString(" ")
     println("Sanitized: $sanitized")
-    MAX_SAMPLE = 40
-    TIMEOUT_MS = 10_000
+    MAX_SAMPLE = 50
+    TIMEOUT_MS = 5_000
 
     val startTime = currentTimeMillis()
-    val takeMoreWhile: () -> Boolean = TimeSource.Monotonic.markNow().run { { hasTimeLeft() } }
+    val takeMoreWhile: () -> Boolean =
+      TimeSource.Monotonic.markNow().run { { hasTimeLeft() && hasMemoryLeft() && !Thread.interrupted() } }
 
     val renderedStubs = if (str.containsHole()) null
     else cfg.parseWithStubs(sanitized).second.renderStubs()
@@ -76,7 +77,7 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
       if (currentTimeMillis() - lastRenderTime > renderFrequencyMillis && sortedRepairs != sortedRepairsP) {
         lastRenderTime = currentTimeMillis()
         sortedRepairsP = sortedRepairs
-        if (takeMoreWhile() && hasMemoryLeft() && !Thread.interrupted()) invokeLater {
+        if (takeMoreWhile()) invokeLater {
           val htmlSolutions = sortedRepairs.renderToHTML(tokens, calculateDiffs = true)
           writeDisplayText(renderLite(htmlSolutions, this, stubs = renderedStubs, reason = reason))
         }
@@ -84,24 +85,26 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
     }
 
     if ("_" !in tokens)
-      (2..maxOf(5, tokens.size)).firstNotNullOf { numEdits ->
-        bijectiveRepair(
-          promptTokens = tokens.intersperse(),
-          deck = cfg.terminals.toList(),
-          maxEdits = numEdits.also { println("Using bijective sampler with $it edits") },
-          parallelize = false,
-          admissibilityFilter = { this in cfg.language },
-          takeMoreWhile = { takeMoreWhile() && hasMemoryLeft() && !Thread.interrupted() },
-          diagnostic = { rep ->
-            runningRepairs[rep.result.joinToString(" ")] = levenshtein(tokens, rep.result)
-            renderUpdates()
-          }
-        ).map { it.result.joinToString(" ") }.distinct().toList().ifEmpty { null }
-      }
+      (2..maxOf(5, tokens.size))
+        .asSequence().takeWhile { takeMoreWhile() }
+        .firstNotNullOfOrNull { numEdits ->
+          bijectiveRepair(
+            promptTokens = tokens.intersperse(),
+            deck = cfg.terminals.toList(),
+            maxEdits = numEdits.also { println("Using bijective sampler with $it edits") },
+            parallelize = true,
+            admissibilityFilter = { this in cfg.language },
+            takeMoreWhile = { takeMoreWhile() },
+            diagnostic = { rep ->
+              runningRepairs[rep.result.joinToString(" ")] = levenshtein(tokens, rep.result)
+              renderUpdates()
+            }
+          ).map { it.result.joinToString(" ") }.distinct().toList().ifEmpty { null }
+        } ?: emptyList()
     else
       cfg.enumSeq(sanitized.tokenizeByWhitespace())
         .retainOnlySamplesWithDistinctEditSignature(sanitized)
-        .takeWhile { takeMoreWhile() && hasMemoryLeft() && !Thread.interrupted() }
+        .takeWhile { takeMoreWhile() }
         .onEach { result ->
           runningRepairs[result] = levenshtein(tokens, result.tokenizeByWhitespace())
           renderUpdates()

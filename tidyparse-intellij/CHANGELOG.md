@@ -3,6 +3,7 @@
 ## 0.21.0
 
 - New multicore repair procedure
+- Adaptive resampling of repair candidates
 - Improved performance on ambiguous grammars
 - Reduced roundtrip latency
 - Added more examples

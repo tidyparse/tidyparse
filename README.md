@@ -211,7 +211,7 @@ For further examples, please refer to the [`examples`](/examples) subdirectory.
 
 ## Acknowledgements
 
-The following individuals have helped shape this project through their enthusiasm and thoughtful feedback. Please check out their work.
+The following individuals have helped shape this project through their thoughtful feedback. Please check out their work.
 
 * [Jin Guo](https://www.cs.mcgill.ca/~jguo/lab.html)
 * [Xujie Si](https://www.cs.mcgill.ca/~xsi/)
@@ -224,3 +224,6 @@ The following individuals have helped shape this project through their enthusias
 * [Matthew Sotoudeh](https://masot.net)
 * [Paul Zhu](https://paulz.me)
 * [Kiran Gopinathan](https://gopiandcode.uk/)
+* [Will Chrichton](https://willcrichton.net/)
+* [Kristopher Micinski](https://kmicinski.com/)
+* [Michael Coblenz](https://cseweb.ucsd.edu/~mcoblenz/)
