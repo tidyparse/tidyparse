@@ -102,7 +102,7 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
           ).map { it.result.joinToString(" ") }.distinct().toList().ifEmpty { null }
         } ?: emptyList()
     else
-      cfg.enumSeq(sanitized.tokenizeByWhitespace())
+      cfg.enumSeqSmart(sanitized.tokenizeByWhitespace())
         .retainOnlySamplesWithDistinctEditSignature(sanitized)
         .takeWhile { takeMoreWhile() }
         .onEach { result ->

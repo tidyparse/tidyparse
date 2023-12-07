@@ -5,7 +5,7 @@ import org.jetbrains.changelog.markdownToHTML
 
 plugins {
   kotlin("jvm")
-  id("org.jetbrains.intellij") version "1.16.0"
+  id("org.jetbrains.intellij") version "1.16.1"
   id("org.jetbrains.changelog") version "2.2.0"
 }
 
@@ -96,9 +96,7 @@ tasks {
       }.joinToString("\n").run { markdownToHTML(this) }
 
 // Get the latest available change notes from the changelog file
-    changeNotes = provider {
-      changelog.renderItem(changelog.getAll().values.first(), HTML)
-    }
+    changeNotes = provider { changelog.renderItem(changelog.getAll().values.first(), HTML) }
   }
 
   runPluginVerifier { ideVersions = listOf("2023.2.3") }

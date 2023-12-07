@@ -1,8 +1,9 @@
 plugins {
+  val kotVer = "2.0.0-Beta1"
   idea
-  kotlin("multiplatform") version "1.9.20" apply false
-  id("com.github.ben-manes.versions") version "0.49.0"
-  kotlin("plugin.serialization") version "1.9.20" apply false
+  kotlin("multiplatform") version kotVer apply false
+  id("com.github.ben-manes.versions") version "0.50.0"
+  kotlin("plugin.serialization") version kotVer apply false
 }
 
 allprojects {
