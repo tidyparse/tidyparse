@@ -1,16 +1,15 @@
  START -> X
- X -> I | F | P | Q
- P -> I O I | P O I
- Q -> B BO B | Q O B
- F -> IF | BF
-IF -> if B then I else I
-BF -> if B then B else B
- O -> + | - | * | /
- I -> 1 | 2 | 3 | 4 | I I | IF
- B -> true | false | B BO B | ( B ) | BF | N B
-BO -> and | or | xor | nand
- N -> !
-
+     X -> I | F | P | Q
+     P -> I | P O I | ( P ) | - P
+     Q -> B BO B | Q O B
+     F -> IF | BF
+    IF -> if B then I else I
+    BF -> if B then B else B
+     O -> + | - | * | /
+     I -> 1 | 2 | 3 | 4 | I I | IF
+     B -> true | false | B BO B | ( B ) | BF | N B
+    BO -> and | or | xor | nand
+     N -> !
 ---
 
 true or false
@@ -52,8 +51,11 @@ if _ _ _ _ _ _ <BO> _ _ _ _ _ _
 if <B> then <B> else ( <B> <BO> <B> <BO> <B> <BO> <B> )
 
 _ _ _ _ _ _ _ _ _ _ _
-_ _ _ _ _ _ _ _ 
+_ _ _ _
 
 if ( true or false ) then true else 1
 if true then if true then 1 else 2 else 3
 _ true _ _ false _ _ true _ _
+_ _ _ )
+- ( 1 + 1 )
+( _ _ _ _ _ _

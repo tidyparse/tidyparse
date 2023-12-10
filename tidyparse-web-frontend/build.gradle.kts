@@ -11,9 +11,9 @@ version = properties("pluginVersion")
 
 dependencies {
   api(project(":tidyparse-core"))
-  implementation("org.jetbrains.kotlinx:kotlinx-html:0.9.0")
+  implementation("org.jetbrains.kotlinx:kotlinx-html:0.10.1")
 //  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
-  val coroutinesVersion = "1.7.3"
+  val coroutinesVersion = "1.8.0-RC"
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutinesVersion")
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core-js:$coroutinesVersion")
 }
@@ -50,26 +50,5 @@ kotlin {
 // To deploy, run:
 //  ./gradlew browserProductionWebpack
 
-//tasks.register<Copy>("copyJsTask") {
-////  dependsOn("browserDistribution")
-//  val worker = "tidyparse-web-worker"
-//  from("$rootDir/$worker/build/$worker/$worker.js")
-//  into("$rootDir/tidyparse-web-frontend/build/processedResources/js/main/")
-//}
-//
-//tasks["processResources"].dependsOn.add(":tidyparse-web-worker:browserDistribution")
-//tasks["browserDevelopmentRun"].dependsOn.add("copyJsTask")
-/*
-No clue how Gradle actually works.
-
-First run:
-
-./gradlew :tidyparse-web-backend:browserDevelopmentRun --continuous
-
-Ensure tidyparse-web-worker/build/tidyparse-web-worker/tidyparse-web-worker.js exists
-
-Then run:
-
-./gradlew :tidyparse-web-frontend:browserDevelopmentRun --continuous
- */
-//tasks["processResources"].dependsOn.add(":tidyparse-web-worker:copyJsTask")
+// To run in the browser, run:
+//  ./gradlew :tidyparse-web-frontend:browserDevelopmentRun --continuous

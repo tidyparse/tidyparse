@@ -103,8 +103,8 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
         } ?: emptyList()
     else
       cfg.enumSeqSmart(sanitized.tokenizeByWhitespace())
-        .retainOnlySamplesWithDistinctEditSignature(sanitized)
         .takeWhile { takeMoreWhile() }
+        .retainOnlySamplesWithDistinctEditSignature(sanitized) { "${cfg.bimap[listOf(it)].hashCode()}" }
         .onEach { result ->
           runningRepairs[result] = levenshtein(tokens, result.tokenizeByWhitespace())
           renderUpdates()
@@ -287,11 +287,23 @@ fun PsiFile.recomputeGrammar(): CFG {
 // Takes a sequence of whitespace-delimited strings and filters for unique edit fingerprints
 // from the original string. For example, if the original string is "a b c d" and the sequence
 // emits "a b Q d" and "a b F d" then only the first is retained and the second is discarded.
-fun Sequence<String>.retainOnlySamplesWithDistinctEditSignature(originalString: String) =
-  distinctBy { computeEditSignature(originalString, it) }
+fun Sequence<String>.retainOnlySamplesWithDistinctEditSignature(
+  originalString: String, abstractTerminal: (String) -> String = { it }
+) = distinctBy { computeAbstractEditSignature(originalString, it, abstractTerminal) }
 
-fun computeEditSignature(s1: String, s2: String): String {
-  return plaintextDiffGenerator.generateDiffRows(s1.tokenizeByWhitespace(), s2.tokenizeByWhitespace())
+fun computeAbstractEditSignature(s1: String, s2: String, abstraction: (String) -> String = { it }): String =
+  plaintextDiffGenerator.generateDiffRows(s1.tokenizeByWhitespace(), s2.tokenizeByWhitespace())
+    .joinToString(" ") {
+      when (it.tag) {
+        INSERT -> "I.${abstraction(it.newLine.dehtmlify())}"
+        DELETE -> ""
+        CHANGE -> "C.${abstraction(it.newLine.dehtmlify())}"
+        else -> "E"
+      }
+    }
+
+fun computeEditSignature(s1: String, s2: String): String =
+  plaintextDiffGenerator.generateDiffRows(s1.tokenizeByWhitespace(), s2.tokenizeByWhitespace())
     .joinToString(" ") {
       when (it.tag) {
         INSERT -> "I.${it.newLine.cfgType()}"
@@ -300,7 +312,6 @@ fun computeEditSignature(s1: String, s2: String): String {
         else -> "E"
       }
     }
-}
 
 /**
  * Timer for triggering events with a designated delay.
