@@ -12,10 +12,7 @@ version = properties("pluginVersion")
 dependencies {
   api(project(":tidyparse-core"))
   implementation("org.jetbrains.kotlinx:kotlinx-html:0.10.1")
-//  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
-  val coroutinesVersion = "1.8.0-RC"
-  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutinesVersion")
-  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core-js:$coroutinesVersion")
+  implementation("dev.andrewbailey.difference:difference:1.0.0")
 }
 
 kotlin {
@@ -36,6 +33,10 @@ kotlin {
         distributionName = "tidyparse-web-frontend"
       }
     }
+  }
+
+  sourceSets["main"].dependencies {
+    implementation("dev.andrewbailey.difference:difference-js:1.0.0")
   }
 
 //  sourceSets {

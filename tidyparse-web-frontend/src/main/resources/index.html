@@ -3,21 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <link rel="stylesheet" type="text/css" href="index.css">
-    <title>Tidyparse demonstration</title>
+    <title>Tidyparse Browser Demo</title>
+    <link rel="icon" href="/tidyparse.svg" type="image/svg+xml">
 </head>
 <body>
-<h1>Tidyparse demonstration</h1>
+<h1>Tidyparse Browser Demonstration</h1>
 <div id="content">
     <textarea id="tidyparse-input" class="panel" spellcheck="false">
  START -> X
-     X -> I | F | P | Q | B
+     X -> I | F | P | B
      P -> I | P O I | ( P ) | - P
-     Q -> B BO B | Q O B
      F -> IF | BF
     IF -> if B then I else I
     BF -> if B then B else B
      O -> + | - | * | /
-     I -> 1 | 2 | 3 | I I | IF
+     I -> 1 | 2 | 3 | I I | IF | P
      B -> true | false | B BO B | ( B ) | BF | N B
     BO -> and | or | xor | nand
      N -> !
@@ -37,6 +37,8 @@ _ _ _ _ _
 
 true or false
 
+( if true then false else true )
+
 if true or false and false then 1 else 2 else
 
 if true then if true then 1 else 3 else true
@@ -48,6 +50,7 @@ if ( true and false ) then if true <BO> true then <I> else  1 else 1
 ( true and false )
 
 if ( true or false ) xor  <B> then true else true
+
 if ( true or false ) then true else ! false
 
 _ true _
@@ -61,6 +64,7 @@ if ( true or false ) + + then q true else 2
 true 1 or false 3
 
 true 1 or false 2
+
 true <BO> <B> or false <BO> <N> <B>
 
 if ( true and false ) then if true then 3 else 2 else false
@@ -72,6 +76,7 @@ if ( true or false ) then 1 else 3 2 3 2
 if ( true or false ) then true else 3 2 3 2
 
 if _ _ _ _ _ _ <BO> _ _ _ _ _ _
+
 if <B> then <B> else ( <B> <BO> <B> <BO> <B> <BO> <B> )
 
 if ( true or false ) then true else 1
@@ -81,7 +86,7 @@ if true then if true then 1 else 2 else 3
     <div id="tidyparse-output" class="panel"></div>
 </div>
 <br/>
-<p>Only the <a href="https://www.mozilla.org/firefox/">Firefox</a> browser is presently supported. The code is available <a href="https://github.com/tidyparse/tidyparse">on GitHub</a>.</p>
+<p>Only the <a href="https://www.mozilla.org/firefox/">Firefox</a> and <a href="https://www.apple.com/ca/safari/">Safari</a> browsers are currently supported. Source code and documentation is available <a href="https://github.com/tidyparse/tidyparse">on GitHub</a> (contributions and feedback welcome).</p>
 <br/>
 <script src="tidyparse-web-frontend.js"></script>
 </body>
