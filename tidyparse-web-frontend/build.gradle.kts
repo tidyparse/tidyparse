@@ -12,7 +12,8 @@ version = properties("pluginVersion")
 dependencies {
   api(project(":tidyparse-core"))
   implementation("org.jetbrains.kotlinx:kotlinx-html:0.10.1")
-  implementation("dev.andrewbailey.difference:difference:1.0.0")
+//  implementation("dev.andrewbailey.difference:difference:1.0.0")
+//  implementation("dev.andrewbailey.difference:difference-js:1.0.0")
 }
 
 kotlin {

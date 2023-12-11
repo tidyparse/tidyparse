@@ -28,8 +28,7 @@ h1, p{
 }
 
 .panel {
-    padding: 1rem;
-    box-sizing: border-box;
+    padding: 10px;
     font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     width: 100%;
     height: 100%;
@@ -39,7 +38,7 @@ h1, p{
     /* color: #93a1a1; */
     /* color: #cacaca; */
     color: #efefef;
-    font-size: 14px;
+    font-size: 16px;
     overflow: auto;
 }
 
@@ -91,17 +90,12 @@ h1, p{
 }
 
 .ldt, .ldt pre, .ldt textarea {
+    padding: 5px;
     font-size: 16px !important;
-    /* resize algorithm depends on a monospaced font */
-    /*font-family: monospace !important;*/
-
     font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-}
-
-.ldt textarea {
-    /* hide the text but show the text caret */
-    color: transparent !important;
-    caret-color: white;
+    border-radius: 10px;
+    background: var(--panel-background);
+    color: #efefef;
 }
 
 /* settings you shouldn't play with unless you have a good reason */
@@ -118,9 +112,9 @@ h1, p{
 
 .ldt label {
     position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
+    top: 5px;
+    left: 5px;
+    width: 99%;
     height: 100%;
     display: inline;
     box-sizing: border-box;
@@ -141,4 +135,8 @@ h1, p{
     overflow: hidden;
     /* IE doesn't support rgba textarea, so use vendor specific alpha filter */
     filter: alpha(opacity = 20);
+
+    /* hide the text but show the text caret */
+    color: transparent !important;
+    caret-color: white;
 }
