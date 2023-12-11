@@ -3,6 +3,7 @@ import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.tidyparse.hasTimeLeft
 import kotlinx.browser.*
 import org.w3c.dom.*
+import kotlin.math.absoluteValue
 import kotlin.time.TimeSource
 
 var cfg: CFG? = null
@@ -78,7 +79,7 @@ fun handleInput() {
     else if (lineHash in cache) flush(cache[lineHash]!!)
     else cfg!!.fastRepairSeq(tokens)
       .enumerateCompletionsInteractively(
-        metric = { levenshtein(tokens, it) },
+        metric = { levenshtein(tokens, it) * 7919 + (tokens.sumOf { it.length } - it.sumOf { it.length }).absoluteValue },
         resultsToPost = toTake,
         shouldKeepGoing = { currentWorkHash == lineHash && startTime.hasTimeLeft() },
         postResults = { flush(it) },
