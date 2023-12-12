@@ -37,7 +37,8 @@ kotlin {
   }
 
   sourceSets["main"].dependencies {
-    implementation("dev.andrewbailey.difference:difference-js:1.0.0")
+//    implementation("dev.andrewbailey.difference:difference:1.0.0")
+//    implementation("dev.andrewbailey.difference:difference-js:1.0.0")
   }
 
 //  sourceSets {

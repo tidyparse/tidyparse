@@ -31,7 +31,7 @@ fun CFG.renderCFGToHTML(tokens: Set<Σᐩ> = emptySet()): String =
 fun CFG.summarize(name: String): String = "<b>$name</b> (" +
     "${nonterminals.size} nonterminal${if (1 < nonterminals.size) "s" else ""} / " +
     "${terminals.size} terminal${if (1 < terminals.size) "s" else ""} / " +
-    "$size production${if (1 < size) "s" else ""})\n${prettyHTML}"
+    "$size production${if (1 < size) "s" else ""})\n$prettyHTML"
 
 fun delim(len: Int = 120) = List(len) { "─" }.joinToString("", "\n", "\n")
 
@@ -48,9 +48,6 @@ fun String.treatAsNonterminal() = drop(la.length).dropLast(ra.length)
 fun String.dehtmlify(): String =
   replace("&lt;", "<").replace("&gt;", ">")
     .replace("<span.*?>".toRegex(), "").replace("</span>", "")
-
-val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
-var grammarFileCache: String = ""
 
 fun displayComparator(tokens: List<String>): Comparator<String> =
   compareBy(tokenwiseLevenshteinEdits(tokens)).thenBy { it.length }
@@ -124,9 +121,6 @@ fun render(
   </html>
   """.trimIndent()
 
-fun TidyEditor.tryToReconcile() =
-  try { reconcile() } catch (e: Exception) { e.printStackTrace() }
-
 fun TimeSource.Monotonic.ValueTimeMark.hasTimeLeft() =
   elapsedNow().inWholeMilliseconds < TIMEOUT_MS
 
@@ -152,60 +146,6 @@ fun updateProgress(query: String, editor: TidyEditor) {
   }
 }
 
-fun TidyEditor.reconcile() {
-  val currentLine = currentLine()
-  if (currentLine.isBlank()) return
-  val caretInGrammar = caretInGrammar()
-  val cfg =
-    (if (caretInGrammar)
-      CFGCFG(
-        names = currentLine.tokenizeByWhitespace()
-          .filter { it !in setOf("->", "|") }.toSet()
-      )
-    else getLatestCFG()).freeze()
-
-  if (cfg.isEmpty()) return
-
-  if (!caretInGrammar) redecorateLines(cfg)
-
-  var debugText: String
-  if ("_" in currentLine.tokenizeByWhitespace()) {
-    currentLine.synthesizeCachingAndDisplayProgress(this, cfg).take(MAX_SAMPLE).let {
-      debugText = "<pre><b>🔍 Found ${it.size}${if(it.size == MAX_SAMPLE)"+" else ""} admissible solutions!</b>\n\n" +
-          it.joinToString("\n", "\n", "\n") + "</pre>"
-    }
-  } else {
-    println("Parsing `$currentLine` with stubs!")
-    val (parseForest, stubs) = cfg.parseWithStubs(currentLine)
-    debugText = if (parseForest.isNotEmpty()) {
-      if (parseForest.size == 1) "<pre>$ok\n🌳" + parseForest.first().prettyPrint() + "</pre>"
-      else "<pre>$ambig\n🌳" + parseForest.joinToString("\n\n") { it.prettyPrint() } + "</pre>"
-    } else {
-      val repairs = currentLine.synthesizeCachingAndDisplayProgress(this, cfg)
-        .take(MAX_SAMPLE).joinToString("\n", "\n", "\n")
-      "<pre>$no" + repairs + "\n$legend</pre>" + stubs.renderStubs()
-    }
-  }
-
-  // Append the CFG only if parse succeeds
-  debugText += cfg.renderedHTML//cfg.renderCFGToHTML(currentLine.tokenizeByWhitespace().toSet())
-
-//  println(cfg.original.graph.toString())
-//  println(cfg.original.graph.toDot())
-//  println(cfg.graph.toDot().alsoCopy())
-//  cfg.graph.A.show()
-
-  writeDisplayText("""
-        <html>
-        <body>
-        $debugText
-        </body>
-        </html>
-      """.trimIndent())
-//    .also { it.show() }
-
-}
-
 //    "$delim</pre>\n" +
 //    GrammarToRRDiagram().run {
 //      val grammar = BNFToGrammar().convert(
@@ -223,11 +163,6 @@ fun TidyEditor.reconcile() {
 //    }
 
 //fun CFG.toGrammar() = Grammar()
-
-fun String.getGrammar() = substringBefore("---")
-
-// TODO: eliminate this completely
-var cfg: CFG = setOf()
 
 fun String.sanitized(): String =
   tokenizeByWhitespace().joinToString(" ") { if (it in cfg.terminals) it else "_" }

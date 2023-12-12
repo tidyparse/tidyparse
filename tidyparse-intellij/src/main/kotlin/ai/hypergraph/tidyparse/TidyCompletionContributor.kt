@@ -43,7 +43,7 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
           ?.let { currentLine.replaceRange(it.range, "_") } ?: currentLine
       else currentLine
 
-      try { originalFile.recomputeGrammar() } catch (e: Exception) { return }
+      try { tidyEditor.getLatestCFG() } catch (e: Exception) { return }
 
       val surroundingNonterminal: MatchResult? = currentLine.getSurroundingNonterminal(column)
 
