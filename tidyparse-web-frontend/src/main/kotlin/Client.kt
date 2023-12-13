@@ -16,6 +16,8 @@ TODO (soon):
  - Add Ctrl+Space code completion popup
  - Provide assistance for grammar editing
  - Convert LDT code to Kotlin
+ - Allow richer HTML content in RHS panel
+ - Extract platform-independent code from IntelliJ plugin
  *//*
 TODO (maybe):
  - Add demo for Python and Java
