@@ -7,7 +7,7 @@ import kotlin.math.absoluteValue
 import kotlin.time.TimeSource
 
 /** Compare with [ai.hypergraph.tidyparse.IJTidyEditor] */
-class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): TidyEditor {
+class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): TidyEditor() {
 
   override fun readDisplayText(): Σᐩ = output.textContent ?: ""
 
@@ -36,7 +36,10 @@ class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): TidyEdito
 
   override fun currentLine(): Σᐩ = editor.getCurrentLine()
 
-  override fun writeDisplayText(s: Σᐩ) { outputField.textContent = s }
+  override fun writeDisplayText(s: Σᐩ) {
+    outputField.textContent = s
+//    (outputField as HTMLTextAreaElement).outerHTML.also { println(it) }
+  }
 
   override fun writeDisplayText(s: (Σᐩ) -> Σᐩ) = writeDisplayText(s(readDisplayText()))
 

@@ -201,7 +201,7 @@ For further examples, please refer to the [`examples`](/examples) subdirectory.
 * Rendering is done on-the-fly but may not reflect the current state of the editor. To refresh the display, type an extra whitespace character.
 * By default, Tidyparse adds ε-productions `{V} -> ε {V} | {V} ε` and terminal literals `{V} -> <V>` for each nonterminal `V` in the CFG. For further details about these transformations and the repair procedure, please refer to our [whitepaper](https://github.com/breandan/galoisenne/blob/master/latex/tacas2023/tacas.pdf).
 * The token `ε` is reserved and must not be used anywhere in the grammar, or the results are undefined.
-* Any token appearing on the left-hand size of a production is considered a nonterminal and all other tokens are considered terminals.
+* Any token appearing on the left-hand side of a production is considered a nonterminal and all other tokens are considered terminals.
 * The strings `---` and `->` are reserved and should only be used in the following contexts:
   * `---` is used to separate the CFG from the test cases.
   * `->` is used to separate the nonterminal from the RHS of a production.

@@ -55,14 +55,14 @@ abstract class BaseTest: FileEditorManagerTestCase() {
   }
 
   private fun String.checkCachedResultParses() {
-    val key = lines().last().sanitized() to substringBefore("---").parseCFG()
-    synthCache[key]?.forEach { it ->
+    val key = lines().last().sanitized(ijTidyEditor.cfg.terminals) to substringBefore("---").parseCFG()
+    ijTidyEditor.synthCache[key]?.forEach { it ->
 //      println("Checking: ${it} (${synthCache[key]?.joinToString(",")})")
       it.dehtmlify().let { assertNotNull(key.π2.parse(it)) { "Unrecognized: \"$it\"" } }
     }
   }
 
-  fun String.testAllLines() {
+  fun String.invokeOnAllLines() {
     measureTimeMillis {
       lines().fold("") { acc, s -> "$acc\n$s".also { it.simulateKeystroke() } }
     }.also { println("Round trip latency: $it") }

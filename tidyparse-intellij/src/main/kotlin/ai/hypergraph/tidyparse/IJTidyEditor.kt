@@ -16,7 +16,7 @@ import java.lang.management.ManagementFactory
 import kotlin.time.*
 
 /** Compare with [JSTidyEditor] */
-class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor {
+class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor() {
   override fun readDisplayText(): Σᐩ = TidyToolWindow.text
 
   override fun writeDisplayText(s: Σᐩ) { TidyToolWindow.text = s }

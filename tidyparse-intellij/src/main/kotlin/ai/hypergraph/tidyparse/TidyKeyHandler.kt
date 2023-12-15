@@ -21,10 +21,12 @@ class TidyKeyHandler : TypedHandlerDelegate() {
   override fun charTyped(c: Char, project: Project, editor: Editor, file: PsiFile): Result =
     CONTINUE.also {
       fontScalingRatio = (editor.colorsScheme.editorFontSize / 16.0).coerceAtLeast(1.0)
-
-      IJTidyEditor(editor, file).handle()
+      ijTidyEditor = IJTidyEditor(editor, file)
+      ijTidyEditor.handle()
     }
 }
+
+lateinit var ijTidyEditor: IJTidyEditor
 
 class TidyBackspaceHandler : BackspaceHandlerDelegate() {
   override fun beforeCharDeleted(c: Char, file: PsiFile, editor: Editor) = Unit

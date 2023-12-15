@@ -129,11 +129,11 @@ fun String.synthesizeCachingAndDisplayProgress(tidyEditor: TidyEditor, cfg: CFG)
 
   val cacheResultOn: Pair<String, CFG> = sanitized to cfg
 
-  val cached = synthCache[cacheResultOn]
+  val cached = tidyEditor.synthCache[cacheResultOn]
 
   return if (cached?.isNotEmpty() == true) cached
   // Cache miss could be due to prior timeout or cold cache. Either way, we need to recompute
-  else tidyEditor.repair(cfg, this).also { synthCache.put(cacheResultOn, it) }
+  else tidyEditor.repair(cfg, this).also { tidyEditor.synthCache.put(cacheResultOn, it) }
 }
 
 fun updateProgress(query: String, editor: TidyEditor) {
@@ -164,8 +164,8 @@ fun updateProgress(query: String, editor: TidyEditor) {
 
 //fun CFG.toGrammar() = Grammar()
 
-fun String.sanitized(): String =
-  tokenizeByWhitespace().joinToString(" ") { if (it in cfg.terminals) it else "_" }
+fun String.sanitized(terminals: Set<Σᐩ>): String =
+  tokenizeByWhitespace().joinToString(" ") { if (it in terminals) it else "_" }
 
 const val ok = "<b>✅ Current line unambiguously parses! Parse tree:</b>\n"
 const val ambig = "<b>⚠️ Current line parses, but is ambiguous:</b>\n"

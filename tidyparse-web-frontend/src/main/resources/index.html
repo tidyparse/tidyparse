@@ -11,7 +11,7 @@
         .ldt .red { color: red; }
         /*.ldt .orange { color: orange; }*/
         /*.ldt .yellow { color: yellow; }*/
-        /*.ldt .green { color: green; }*/
+        .ldt .green { color: green; }
         .ldt .blue { color: blue; }
         .ldt .gray { color: darkslategray; }
         /*.ldt .indigo { color: indigo; }*/
@@ -29,7 +29,7 @@
             gray: /_/,
             // orange: /orange/,
             // yellow: /yellow/,
-            // green: /green/,
+            green: /START/,
             // indigo: /indigo/,
             // violet: /violet/,
             other: /\S/
@@ -120,7 +120,36 @@ if ( true or false ) then true else 1
 
 if true then if true then 1 else 2 else 3
 </textarea>
-    <div id="tidyparse-output" class="panel"></div>
+<div id="tidyparse-output" class="panel">
+  Tips:
+
+  • All tokens must be separated by one or more whitespaces.
+
+  • Nonterminal stubs are enclosed in angle brackets, &lt;F&gt;.
+
+  • Rendering is done on-the-fly but may not reflect the
+    current editor state. To refresh it, modify the editor.
+
+  • Tidyparse adds ε-productions, {V} <font color="red">-></font> ε {V} <font color="red">|</font> {V} ε, and
+    literals {V} <font color="red">-></font> &lt;V&gt; for each nonterminal, V, in the CFG.
+
+  • Any symbol to the left of <font color="red">-></font> is considered a nonterminal
+    and all other symbols are considered terminals.
+
+  • <font color="blue">---</font> and <font color="red">-></font> are reserved for the following scenarios:
+    • <font color="blue">---</font> is used to separate the CFG from the test cases.
+    • <font color="red">-></font> separates the left and right sides of a production.
+
+  • The token ε is reserved and must not be used anywhere.
+
+  • Any line in the CFG that does not contain <font color="red">-></font> is ignored.
+
+  • If the grammar does not contain a nonterminal named <font color="green">START</font>,
+    Tidyparse will add <font color="green">START</font> <font color="red">-></font> {V} for every nonterminal, V.
+
+  • BNF is translatable by substituting ::= with <font color="red">-></font>, removing
+    angle brackets from nonterminals, and " from terminals.
+</div>
 </div>
 <br/>
 <p>The <a href="https://www.mozilla.org/firefox/">Firefox</a> and <a href="https://www.apple.com/ca/safari/">Safari</a> browsers are currently supported. Source code and documentation is available <a href="https://github.com/tidyparse/tidyparse">on GitHub</a>. Contributions and feedback are welcome.</p>

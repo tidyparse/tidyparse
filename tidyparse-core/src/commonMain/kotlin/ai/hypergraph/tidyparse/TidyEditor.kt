@@ -6,21 +6,21 @@ import ai.hypergraph.kaliningraph.parsing.*
 import kotlin.math.absoluteValue
 import kotlin.time.TimeSource
 
-// TODO: eliminate this completely
-var cfg: CFG = setOf()
-var grammarFileCache: String = ""
-val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
-var cache = mutableMapOf<Int, String>()
-var currentWorkHash = 0
-val toTake = 30
+abstract class TidyEditor {
+  // TODO: eliminate this completely
+  var cfg: CFG = setOf()
+  var grammarFileCache: String = ""
+  val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
+  var cache = mutableMapOf<Int, String>()
+  var currentWorkHash = 0
+  val toTake = 30
 
-interface TidyEditor {
-  fun readDisplayText(): Σᐩ
-  fun readEditorText(): Σᐩ
-  fun getCaretPosition(): Int
-  fun currentLine(): Σᐩ
-  fun writeDisplayText(s: Σᐩ)
-  fun writeDisplayText(s: (Σᐩ) -> Σᐩ)
+  abstract fun readDisplayText(): Σᐩ
+  abstract fun readEditorText(): Σᐩ
+  abstract fun getCaretPosition(): Int
+  abstract fun currentLine(): Σᐩ
+  abstract fun writeDisplayText(s: Σᐩ)
+  abstract fun writeDisplayText(s: (Σᐩ) -> Σᐩ)
   fun getLatestCFG(): CFG {
     val grammar: String = readEditorText().substringBefore("---")
     return if (grammar != grammarFileCache || cfg.isNotEmpty()) {
@@ -29,27 +29,29 @@ interface TidyEditor {
     } else cfg
   }
 
-  fun handleInput() {
+  open fun handleInput() {
     val timer = TimeSource.Monotonic.markNow()
     val cfg = getLatestCFG()
     if (caretInGrammar()) { return }
     val line = currentLine()
     val tokens = line.tokenizeByWhitespace()
-    val lineHash = tokens.hashCode()
+    val sanitized = tokens.joinToString(" ")
+    val lineHash = tokens.hashCode() + grammarFileCache.hashCode()
     currentWorkHash = lineHash
 
     fun finally(it: String, action: String = "Completed") {
       cache[lineHash] = it
       writeDisplayText(it)
-      println("$action in ${timer.elapsedNow().inWholeMilliseconds}")
+      println("$action in ${timer.elapsedNow().inWholeMilliseconds}ms")
     }
     fun shouldContinue() = currentWorkHash == lineHash && timer.hasTimeLeft()
 
-    if (lineHash in cache) writeDisplayText(cache[lineHash]!!)
-    else if ("_" in line) {
+    if (lineHash in cache) return writeDisplayText(cache[lineHash]!!)
+
+    if (line.containsHole()) {
       writeDisplayText("Solving: $line\n".also { print(it) })
 
-      cfg.enumSeqSmart(line.tokenizeByWhitespace()).distinct()
+      return cfg.enumSeqSmart(tokens).distinct()
         .enumerateCompletionsInteractively(
           metric = { it.size * 7919 + it.sumOf { it.length } },
           shouldContinue = ::shouldContinue,
@@ -57,28 +59,32 @@ interface TidyEditor {
           localContinuation = ::continuation
         )
     }
-    else if (cfg.parse(line)?.prettyPrint()?.also { writeDisplayText("$line\n\n$it") } != null) { }
-    else {
-      writeDisplayText("Repairing: $line\n".also { print(it) })
 
-      cfg.fastRepairSeq(tokens)
-        .enumerateCompletionsInteractively(
-          metric = { levenshtein(tokens, it) * 7919 +
-              (tokens.sumOf { it.length } - it.sumOf { it.length }).absoluteValue
-          },
-          shouldContinue = ::shouldContinue,
-          finally = ::finally,
-          localContinuation = ::continuation
-        )
-    }
+    val q = cfg.parse(sanitized)?.prettyPrint()
+
+    if (q != null) return writeDisplayText("$line\n\n$q")
+
+//    val renderedStubs = cfg.parseWithStubs(sanitized).second.renderStubs()
+//    writeDisplayText(render(cfg, emptyList(), this, stubs = renderedStubs, reason = no))
+    writeDisplayText("Repairing: $line\n".also { print(it) })
+
+    return cfg.fastRepairSeq(tokens)
+      .enumerateCompletionsInteractively(
+        metric = { levenshtein(tokens, it) * 7919 +
+          (tokens.sumOf { it.length } - it.sumOf { it.length }).absoluteValue
+        },
+        shouldContinue = ::shouldContinue,
+        finally = ::finally,
+        localContinuation = ::continuation
+      )
   }
 
   fun caretInGrammar(): Boolean =
     readEditorText().indexOf("---")
       .let { it == -1 || getCaretPosition() < it }
-  fun diffAsHtml(l1: List<Σᐩ>, l2: List<Σᐩ>): Σᐩ = l2.joinToString(" ")
-  fun repair(cfg: CFG, str: Σᐩ): List<Σᐩ>
-  fun redecorateLines(cfg: CFG) {}
+  open fun diffAsHtml(l1: List<Σᐩ>, l2: List<Σᐩ>): Σᐩ = l2.joinToString(" ")
+  abstract fun repair(cfg: CFG, str: Σᐩ): List<Σᐩ>
+  open fun redecorateLines(cfg: CFG) {}
 
   fun Sequence<String>.enumerateCompletionsInteractively(
     resultsToPost: Int = toTake,
@@ -97,7 +103,7 @@ interface TidyEditor {
         return finally(topNResults.joinToString("\n", "", "\n...") { it.first })
 
       val next = iter.next()
-      println("Found: ${next}")
+      println("Found: $next")
       val isNew = next !in results
       if (next.isNotEmpty() && isNew) {
         results.add(next)
@@ -117,7 +123,7 @@ interface TidyEditor {
     findNextCompletion()
   }
 
-  fun continuation(f: () -> Unit): Any = { f() }
+  open fun continuation(f: () -> Unit): Any = { f() }
 
   fun getGrammarText(): Σᐩ = readEditorText().substringBefore("---")
 

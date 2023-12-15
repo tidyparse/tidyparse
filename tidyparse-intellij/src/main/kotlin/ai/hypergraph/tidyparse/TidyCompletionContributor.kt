@@ -27,26 +27,28 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
     context: ProcessingContext,
     result: CompletionResultSet
   ) {
-    parameters.apply {
-      if (originalFile.fileType.defaultExtension != "tidy") return
+    if (parameters.originalFile.fileType.defaultExtension != "tidy") return
 
-      var currentLine = runReadAction { editor.currentLine() }.trim()
+    val ijEditor = parameters.editor
+    var currentLine = runReadAction { ijEditor.currentLine() }.trim()
 
-      val tidyEditor = IJTidyEditor(editor, originalFile)
-      tidyEditor.handle()?.get()
+    val tidyEditor = IJTidyEditor(ijEditor, parameters.originalFile)
+    tidyEditor.handle()?.get()
 
-      val column = editor.caretModel.logicalPosition.column
+    val column = ijEditor.caretModel.logicalPosition.column
 
-      currentLine = if (!currentLine.containsHole() && cfg.parse(currentLine) != null &&
-        currentLine.getSurroundingNonterminal(column) == null)
-        currentLine.getSurroundingToken(column)
-          ?.let { currentLine.replaceRange(it.range, "_") } ?: currentLine
-      else currentLine
+    currentLine = if (!currentLine.containsHole() &&
+      tidyEditor.cfg.parse(currentLine) != null &&
+      currentLine.getSurroundingNonterminal(column) == null)
+      currentLine.getSurroundingToken(column)
+        ?.let { currentLine.replaceRange(it.range, "_") } ?: currentLine
+    else currentLine
 
-      try { tidyEditor.getLatestCFG() } catch (e: Exception) { return }
+    try { tidyEditor.getLatestCFG() } catch (e: Exception) { return }
 
-      val surroundingNonterminal: MatchResult? = currentLine.getSurroundingNonterminal(column)
+    val surroundingNonterminal: MatchResult? = currentLine.getSurroundingNonterminal(column)
 
+    tidyEditor.run {
       if (surroundingNonterminal != null) {
         cfg.originalForm.bimap[surroundingNonterminal.value.drop(1).dropLast(1)]
           .map { it.joinToString(" ") { if (it in cfg.originalForm.terminals) it else "<$it>" } }
@@ -54,7 +56,7 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
           .forEachIndexed { i, it -> result.addElement(createLookupElement(it, i, surroundingNonterminal)) }
       } else synchronized(cfg) {
         try {
-          synthCache[currentLine.sanitized() to cfg]?.map { it.dehtmlify().tokenizeByWhitespace().joinToString(" ") }
+          synthCache[currentLine.sanitized(cfg.terminals) to cfg]?.map { it.dehtmlify().tokenizeByWhitespace().joinToString(" ") }
             ?.forEachIndexed { i, it -> result.addElement(createLookupElement(it, i, null)) }
         } catch (e: Exception) {
           e.printStackTrace()
