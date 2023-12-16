@@ -85,6 +85,15 @@ h1, p{
 
 /* settings you can play with */
 
+.ldt .red { color: red; }
+/*.ldt .orange { color: orange; }*/
+/*.ldt .yellow { color: yellow; }*/
+.ldt .green { color: green; }
+.ldt .blue { color: blue; }
+.ldt .gray { color: darkslategray; }
+/*.ldt .indigo { color: indigo; }*/
+/*.ldt .violet { color: violet; }*/
+
 .ldt, .ldt label {
     padding: 4px;
 }

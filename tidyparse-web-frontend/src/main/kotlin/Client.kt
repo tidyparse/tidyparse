@@ -37,6 +37,26 @@ TODO (maybe):
 fun main() {
   TIMEOUT_MS = 5_000
   jsEditor.getLatestCFG()
+  // Wait for the page to finish loading before accessing the DOM
+  window.onload = {
+    // Create the parser, case insensitive
+    val parser = Parser(
+        "whitespace" to "\\s+",
+               "red" to "->|\\|",
+              "blue" to "---",
+              "gray" to "_",
+             "green" to "START",
+             "other" to "\\S"
+        // Uncomment or add more rules as needed
+        // "orange" to "orange",
+        // "yellow" to "yellow",
+        // "indigo" to "indigo",
+        // "violet" to "violet",
+    )
+    val textarea = document.getElementById("tidyparse-input")
+    TextareaDecorator(textarea as HTMLTextAreaElement, parser)
+  }
+
   inputField.addEventListener("input", { jsEditor.handleInput() })
 }
 
