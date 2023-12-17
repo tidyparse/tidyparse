@@ -11,7 +11,7 @@ class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): TidyEdito
 
   override fun readDisplayText(): Σᐩ = output.textContent ?: ""
 
-  override fun readEditorText(): Σᐩ = editor.textContent ?: ""
+  override fun readEditorText(): Σᐩ = editor.value
 
   override fun getCaretPosition(): Int = editor.selectionStart!!
 

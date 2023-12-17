@@ -48,8 +48,7 @@ fun main() {
         // "indigo" to "indigo",
         // "violet" to "violet",
     )
-    val textarea = document.getElementById("tidyparse-input")
-    TextareaDecorator(textarea as HTMLTextAreaElement, parser)
+    TextareaDecorator(inputField, parser)
   }
 
   inputField.addEventListener("input", { jsEditor.handleInput() })

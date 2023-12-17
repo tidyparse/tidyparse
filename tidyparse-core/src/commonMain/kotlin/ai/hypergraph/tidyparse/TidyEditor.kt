@@ -23,7 +23,7 @@ abstract class TidyEditor {
   abstract fun writeDisplayText(s: (Σᐩ) -> Σᐩ)
   fun getLatestCFG(): CFG {
     val grammar: String = readEditorText().substringBefore("---")
-    return if (grammar != grammarFileCache || cfg.isNotEmpty()) {
+    return if (grammar != grammarFileCache || cfg.isEmpty()) {
       grammarFileCache = grammar
       grammarFileCache.parseCFG().freeze().also { cfg = it }
     } else cfg
@@ -31,28 +31,41 @@ abstract class TidyEditor {
 
   open fun handleInput() {
     val timer = TimeSource.Monotonic.markNow()
-    val cfg = getLatestCFG()
-    if (caretInGrammar()) { return }
-    val line = currentLine()
-    val tokens = line.tokenizeByWhitespace()
+
+    val currentLine = currentLine()
+    if (currentLine.isBlank()) return
+    val caretInGrammar = caretInGrammar()
+    println("Substring before ---: ${readEditorText().substringBefore("---")}")
+    println("Caret in grammar: $caretInGrammar, ${getCaretPosition()}, ${readEditorText().indexOf("---")}")
+    val cfg =
+      (if (caretInGrammar)
+        CFGCFG(
+          names = currentLine.tokenizeByWhitespace()
+            .filter { it !in setOf("->", "|") }.toSet()
+        )
+      else getLatestCFG()).freeze()
+
+    if (cfg.isEmpty()) return
+
+    val tokens = currentLine().tokenizeByWhitespace()
     val sanitized = tokens.joinToString(" ")
-    val lineHash = tokens.hashCode() + grammarFileCache.hashCode()
-    currentWorkHash = lineHash
+    val workHash = sanitized.hashCode() + cfg.hashCode()
+    currentWorkHash = workHash
+
+    if (workHash in cache) return writeDisplayText(cache[workHash]!!)
 
     fun finally(it: String, action: String = "Completed") {
       val displayText = "$invalidPrefix$it"
-      cache[lineHash] = displayText
+      cache[workHash] = displayText
       writeDisplayText(displayText)
       println("$action in ${timer.elapsedNow().inWholeMilliseconds}ms")
     }
-    fun shouldContinue() = currentWorkHash == lineHash && timer.hasTimeLeft()
+    fun shouldContinue() = currentWorkHash == workHash && timer.hasTimeLeft()
 
-    if (lineHash in cache) return writeDisplayText(cache[lineHash]!!)
+    if (!caretInGrammar) redecorateLines(cfg)
 
-    if (line.containsHole()) {
-      writeDisplayText("Solving: $line\n".also { print(it) })
-
-      return cfg.enumSeqSmart(tokens).distinct()
+    return if (sanitized.containsHole()) {
+      cfg.enumSeqSmart(tokens).distinct()
         .enumerateCompletionsInteractively(
           metric = { it.size * 7919 + it.sumOf { it.length } },
           shouldContinue = ::shouldContinue,
@@ -60,16 +73,11 @@ abstract class TidyEditor {
           localContinuation = ::continuation
         )
     }
-
-    val parseTree = cfg.parse(sanitized)?.prettyPrint()
-
-    if (parseTree != null) return writeDisplayText("$parsedPrefix$parseTree")
-
-//    val renderedStubs = cfg.parseWithStubs(sanitized).second.renderStubs()
-//    writeDisplayText(render(cfg, emptyList(), this, stubs = renderedStubs, reason = no))
-    println("Repairing: $line\n")
-
-    return cfg.fastRepairSeq(tokens)
+    else if (tokens in cfg.language) {
+      val parseTree = cfg.parse(sanitized)?.prettyPrint()
+      writeDisplayText("$parsedPrefix$parseTree")
+    }
+    else cfg.fastRepairSeq(tokens)
       .enumerateCompletionsInteractively(
         metric = { levenshtein(tokens, it) * 7919 +
           (tokens.sumOf { it.length } - it.sumOf { it.length }).absoluteValue
@@ -83,6 +91,7 @@ abstract class TidyEditor {
   fun caretInGrammar(): Boolean =
     readEditorText().indexOf("---")
       .let { it == -1 || getCaretPosition() < it }
+
   open fun diffAsHtml(l1: List<Σᐩ>, l2: List<Σᐩ>): Σᐩ = l2.joinToString(" ")
   abstract fun repair(cfg: CFG, str: Σᐩ): List<Σᐩ>
   open fun redecorateLines(cfg: CFG) {}
@@ -111,8 +120,8 @@ abstract class TidyEditor {
       val isNew = next !in results
       if (next.isNotEmpty() && isNew) {
         results.add(next)
-        if (topNResults.size < resultsToPost || next.length < topNResults.last().second) {
-          val score = metric(next.tokenizeByWhitespace())
+        val score = metric(next.tokenizeByWhitespace())
+        if (topNResults.size < resultsToPost || score < topNResults.last().second) {
           val loc = topNResults.binarySearch { it.second.compareTo(score) }
           val idx = if (loc < 0) { -loc - 1 } else loc
           topNResults.add(idx, next to score)
