@@ -8,26 +8,21 @@ import kotlin.time.TimeSource
 
 /**
 TODO (soon):
- - Unify with [ai.hypergraph.tidyparse.TidyEditor]
- - Clean up the Gradle build wreckage
+ - Extract platform-independent code from IntelliJ plugin
  - Get Myers diffs working properly
+ - Clean up the Gradle build wreckage
  - Render the Chomsky-normalized CFG
+ - Syntax highlighting for the snippets
  - Rank results by more sensible metric
  - Add Ctrl+Space code completion popup
  - Provide assistance for grammar editing
- - Convert LDT code to Kotlin
  - Allow richer HTML content in RHS panel
- - Extract platform-independent code from IntelliJ plugin
  *//*
 TODO (maybe):
  - Add demo for Python and Java
- - Use a proper editor instead of a TextArea
-    - https://github.com/kueblc/LDT
- - Syntax highlighting for the snippets
  - Configurable settings, e.g., timeout, max repairs
  - Auto-alignment of the productions
  - Calculate finger-travel distance
- - Find a better pattern for timeslicing
  - Collect telemetry for a user study
  - Improve support for incrementalization
  - Look into ropes, zippers and lenses

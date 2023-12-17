@@ -13,7 +13,7 @@ abstract class TidyEditor {
   val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
   var cache = mutableMapOf<Int, String>()
   var currentWorkHash = 0
-  val toTake = 30
+  val toTake = 27
 
   abstract fun readDisplayText(): Σᐩ
   abstract fun readEditorText(): Σᐩ
@@ -25,7 +25,7 @@ abstract class TidyEditor {
     val grammar: String = readEditorText().substringBefore("---")
     return if (grammar != grammarFileCache || cfg.isNotEmpty()) {
       grammarFileCache = grammar
-      grammarFileCache.parseCFG().also { cfg = it }
+      grammarFileCache.parseCFG().freeze().also { cfg = it }
     } else cfg
   }
 
@@ -40,8 +40,9 @@ abstract class TidyEditor {
     currentWorkHash = lineHash
 
     fun finally(it: String, action: String = "Completed") {
-      cache[lineHash] = it
-      writeDisplayText(it)
+      val displayText = "$invalidPrefix$it"
+      cache[lineHash] = displayText
+      writeDisplayText(displayText)
       println("$action in ${timer.elapsedNow().inWholeMilliseconds}ms")
     }
     fun shouldContinue() = currentWorkHash == lineHash && timer.hasTimeLeft()
@@ -60,13 +61,13 @@ abstract class TidyEditor {
         )
     }
 
-    val q = cfg.parse(sanitized)?.prettyPrint()
+    val parseTree = cfg.parse(sanitized)?.prettyPrint()
 
-    if (q != null) return writeDisplayText("$line\n\n$q")
+    if (parseTree != null) return writeDisplayText("$parsedPrefix$parseTree")
 
 //    val renderedStubs = cfg.parseWithStubs(sanitized).second.renderStubs()
 //    writeDisplayText(render(cfg, emptyList(), this, stubs = renderedStubs, reason = no))
-    writeDisplayText("Repairing: $line\n".also { print(it) })
+    println("Repairing: $line\n")
 
     return cfg.fastRepairSeq(tokens)
       .enumerateCompletionsInteractively(
@@ -90,7 +91,7 @@ abstract class TidyEditor {
     resultsToPost: Int = toTake,
     metric: (List<String>) -> Int,
     shouldContinue: () -> Boolean,
-    postResults: (String) -> Unit = { writeDisplayText(it) },
+    postResults: (String) -> Unit = { writeDisplayText("$invalidPrefix$it") },
     finally: (String) -> Unit = { postResults(it) },
     localContinuation: (() -> Unit) -> Any = { it() }
   ) {
@@ -99,8 +100,11 @@ abstract class TidyEditor {
     val iter = iterator()
 
     fun findNextCompletion() {
+      var i = 0
       if (!iter.hasNext() || !shouldContinue())
-        return finally(topNResults.joinToString("\n", "", "\n...") { it.first })
+        return finally(topNResults.joinToString("\n", "", "\n...") {
+          "${i++.toString().padStart(2)}.) ${it.first}"
+        })
 
       val next = iter.next()
       println("Found: $next")
@@ -113,7 +117,7 @@ abstract class TidyEditor {
           val idx = if (loc < 0) { -loc - 1 } else loc
           topNResults.add(idx, next to score)
           if (topNResults.size > resultsToPost) topNResults.removeLast()
-          postResults(topNResults.joinToString("\n") { it.first })
+          postResults(topNResults.joinToString("\n") { "${i++.toString().padStart(2)}.) ${it.first}" })
         }
       }
 

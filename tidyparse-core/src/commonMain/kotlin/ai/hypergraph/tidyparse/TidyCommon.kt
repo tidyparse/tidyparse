@@ -167,6 +167,8 @@ fun updateProgress(query: String, editor: TidyEditor) {
 fun String.sanitized(terminals: Set<Σᐩ>): String =
   tokenizeByWhitespace().joinToString(" ") { if (it in terminals) it else "_" }
 
+const val parsedPrefix = "✅ Current line parses! Tree:\n\n"
+const val invalidPrefix = "❌ Current line invalid, possible fixes:\n\n"
 const val ok = "<b>✅ Current line unambiguously parses! Parse tree:</b>\n"
 const val ambig = "<b>⚠️ Current line parses, but is ambiguous:</b>\n"
 const val no = "<b>❌ Current line invalid, possible fixes:</b>\n"
