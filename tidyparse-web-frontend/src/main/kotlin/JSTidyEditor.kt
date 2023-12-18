@@ -8,7 +8,6 @@ import kotlin.time.TimeSource
 
 /** Compare with [ai.hypergraph.tidyparse.IJTidyEditor] */
 class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): TidyEditor() {
-
   override fun readDisplayText(): Σᐩ = output.textContent ?: ""
 
   override fun readEditorText(): Σᐩ = editor.value
@@ -32,13 +31,17 @@ class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): TidyEdito
     //}
   }
 
-  override fun continuation(f: () -> Unit): Any = window.setTimeout(f, 10)
+  override fun continuation(f: () -> Unit): Any = window.setTimeout(f, 0)
 
   override fun currentLine(): Σᐩ = editor.getCurrentLine()
 
   override fun writeDisplayText(s: Σᐩ) {
     outputField.textContent = s
 //    (outputField as HTMLTextAreaElement).outerHTML.also { println(it) }
+  }
+
+  override fun redecorateLines(cfg: CFG) {
+//    TextareaDecorator(inputField, parser).underline(lineNumber())
   }
 
   override fun writeDisplayText(s: (Σᐩ) -> Σᐩ) = writeDisplayText(s(readDisplayText()))

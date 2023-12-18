@@ -29,6 +29,8 @@ abstract class TidyEditor {
     } else cfg
   }
 
+  fun lineNumber(): Int = readEditorText().substring(0, getCaretPosition()).count { it == '\n' }
+
   open fun handleInput() {
     val timer = TimeSource.Monotonic.markNow()
 
@@ -79,8 +81,9 @@ abstract class TidyEditor {
     }
     else cfg.fastRepairSeq(tokens)
       .enumerateCompletionsInteractively(
-        metric = { levenshtein(tokens, it) * 7919 +
-          (tokens.sumOf { it.length } - it.sumOf { it.length }).absoluteValue
+        metric = {
+          levenshtein(tokens, it) * 7919 +
+            (tokens.sumOf { it.length } - it.sumOf { it.length }).absoluteValue
         },
         shouldContinue = ::shouldContinue,
         finally = ::finally,

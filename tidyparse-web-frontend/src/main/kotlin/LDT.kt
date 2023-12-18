@@ -1,7 +1,7 @@
 import kotlinx.browser.*
 import org.w3c.dom.*
 
-class Parser(val ruleMap: Map<String, Regex>) {
+class Parser(private val ruleMap: Map<String, Regex>) {
   constructor(vararg rules: Pair<String, String>): this(
     rules.associate { (color, regex) -> color to Regex(regex) }
   )
@@ -26,25 +26,34 @@ class TextareaDecorator(private val textarea: HTMLTextAreaElement, private val p
     val label = document.createElement("label") as HTMLLabelElement
     parent.appendChild(label)
 
-    // Replace the textarea with RTA DOM and reattach on label
-    textarea.parentNode?.replaceChild(parent, textarea)
-    label.appendChild(textarea)
+    textarea.run {
+      // Replace the textarea with RTA DOM and reattach on label
+      parentNode?.replaceChild(parent, this)
+      label.appendChild(this)
 
-    // Transfer the CSS styles to our editor
-    parent.className = "ldt ${textarea.className}"
-    textarea.className = ""
-    textarea.spellcheck = false
-    textarea.wrap = "off"
+      // Transfer the CSS styles to our editor
+      parent.className = "ldt $className"
+      className = ""
+      spellcheck = false
+      wrap = "off"
 
-    // Detect all changes to the textarea
-    textarea.addEventListener("input", { update() })
+      // Detect all changes to the textarea
+      addEventListener("input", { update() })
 
-    // Initial highlighting
-    update()
+      // Initial highlighting
+      update()
+    }
   }
 
-  private fun update() {
-    val input = textarea.value
+  // Surrounds the given line with <u>...</u> in output like color() does
+  fun underline(lineNumber: Int) {
+    output.innerHTML.also { println("HTML:\n\n$it") }.split('\n')
+      .mapIndexed { index, s -> if (index == lineNumber) "<u>$s</u>" else s }
+      .joinToString("\n").also { output.innerHTML = it }
+  }
+
+  private fun HTMLTextAreaElement.update() {
+    val input = value
     if (input.isNotEmpty()) {
       color(input)
       // Determine the best size for the textarea
@@ -52,41 +61,40 @@ class TextareaDecorator(private val textarea: HTMLTextAreaElement, private val p
       val maxlen = lines.maxOfOrNull { line ->
         line.length + line.count { it == '\t' } * 7 // Approximation for tab length
       } ?: 0
-      textarea.cols = maxlen + 1
-      textarea.rows = lines.size + 2
+      cols = maxlen + 1
+      rows = lines.size + 2
     } else {
       // Clear the display
       output.innerHTML = ""
-      textarea.cols = 1
-      textarea.rows = 1
+      cols = 1
+      rows = 1
     }
   }
 
   private fun color(input: String) {
     val oldTokens = output.childNodes.asList()
     val newTokens = parser.tokenize(input)
-    var firstDiff = newTokens.zip(oldTokens)
+    val firstDiff = newTokens.zip(oldTokens)
       .indexOfFirst { (new, old) -> new != (old as? HTMLElement)?.textContent }
-    if (firstDiff == -1) firstDiff = minOf(newTokens.size, oldTokens.size)
+      .let { if (it == -1) minOf(newTokens.size, oldTokens.size) else it }
 
     // Trim the length of output nodes to the size of the input
-    while (newTokens.size < oldTokens.size) {
-      output.removeChild(oldTokens[firstDiff])
-    }
+    while (newTokens.size < oldTokens.size) output.removeChild(oldTokens[firstDiff])
 
     // Update modified spans
-    for (index in firstDiff until oldTokens.size) {
-      val oldNode = oldTokens[index] as HTMLElement
-      oldNode.className = parser.identify(newTokens[index]) ?: ""
-      oldNode.textContent = newTokens[index]
-    }
+    for (index in firstDiff until oldTokens.size)
+      (oldTokens[index] as HTMLElement).apply {
+        className = parser.identify(newTokens[index]) ?: ""
+        textContent = newTokens[index]
+      }
 
     // Add in new spans
-    for (index in oldTokens.size until newTokens.size) {
-      val span = document.createElement("span") as HTMLElement
-      span.className = parser.identify(newTokens[index]) ?: ""
-      span.textContent = newTokens[index]
-      output.appendChild(span)
-    }
+    for (index in oldTokens.size until newTokens.size)
+      output.appendChild(
+        (document.createElement("span") as HTMLElement).apply {
+          className = parser.identify(newTokens[index]) ?: ""
+          textContent = newTokens[index]
+        }
+      )
   }
 }

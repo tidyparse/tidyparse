@@ -17,6 +17,10 @@ h1, p{
     padding: 0px 10px;
 }
 
+u {
+    text-decoration: #f00 wavy underline;
+}
+
 #content {
     width: 100%;
     padding: 0px;

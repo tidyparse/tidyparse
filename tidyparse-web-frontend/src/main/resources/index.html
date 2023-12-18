@@ -4,11 +4,12 @@
   <meta charset="UTF-8">
   <link href='https://fonts.googleapis.com/css?family=JetBrains Mono' rel='stylesheet'>
   <link rel="stylesheet" type="text/css" href="index.css">
-  <title>Tidyparse Browser Demo</title>
+  <title>Tidyparse</title>
   <link rel="icon" href="/pluginIcon.svg" type="image/svg+xml">
 </head>
 <body>
-<h1>Tidyparse Browser Demonstration</h1>
+<!-- Now render the pluginIcon.svg next to the header: -->
+<h1><img style="display: inline;" src="/pluginIcon.svg" width="26">&nbsp;&nbsp;Tidyparse Browser Demonstration</h1>
 <div id="content">
     <textarea id="tidyparse-input" class="ldt" spellcheck="false">
 START -> X
@@ -85,17 +86,15 @@ if ( true or false ) then true else 1
 if true then if true then 1 else 2 else 3
 </textarea>
 <div id="tidyparse-output" class="panel">
-  Tips:
+  Usage Tips:
+
+  • To trigger an update, modify the editor to the left.
 
   • All tokens must be separated by one or more whitespaces.
 
+  • Invalid lines are marked with <u>a squiggly underline</u>.
+
   • Nonterminal stubs are enclosed in angle brackets, &lt;F&gt;.
-
-  • Rendering is done on-the-fly but may not reflect the
-    current editor state. To refresh it, modify the editor.
-
-  • Tidyparse adds ε-productions, {V} <font color="red">-></font> ε {V} <font color="red">|</font> {V} ε, and
-    literals {V} <font color="red">-></font> &lt;V&gt; for each nonterminal, V, in the CFG.
 
   • Any symbol to the left of <font color="red">-></font> is considered a nonterminal
     and all other symbols are considered terminals.
@@ -104,15 +103,19 @@ if true then if true then 1 else 2 else 3
     • <font color="blue">---</font> is used to separate the CFG from the test cases.
     • <font color="red">-></font> separates the left and right sides of a production.
 
-  • The token ε is reserved and must not be used anywhere.
+  • The symbol ε is reserved and must not be used anywhere.
 
   • Any line in the CFG that does not contain <font color="red">-></font> is ignored.
 
-  • If the grammar does not contain a nonterminal named <font color="green">START</font>,
+  • Tidyparse adds ε-productions, {V} <font color="red">-></font> ε {V} <font color="red">|</font> {V} ε, and
+    literals {V} <font color="red">-></font> &lt;V&gt; for each nonterminal, V, in the CFG.
+
+  • If the grammar contains no nonterminal named <font color="green">START</font>, then
     Tidyparse will add <font color="green">START</font> <font color="red">-></font> {V} for every nonterminal, V.
 
   • BNF is translatable by substituting ::= with <font color="red">-></font>, removing
     angle brackets from nonterminals, and " from terminals.
+
 </div>
 </div>
 <br/>

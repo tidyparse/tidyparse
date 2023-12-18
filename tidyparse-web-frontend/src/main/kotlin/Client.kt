@@ -27,30 +27,26 @@ TODO (maybe):
  - Improve support for incrementalization
  - Look into ropes, zippers and lenses
 */
+val parser = Parser(
+  "whitespace" to "\\s+",
+  "red" to "->|\\|",
+  "blue" to "---",
+  "gray" to "_",
+  "green" to "START",
+  "other" to "\\S"
+  // Uncomment or add more rules as needed
+  // "orange" to "orange",
+  // "yellow" to "yellow",
+  // "indigo" to "indigo",
+  // "violet" to "violet",
+)
 
 // ./gradlew browserDevelopmentRun --continuous
 fun main() {
   TIMEOUT_MS = 5_000
   jsEditor.getLatestCFG()
   // Wait for the page to finish loading before accessing the DOM
-  window.onload = {
-    // Create the parser, case insensitive
-    val parser = Parser(
-        "whitespace" to "\\s+",
-               "red" to "->|\\|",
-              "blue" to "---",
-              "gray" to "_",
-             "green" to "START",
-             "other" to "\\S"
-        // Uncomment or add more rules as needed
-        // "orange" to "orange",
-        // "yellow" to "yellow",
-        // "indigo" to "indigo",
-        // "violet" to "violet",
-    )
-    TextareaDecorator(inputField, parser)
-  }
-
+  window.onload = { TextareaDecorator(inputField, parser) }
   inputField.addEventListener("input", { jsEditor.handleInput() })
 }
 
