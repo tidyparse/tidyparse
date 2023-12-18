@@ -15,24 +15,22 @@ class Parser(private val ruleMap: Map<String, Regex>) {
     ruleMap.entries.firstOrNull { it.value.matches(token) }?.key
 }
 
-class TextareaDecorator(private val textarea: HTMLTextAreaElement, private val parser: Parser) {
-  private val output: HTMLPreElement
+class TextareaDecorator(inputField: HTMLTextAreaElement, private val parser: Parser) {
+  private val output: HTMLPreElement = document.createElement("pre") as HTMLPreElement
 
   init {
     // Construct editor DOM
     val parent = document.createElement("div") as HTMLDivElement
-    output = document.createElement("pre") as HTMLPreElement
-    parent.appendChild(output)
+    parent.apply { className = "ldt $className" }.appendChild(output)
     val label = document.createElement("label") as HTMLLabelElement
     parent.appendChild(label)
 
-    textarea.run {
+    inputField.apply {
       // Replace the textarea with RTA DOM and reattach on label
       parentNode?.replaceChild(parent, this)
       label.appendChild(this)
 
       // Transfer the CSS styles to our editor
-      parent.className = "ldt $className"
       className = ""
       spellcheck = false
       wrap = "off"
@@ -52,12 +50,11 @@ class TextareaDecorator(private val textarea: HTMLTextAreaElement, private val p
       .joinToString("\n").also { output.innerHTML = it }
   }
 
-  private fun HTMLTextAreaElement.update() {
-    val input = value
-    if (input.isNotEmpty()) {
-      color(input)
+  private fun HTMLTextAreaElement.update() =
+    if (value.isNotEmpty()) {
+      color(value)
       // Determine the best size for the textarea
-      val lines = input.split('\n')
+      val lines = value.split('\n')
       val maxlen = lines.maxOfOrNull { line ->
         line.length + line.count { it == '\t' } * 7 // Approximation for tab length
       } ?: 0
@@ -69,7 +66,6 @@ class TextareaDecorator(private val textarea: HTMLTextAreaElement, private val p
       cols = 1
       rows = 1
     }
-  }
 
   private fun color(input: String) {
     val oldTokens = output.childNodes.asList()

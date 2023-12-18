@@ -14,12 +14,12 @@ TODO (soon):
  - Render the Chomsky-normalized CFG
  - Syntax highlighting for the snippets
  - Rank results by more sensible metric
- - Add Ctrl+Space code completion popup
  - Provide assistance for grammar editing
  - Allow richer HTML content in RHS panel
  *//*
 TODO (maybe):
  - Add demo for Python and Java
+ - Add Ctrl+Space code completion popup
  - Configurable settings, e.g., timeout, max repairs
  - Auto-alignment of the productions
  - Calculate finger-travel distance
@@ -45,7 +45,6 @@ val parser = Parser(
 fun main() {
   TIMEOUT_MS = 5_000
   jsEditor.getLatestCFG()
-  // Wait for the page to finish loading before accessing the DOM
   window.onload = { TextareaDecorator(inputField, parser) }
   inputField.addEventListener("input", { jsEditor.handleInput() })
 }
