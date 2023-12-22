@@ -90,8 +90,8 @@ u {
 /* settings you can play with */
 
 .ldt .red { color: red; }
-/*.ldt .orange { color: orange; }*/
-/*.ldt .yellow { color: yellow; }*/
+.ldt .orange { color: orange; }
+.ldt .yellow { color: yellow; }
 .ldt .green { color: green; }
 .ldt .blue { color: blue; }
 .ldt .gray { color: darkslategray; }

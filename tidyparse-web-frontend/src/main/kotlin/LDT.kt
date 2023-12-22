@@ -1,3 +1,6 @@
+import ai.hypergraph.kaliningraph.image.escapeHTML
+import ai.hypergraph.kaliningraph.parsing.*
+import ai.hypergraph.tidyparse.*
 import kotlinx.browser.*
 import org.w3c.dom.*
 
@@ -15,7 +18,7 @@ class Parser(private val ruleMap: Map<String, Regex>) {
     ruleMap.entries.firstOrNull { it.value.matches(token) }?.key
 }
 
-class TextareaDecorator(inputField: HTMLTextAreaElement, private val parser: Parser) {
+class TextareaDecorator(val inputField: HTMLTextAreaElement, private val parser: Parser) {
   private val output: HTMLPreElement = document.createElement("pre") as HTMLPreElement
 
   init {
@@ -34,63 +37,26 @@ class TextareaDecorator(inputField: HTMLTextAreaElement, private val parser: Par
       className = ""
       spellcheck = false
       wrap = "off"
-
-      // Detect all changes to the textarea
-      addEventListener("input", { update() })
-
-      // Initial highlighting
-      update()
     }
   }
 
-  // Surrounds the given line with <u>...</u> in output like color() does
-  fun underline(lineNumber: Int) {
-    output.innerHTML.also { println("HTML:\n\n$it") }.split('\n')
-      .mapIndexed { index, s -> if (index == lineNumber) "<u>$s</u>" else s }
-      .joinToString("\n").also { output.innerHTML = it }
-  }
-
-  private fun HTMLTextAreaElement.update() =
-    if (value.isNotEmpty()) {
-      color(value)
-      // Determine the best size for the textarea
-      val lines = value.split('\n')
-      val maxlen = lines.maxOfOrNull { line ->
-        line.length + line.count { it == '\t' } * 7 // Approximation for tab length
-      } ?: 0
-      cols = maxlen + 1
-      rows = lines.size + 2
-    } else {
-      // Clear the display
-      output.innerHTML = ""
-      cols = 1
-      rows = 1
+  fun update(cfg: CFG = emptySet()) {
+    val sb = StringBuilder()
+    var lines: Int
+    var maxLen = 0
+    inputField.value.lines().also { lines = it.size }.forEach { line ->
+      if (line.length > maxLen) maxLen = line.length
+      sb.appendLine(segmentationCacheHTML.getOrElse(cfg.hashCode() + line.hashCode()) { line.toColorfulHTML() })
     }
 
-  private fun color(input: String) {
-    val oldTokens = output.childNodes.asList()
-    val newTokens = parser.tokenize(input)
-    val firstDiff = newTokens.zip(oldTokens)
-      .indexOfFirst { (new, old) -> new != (old as? HTMLElement)?.textContent }
-      .let { if (it == -1) minOf(newTokens.size, oldTokens.size) else it }
-
-    // Trim the length of output nodes to the size of the input
-    while (newTokens.size < oldTokens.size) output.removeChild(oldTokens[firstDiff])
-
-    // Update modified spans
-    for (index in firstDiff until oldTokens.size)
-      (oldTokens[index] as HTMLElement).apply {
-        className = parser.identify(newTokens[index]) ?: ""
-        textContent = newTokens[index]
-      }
-
-    // Add in new spans
-    for (index in oldTokens.size until newTokens.size)
-      output.appendChild(
-        (document.createElement("span") as HTMLElement).apply {
-          className = parser.identify(newTokens[index]) ?: ""
-          textContent = newTokens[index]
-        }
-      )
+    output.innerHTML = sb.toString()
+    inputField.cols = maxLen + 1
+    inputField.rows = lines + 2
   }
+
+  fun String.toColorfulHTML() =
+    tokenizeByWhitespaceAndKeepDelimiters().joinToString("") { token ->
+      val escapedToken = token.escapeHTML()
+      parser.identify(token)?.let { "<span class=\"$it\">$escapedToken</span>" } ?: token
+    }
 }

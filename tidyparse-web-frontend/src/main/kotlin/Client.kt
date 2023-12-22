@@ -1,9 +1,6 @@
-import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.tidyparse.hasTimeLeft
 import kotlinx.browser.*
 import org.w3c.dom.*
-import kotlin.math.absoluteValue
 import kotlin.time.TimeSource
 
 /**
@@ -29,11 +26,11 @@ TODO (maybe):
 */
 val parser = Parser(
   "whitespace" to "\\s+",
-  "red" to "->|\\|",
-  "blue" to "---",
-  "gray" to "_",
-  "green" to "START",
-  "other" to "\\S"
+//  "red"        to "->|\\|",
+  "blue"       to "---",
+  "gray"       to "->|_|\\|",
+  "green"      to "START",
+  "other"      to "\\S"
   // Uncomment or add more rules as needed
   // "orange" to "orange",
   // "yellow" to "yellow",
@@ -45,10 +42,12 @@ val parser = Parser(
 fun main() {
   TIMEOUT_MS = 5_000
   jsEditor.getLatestCFG()
-  window.onload = { TextareaDecorator(inputField, parser) }
-  inputField.addEventListener("input", { jsEditor.handleInput() })
+  window.onload = { jsEditor.redecorateLines() }
+//  inputField.addEventListener("input", { jsEditor.handleInput() })
+  inputField.addEventListener("input", { jsEditor.redecorateLines() })
 }
 
+val decorator by lazy { TextareaDecorator(inputField, parser) }
 val jsEditor by lazy { JSTidyEditor(inputField, outputField) }
 val inputField by lazy { document.getElementById("tidyparse-input") as HTMLTextAreaElement }
 val outputField by lazy { document.getElementById("tidyparse-output") as Node }

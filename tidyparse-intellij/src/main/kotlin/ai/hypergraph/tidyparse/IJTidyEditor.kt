@@ -181,8 +181,6 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor() {
       }
     }
 
-  private val segmentationCache = mutableMapOf<Int, Segmentation>()
-
   fun getOrComputeSegmentations(cfg: CFG, editorText: Σᐩ): List<Segmentation> {
     val lines = editorText.lines()
     val lastGrammarLine = lines.map { it.trim() }.indexOfFirst { it.trim() == "---" }
@@ -193,7 +191,7 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor() {
       val key = editor.hashCode() + cfg.hashCode() + line.hashCode()
       if (key in segmentationCache) Segmentation() // This means it was previously highlighted
       else if (line.isEmptyOrGrammarDelim(lineNo)) Segmentation()
-      else segmentationCache.computeIfAbsent(key) { Segmentation.build(cfg, editorText) }
+      else segmentationCache.getOrPut(key) { Segmentation.build(cfg, editorText) }
     }
   }
 

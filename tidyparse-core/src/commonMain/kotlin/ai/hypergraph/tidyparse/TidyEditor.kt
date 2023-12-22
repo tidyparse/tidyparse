@@ -1,10 +1,37 @@
 package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.cache.LRUCache
+import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.levenshtein
 import ai.hypergraph.kaliningraph.parsing.*
 import kotlin.math.absoluteValue
 import kotlin.time.TimeSource
+
+val segmentationCache = mutableMapOf<Int, Segmentation>()
+val segmentationCacheHTML = mutableMapOf<Int, String>()
+
+fun preparseParseableLines(cfg: CFG, editorText: Σᐩ) {
+  editorText.split("---").last().lines()
+    .filter { it.isNotBlank() && !it.containsHole() }.forEach { line ->
+      segmentationCacheHTML.getOrPut(cfg.hashCode() + line.hashCode()) {
+        Segmentation.build(cfg, line).toColorfulHTMLString()
+      }
+    }
+}
+
+fun getOrComputeSegmentations(cfg: CFG, editorText: Σᐩ): List<Segmentation> {
+  val lines = editorText.lines()
+  val lastGrammarLine = lines.map { it.trim() }.indexOfFirst { it.trim() == "---" }
+
+  fun String.isEmptyOrGrammarDelim(i: Int) = trim().isEmpty() || i in 0..lastGrammarLine
+
+  return lines.mapIndexed { lineNo, line ->
+    val key = cfg.hashCode() + line.hashCode()
+    if (key in segmentationCache) segmentationCache[key]!!
+    else if (line.isEmptyOrGrammarDelim(lineNo)) Segmentation(line = line)
+    else segmentationCache.getOrPut(key) { Segmentation.build(cfg, editorText) }
+  }
+}
 
 abstract class TidyEditor {
   // TODO: eliminate this completely
@@ -23,13 +50,13 @@ abstract class TidyEditor {
   abstract fun writeDisplayText(s: (Σᐩ) -> Σᐩ)
   fun getLatestCFG(): CFG {
     val grammar: String = readEditorText().substringBefore("---")
-    return if (grammar != grammarFileCache || cfg.isEmpty()) {
-      grammarFileCache = grammar
-      grammarFileCache.parseCFG().freeze().also { cfg = it }
-    } else cfg
+    return try {
+      if (grammar != grammarFileCache || cfg.isNotEmpty()) {
+        grammar.also { grammarFileCache = it }
+          .parseCFG(validate = true).freeze().also { cfg = it }
+      } else cfg
+    } catch (e: Exception) { cfg }
   }
-
-  fun lineNumber(): Int = readEditorText().substring(0, getCaretPosition()).count { it == '\n' }
 
   open fun handleInput() {
     val timer = TimeSource.Monotonic.markNow()
@@ -37,8 +64,7 @@ abstract class TidyEditor {
     val currentLine = currentLine()
     if (currentLine.isBlank()) return
     val caretInGrammar = caretInGrammar()
-    println("Substring before ---: ${readEditorText().substringBefore("---")}")
-    println("Caret in grammar: $caretInGrammar, ${getCaretPosition()}, ${readEditorText().indexOf("---")}")
+
     val cfg =
       (if (caretInGrammar)
         CFGCFG(
@@ -63,8 +89,6 @@ abstract class TidyEditor {
       println("$action in ${timer.elapsedNow().inWholeMilliseconds}ms")
     }
     fun shouldContinue() = currentWorkHash == workHash && timer.hasTimeLeft()
-
-    if (!caretInGrammar) redecorateLines(cfg)
 
     return if (sanitized.containsHole()) {
       cfg.enumSeqSmart(tokens).distinct()
@@ -97,7 +121,7 @@ abstract class TidyEditor {
 
   open fun diffAsHtml(l1: List<Σᐩ>, l2: List<Σᐩ>): Σᐩ = l2.joinToString(" ")
   abstract fun repair(cfg: CFG, str: Σᐩ): List<Σᐩ>
-  open fun redecorateLines(cfg: CFG) {}
+  open fun redecorateLines(cfg: CFG = setOf()) {}
 
   fun Sequence<String>.enumerateCompletionsInteractively(
     resultsToPost: Int = toTake,

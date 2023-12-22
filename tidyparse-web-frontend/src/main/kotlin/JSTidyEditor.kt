@@ -41,7 +41,20 @@ class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): TidyEdito
   }
 
   override fun redecorateLines(cfg: CFG) {
-//    TextareaDecorator(inputField, parser).underline(lineNumber())
+    val decCFG = getLatestCFG()
+    fun decorate() {
+//      val startTime = TimeSource.Monotonic.markNow()
+//      println("Read grammar in ${startTime.elapsedNow().inWholeMilliseconds}ms")
+      jsEditor.apply { preparseParseableLines(decCFG, readEditorText()) }
+//      println("Preparsed in ${startTime.elapsedNow().inWholeMilliseconds}ms")
+      decorator.update(decCFG)
+//      println("Redecorated in ${startTime.elapsedNow().inWholeMilliseconds}ms")
+    }
+
+    if (caretInGrammar()) {
+      decorator.update(decCFG)
+      if (currentLine().isValidProd()) decorate()
+    } else decorate()
   }
 
   override fun writeDisplayText(s: (Σᐩ) -> Σᐩ) = writeDisplayText(s(readDisplayText()))
