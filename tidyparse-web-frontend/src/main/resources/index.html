@@ -89,27 +89,27 @@ if true then if true then 1 else 2 else 3</textarea>
 
   • Invalid lines are marked with <u>a squiggly underline</u>.
 
-  • Unparseable fragments are marked <u><font color="orange">orange</font></u> and unrecognized
-    terminals are marked <u><font color="red">red</font></u> inside invalid snippets.
+  • Unparseable fragments are marked <u><span style="color: orange; ">orange</span></u> and unrecognized
+    terminals are marked <u><span style="color: red; ">red</span></u> inside invalid snippets.
 
   • Nonterminal stubs are enclosed in angle brackets, &lt;F&gt;.
 
-  • Any symbol to the left of <font color="gray">-></font> is considered a nonterminal
+  • Any symbol to the left of <span style="color: gray; ">-></span> is considered a nonterminal
     and all other symbols are considered terminals.
 
-  • <font color="blue">---</font> and <font color="gray">-></font> are reserved for the following scenarios:
-    • <font color="blue">---</font> is used to separate the CFG from the test cases.
-    • <font color="gray">-></font> separates the left and right sides of a production.
+  • <span style="color: blue; ">---</span> and <span style="color: gray; ">-></span> are reserved for the following scenarios:
+    • <span style="color: blue; ">---</span> is used to separate the CFG from the test cases.
+    • <span style="color: gray; ">-></span> separates the left and right sides of a production.
 
   • The symbol ε is reserved and must not be used anywhere.
 
-  • Any line in the CFG that does not contain <font color="gray">-></font> is ignored.
+  • Any line in the CFG that does not contain <span style="color: gray; ">-></span> is ignored.
 
-  • Tidyparse adds ε-productions, {V} <font color="gray">-></font> ε {V} <font color="gray">|</font> {V} ε, and
-    literals {V} <font color="gray">-></font> &lt;V&gt; for each nonterminal, V, in the CFG.
+  • Tidyparse adds ε-productions, {V} <span style="color: gray; ">-></span> ε {V} <span style="color: gray; ">|</span> {V} ε, and
+    literals {V} <span style="color: gray; ">-></span> &lt;V&gt; for each nonterminal, V, in the CFG.
 
-  • If the grammar contains no nonterminal named <font color="green">START</font>, then
-    Tidyparse will add <font color="green">START</font> <font color="gray">-></font> {V} for every nonterminal, V.
+  • If the grammar contains no nonterminal named <span style="color: green; ">START</span>, then
+    Tidyparse will add <span style="color: green; ">START</span> <span style="color: gray; ">-></span> {V} for every nonterminal, V.
 
 </div>
 </div>
