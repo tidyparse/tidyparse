@@ -19,6 +19,7 @@ h1, p{
 
 u {
     text-decoration: #f00 wavy underline;
+    -webkit-text-decoration: underline wavy red;
 }
 
 #content {
