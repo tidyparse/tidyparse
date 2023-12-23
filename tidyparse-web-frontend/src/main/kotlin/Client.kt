@@ -43,7 +43,7 @@ fun main() {
   TIMEOUT_MS = 5_000
   jsEditor.getLatestCFG()
   window.onload = { jsEditor.redecorateLines() }
-  inputField.addEventListener("input", { jsEditor.handleInput() })
+  inputField.addEventListener("input", { jsEditor.run { continuation { handleInput() } } })
   inputField.addEventListener("input", { jsEditor.redecorateLines() })
 }
 

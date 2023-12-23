@@ -4,35 +4,10 @@ import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.levenshtein
 import ai.hypergraph.kaliningraph.parsing.*
+import org.kosat.round
 import kotlin.math.absoluteValue
-import kotlin.time.TimeSource
-
-val segmentationCache = mutableMapOf<Int, Segmentation>()
-val segmentationCacheHTML = mutableMapOf<Int, String>()
-
-fun preparseParseableLines(cfg: CFG, editorText: Σᐩ) {
-  editorText.split("---").last().lines()
-    .filter { it.isNotBlank() && !it.containsHole() }.forEach { line ->
-      segmentationCacheHTML.getOrPut(cfg.hashCode() + line.hashCode()) {
-        Segmentation.build(cfg, line).toColorfulHTMLString()
-      }
-    }
-}
-
-fun getOrComputeSegmentations(cfg: CFG, editorText: Σᐩ): List<Segmentation> {
-  val lines = editorText.lines()
-  val lastGrammarLine = lines.map { it.trim() }.indexOfFirst { it.trim() == "---" }
-
-  fun String.isEmptyOrGrammarDelim(i: Int) = trim().isEmpty() || i in 0..lastGrammarLine
-
-  return lines.mapIndexed { lineNo, line ->
-    val key = cfg.hashCode() + line.hashCode()
-    if (key in segmentationCache) segmentationCache[key]!!
-    else if (line.isEmptyOrGrammarDelim(lineNo)) Segmentation(line = line)
-    else segmentationCache.getOrPut(key) { Segmentation.build(cfg, editorText) }
-  }
-}
-
+import kotlin.time.*
+import kotlin.time.DurationUnit.SECONDS
 abstract class TidyEditor {
   // TODO: eliminate this completely
   var cfg: CFG = setOf()
@@ -49,7 +24,7 @@ abstract class TidyEditor {
   abstract fun writeDisplayText(s: Σᐩ)
   abstract fun writeDisplayText(s: (Σᐩ) -> Σᐩ)
   fun getLatestCFG(): CFG {
-    val grammar: String = readEditorText().substringBefore("---")
+    val grammar: String = getGrammarText()
     return try {
       if (grammar != grammarFileCache || cfg.isNotEmpty()) {
         grammar.also { grammarFileCache = it }
@@ -64,18 +39,15 @@ abstract class TidyEditor {
     val currentLine = currentLine()
     if (currentLine.isBlank()) return
     val caretInGrammar = caretInGrammar()
+    val tokens = currentLine.tokenizeByWhitespace()
 
     val cfg =
       (if (caretInGrammar)
-        CFGCFG(
-          names = currentLine.tokenizeByWhitespace()
-            .filter { it !in setOf("->", "|") }.toSet()
-        )
+        CFGCFG(names = tokens.filter { it !in setOf("->", "|") }.toSet())
       else getLatestCFG()).freeze()
 
     if (cfg.isEmpty()) return
 
-    val tokens = currentLine().tokenizeByWhitespace()
     val sanitized = tokens.joinToString(" ")
     val workHash = sanitized.hashCode() + cfg.hashCode()
     currentWorkHash = workHash
@@ -83,9 +55,8 @@ abstract class TidyEditor {
     if (workHash in cache) return writeDisplayText(cache[workHash]!!)
 
     fun finally(it: String, action: String = "Completed") {
-      val displayText = "$invalidPrefix$it"
-      cache[workHash] = displayText
-      writeDisplayText(displayText)
+      if (currentWorkHash == workHash)
+        writeDisplayText("$invalidPrefix$it".also { cache[workHash] = it })
       println("$action in ${timer.elapsedNow().inWholeMilliseconds}ms")
     }
     fun shouldContinue() = currentWorkHash == workHash && timer.hasTimeLeft()
@@ -93,7 +64,10 @@ abstract class TidyEditor {
     return if (sanitized.containsHole()) {
       cfg.enumSeqSmart(tokens).distinct()
         .enumerateCompletionsInteractively(
-          metric = { it.size * 7919 + it.sumOf { it.length } },
+          metric = {
+            levenshtein(tokens, it) * 7919 +
+                (tokens.sumOf { it.length } - it.sumOf { it.length }).absoluteValue
+          },
           shouldContinue = ::shouldContinue,
           finally = ::finally,
           localContinuation = ::continuation
@@ -134,13 +108,20 @@ abstract class TidyEditor {
     val results = mutableSetOf<String>()
     val topNResults = mutableListOf<Pair<String, Int>>()
     val iter = iterator()
+    val startTime = TimeSource.Monotonic.markNow()
 
     fun findNextCompletion() {
       var i = 0
-      if (!iter.hasNext() || !shouldContinue())
-        return finally(topNResults.joinToString("\n", "", "\n...") {
+      if (!iter.hasNext() || !shouldContinue()) {
+        val throughput = (results.size /
+            startTime.elapsedNow().toDouble(SECONDS)).round(3)
+        val moreResults = (results.size - topNResults.size)
+          .let { if (it == 0) "\n\n" else "\n\n...$it more" }
+        val statistics = "$moreResults ~$throughput res/s."
+        return finally(topNResults.joinToString("\n", "", statistics) {
           "${i++.toString().padStart(2)}.) ${it.first}"
         })
+      }
 
       val next = iter.next()
       println("Found: $next")
@@ -165,7 +146,8 @@ abstract class TidyEditor {
 
   open fun continuation(f: () -> Unit): Any = { f() }
 
-  fun getGrammarText(): Σᐩ = readEditorText().substringBefore("---")
+  fun getGrammarText(): Σᐩ = readEditorText().split("---").first()
+  fun getExampleText(): Σᐩ = readEditorText().split("---").last()
 
   fun currentGrammar(): CFG =
     try { readEditorText().parseCFG() } catch (e: Exception) { setOf() }

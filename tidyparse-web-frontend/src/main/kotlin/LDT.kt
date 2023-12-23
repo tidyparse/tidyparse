@@ -1,6 +1,5 @@
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.tidyparse.*
 import kotlinx.browser.*
 import org.w3c.dom.*
 
@@ -40,7 +39,21 @@ class TextareaDecorator(val inputField: HTMLTextAreaElement, private val parser:
     }
   }
 
-  fun update(cfg: CFG = emptySet()) {
+  fun quickDecorate() {
+    val sb = StringBuilder()
+    var lines: Int
+    var maxLen = 0
+    inputField.value.lines().also { lines = it.size }.forEach { line ->
+      if (line.length > maxLen) maxLen = line.length
+      sb.appendLine(line.toColorfulHTML())
+    }
+
+    output.innerHTML = sb.toString()
+    inputField.cols = maxLen + 1
+    inputField.rows = lines + 2
+  }
+
+  fun fullDecorate(cfg: CFG = emptySet()) {
     val sb = StringBuilder()
     var lines: Int
     var maxLen = 0
@@ -54,9 +67,9 @@ class TextareaDecorator(val inputField: HTMLTextAreaElement, private val parser:
     inputField.rows = lines + 2
   }
 
-  fun String.toColorfulHTML() =
+  private fun String.toColorfulHTML() =
     tokenizeByWhitespaceAndKeepDelimiters().joinToString("") { token ->
       val escapedToken = token.escapeHTML()
-      parser.identify(token)?.let { "<span class=\"$it\">$escapedToken</span>" } ?: token
+      parser.identify(token)?.let { "<span class=\"$it\">$escapedToken</span>" } ?: escapedToken
     }
 }

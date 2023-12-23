@@ -1,9 +1,7 @@
-import ai.hypergraph.kaliningraph.levenshtein
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.tidyparse.*
 import kotlinx.browser.window
 import org.w3c.dom.*
-import kotlin.math.absoluteValue
 import kotlin.time.TimeSource
 
 /** Compare with [ai.hypergraph.tidyparse.IJTidyEditor] */
@@ -40,21 +38,23 @@ class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): TidyEdito
 //    (outputField as HTMLTextAreaElement).outerHTML.also { println(it) }
   }
 
+  var hashIter = 0
+
   override fun redecorateLines(cfg: CFG) {
+    val currentHash = ++hashIter
+//    val timer = TimeSource.Monotonic.markNow()
+    if (caretInGrammar()) decorator.quickDecorate()
     val decCFG = getLatestCFG()
+
     fun decorate() {
-//      val startTime = TimeSource.Monotonic.markNow()
-//      println("Read grammar in ${startTime.elapsedNow().inWholeMilliseconds}ms")
-      jsEditor.apply { preparseParseableLines(decCFG, readEditorText()) }
-//      println("Preparsed in ${startTime.elapsedNow().inWholeMilliseconds}ms")
-      decorator.update(decCFG)
-//      println("Redecorated in ${startTime.elapsedNow().inWholeMilliseconds}ms")
+      if (currentHash != hashIter) return
+      jsEditor.apply { preparseParseableLines(decCFG, getExampleText()) }
+      if (currentHash == hashIter) decorator.fullDecorate(decCFG)
     }
 
-    if (caretInGrammar()) {
-      decorator.update(decCFG)
-      if (currentLine().isValidProd()) decorate()
-    } else decorate()
+    if (!caretInGrammar()) continuation { decorate() }
+    else if (currentLine().isValidProd()) window.setTimeout({ decorate() }, 100)
+//    println("Redecorated in ${timer.elapsedNow()}")
   }
 
   override fun writeDisplayText(s: (Σᐩ) -> Σᐩ) = writeDisplayText(s(readDisplayText()))
