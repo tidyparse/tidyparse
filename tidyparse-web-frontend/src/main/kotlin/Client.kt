@@ -1,4 +1,5 @@
 import ai.hypergraph.kaliningraph.parsing.*
+import ai.hypergraph.kaliningraph.types.*
 import kotlinx.browser.*
 import org.w3c.dom.*
 import kotlin.time.TimeSource
@@ -40,6 +41,9 @@ val parser = Parser(
 
 // ./gradlew browserDevelopmentRun --continuous
 fun main() {
+  if (window.navigator.userAgent.indexOf("hrome") != -1) {
+    PlatformVars.PLATFORM_CALLER_STACKTRACE_DEPTH = 4
+  }
   TIMEOUT_MS = 5_000
   jsEditor.getLatestCFG()
   window.onload = { jsEditor.redecorateLines() }

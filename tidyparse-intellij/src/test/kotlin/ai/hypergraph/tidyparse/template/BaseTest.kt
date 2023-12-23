@@ -57,7 +57,7 @@ abstract class BaseTest: FileEditorManagerTestCase() {
   private fun String.checkCachedResultParses() {
     val key =
       lines().last().sanitized(ijTidyEditor.cfg.terminals) to
-        ijTidyEditor.getGrammarText().parseCFG().freeze()
+        ijTidyEditor.getLatestCFG().freeze()
     ijTidyEditor.synthCache[key]?.forEach { it ->
 //      println("Checking: ${it} (${synthCache[key]?.joinToString(",")})")
       it.dehtmlify().let { assertNotNull(key.π2.parse(it)) { "Unrecognized: \"$it\"" } }
