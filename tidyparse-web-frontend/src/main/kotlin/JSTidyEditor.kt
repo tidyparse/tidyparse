@@ -44,10 +44,10 @@ class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): TidyEdito
     val currentHash = ++hashIter
 //    val timer = TimeSource.Monotonic.markNow()
     if (caretInGrammar()) decorator.quickDecorate()
-    val decCFG = getLatestCFG()
 
     fun decorate() {
       if (currentHash != hashIter) return
+      val decCFG = getLatestCFG()
       jsEditor.apply { preparseParseableLines(decCFG, getExampleText()) }
       if (currentHash == hashIter) decorator.fullDecorate(decCFG)
     }
