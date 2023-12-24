@@ -34,7 +34,7 @@ _ _ _ _ true _ _ _ _ )
 
 if ( true or false ) + + then q true else 2
 
-true 1 or false 3
+true 1 or false 
 
 true 1 or false 2
 true <BO> <B> or false <BO> <N> <B>

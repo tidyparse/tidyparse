@@ -78,6 +78,8 @@ fun List<Tree>.renderStubs(): String =
           }.toHtmlTable()
     }
 
+
+
 fun renderLite(
   solutions: List<String>,
   editor: TidyEditor,

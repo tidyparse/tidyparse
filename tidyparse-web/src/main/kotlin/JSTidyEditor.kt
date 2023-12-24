@@ -33,10 +33,7 @@ class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): TidyEdito
 
   override fun currentLine(): Σᐩ = editor.getCurrentLine()
 
-  override fun writeDisplayText(s: Σᐩ) {
-    outputField.textContent = s
-//    (outputField as HTMLTextAreaElement).outerHTML.also { println(it) }
-  }
+  override fun writeDisplayText(s: Σᐩ) { (outputField as HTMLDivElement).innerHTML = s }
 
   var hashIter = 0
 
