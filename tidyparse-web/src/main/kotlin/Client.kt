@@ -6,13 +6,11 @@ import org.w3c.dom.*
 /**
 TODO (soon):
  - Extract platform-independent code from IntelliJ plugin
- - Get Myers diffs working properly
  - Clean up the Gradle build wreckage
  - Render the Chomsky-normalized CFG
- - Syntax highlighting for the snippets
  - Rank results by more sensible metric
  - Provide assistance for grammar editing
- - Allow richer HTML content in RHS panel
+ - Improve support for incrementalization
  *//*
 TODO (maybe):
  - Add demo for Python and Java
@@ -21,8 +19,11 @@ TODO (maybe):
  - Auto-alignment of the productions
  - Calculate finger-travel distance
  - Collect telemetry for a user study
- - Improve support for incrementalization
  - Look into ropes, zippers and lenses
+   - http://strictlypositive.org/diff.pdf
+   - https://www.scs.stanford.edu/11au-cs240h/notes/zipper.html
+   - https://www.st.cs.uni-saarland.de/edu/seminare/2005/advanced-fp/docs/huet-zipper.pdf
+   - http://blog.ezyang.com/2010/04/you-could-have-invented-zippers/
 */
 val parser = Parser(
   "whitespace" to "\\s+",

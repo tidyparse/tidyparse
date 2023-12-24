@@ -13,8 +13,12 @@ class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): TidyEdito
   override fun getCaretPosition(): Int = editor.selectionStart!!
 
   companion object {
-    private fun HTMLTextAreaElement.getEndOfLineIdx() = value.indexOf("\n", selectionStart!!)
-    private fun HTMLTextAreaElement.getCurrentLine() = value.substring(0, getEndOfLineIdx()).split("\n").last()
+    private fun HTMLTextAreaElement.getEndOfLineIdx() =
+      // Gets the end of the line or the end of the string, whichever comes first
+      value.indexOf("\n", selectionStart!!).takeIf { it != -1 } ?: value.length
+    private fun HTMLTextAreaElement.getCurrentLine() =
+      value.substring(0, getEndOfLineIdx()).substringAfterLast("\n")
+
     fun String.diff(other: String): String = other
 
     //fun String.diff(other: String): String {

@@ -34,6 +34,7 @@ abstract class TidyEditor {
   }
 
   open fun handleInput() {
+    println("Current line is ${currentLine()}")
     val timer = TimeSource.Monotonic.markNow()
 
     val currentLine = currentLine()
