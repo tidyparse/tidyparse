@@ -1,8 +1,8 @@
 package ai.hypergraph.tidyparse
 
+import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.image.escapeHTML
-import ai.hypergraph.kaliningraph.levenshtein
 import ai.hypergraph.kaliningraph.parsing.*
 import org.kosat.round
 import kotlin.math.absoluteValue
@@ -119,7 +119,7 @@ abstract class TidyEditor {
           .let { if (it == 0) "\n\n" else "\n\n...$it more" }
         val statistics = "$moreResults ~$throughput res/s."
         return finally(topNResults.joinToString("\n", "", statistics) {
-          "${i++.toString().padStart(2)}.) ${it.first}"
+          "<span style=\"color: gray\" class=\"noselect\">${i++.toString().padStart(2)}.) </span>${it.first}"
         })
       }
 
@@ -130,11 +130,15 @@ abstract class TidyEditor {
         results.add(next)
         val score = metric(next.tokenizeByWhitespace())
         if (topNResults.size < resultsToPost || score < topNResults.last().second) {
+          val currentLine = currentLine()
+          val html = levenshteinAlign(currentLine, next).paintDiffs()
           val loc = topNResults.binarySearch { it.second.compareTo(score) }
           val idx = if (loc < 0) { -loc - 1 } else loc
-          topNResults.add(idx, next to score)
+          topNResults.add(idx, html to score)
           if (topNResults.size > resultsToPost) topNResults.removeLast()
-          postResults(topNResults.joinToString("\n") { "${i++.toString().padStart(2)}.) ${it.first}" })
+          postResults(topNResults.joinToString("\n") {
+            "<span style=\"color: gray\" class=\"noselect\">${i++.toString().padStart(2)}.) </span>${it.first}"
+          })
         }
       }
 
