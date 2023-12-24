@@ -63,7 +63,7 @@ abstract class TidyEditor {
     fun shouldContinue() = currentWorkHash == workHash && timer.hasTimeLeft()
 
     return if (sanitized.containsHole()) {
-      cfg.enumSeqSmart(tokens).distinct()
+      cfg.enumSeqSmart(tokens)
         .enumerateCompletionsInteractively(
           metric = {
             levenshtein(tokens, it) * 7919 +
