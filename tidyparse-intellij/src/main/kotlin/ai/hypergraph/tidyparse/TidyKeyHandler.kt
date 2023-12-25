@@ -1,10 +1,7 @@
 package ai.hypergraph.tidyparse
 
-import ai.hypergraph.kaliningraph.parsing.TIMEOUT_MS
-import com.intellij.codeInsight.editorActions.BackspaceHandlerDelegate
-import com.intellij.codeInsight.editorActions.TypedHandlerDelegate
+import com.intellij.codeInsight.editorActions.*
 import com.intellij.codeInsight.editorActions.TypedHandlerDelegate.Result.CONTINUE
-import com.intellij.openapi.application.*
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile

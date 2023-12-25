@@ -26,13 +26,12 @@ fun generateDiff(original: String, variants: List<String>): String = """
   \end{tcolorbox}
   """.trimIndent()
 
-
 fun diffAsLatex(l1: List<String>, l2: List<String>): String =
   levenshteinAlign(l1, l2).joinToString("") { (a, b) ->
     when {
-      a == null -> "(*@\\hlgreen{$b}}@*)"
-      b == null -> "(*@\\hlred{$a}}@*)"
-      a != b -> "(*@\\hlorange{$b}}@*)"
+      a == null -> "(*@\\hlgreen{$b}@*)"
+      b == null -> "(*@\\hlred{$a}@*)"
+      a != b -> "(*@\\hlorange{$b}@*)"
       else -> b
     }
   }.replace("&gt;", ">").replace("&lt;", "<")
