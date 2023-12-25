@@ -177,7 +177,7 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor() {
         a == null -> "<span style=\"background-color: $insertColor\">$bs</span>"
         b == null -> "<span style=\"background-color: $deleteColor\">${List(a.length) { " " }.joinToString("")}</span>"
         a != b -> "<span style=\"background-color: $changeColor\">$bs</span>"
-        else -> "<span style=\"background-color: #FFFF66\">$bs</span>"
+        else -> bs
       }
     }
 
