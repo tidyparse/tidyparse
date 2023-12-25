@@ -60,7 +60,6 @@ abstract class BaseTest: FileEditorManagerTestCase() {
         ijTidyEditor.getLatestCFG().freeze()
     ijTidyEditor.synthCache[key]?.forEach { result ->
       val dd = result.dehtmlify()
-      println("Checking: $dd\nResults: $result")
       assertNotNull(
         key.π2.parse(dd),
         "Unrecognized: \"$dd\" for CFG:\n${key.second.prettyPrint()}"

@@ -46,8 +46,13 @@ val ra = ">".escapeHTML()
 fun String.treatAsNonterminal() = drop(la.length).dropLast(ra.length)
 
 fun String.dehtmlify(): String =
-  replace("&lt;", "<").replace("&gt;", ">")
-    .replace("<span.*?>".toRegex(), "").replace("</span>", "")
+  replace("&lt;", "<")
+    .replace("&gt;", ">")
+    .replace("&amp;", "&")
+    .replace("&quot;", "\"")
+    .replace("&apos;", "'")
+    .replace("<span.*?>".toRegex(), "")
+    .replace("</span>", "")
 
 fun displayComparator(tokens: List<String>): Comparator<String> =
   compareBy(tokenwiseLevenshteinEdits(tokens)).thenBy { it.length }
