@@ -4,7 +4,6 @@ import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.*
 import bijectiveRepair
-import com.github.difflib.text.DiffRow
 import com.intellij.openapi.application.*
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.markup.*
@@ -172,12 +171,12 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor() {
         0.7 < ManagementFactory.getMemoryMXBean().heapMemoryUsage.let { it.used.toDouble() / it.max })
 
   override fun diffAsHtml(l1: List<Σᐩ>, l2: List<Σᐩ>): Σᐩ =
-    htmlDiffGenerator.generateDiffRows(l1, l2).joinToString(" ") {
-      when (it.tag) {
-        DiffRow.Tag.INSERT -> it.newLine.replace("<span>", "<span style=\"background-color: $insertColor\">")
-        DiffRow.Tag.CHANGE -> it.newLine.replace("<span>", "<span style=\"background-color: $changeColor\">")
-        DiffRow.Tag.DELETE -> "<span style=\"background-color: $deleteColor\">${List(it.oldLine.length) { " " }.joinToString("")}</span>"
-        else -> it.newLine.replace("<span>", "<span style=\"background-color: #FFFF66\">")
+    levenshteinAlign(l1, l2).joinToString(" ") { (a, b) ->
+      when {
+        a == null -> "<span style=\"background-color: $insertColor\">${b!!.escapeHTML()}</span>"
+        b == null -> "<span style=\"background-color: $deleteColor\">${List(a.length) { " " }.joinToString("")}</span>"
+        a != b -> "<span style=\"background-color: $changeColor\">${b.escapeHTML()}</span>"
+        else -> b.escapeHTML()
       }
     }
 

@@ -1,6 +1,6 @@
 package ai.hypergraph.tidyparse
 
-import com.github.difflib.text.*
+import ai.hypergraph.kaliningraph.levenshteinAlign
 
 fun main() {
   println(generateDiff("1 + 22 + 4", listOf("1 + 3 + 4", "1 + 33 + 4", "1 + 22 + 4")))
@@ -26,28 +26,13 @@ fun generateDiff(original: String, variants: List<String>): String = """
   \end{tcolorbox}
   """.trimIndent()
 
-private val latexDiffGenerator: DiffRowGenerator =
-  DiffRowGenerator.create()
-    .showInlineDiffs(true)
-    .inlineDiffByWord(true)
-    .newTag { f: Boolean -> if (f) "(*@\\hl{" else "}@*)" }
-    .oldTag { _ -> "" }
-    .build()
 
 fun diffAsLatex(l1: List<String>, l2: List<String>): String =
-  latexDiffGenerator.generateDiffRows(l1, l2).joinToString("") {
-    when (it.tag) {
-      DiffRow.Tag.INSERT -> it.newLine.replace("\\hl", "\\hlgreen")
-        .replace("}@*)", "}\\hlgreen@*)")
-      DiffRow.Tag.CHANGE -> it.newLine.replace("\\hl", "\\hlorange")
-        .replace("}@*)", "}\\hlorange@*)")
-      DiffRow.Tag.DELETE -> "(*@\\hlred{${it.oldLine}}@*)"
-      else -> it.newLine
+  levenshteinAlign(l1, l2).joinToString("") { (a, b) ->
+    when {
+      a == null -> "(*@\\hlgreen{$b}}@*)"
+      b == null -> "(*@\\hlred{$a}}@*)"
+      a != b -> "(*@\\hlorange{$b}}@*)"
+      else -> b
     }
   }.replace("&gt;", ">").replace("&lt;", "<")
-   .replace("}\\hlorange@*) (*@\\hlorange{", " ")
-   .replace("}\\hlgreen@*) (*@\\hlgreen{", " ")
-   .replace("}\\hlorange@*)(*@\\hlorange{", "")
-   .replace("}\\hlgreen@*)(*@\\hlgreen{", "")
-   .replace("}\\hlorange@*)", "}@*)")
-   .replace("}\\hlgreen@*)", "}@*)")

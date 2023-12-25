@@ -58,10 +58,5 @@ kotlin {
         implementation(kotlin("test"))
       }
     }
-    val jvmMain by getting {
-      dependencies {
-        api("io.github.java-diff-utils:java-diff-utils:4.12")
-      }
-    }
   }
 }
