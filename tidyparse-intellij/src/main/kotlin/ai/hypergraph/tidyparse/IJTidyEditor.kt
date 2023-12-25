@@ -172,11 +172,12 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor() {
 
   override fun diffAsHtml(l1: List<Σᐩ>, l2: List<Σᐩ>): Σᐩ =
     levenshteinAlign(l1, l2).joinToString(" ") { (a, b) ->
+      val bs = b.toString().escapeHTML()
       when {
-        a == null -> "<span style=\"background-color: $insertColor\">${b!!.escapeHTML()}</span>"
+        a == null -> "<span style=\"background-color: $insertColor\">$bs</span>"
         b == null -> "<span style=\"background-color: $deleteColor\">${List(a.length) { " " }.joinToString("")}</span>"
-        a != b -> "<span style=\"background-color: $changeColor\">${b.escapeHTML()}</span>"
-        else -> b.escapeHTML()
+        a != b -> "<span style=\"background-color: $changeColor\">$bs</span>"
+        else -> "<span style=\"background-color: #FFFF66\">$bs</span>"
       }
     }
 

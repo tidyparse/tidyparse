@@ -58,9 +58,13 @@ abstract class BaseTest: FileEditorManagerTestCase() {
     val key =
       lines().last().sanitized(ijTidyEditor.cfg.terminals) to
         ijTidyEditor.getLatestCFG().freeze()
-    ijTidyEditor.synthCache[key]?.forEach { it ->
-//      println("Checking: ${it} (${synthCache[key]?.joinToString(",")})")
-      it.dehtmlify().let { assertNotNull(key.π2.parse(it)) { "Unrecognized: \"$it\"" } }
+    ijTidyEditor.synthCache[key]?.forEach { result ->
+      val dd = result.dehtmlify()
+      println("Checking: $dd\nResults: $result")
+      assertNotNull(
+        key.π2.parse(dd),
+        "Unrecognized: \"$dd\" for CFG:\n${key.second.prettyPrint()}"
+      )
     }
   }
 
