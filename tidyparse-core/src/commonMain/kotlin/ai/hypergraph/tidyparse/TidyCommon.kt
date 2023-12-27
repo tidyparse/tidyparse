@@ -136,11 +136,11 @@ fun String.synthesizeCachingAndDisplayProgress(tidyEditor: TidyEditor, cfg: CFG)
 
   val cacheResultOn: Pair<String, CFG> = sanitized to cfg
 
-  val cached = tidyEditor.synthCache[cacheResultOn]
+  val cached = synthCache[cacheResultOn]
 
   return if (cached?.isNotEmpty() == true) cached
   // Cache miss could be due to prior timeout or cold cache. Either way, we need to recompute
-  else tidyEditor.repair(cfg, this).also { tidyEditor.synthCache.put(cacheResultOn, it) }
+  else tidyEditor.repair(cfg, this).also { synthCache.put(cacheResultOn, it) }
 }
 
 fun updateProgress(query: String, editor: TidyEditor) {

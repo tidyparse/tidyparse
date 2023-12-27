@@ -1,6 +1,7 @@
 package ai.hypergraph.tidyparse.template
 
 import ai.hypergraph.kaliningraph.parsing.*
+import ai.hypergraph.kaliningraph.sat.synthesizeIncrementally
 import ai.hypergraph.kaliningraph.types.π2
 import ai.hypergraph.tidyparse.*
 import com.intellij.openapi.actionSystem.AnAction
@@ -9,6 +10,7 @@ import com.intellij.psi.PsiFile
 import com.intellij.testFramework.FileEditorManagerTestCase
 import com.intellij.util.ui.UIUtil
 import com.jetbrains.rd.util.measureTimeMillis
+import junit.framework.TestCase
 import kotlin.test.assertNotNull
 
 abstract class BaseTest: FileEditorManagerTestCase() {
@@ -40,6 +42,14 @@ abstract class BaseTest: FileEditorManagerTestCase() {
     manager?.closeAllFiles()
   }
 
+  fun getCodeCompletionResults(): List<String> {
+    myFixture.editor?.let {
+      takeAction(IdeActions.ACTION_CODE_COMPLETION)
+      UIUtil.dispatchAllInvocationEvents()
+    }
+    return myFixture.lookupElementStrings ?: emptyList()
+  }
+
   fun typeAndAwaitResults(string: String) {
     myFixture.type(string)
     UIUtil.dispatchAllInvocationEvents()
@@ -55,14 +65,17 @@ abstract class BaseTest: FileEditorManagerTestCase() {
   }
 
   private fun String.checkCachedResultParses() {
-    val key =
-      lines().last().sanitized(ijTidyEditor.cfg.terminals) to
-        ijTidyEditor.getLatestCFG().freeze()
-    ijTidyEditor.synthCache[key]?.forEach { result ->
-      val dd = result.dehtmlify()
+    val cfg = ijTidyEditor.getLatestCFG().freeze()
+    val results = getCodeCompletionResults()
+    val lastLine = lines().last()
+    if (results.isEmpty() && lastLine.containsHole()) {
+      val satResult = lastLine.synthesizeIncrementally(cfg).firstOrNull()
+      assertNull("No result produced for: $this\nBut a solution exists: $satResult", satResult)
+    }
+    results.forEach {
       assertNotNull(
-        key.π2.parse(dd),
-        "Unrecognized: \"$dd\" for CFG:\n${key.second.prettyPrint()}"
+        cfg.parse(it),
+        "Unrecognized: \"$it\" for CFG:\n${cfg.prettyPrint()}"
       )
     }
   }

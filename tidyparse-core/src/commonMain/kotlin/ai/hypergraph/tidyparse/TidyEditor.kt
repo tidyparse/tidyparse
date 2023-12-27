@@ -8,11 +8,13 @@ import org.kosat.round
 import kotlin.math.absoluteValue
 import kotlin.time.*
 import kotlin.time.DurationUnit.SECONDS
+
+val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
+
 abstract class TidyEditor {
   // TODO: eliminate this completely
   var cfg: CFG = setOf()
   var grammarFileCache: String = ""
-  val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
   var cache = mutableMapOf<Int, String>()
   var currentWorkHash = 0
   val toTake = 27
@@ -23,6 +25,7 @@ abstract class TidyEditor {
   abstract fun currentLine(): Σᐩ
   abstract fun writeDisplayText(s: Σᐩ)
   abstract fun writeDisplayText(s: (Σᐩ) -> Σᐩ)
+
   fun getLatestCFG(): CFG {
     val grammar: String = getGrammarText()
     return try {

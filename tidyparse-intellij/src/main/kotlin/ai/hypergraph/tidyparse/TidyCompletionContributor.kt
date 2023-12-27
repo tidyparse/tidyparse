@@ -10,6 +10,7 @@ import com.intellij.openapi.application.runReadAction
 import com.intellij.patterns.PlatformPatterns
 import com.intellij.psi.PlainTextTokenTypes.PLAIN_TEXT
 import com.intellij.util.ProcessingContext
+import com.jetbrains.rd.util.printlnError
 
 class TidyCompletionContributor : CompletionContributor() {
   init {
