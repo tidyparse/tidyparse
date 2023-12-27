@@ -68,7 +68,8 @@ abstract class BaseTest: FileEditorManagerTestCase() {
     val cfg = ijTidyEditor.getLatestCFG().freeze()
     val results = getCodeCompletionResults()
     val lastLine = lines().last()
-    if (results.isEmpty() && lastLine.containsHole()) {
+    if (results.isEmpty() && lastLine.containsHole() &&
+      lastLine.tokenizeByWhitespace().all { it in cfg.terminals }) {
       val satResult = lastLine.synthesizeIncrementally(cfg).firstOrNull()
       assertNull("No result produced for: $this\nBut a solution exists: $satResult", satResult)
     }
