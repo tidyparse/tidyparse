@@ -6,14 +6,14 @@ import org.w3c.dom.*
 /**
 TODO (soon):
  - Extract platform-independent code from IntelliJ plugin
- - Clean up the Gradle build wreckage
  - Render the Chomsky-normalized CFG
  - Rank results by more sensible metric
  - Provide assistance for grammar editing
  - Improve support for incrementalization
+ - Add "real world" demo for Python/Java
+ - Probabilistic Levenshtein-Bar-Hillel
  *//*
 TODO (maybe):
- - Add demo for Python and Java
  - Add Ctrl+Space code completion popup
  - Configurable settings, e.g., timeout, max repairs
  - Auto-alignment of the productions
