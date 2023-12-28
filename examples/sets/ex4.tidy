@@ -1,0 +1,12 @@
+START -> S1 | S2
+S1 -> X b
+X -> a X b | a b
+B -> B b | b
+S2 -> A X
+A -> A a | a
+
+{ a^m b^n | m != n }
+---
+
+
+_ _ _ _

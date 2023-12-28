@@ -1,0 +1,7 @@
+START -> A A
+A -> A A A | b A | A b | a
+---
+
+_ _ _ _ _
+
+b a b b a b

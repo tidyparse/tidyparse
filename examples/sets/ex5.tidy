@@ -1,0 +1,8 @@
+START -> A B | B A
+A -> a | a A a | a A b | b A a | b A b
+B -> b | a B a | a B b | b B a | b B b
+
+{ xy | |x| = |y|, x != y }
+---
+
+_ _ _ _ _
