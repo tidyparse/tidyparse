@@ -31,7 +31,10 @@ changelog {
 }
 
 dependencies {
-  api(project(":tidyparse-core"))
+  implementation(project(":tidyparse-core")) {
+    exclude(group = "org.jetbrains.kotlin")
+    exclude(group = "org.jetbrains.kotlinx")
+  }
   testImplementation(kotlin("test"))
 }
 

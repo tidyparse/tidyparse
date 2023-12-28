@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.22.0
+
+- Remove external dependencies
+- Release [browser version](https://tidyparse.github.io)
+
 ## 0.21.0
 
 - New multicore repair procedure

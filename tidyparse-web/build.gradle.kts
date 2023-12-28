@@ -13,7 +13,7 @@ kotlin {
     sourceSets {
       val main by getting {
         dependencies{
-          api(project(":tidyparse-core"))
+          implementation(project(":tidyparse-core"))
         }
       }
     }
