@@ -2,6 +2,7 @@ package ai.hypergraph.tidyparse.template
 
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.sat.synthesizeIncrementally
+import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.kaliningraph.types.π2
 import ai.hypergraph.tidyparse.*
 import com.intellij.openapi.actionSystem.AnAction
