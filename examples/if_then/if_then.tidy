@@ -12,6 +12,8 @@
      N -> !
 ---
 
+! 1 or <N> 3
+
 true or false
 
 if true or false and false then 1 else 2 else
