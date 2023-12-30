@@ -40,4 +40,4 @@ kotlin {
 //  ./gradlew browserProductionWebpack
 
 // To run in the browser, run:
-//  ./gradlew :tidyparse-web-frontend:browserDevelopmentRun --continuous
+//  ./gradlew :tidyparse-web:browserDevelopmentRun --continuous
