@@ -128,9 +128,8 @@ abstract class TidyEditor {
       }
 
       val next = iter.next()
-      println("Found: $next")
-      val isNew = next !in results
-      if (next.isNotEmpty() && isNew) {
+      if (next.isNotEmpty() && next !in results) {
+        println("Found: $next")
         results.add(next)
         val score = metric(next.tokenizeByWhitespace())
         if (topNResults.size < resultsToPost || score < topNResults.last().second) {

@@ -1,6 +1,6 @@
 package ai.hypergraph.tidyparse
 
-import ai.hypergraph.kaliningraph.levenshteinAlign
+import ai.hypergraph.kaliningraph.parsing.levenshteinAlign
 
 fun main() {
   println(generateDiff("1 + 22 + 4", listOf("1 + 3 + 4", "1 + 33 + 4", "1 + 22 + 4")))
