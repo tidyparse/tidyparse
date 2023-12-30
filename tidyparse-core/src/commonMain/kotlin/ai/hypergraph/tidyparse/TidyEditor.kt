@@ -113,21 +113,28 @@ abstract class TidyEditor {
     val topNResults = mutableListOf<Pair<String, Int>>()
     val iter = iterator()
     val startTime = TimeSource.Monotonic.markNow()
+    var totalResults = 0
 
     fun findNextCompletion() {
       var i = 0
       if (!iter.hasNext() || !shouldContinue()) {
         val throughput = (results.size /
             startTime.elapsedNow().toDouble(SECONDS)).round(3)
+        val throughputTot = (totalResults /
+            startTime.elapsedNow().toDouble(SECONDS)).round(3)
+        val summary = if (throughput != throughputTot)
+          "~$throughput unique res/s, ~$throughputTot total res/s"
+        else "~$throughput res/s"
         val moreResults = (results.size - topNResults.size)
           .let { if (it == 0) "\n\n" else "\n\n...$it more" }
-        val statistics = "$moreResults ~$throughput res/s."
+        val statistics = "$moreResults, $summary."
         return finally(topNResults.joinToString("\n", "", statistics) {
           "<span style=\"color: gray\" class=\"noselect\">${i++.toString().padStart(2)}.) </span>${it.first}"
         })
       }
 
       val next = iter.next()
+      totalResults++
       if (next.isNotEmpty() && next !in results) {
         println("Found: $next")
         results.add(next)
