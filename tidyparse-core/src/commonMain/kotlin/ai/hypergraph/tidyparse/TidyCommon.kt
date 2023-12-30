@@ -6,6 +6,7 @@ import ai.hypergraph.kaliningraph.image.*
 import ai.hypergraph.kaliningraph.parsing.* // TODO: Why is this not available?
 import ai.hypergraph.kaliningraph.tensor.FreeMatrix
 import ai.hypergraph.kaliningraph.parsing.prettyPrint
+import ai.hypergraph.kaliningraph.repair.TIMEOUT_MS
 import ai.hypergraph.kaliningraph.types.*
 import kotlin.math.*
 import kotlin.time.*

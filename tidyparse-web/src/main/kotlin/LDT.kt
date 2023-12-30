@@ -1,5 +1,6 @@
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.*
+import ai.hypergraph.kaliningraph.tokenizeByWhitespaceAndKeepDelimiters
 import kotlinx.browser.*
 import org.w3c.dom.*
 
