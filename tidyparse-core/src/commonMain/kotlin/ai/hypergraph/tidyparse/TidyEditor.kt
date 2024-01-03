@@ -81,7 +81,7 @@ abstract class TidyEditor {
       val parseTree = cfg.parse(sanitized)?.prettyPrint()
       writeDisplayText("$parsedPrefix$parseTree")
     }
-    else cfg.fastRepairSeq(tokens)
+    else cfg.fasterRepairSeq(tokens)
       .enumerateCompletionsInteractively(
         metric = {
           levenshtein(tokens, it) * 7919 +
