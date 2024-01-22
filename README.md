@@ -227,3 +227,6 @@ The following individuals have helped shape this project through their thoughtfu
 * [Will Chrichton](https://willcrichton.net/)
 * [Kristopher Micinski](https://kmicinski.com/)
 * [Michael Coblenz](https://cseweb.ucsd.edu/~mcoblenz/)
+* [Matthijs Vákár](https://www.uu.nl/staff/MILVakar)
+* [Alex Lew](http://alexlew.net/)
+* [Maddy Bowers](https://mlb2251.github.io/)
