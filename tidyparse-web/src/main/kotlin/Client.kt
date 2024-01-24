@@ -2,6 +2,7 @@ import ai.hypergraph.kaliningraph.repair.TIMEOUT_MS
 import ai.hypergraph.kaliningraph.types.PlatformVars
 import kotlinx.browser.*
 import org.w3c.dom.*
+import org.w3c.dom.events.Event
 
 /**
 TODO (soon):

@@ -37,10 +37,9 @@ abstract class TidyEditor {
   }
 
   open fun handleInput() {
-    println("Current line is ${currentLine()}")
     val timer = TimeSource.Monotonic.markNow()
 
-    val currentLine = currentLine()
+    val currentLine = currentLine().also { println("Current line is: $it") }
     if (currentLine.isBlank()) return
     val caretInGrammar = caretInGrammar()
     val tokens = currentLine.tokenizeByWhitespace()
