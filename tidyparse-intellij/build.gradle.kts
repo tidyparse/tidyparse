@@ -5,7 +5,7 @@ import org.jetbrains.changelog.markdownToHTML
 
 plugins {
   kotlin("jvm")
-  id("org.jetbrains.intellij") version "1.16.1"
+  id("org.jetbrains.intellij") version "1.17.0"
   id("org.jetbrains.changelog") version "2.2.0"
 }
 
