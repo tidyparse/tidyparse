@@ -80,7 +80,9 @@ abstract class TidyEditor {
       val parseTree = cfg.parse(sanitized)?.prettyPrint()
       writeDisplayText("$parsedPrefix$parseTree")
     }
-    else cfg.fasterRepairSeq(tokens)
+    else cfg
+//      .barHillelRepair(tokens) // TODO: fix delay and replace fastRepairSeq
+      .fasterRepairSeq(tokens)
       .enumerateCompletionsInteractively(
         metric = {
           levenshtein(tokens, it) * 7919 +
