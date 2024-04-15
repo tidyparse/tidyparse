@@ -2,10 +2,11 @@ import org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
 import org.gradle.api.tasks.testing.logging.TestLogEvent.*
 import org.jetbrains.changelog.Changelog.OutputType.HTML
 import org.jetbrains.changelog.markdownToHTML
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
   kotlin("jvm")
-  id("org.jetbrains.intellij") version "1.17.1"
+  id("org.jetbrains.intellij") version "1.17.3"
   id("org.jetbrains.changelog") version "2.2.0"
 }
 
@@ -48,6 +49,14 @@ dependencies {
 //  }
 //}
 
+val javaVersion = properties("javaVersion")
+kotlin {
+  compilerOptions {
+    jvmTarget = JvmTarget.fromTarget(javaVersion)
+    apiVersion = languageVersion
+  }
+}
+
 tasks {
   test {
     minHeapSize = "1g"
@@ -69,17 +78,9 @@ tasks {
   }
 
 // Set the JVM compatibility versions
-  val javaVersion = properties("javaVersion")
   compileJava {
     sourceCompatibility = javaVersion
     targetCompatibility = javaVersion
-  }
-
-  compileKotlin {
-    kotlinOptions {
-      jvmTarget = javaVersion
-      apiVersion = languageVersion
-    }
   }
 
   patchPluginXml {
@@ -101,7 +102,7 @@ tasks {
     changeNotes = provider { changelog.renderItem(changelog.getAll().values.first(), HTML) }
   }
 
-  runPluginVerifier { ideVersions = listOf("2023.2.3") }
+  runPluginVerifier { ideVersions = listOf("2024.1") }
 
   runIde {
     maxHeapSize = "4g"

@@ -10,13 +10,10 @@ version = properties("pluginVersion")
 
 kotlin {
   js(IR) {
-    sourceSets {
-      val main by getting {
-        dependencies{
-          implementation(project(":tidyparse-core"))
-        }
-      }
+    dependencies {
+      implementation(project(":tidyparse-core"))
     }
+
     binaries.executable()
     browser {
       runTask {
