@@ -43,7 +43,7 @@ kotlin {
           exclude(group = "org.logicng")
         }
 
-        api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
+        api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.0-RC")
       }
     }
     commonTest {
