@@ -6,8 +6,8 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
   kotlin("jvm")
-  id("org.jetbrains.intellij") version "1.17.3"
-  id("org.jetbrains.changelog") version "2.2.0"
+  id("org.jetbrains.intellij") version "1.17.4"
+  id("org.jetbrains.changelog") version "2.2.1"
 }
 
 fun properties(key: String) = project.findProperty(key).toString()
