@@ -45,9 +45,9 @@ abstract class TidyEditor {
     val tokens = currentLine.tokenizeByWhitespace()
 
     val cfg =
-      (if (caretInGrammar)
+      if (caretInGrammar)
         CFGCFG(names = tokens.filter { it !in setOf("->", "|") }.toSet())
-      else getLatestCFG()).freeze()
+      else getLatestCFG()
 
     if (cfg.isEmpty()) return
 
@@ -64,13 +64,13 @@ abstract class TidyEditor {
     }
     fun shouldContinue() = currentWorkHash == workHash && timer.hasTimeLeft()
 
+    fun rankingFun(l: List<String>): Int = levenshtein(tokens, l) * 7919 +
+      (tokens.sumOf { it.length } - l.sumOf { it.length }).absoluteValue
+
     return if (sanitized.containsHole()) {
       cfg.enumSeqSmart(tokens)
         .enumerateCompletionsInteractively(
-          metric = {
-            levenshtein(tokens, it) * 7919 +
-                (tokens.sumOf { it.length } - it.sumOf { it.length }).absoluteValue
-          },
+          metric = ::rankingFun,
           shouldContinue = ::shouldContinue,
           finally = ::finally,
           localContinuation = ::continuation
@@ -78,16 +78,13 @@ abstract class TidyEditor {
     }
     else if (tokens in cfg.language) {
       val parseTree = cfg.parse(sanitized)?.prettyPrint()
-      writeDisplayText("$parsedPrefix$parseTree")
+      writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it })
     }
     else cfg
 //      .barHillelRepair(tokens) // TODO: fix delay and replace fastRepairSeq
       .fasterRepairSeq(tokens)
       .enumerateCompletionsInteractively(
-        metric = {
-          levenshtein(tokens, it) * 7919 +
-            (tokens.sumOf { it.length } - it.sumOf { it.length }).absoluteValue
-        },
+        metric = ::rankingFun,
         shouldContinue = ::shouldContinue,
         finally = ::finally,
         localContinuation = ::continuation
@@ -161,8 +158,8 @@ abstract class TidyEditor {
 
   open fun continuation(f: () -> Unit): Any = { f() }
 
-  fun getGrammarText(): Σᐩ = readEditorText().split("---").first()
-  fun getExampleText(): Σᐩ = readEditorText().split("---").last()
+  fun getGrammarText(): Σᐩ = readEditorText().substringBefore("---")
+  fun getExampleText(): Σᐩ = readEditorText().substringAfter("---")
 
   fun currentGrammar(): CFG =
     try { readEditorText().parseCFG() } catch (e: Exception) { setOf() }
