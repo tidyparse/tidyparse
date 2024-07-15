@@ -51,8 +51,11 @@ abstract class TidyEditor {
 
     if (cfg.isEmpty()) return
 
-    val sanitized = tokens.joinToString(" ")
-    val workHash = sanitized.hashCode() + cfg.hashCode()
+    var containsUnk = false
+    val abstractUnk = tokens.map { if (it in cfg.terminals) it else { containsUnk = true; "_" } }
+
+    val workHash = abstractUnk.hashCode() + cfg.hashCode()
+    if (workHash == currentWorkHash) return
     currentWorkHash = workHash
 
     if (workHash in cache) return writeDisplayText(cache[workHash]!!)
@@ -67,7 +70,7 @@ abstract class TidyEditor {
     fun rankingFun(l: List<String>): Int = levenshtein(tokens, l) * 7919 +
       (tokens.sumOf { it.length } - l.sumOf { it.length }).absoluteValue
 
-    return if (sanitized.containsHole()) {
+    return if (HOLE_MARKER in tokens) {
       cfg.enumSeqSmart(tokens)
         .enumerateCompletionsInteractively(
           metric = ::rankingFun,
@@ -76,13 +79,13 @@ abstract class TidyEditor {
           localContinuation = ::continuation
         )
     }
-    else if (tokens in cfg.language) {
-      val parseTree = cfg.parse(sanitized)?.prettyPrint()
+    else if (!containsUnk && tokens in cfg.language) {
+      val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
       writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it })
     }
     else cfg
 //      .barHillelRepair(tokens) // TODO: fix delay and replace fastRepairSeq
-      .fasterRepairSeq(tokens)
+      .fasterRepairSeq(abstractUnk)
       .enumerateCompletionsInteractively(
         metric = ::rankingFun,
         shouldContinue = ::shouldContinue,
