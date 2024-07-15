@@ -45,9 +45,9 @@ abstract class TidyEditor {
     val tokens = currentLine.tokenizeByWhitespace()
 
     val cfg =
-      (if (caretInGrammar)
+      if (caretInGrammar)
         CFGCFG(names = tokens.filter { it !in setOf("->", "|") }.toSet())
-      else getLatestCFG()).freeze()
+      else getLatestCFG()
 
     if (cfg.isEmpty()) return
 
