@@ -33,8 +33,12 @@ kotlin {
   }
 }
 
-// To deploy, run:
+// To deploy the browser application, run:
 //  ./gradlew browserProductionWebpack
+// Then copy the contents of ./build/kotlin-webpack/js/tidyparse-web to the server:
+//  https://github.com/tidyparse/tidyparse.github.io/upload/main
+// Wait a few minutes for CI to finish, then check the website:
+//  https://tidyparse.github.io
 
-// To run in the browser, run:
+// To run on localhost and open a browser, run:
 //  ./gradlew :tidyparse-web:browserDevelopmentRun --continuous
