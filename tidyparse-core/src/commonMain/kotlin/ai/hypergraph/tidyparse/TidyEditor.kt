@@ -4,6 +4,7 @@ import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.*
+import ai.hypergraph.kaliningraph.repair.minimizeFix
 import org.kosat.round
 import kotlin.math.absoluteValue
 import kotlin.time.*
@@ -17,6 +18,8 @@ abstract class TidyEditor {
   var grammarFileCache: String = ""
   var cache = mutableMapOf<Int, String>()
   var currentWorkHash = 0
+  var minimize = false
+  var ntStubs = true
   val toTake = 27
 
   abstract fun readDisplayText(): Σᐩ
@@ -31,7 +34,9 @@ abstract class TidyEditor {
     return try {
       if (grammar != grammarFileCache || cfg.isNotEmpty()) {
         grammar.also { grammarFileCache = it }
-          .parseCFG(validate = true).freeze().also { cfg = it }
+          .parseCFG(validate = true)
+          .let { if (ntStubs) it else it.noNonterminalStubs }
+          .also { cfg = it }
       } else cfg
     } catch (e: Exception) { cfg }
   }
@@ -85,7 +90,7 @@ abstract class TidyEditor {
     }
     else cfg
 //      .barHillelRepair(tokens) // TODO: fix delay and replace fastRepairSeq
-      .fasterRepairSeq(abstractUnk)
+      .fasterRepairSeq(abstractUnk, minimize = minimize)
       .enumerateCompletionsInteractively(
         metric = ::rankingFun,
         shouldContinue = ::shouldContinue,

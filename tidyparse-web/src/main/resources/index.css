@@ -92,6 +92,22 @@ u {
     color: var(--no-value-color);
 }
 
+
+/* align minimize button to the right
+under the second panel
+<div id="minimize">
+  <input type="checkbox" id="minimize-checkbox">
+  <label for="minimize-checkbox">Minimize</label>
+</div>
+*/
+
+#check1, #check2 {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 20px;
+    margin-right: -90px;
+}
+
 /* TextareaDecorator.css
  * written by Colin Kuebler 2012
  * Part of LDT, dual licensed under GPLv3 and MIT

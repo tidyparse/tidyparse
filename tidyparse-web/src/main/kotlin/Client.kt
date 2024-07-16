@@ -1,3 +1,4 @@
+import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.TIMEOUT_MS
 import ai.hypergraph.kaliningraph.types.PlatformVars
 import kotlinx.browser.*
@@ -52,9 +53,20 @@ fun main() {
   window.onload = { jsEditor.redecorateLines() }
   inputField.addEventListener("input", { jsEditor.run { continuation { handleInput() } } })
   inputField.addEventListener("input", { jsEditor.redecorateLines() })
+  mincheck.addEventListener("change", { jsEditor.minimize = mincheck.checked })
+  ntscheck.addEventListener("change", {
+    jsEditor.ntStubs = ntscheck.checked
+    try {
+      jsEditor.cfg = jsEditor.getGrammarText().parseCFG(validate = true)
+        .let { if (ntscheck.checked) it else it.noNonterminalStubs }
+    } catch (e: Exception) {}
+    jsEditor.redecorateLines()
+  })
 }
 
 val decorator by lazy { TextareaDecorator(inputField, parser) }
 val jsEditor by lazy { JSTidyEditor(inputField, outputField) }
 val inputField by lazy { document.getElementById("tidyparse-input") as HTMLTextAreaElement }
 val outputField by lazy { document.getElementById("tidyparse-output") as Node }
+val mincheck by lazy { document.getElementById("minimize-checkbox") as HTMLInputElement }
+val ntscheck by lazy { document.getElementById("ntstubs-checkbox") as HTMLInputElement }

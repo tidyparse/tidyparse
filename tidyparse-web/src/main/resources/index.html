@@ -37,7 +37,7 @@ if ( true ) + then
 
 true or false
 
-( if true then false else true )
+( if true then <B> else true )
 
 if true or false and false then 1 else 2 else
 
@@ -112,6 +112,14 @@ if true then if true then 1 else 2 else 3</textarea>
     Tidyparse will add <span style="color: green; ">START</span> <span style="color: gray; ">-></span> {V} for every nonterminal, V.
 
 </div>
+</div>
+<div id="check1">
+  <label for="minimize-checkbox">Minimize repairs&nbsp;</label>
+  <input type="checkbox" id="minimize-checkbox">
+</div>
+<div id="check2">
+  <label for="ntstubs-checkbox">Nonterminal stubs&nbsp;</label>
+  <input type="checkbox" id="ntstubs-checkbox" checked>
 </div>
 <script src="tidyparse-web.js"></script>
 </body>
