@@ -108,28 +108,4 @@ tasks {
     maxHeapSize = "4g"
     args = listOf(projectDir.parent + "/examples")
   }
-//
-//  // Configure UI tests plugin
-//  // Read more: https://github.com/JetBrains/intellij-ui-test-robot
-//  runIdeForUiTests {
-//    systemProperty("robot-server.port", "8082")
-//    systemProperty("ide.mac.message.dialogs.as.sheets", "false")
-//    systemProperty("jb.privacy.policy.text", "<!--999.999-->")
-//    systemProperty("jb.consents.confirmation.enabled", "false")
-//  }
-//
-//  signPlugin {
-//    certificateChain = System.getenv("CERTIFICATE_CHAIN"))
-//    privateKey = System.getenv("PRIVATE_KEY"))
-//    password = System.getenv("PRIVATE_KEY_PASSWORD"))
-//  }
-//
-//  publishPlugin {
-//    dependsOn("patchChangelog")
-//    token = System.getenv("PUBLISH_TOKEN"))
-//    // pluginVersion is based on the SemVer (https://semver.org) and supports pre-release labels, like 2.1.7-alpha.3
-//    // Specify pre-release label to publish the plugin in a custom Release Channel automatically. Read more:
-//    // https://plugins.jetbrains.com/docs/intellij/deployment.html#specifying-a-release-channel
-//    channels = listOf(properties("pluginVersion").split('-').getOrElse(1) { "default" }.split('.').first()))
-//  }
 }

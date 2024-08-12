@@ -18,19 +18,6 @@ class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): TidyEdito
       value.indexOf("\n", selectionStart!!).takeIf { it != -1 } ?: value.length
     private fun HTMLTextAreaElement.getCurrentLine() =
       value.substring(0, getEndOfLineIdx()).substringAfterLast("\n")
-
-    fun String.diff(other: String): String = other
-
-    //fun String.diff(other: String): String {
-    //  val output = tokenizeByWhitespace().toMutableList()
-    //  differenceOf(output, other.tokenizeByWhitespace())
-    //    .applyDiff(
-    //      remove = { index -> output.removeAt(index) },
-    //      insert = { item, index -> output.add(index, "<span style=\"background-color: green;\">${item.escapeHTML()}</span>") },
-    //      move = { old, new ->  }
-    //    )
-    //  return output.joinToString(" ") { if (it.startsWith("<span style=")) it else it.escapeHTML() }
-    //}
   }
 
   override fun continuation(f: () -> Unit): Any = window.setTimeout(f, 0)
