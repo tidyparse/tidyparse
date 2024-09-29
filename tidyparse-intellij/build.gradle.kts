@@ -14,7 +14,6 @@ plugins {
 repositories {
   mavenCentral()
   intellijPlatform.defaultRepositories()
-//  intellijPlatform.localPlatformArtifacts()
 }
 
 fun properties(key: String) = project.findProperty(key).toString()
@@ -48,7 +47,7 @@ dependencies {
   intellijPlatform {
     testImplementation("junit:junit:4.13.2")
 
-    bundledPlugins("com.intellij.java")
+//    bundledPlugins("com.intellij.java")
     create("IC", "2024.2.2")
     pluginVerifier()
     instrumentationTools()
