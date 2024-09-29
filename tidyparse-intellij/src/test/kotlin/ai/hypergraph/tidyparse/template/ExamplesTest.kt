@@ -5,7 +5,7 @@ import java.io.File
 
 class ExamplesTest : BaseTest() {
   @Test
-  fun testAllExamplesWork() {
+  fun testAllExamplesDoNotThrow() {
     File("../examples/").walkTopDown()
       .filter { it.isFile && it.extension == "tidy" }
       .forEach { println("Testing: ${it.path}"); it.readText().invokeOnAllLines() }

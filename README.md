@@ -2,6 +2,7 @@
 
 <h1 align="center">Tidyparse</h1>
 <p align="center">
+ 	<a href="https://github.com/tidyparse/tidyparse/actions/workflows/build.yml" title="Build Plugin"><img src="https://github.com/tidyparse/tidyparse/actions/workflows/build.yml/badge.svg"></a>
  	<a href="https://plugins.jetbrains.com/plugin/19570-tidyparse" title="Tidyparse"><img src="https://img.shields.io/jetbrains/plugin/v/19570-tidyparse.svg"></a>
  	<a href="LICENSE" title="License"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"></a>
 </p>
