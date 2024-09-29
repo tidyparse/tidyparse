@@ -215,6 +215,7 @@ The following individuals have helped shape this project through their thoughtfu
 
 * [Jin Guo](https://www.cs.mcgill.ca/~jguo/lab.html)
 * [Xujie Si](https://www.cs.mcgill.ca/~xsi/)
+* [David Chiang](https://www3.nd.edu/~dchiang/)
 * [Brigitte Pientka](https://www.cs.mcgill.ca/~bpientka/)
 * [Ori Roth](https://scholar.google.co.il/citations?user=aaBmQ9MAAAAJ)
 * [Younesse Kaddar](https://younesse.net)
