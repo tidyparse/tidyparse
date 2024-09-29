@@ -52,13 +52,14 @@ class TidyCompletionProvider : CompletionProvider<CompletionParameters>() {
 
     tidyEditor.run {
       if (surroundingNonterminal != null) {
-        cfg.originalForm.bimap[surroundingNonterminal.value.drop(1).dropLast(1)]
+        cfg.originalForm.bimap[surroundingNonterminal.value.drop(1).dropLast(1)].take(50)
           .map { it.joinToString(" ") { if (it in cfg.originalForm.terminals) it else "<$it>" } }
           .sortedWith(compareBy<String> { !it.isNonterminalStub() }.thenBy { it.count { ' ' == it } })
           .forEachIndexed { i, it -> result.addElement(createLookupElement(it, i, surroundingNonterminal)) }
       } else synchronized(cfg) {
         try {
-          synthCache[currentLine.sanitized(cfg.terminals) to cfg]?.map { it.dehtmlify().tokenizeByWhitespace().joinToString(" ") }
+          synthCache[currentLine.sanitized(cfg.terminals) to cfg]?.take(50)
+            ?.map { it.dehtmlify().tokenizeByWhitespace().joinToString(" ") }
             ?.forEachIndexed { i, it -> result.addElement(createLookupElement(it, i, null)) }
         } catch (e: Exception) {
           e.printStackTrace()

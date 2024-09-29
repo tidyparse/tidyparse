@@ -145,6 +145,7 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor() {
     else
       cfg.enumSeqSmart(sanitized.tokenizeByWhitespace())
         .takeWhile { takeMoreWhile() }
+        .filter { it.isNotEmpty() }
         .retainOnlySamplesWithDistinctEditSignature(sanitized) { "${cfg.bimap[listOf(it)].hashCode()}" }
         .onEach { result ->
           runningRepairs[result] = levenshtein(tokens, result.tokenizeByWhitespace())

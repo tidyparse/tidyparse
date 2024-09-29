@@ -11,8 +11,6 @@ import com.intellij.psi.PsiFile
 import com.intellij.testFramework.FileEditorManagerTestCase
 import com.intellij.util.ui.UIUtil
 import com.jetbrains.rd.util.measureTimeMillis
-import junit.framework.TestCase
-import kotlin.test.assertNotNull
 
 abstract class BaseTest: FileEditorManagerTestCase() {
   companion object {
@@ -76,8 +74,8 @@ abstract class BaseTest: FileEditorManagerTestCase() {
     }
     results.forEach {
       assertNotNull(
-        cfg.parse(it),
-        "Unrecognized: \"$it\" for CFG:\n${cfg.prettyPrint()}"
+        "Unrecognized: \"$it\" for CFG:\n${cfg.prettyPrint()}",
+        cfg.parse(it)
       )
     }
   }
@@ -85,6 +83,6 @@ abstract class BaseTest: FileEditorManagerTestCase() {
   fun String.invokeOnAllLines() {
     measureTimeMillis {
       lines().fold("") { acc, s -> "$acc\n$s".also { it.simulateKeystroke() } }
-    }.also { println("Round trip latency: $it") }
+    }.also { println("Round trip latency: ${it}ms") }
   }
 }
