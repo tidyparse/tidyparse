@@ -3,11 +3,18 @@ import org.gradle.api.tasks.testing.logging.TestLogEvent.*
 import org.jetbrains.changelog.Changelog.OutputType.HTML
 import org.jetbrains.changelog.markdownToHTML
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 plugins {
   kotlin("jvm")
-  id("org.jetbrains.intellij") version "1.17.4"
+  id("org.jetbrains.intellij.platform") version "2.1.0"
   id("org.jetbrains.changelog") version "2.2.1"
+}
+
+repositories {
+  mavenCentral()
+  intellijPlatform.defaultRepositories()
+//  intellijPlatform.localPlatformArtifacts()
 }
 
 fun properties(key: String) = project.findProperty(key).toString()
@@ -16,13 +23,13 @@ group = properties("pluginGroup")
 version = properties("pluginVersion")
 
 // Configure Gradle IntelliJ Plugin - read more: https://github.com/JetBrains/gradle-intellij-plugin
-intellij {
-  pluginName = properties("pluginName")
-  version = properties("platformVersion")
-  type = properties("platformType")
+intellijPlatform {
+  pluginConfiguration {
+    version = properties("pluginVersion")
+    name = "TidyParse"
+  }
 
-  // Plugin Dependencies. Uses `platformPlugins` property from the gradle.properties file.
-  plugins = properties("platformPlugins").split(',').map(String::trim).filter(String::isNotEmpty)
+//  pluginVerification.ides.recommended()
 }
 
 // Configure Gradle Changelog Plugin - read more: https://github.com/JetBrains/gradle-changelog-plugin
@@ -36,7 +43,17 @@ dependencies {
     exclude(group = "org.jetbrains.kotlin")
     exclude(group = "org.jetbrains.kotlinx")
   }
-  testImplementation(kotlin("test"))
+//  testImplementation(kotlin("test"))
+  testImplementation("org.opentest4j:opentest4j:1.3.0")
+  intellijPlatform {
+    testImplementation("junit:junit:4.13.2")
+
+    bundledPlugins("com.intellij.java")
+    create("IC", "2024.2.2")
+    pluginVerifier()
+    instrumentationTools()
+    testFramework(TestFrameworkType.Platform)
+  }
 }
 
 //kotlin {
@@ -101,8 +118,6 @@ tasks {
 // Get the latest available change notes from the changelog file
     changeNotes = provider { changelog.renderItem(changelog.getAll().values.first(), HTML) }
   }
-
-  runPluginVerifier { ideVersions = listOf("2024.1") }
 
   runIde {
     maxHeapSize = "4g"

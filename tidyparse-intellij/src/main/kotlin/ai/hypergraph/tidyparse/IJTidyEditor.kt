@@ -229,7 +229,8 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor() {
         highlightManager.addRangeHighlighter(
           range.startOffset, range.endOffset, 0, orangeUnderline, HighlighterTargetArea.EXACT_RANGE
         ).apply {
-          errorStripeMarkColor = JBColor.RED
+//          errorStripeMarkColor = JBColor.RED
+          setErrorStripeMarkColor(JBColor.RED)
           errorStripeTooltip = "Line not in grammar"
         }
       }
