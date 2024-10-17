@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.23.0
+
+- Improve handling for invalid grammars
+
 ## 0.22.0
 
 - Remove external dependencies

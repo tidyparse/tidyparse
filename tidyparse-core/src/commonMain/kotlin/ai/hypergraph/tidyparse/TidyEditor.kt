@@ -38,7 +38,10 @@ abstract class TidyEditor {
           .let { if (ntStubs) it else it.noNonterminalStubs }
           .also { cfg = it }
       } else cfg
-    } catch (e: Exception) { cfg }
+    } catch (e: Exception) {
+      writeDisplayText("<html><body><pre>${e.message!!}</pre></body></html>")
+      emptySet()
+    }
   }
 
   open fun handleInput() {

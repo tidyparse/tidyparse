@@ -102,7 +102,7 @@ tasks {
   patchPluginXml {
     version = properties("pluginVersion")
     sinceBuild = properties("pluginSinceBuild")
-    untilBuild = properties("pluginUntilBuild")
+//    untilBuild = properties("pluginUntilBuild")
 
   pluginDescription =
     projectDir.parentFile.resolve("README.md").readText().lines().run {

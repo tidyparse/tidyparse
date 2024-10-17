@@ -65,7 +65,7 @@ Global_Stmt -> Global_Keyword Many_Names
 Nonlocal_Stmt -> Nonlocal_Keyword Many_Names
 Assert_Stmt -> Assert_Keyword Test | Assert_Keyword Test Comma Test
 
-Aug_Assign -> += | -= | *= | @= | /= | %= | &= | |= | ^= | <<= | >>= | **= | //=
+Aug_Assign -> += | -= | *= | @= | /= | %= | &= | ^= | <<= | >>= | **= | //=
 Del_Keyword -> del
 Pass_Stmt -> pass
 Break_Stmt -> break
@@ -201,5 +201,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 _ _ _ _ _ _ _ NEWLINE
 
+_ _ _ _ _
+
 [ * ( NAME for [ [ ] [ : ] , * NUMBER ] in [ ( ( NAME , NAME ) , NUMBER ) ] ) ] NEWLINE
-( lambda * NAME : NAME ( NAME ) . NAME ( NAME ) ) ( * ( [ NAME ] * NUMBER ) ) == NUMBER NUMBER NEWLINE 
+( lambda * NAME : NAME ( NAME ) . NAME ( NAME ) ) ( * ( [ NAME ] * NUMBER ) ) == NUMBER NUMBER NEWLINE  
