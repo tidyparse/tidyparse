@@ -30,7 +30,7 @@ kotlin {
 //    }
     commonMain {
       dependencies {
-        api(kotlin("stdlib"))
+        api(kotlin("stdlib:2.1.0"))
         api("ai.hypergraph:kaliningraph") {
           exclude(group = "org.jetbrains.kotlin")
           exclude(group = "guru.nidi")

@@ -1,5 +1,5 @@
 plugins {
-  val kotVer = "2.0.0"
+  val kotVer = "2.1.0"
   idea
   kotlin("multiplatform") version kotVer apply false
   id("com.github.ben-manes.versions") version "0.51.0"

@@ -48,7 +48,7 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
 
 //    bundledPlugins("com.intellij.java")
-    create("IC", "2024.2.2")
+    create("IC", "2024.3")
     pluginVerifier()
     instrumentationTools()
     testFramework(TestFrameworkType.Platform)
