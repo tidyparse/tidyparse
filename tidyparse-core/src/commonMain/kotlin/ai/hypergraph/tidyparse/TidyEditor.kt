@@ -92,7 +92,8 @@ abstract class TidyEditor {
       val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
       writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it })
     }
-    else FSA.intersectPTree(currentLine, cfg, FSA.LED(cfg, currentLine))
+    else FSA.intersectPTree(currentLine, cfg, FSA.LED(cfg, currentLine)
+      .also { println("Using matrix LBH procedure with LED=$it") })
       ?.sampleStrWithoutReplacement()
 //    else cfg
 //      .barHillelRepair(tokens) // TODO: fix delay and replace fastRepairSeq
