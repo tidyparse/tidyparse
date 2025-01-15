@@ -1,6 +1,7 @@
 package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.*
+import ai.hypergraph.kaliningraph.automata.FSA
 import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.*
@@ -91,15 +92,17 @@ abstract class TidyEditor {
       val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
       writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it })
     }
-    else cfg
+    else FSA.intersectPTree(currentLine, cfg, FSA.LED(cfg, currentLine))
+      ?.sampleStrWithoutReplacement()
+//    else cfg
 //      .barHillelRepair(tokens) // TODO: fix delay and replace fastRepairSeq
-      .fasterRepairSeq(abstractUnk, minimize = minimize)
-      .enumerateCompletionsInteractively(
+//      .fasterRepairSeq(abstractUnk, minimize = minimize)
+      ?.enumerateCompletionsInteractively(
         metric = ::rankingFun,
         shouldContinue = ::shouldContinue,
         finally = ::finally,
         localContinuation = ::continuation
-      )
+      ) ?: Unit
   }
 
   fun caretInGrammar(): Boolean =
