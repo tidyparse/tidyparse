@@ -1,6 +1,7 @@
 package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.*
+import ai.hypergraph.kaliningraph.automata.FSA
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
@@ -124,32 +125,19 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor() {
       }
     }
 
-    if ("_" !in tokens)
-      (2..maxOf(5, tokens.size))
-        .asSequence().takeWhile { takeMoreWhile() }
-        .firstNotNullOfOrNull { numEdits ->
-          bijectiveRepair(
-            promptTokens = tokens.intersperse(),
-            deck = cfg.terminals.toList(),
-            maxEdits = numEdits.also { println("Using bijective sampler with $it edits") },
-            parallelize = true,
-            admissibilityFilter = { this in cfg.language },
-            takeMoreWhile = { takeMoreWhile() },
-            diagnostic = { rep ->
-              runningRepairs[rep.result.joinToString(" ")] = levenshtein(tokens, rep.result)
-              renderUpdates()
-            }
-          ).map { it.result.joinToString(" ") }.distinct().toList().ifEmpty { null }
-        } ?: emptyList()
-    else
-      cfg.enumSeqSmart(sanitized.tokenizeByWhitespace())
-        .takeWhile { takeMoreWhile() }
-        .filter { it.isNotEmpty() }
-        .retainOnlySamplesWithDistinctEditSignature(sanitized) { "${cfg.bimap[listOf(it)].hashCode()}" }
-        .onEach { result ->
-          runningRepairs[result] = levenshtein(tokens, result.tokenizeByWhitespace())
-          renderUpdates()
-        }.toList()
+    (
+       if ("_" in tokens) cfg.enumSeqSmart(sanitized.tokenizeByWhitespace())
+       else FSA.intersectPTree(str, cfg, FSA.LED(cfg, str)
+           .also { println("Using matrix LBH procedure with LED=$it") })
+           ?.sampleStrWithoutReplacement() ?: sequenceOf()
+    )
+    .takeWhile { takeMoreWhile() }
+    .filter { it.isNotEmpty() }
+    .retainOnlySamplesWithDistinctEditSignature(sanitized) { "${cfg.bimap[listOf(it)].hashCode()}" }
+    .onEach { result ->
+      runningRepairs[result] = levenshtein(tokens, result.tokenizeByWhitespace())
+      renderUpdates()
+    }.toList()
 
     println("Found ${runningRepairs.size} total repairs in ${System.currentTimeMillis() - startTime}ms")
 

@@ -1,25 +1,30 @@
-START -> StmtSeq
-
-StmtSeq -> Stmt StmtSeq | Stmt
-
-Stmt -> ID = Expr ; | if ( BoolExpr ) { StmtSeq } else { StmtSeq } | while ( BoolExpr ) { StmtSeq }
-
-Expr -> ID | NUM | Expr + Expr | ( Expr )
-
-BoolExpr -> Expr == Expr | Expr < Expr | ( BoolExpr )
-
+START -> STM+
+STM+ -> STM+ STM | STM
+ STM -> ID = EXP ; | IFS | while ( BEXP ) { STM+ }
+ IFS -> ID = if ( BEXP ) { EXP } else { EXP }
+ IFS -> if ( BEXP ) { STM+ } else { STM+ } | if ( BEXP ) { STM+ }
+ EXP -> ID | NUM | EXP + EXP | ( EXP ) | ID ( ARGS ) | BEXP
+ARGS -> EXP | EXP , EXP
+BEXP -> EXP == EXP | EXP < EXP | ( BEXP ) | LIT | ! BEXP
+ LIT -> true | false
 ---
 
 ID = NUM ;
 
-_ _ _ _ _ _ _ _
+_ _ _ <LIT> _ ID ) _ _ _
 
-ID ID ID
-
-if ( ID < NUM ) { ID = ID ; } else { ID = ID + NUM ;
+<LIT> ( <LIT> + ID )
 
 if ( ID < NUM ) { ID = ID ; } else { ID = ID + NUM ; }
+
+if ( ID < NUM ) { ID = ID ; } else { ID = ID + NUM ;
 
 while ( ID == NUM ) { ID = ID + NUM ; }
 
 while ( ID == NUM ) { ID ID + NUM ; }
+
+while ( ID == NUM { ID ID + NUM ; } }
+
+ID = if ( ID == true ) { ID ( true ) } else { false < true }
+
+ID = if ( ID == true ) { ID ( true ) } else { false ; true }
