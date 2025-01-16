@@ -1,0 +1,13 @@
+START -> a START c | B
+B -> b B c | b c
+
+L_2 = { a^n b^m c^(n+m) | n, m >= 0 }
+---
+
+a c b d
+
+a b c c
+
+a a b c c c c
+
+a a b b c c c c

@@ -1,0 +1,21 @@
+START -> DefList
+
+DefList -> Def DefList | Def
+
+Def -> let ID = Expr ; | let ID = fun ( ID ) { Expr } ;
+
+Expr -> NUM | ID | Expr + Expr | match Expr with { ClauseList }
+
+ClauseList -> Pattern >> Expr ; ClauseList | Pattern >> Expr ;
+
+Pattern -> NUM | ID | Nil | Cons ( Pattern , Pattern )
+
+---
+
+let ID = NUM ;
+
+let ID = fun ( ID ) { ID + NUM } ;
+
+match ID with { Nil >> NUM ; Cons ( ID , ID ) >> ID + NUM ; }
+
+let ID = Cons ( NUM , Nil ) ; let ID = fun ( ID ) { match ID with { Nil >> NUM ; Cons ( ID , ID ) >> ID + ID + ID ; } } ;

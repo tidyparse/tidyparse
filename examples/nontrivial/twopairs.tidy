@@ -1,0 +1,15 @@
+START -> X Y
+
+X -> a X b | a b
+Y -> c Y d | c d
+---
+
+a b a b a b a b b
+
+a a a a b b b b c d
+
+b a a b
+
+a a b b
+
+a a b b c d

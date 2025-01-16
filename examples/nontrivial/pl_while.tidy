@@ -1,0 +1,25 @@
+START -> StmtSeq
+
+StmtSeq -> Stmt StmtSeq | Stmt
+
+Stmt -> ID = Expr ; | if ( BoolExpr ) { StmtSeq } else { StmtSeq } | while ( BoolExpr ) { StmtSeq }
+
+Expr -> ID | NUM | Expr + Expr | ( Expr )
+
+BoolExpr -> Expr == Expr | Expr < Expr | ( BoolExpr )
+
+---
+
+ID = NUM ;
+
+_ _ _ _ _ _ _ _
+
+ID ID ID
+
+if ( ID < NUM ) { ID = ID ; } else { ID = ID + NUM ;
+
+if ( ID < NUM ) { ID = ID ; } else { ID = ID + NUM ; }
+
+while ( ID == NUM ) { ID = ID + NUM ; }
+
+while ( ID == NUM ) { ID ID + NUM ; }

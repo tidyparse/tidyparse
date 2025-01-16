@@ -1,0 +1,26 @@
+START -> REGEX
+
+REGEX -> CONCAT | REGEX OP CONCAT | ! REGEX
+
+OP -> OR | AND
+
+CONCAT -> ATOM | CONCAT ATOM
+
+KDUP -> * | +
+
+ATOM -> BASE KDUP | BASE
+
+BASE -> ( REGEX ) | TOK
+
+TOK -> a | b | c | TOK TOK | [ TOK ]
+---
+
+a
+
+a OR b
+
+( a b ) *
+
+a OR ( b OR c ) *
+
+! a b [ c b a ] )

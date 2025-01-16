@@ -1,0 +1,16 @@
+START -> A | B
+
+; First sublanguage:  a^n b^n c^m
+A -> a A b | C
+C -> c C | c
+
+; Second sublanguage: a^m b^n c^n
+B -> a B | G
+G -> b G c | b c
+---
+
+a a b b c c
+
+a b c c a
+
+a b a a b a

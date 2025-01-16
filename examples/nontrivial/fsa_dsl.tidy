@@ -1,0 +1,32 @@
+START -> machine ID { StateDefs StartState AcceptStates }
+
+StateDefs -> StateDef StateDefs | StateDef
+
+StateDef -> state ID { Transitions }
+
+Transitions -> Transition Transitions | Transition
+
+Transition -> on EVENT >> ID ;
+
+StartState -> start ID ;
+
+AcceptStates -> accept IDs ;
+
+IDs -> ID , IDs | ID
+
+
+// Would be nice if we could tokenize by blank lines for multiline examples
+machine Turnstile {
+  state Locked { on coin >> Unlocked ; }
+  state Unlocked { on push >> Locked ; }
+  state Broken { on fix >> Locked ; }
+  start Locked ;
+  accept Unlocked ;
+}
+---
+
+machine ID { >> }
+
+machine ID { state ID { on EVENT >> ID ; } state ID on EVENT >> ID ; } start ID ; accept ID ; }
+
+machine ID { state ID { on EVENT >> ID ; } state ID { on EVENT >> ID ; } start ID ; accept ID ; }
