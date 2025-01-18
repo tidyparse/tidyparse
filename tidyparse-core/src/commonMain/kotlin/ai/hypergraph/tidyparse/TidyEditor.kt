@@ -76,13 +76,12 @@ abstract class TidyEditor {
 
       val startIdx = cfg.bindex[START_SYMBOL]
 
-      // For pairs (p,q) in topological order by (rank(q) - rank(p)):
-      for (dist in 1..levFSA.numStates-1) {
+      // For pairs (p,q) in topological order
+      for (dist in 0..levFSA.numStates-1) {
         for (iP in 0 until levFSA.numStates - dist) {
           val p = iP
           val q = iP + dist
-          // For each A -> B C
-          for ((A, B, C) in cfg.tripleIntProds) {
+          for ((A, /*->*/ B, C) in cfg.tripleIntProds) {
             if (!dp[p][q][A]) {
               // Check possible midpoints r in [p+1, q-1]
               // or in general, r in levFSA.allPairs[p->q]
@@ -91,8 +90,6 @@ abstract class TidyEditor {
                 if (dp[p][r][B] && dp[r][q][C]) {
                   if (p == 0 && A == startIdx && q in levFSA.finalIdxs) return true
                   dp[p][q][A] = true
-                  // We don't need fresh = true, because once we pass this step,
-                  // we won't come back to (p,q) in a later sweep
                   break
                 }
               }
@@ -126,7 +123,7 @@ abstract class TidyEditor {
       }
     }
 
-    for (dist in 1 until nStates) {
+    for (dist in 0 until nStates) {
       for (p in 0 until (nStates - dist)) {
         val q = p + dist
 
