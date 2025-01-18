@@ -50,7 +50,6 @@ dependencies {
 //    bundledPlugins("com.intellij.java")
     create("IC", "2024.3")
     pluginVerifier()
-    instrumentationTools()
     testFramework(TestFrameworkType.Platform)
   }
 }

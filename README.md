@@ -24,7 +24,7 @@ cd tidyparse && \
 git submodule update --init --recursive
 ```
 
-Then, depending on whether you want to run the IntelliJ Plugin or browser demo, run `./gradlew runIde` or `./gradlew browserDevelopmentRun --continuous`.
+Then, depending on whether you want to run the IntelliJ Plugin or browser demo, run `./gradlew runIde` or `./gradlew :tidyparse-web:jsBrowserDevelopmentRun --continuous`.
 
 ## Usage
 

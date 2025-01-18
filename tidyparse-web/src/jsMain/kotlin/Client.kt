@@ -3,20 +3,14 @@ import ai.hypergraph.kaliningraph.repair.TIMEOUT_MS
 import ai.hypergraph.kaliningraph.types.PlatformVars
 import kotlinx.browser.*
 import org.w3c.dom.*
-import org.w3c.dom.events.Event
 
 /**
 TODO (soon):
- - Extract platform-independent code from IntelliJ plugin
- - Switch to an adaptive repair algorithm / more efficient variant of sampleWRGD
  - Look into constrained inference with llama.cpp / BERT
- - Render the Chomsky-normalized CFG
  - Rank results by more sensible metric
- - Provide assistance for grammar editing
  - Improve support for incrementalization
  - Configurable settings, e.g., timeout, max repairs, minimization
  - Add "real world" demo for Python/Java
- - Probabilistic Levenshtein-Bar-Hillel
  *//*
 TODO (maybe):
  - Add Ctrl+Space code completion popup
