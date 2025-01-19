@@ -1,4 +1,4 @@
-import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.PRODUCTION
+import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.*
 
 plugins {
   kotlin("multiplatform")

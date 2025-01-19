@@ -50,12 +50,14 @@ abstract class TidyEditor {
   }
 
   private suspend fun initiateSuspendableRepair(
-    brokenStr: Σᐩ, cfg: CFG,
+    brokenStr: List<Σᐩ>, cfg: CFG,
     metric: (List<String>) -> Int,
     shouldContinue: () -> Boolean,
     finally: (String) -> Unit,
   ) {
     var i = 0
+    val upperBound = MAX_RADIUS * 2
+    val monoEditBounds = cfg.maxParsableFragmentB(brokenStr, pad = upperBound)
     suspend fun pause(freq: Int = 100_000) { if (i++ % freq == 0) { delay(100.nanoseconds) }}
 
     fun lazyAllPairs(fsa: FSA, a: Int, b: Int): Sequence<Int> {
@@ -67,9 +69,8 @@ abstract class TidyEditor {
       return (al..bl).asSequence().flatMap { i -> (ar..br).asSequence().map { j -> fsa.coordsToIds[i to j]!! } }
     }
 
-    suspend fun nonemptyLevInt(str: Σᐩ, cfg: CFG, radius: Int): Boolean {
-      val levFSA = makeLevFSA(str, radius)
-
+    suspend fun nonemptyLevInt(cfg: CFG, levFSA: FSA): Boolean {
+      val ap: Map<Pair<Int, Int>, Set<Int>> = levFSA.allPairs
       val dp = Array(levFSA.numStates) { Array(levFSA.numStates) { BooleanArray(cfg.nonterminals.size) { false } } }
 
       levFSA.allIndexedTxs0(cfg).forEach { (q0, nt, q1) -> dp[q0][q1][nt] = true }
@@ -85,7 +86,7 @@ abstract class TidyEditor {
             if (!dp[p][q][A]) {
               // Check possible midpoints r in [p+1, q-1]
               // or in general, r in levFSA.allPairs[p->q]
-              for (r in (lazyAllPairs(levFSA, p, q))) {
+              for (r in ap[p to q] ?: emptySet()) {
                 pause()
                 if (dp[p][r][B] && dp[r][q][C]) {
                   if (p == 0 && A == startIdx && q in levFSA.finalIdxs) return true
@@ -101,10 +102,13 @@ abstract class TidyEditor {
       return false
     }
 
-    val radius = (2 until (2 * MAX_RADIUS)).firstOrNull { nonemptyLevInt(brokenStr, cfg, it) } ?: (2 * MAX_RADIUS)
+    val radius = (2 until upperBound).firstOrNull {
+      nonemptyLevInt(cfg, makeLevFSA(brokenStr, it, monoEditBounds))
+    } ?: upperBound
 
     // 1) Build the Levenshtein automaton (acyclic)
-    val levFSA = makeLevFSA(brokenStr, radius + 1)
+    val levFSA = makeLevFSA(brokenStr, radius + 1, monoEditBounds)
+    val ap: Map<Pair<Int, Int>, Set<Int>> = levFSA.allPairs
 
     val nStates = levFSA.numStates
     val startIdx = cfg.bindex[START_SYMBOL]
@@ -130,7 +134,7 @@ abstract class TidyEditor {
         // For each rule A -> B C
         for ((Aidx, Bidx, Cidx) in cfg.tripleIntProds) {
           // Check all possible midpoint states r in the DAG from p to q
-          for (r in (lazyAllPairs(levFSA, p, q))) {
+          for (r in ap[p to q] ?: emptySet()) {
             pause()
             val left = dp[p][r][Bidx]
             val right = dp[r][q][Cidx]
@@ -210,7 +214,7 @@ abstract class TidyEditor {
     else Unit.also {
       MainScope().launch {
         initiateSuspendableRepair(
-          currentLine, cfg,
+          tokens, cfg,
           metric = ::rankingFun,
           shouldContinue = ::shouldContinue,
           finally = ::finally,

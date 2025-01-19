@@ -127,7 +127,7 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor() {
 
     (
        if ("_" in tokens) cfg.enumSeqSmart(sanitized.tokenizeByWhitespace())
-       else FSA.intersectPTree(str, cfg, FSA.LED(cfg, str)
+       else FSA.intersectPTree(tokens, cfg, FSA.LED(cfg,tokens)
            .also { println("Using matrix LBH procedure with LED=$it") })
            ?.sampleStrWithoutReplacement() ?: sequenceOf()
     )
