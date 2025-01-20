@@ -19,7 +19,8 @@ kotlin {
       }
 
       webpackTask {
-        mode = PRODUCTION
+        // We need this to work on Chrome when deployed due to the PLATFORM_CALLER_STACKTRACE_DEPTH hack
+        mode = DEVELOPMENT
         mainOutputFileName = "tidyparse-web.js"
         devtool = "source-map" // For debugging; remove for production
       }
@@ -37,7 +38,7 @@ kotlin {
 
 // To deploy the browser application, run:
 //  ./gradlew :tidyparse-web:jsBrowserProductionWebpack
-// Then copy the contents of tidyparse-web/build/kotlin-webpack/js/tidyparse-web to the server:
+// Then copy the contents of tidyparse-web/build/kotlin-webpack/js/productionExecutable/tidyparse-web to the server:
 //  https://github.com/tidyparse/tidyparse.github.io/upload/main
 // Wait a few minutes for CI to finish, then check the website:
 //  https://tidyparse.github.io

@@ -60,15 +60,6 @@ abstract class TidyEditor {
     val monoEditBounds = cfg.maxParsableFragmentB(brokenStr, pad = upperBound)
     suspend fun pause(freq: Int = 100_000) { if (i++ % freq == 0) { delay(100.nanoseconds) }}
 
-    fun lazyAllPairs(fsa: FSA, a: Int, b: Int): Sequence<Int> {
-      val (ac, bc) = fsa.idsToCoords[a]!! to fsa.idsToCoords[b]!!
-//    if (!bc.dominates(ac)) return emptyList()
-      val (al, ar) = ac
-      val (bl, br) = bc
-
-      return (al..bl).asSequence().flatMap { i -> (ar..br).asSequence().map { j -> fsa.coordsToIds[i to j]!! } }
-    }
-
     suspend fun nonemptyLevInt(cfg: CFG, levFSA: FSA): Boolean {
       val ap: Map<Pair<Int, Int>, Set<Int>> = levFSA.allPairs
       val dp = Array(levFSA.numStates) { Array(levFSA.numStates) { BooleanArray(cfg.nonterminals.size) { false } } }
@@ -78,7 +69,7 @@ abstract class TidyEditor {
       val startIdx = cfg.bindex[START_SYMBOL]
 
       // For pairs (p,q) in topological order
-      for (dist in 0..levFSA.numStates-1) {
+      for (dist in 0 until levFSA.numStates) {
         for (iP in 0 until levFSA.numStates - dist) {
           val p = iP
           val q = iP + dist
@@ -155,6 +146,7 @@ abstract class TidyEditor {
 
     // 6) Combine them under a single "super‐root"
     PTree(START_SYMBOL, allParses.flatMap { forest -> forest.branches })
+//      .toCFG.also { println("CFG Size: ${it.size}") }.toPTree().also { println("Words: ${it.totalTreesStr}") }
       .sampleStrWithoutReplacement()
       .enumerateCompletionsInteractively(
         metric = metric,
