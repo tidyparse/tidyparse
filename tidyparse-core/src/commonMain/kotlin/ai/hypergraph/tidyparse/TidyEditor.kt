@@ -97,27 +97,27 @@ abstract class TidyEditor {
       nonemptyLevInt(cfg, makeLevFSA(brokenStr, it, monoEditBounds))
     } ?: upperBound
 
-    // 1) Build the Levenshtein automaton (acyclic)
     val levFSA = makeLevFSA(brokenStr, radius + 1, monoEditBounds)
     val ap: Map<Pair<Int, Int>, Set<Int>> = levFSA.allPairs
 
     val nStates = levFSA.numStates
     val startIdx = cfg.bindex[START_SYMBOL]
 
-    // 2) Create dp array of parse trees
+    // 1) Create dp array of parse trees
     val dp: Array<Array<Array<PTree?>>> = Array(nStates) { Array(nStates) { Array(cfg.nonterminals.size) { null } } }
 
-    // 3) Initialize terminal productions A -> a
+    // 2) Initialize terminal productions A -> a
     for ((p, σ, q) in levFSA.allIndexedTxs1(cfg)) {
       val Aidxs = cfg.bimap.TDEPS[σ]!!.map { cfg.bindex[it] }
       for (Aidx in Aidxs) {
         pause()
         if (!shouldContinue()) return
         val newLeaf = PTree(root = cfg.bindex[Aidx], branches = PSingleton(σ))
-        dp[p][q][Aidx] = if (dp[p][q][Aidx] == null) newLeaf else dp[p][q][Aidx]!! + newLeaf
+        dp[p][q][Aidx] = newLeaf + dp[p][q][Aidx]
       }
     }
 
+    // 3) CYK + Floyd Warshall parsing
     for (dist in 0 until nStates) {
       for (p in 0 until (nStates - dist)) {
         val q = p + dist
@@ -132,19 +132,17 @@ abstract class TidyEditor {
             if (left != null && right != null) {
               // Found a parse for A
               val newTree = PTree(cfg.bindex[Aidx], listOf(left to right))
-
-              if (dp[p][q][Aidx] == null) dp[p][q][Aidx] = newTree
-              else dp[p][q][Aidx] = dp[p][q][Aidx]!! + newTree
+              dp[p][q][Aidx] = newTree + dp[p][q][Aidx]
             }
           }
         }
       }
     }
 
-    // 5) Gather final parse trees from dp[0][f][startIdx], for all final states f
-    val allParses = levFSA.finalIdxs.mapNotNull { f -> dp[0][f][startIdx] }
+    // 4) Gather final parse trees from dp[0][f][startIdx], for all final states f
+    val allParses = levFSA.finalIdxs.mapNotNull { q -> dp[0][q][startIdx] }
 
-    // 6) Combine them under a single "super‐root"
+    // 5) Combine them under a single "super‐root"
     PTree(START_SYMBOL, allParses.flatMap { forest -> forest.branches })
 //      .toCFG.also { println("CFG Size: ${it.size}") }.toPTree().also { println("Words: ${it.totalTreesStr}") }
       .sampleStrWithoutReplacement()

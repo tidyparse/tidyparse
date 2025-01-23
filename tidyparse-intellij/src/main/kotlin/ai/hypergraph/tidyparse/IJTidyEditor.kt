@@ -127,10 +127,11 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor() {
 
     (
        if ("_" in tokens) cfg.enumSeqSmart(sanitized.tokenizeByWhitespace())
-       else FSA.intersectPTree(tokens, cfg, FSA.LED(cfg,tokens)
+       else FSA.intersectPTree(tokens, cfg, (FSA.LED(cfg,tokens) + 1)
            .also { println("Using matrix LBH procedure with LED=$it") })
            ?.sampleStrWithoutReplacement() ?: sequenceOf()
-    )
+//         ?.toCFG?.toPTree()?.sampleStrWithoutReplacement() ?: sequenceOf()
+        )
     .takeWhile { takeMoreWhile() }
     .filter { it.isNotEmpty() }
     .retainOnlySamplesWithDistinctEditSignature(sanitized) { "${cfg.bimap[listOf(it)].hashCode()}" }
