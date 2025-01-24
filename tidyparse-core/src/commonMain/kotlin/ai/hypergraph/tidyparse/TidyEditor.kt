@@ -58,26 +58,31 @@ abstract class TidyEditor {
     var i = 0
     val upperBound = MAX_RADIUS * 2
     val monoEditBounds = cfg.maxParsableFragmentB(brokenStr, pad = upperBound)
+    val bindex = cfg.bindex
+    val bimap = cfg.bimap
+    val prods = cfg.tripleIntProds
+    val width = cfg.nonterminals.size
     suspend fun pause(freq: Int = 100_000) { if (i++ % freq == 0) { delay(100.nanoseconds) }}
 
     suspend fun nonemptyLevInt(cfg: CFG, levFSA: FSA): Boolean {
       val ap: Map<Pair<Int, Int>, Set<Int>> = levFSA.allPairs
-      val dp = Array(levFSA.numStates) { Array(levFSA.numStates) { BooleanArray(cfg.nonterminals.size) { false } } }
+      val dp = Array(levFSA.numStates) { Array(levFSA.numStates) { BooleanArray(width) { false } } }
 
       levFSA.allIndexedTxs0(cfg).forEach { (q0, nt, q1) -> dp[q0][q1][nt] = true }
 
-      val startIdx = cfg.bindex[START_SYMBOL]
+      val startIdx = bindex[START_SYMBOL]
 
       // For pairs (p,q) in topological order
       for (dist in 0 until levFSA.numStates) {
         for (iP in 0 until levFSA.numStates - dist) {
           val p = iP
           val q = iP + dist
-          for ((A, /*->*/ B, C) in cfg.tripleIntProds) {
+          if (p to q !in levFSA.allPairs) continue
+          for ((A, /*->*/ B, C) in prods) {
             if (!dp[p][q][A]) {
               // Check possible midpoints r in [p+1, q-1]
               // or in general, r in levFSA.allPairs[p->q]
-              for (r in ap[p to q] ?: emptySet()) {
+              for (r in ap[p to q]!!) {
                 pause()
                 if (dp[p][r][B] && dp[r][q][C]) {
                   if (p == 0 && A == startIdx && q in levFSA.finalIdxs) return true
@@ -98,21 +103,20 @@ abstract class TidyEditor {
     } ?: upperBound
 
     val levFSA = makeLevFSA(brokenStr, radius + 1, monoEditBounds)
-    val ap: Map<Pair<Int, Int>, Set<Int>> = levFSA.allPairs
 
     val nStates = levFSA.numStates
-    val startIdx = cfg.bindex[START_SYMBOL]
+    val startIdx = bindex[START_SYMBOL]
 
     // 1) Create dp array of parse trees
-    val dp: Array<Array<Array<PTree?>>> = Array(nStates) { Array(nStates) { Array(cfg.nonterminals.size) { null } } }
+    val dp: Array<Array<Array<PTree?>>> = Array(nStates) { Array(nStates) { Array(width) { null } } }
 
     // 2) Initialize terminal productions A -> a
     for ((p, σ, q) in levFSA.allIndexedTxs1(cfg)) {
-      val Aidxs = cfg.bimap.TDEPS[σ]!!.map { cfg.bindex[it] }
+      val Aidxs = bimap.TDEPS[σ]!!.map { bindex[it] }
       for (Aidx in Aidxs) {
         pause()
         if (!shouldContinue()) return
-        val newLeaf = PTree(root = cfg.bindex[Aidx], branches = PSingleton(σ))
+        val newLeaf = PTree(root = bindex[Aidx], branches = PSingleton(σ))
         dp[p][q][Aidx] = newLeaf + dp[p][q][Aidx]
       }
     }
@@ -121,17 +125,17 @@ abstract class TidyEditor {
     for (dist in 0 until nStates) {
       for (p in 0 until (nStates - dist)) {
         val q = p + dist
+        if (p to q !in levFSA.allPairs) continue
 
-        // For each rule A -> B C
-        for ((Aidx, Bidx, Cidx) in cfg.tripleIntProds) {
+        for (r in levFSA.allPairs[p to q]!!) {
+          for ((Aidx, /*->*/ Bidx, Cidx) in prods) {
           // Check all possible midpoint states r in the DAG from p to q
-          for (r in ap[p to q] ?: emptySet()) {
             pause()
             val left = dp[p][r][Bidx]
             val right = dp[r][q][Cidx]
             if (left != null && right != null) {
               // Found a parse for A
-              val newTree = PTree(cfg.bindex[Aidx], listOf(left to right))
+              val newTree = PTree(bindex[Aidx], listOf(left to right))
               dp[p][q][Aidx] = newTree + dp[p][q][Aidx]
             }
           }
