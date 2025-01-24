@@ -253,7 +253,8 @@ abstract class TidyEditor {
           .let { if (it == 0) "\n\n" else "\n\n...$it more" }
         val statistics = "$moreResults $summary."
         return finally(topNResults.joinToString("\n", "", statistics) {
-          "<span style=\"color: gray\" class=\"noselect\">${i++.toString().padStart(2)}.) </span>${it.first}"
+          val result = "<span style=\"color: gray\" class=\"noselect\">${i++.toString().padStart(2)}.) </span>${it.first}"
+          if (i == 1) "<mark>$result</mark>" else result
         })
       }
 

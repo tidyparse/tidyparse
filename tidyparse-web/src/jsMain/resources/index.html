@@ -18,12 +18,14 @@ STM+ -> STM+ STM | STM
  IFS -> ID = if ( BEXP ) { EXP } else { EXP }
  IFS -> if ( BEXP ) { STM+ } else { STM+ } | if ( BEXP ) { STM+ }
  EXP -> ID | NUM | EXP + EXP | ( EXP ) | ID ( ARGS ) | BEXP
-ARGS -> EXP | EXP , EXP
+ARGS -> EXP | EXP , ARGS
 BEXP -> EXP == EXP | EXP < EXP | ( BEXP ) | LIT | ! BEXP
  LIT -> true | false
 ---
 
 ID = NUM ;
+
+ID = _ _ _ ;
 
 _ _ _ <LIT> _ ID ) _ _ _
 
@@ -46,6 +48,8 @@ ID = if ( ID == true ) { ID ( true ) } else { false ; true }</textarea>
    Usage Tips:
 
    • To trigger an update, modify the editor to the left.
+
+   • Use the ↑/↓ keys to scroll completions, then ↵ to apply.
 
    • All tokens must be separated by one or more whitespaces.
 
@@ -72,6 +76,7 @@ ID = if ( ID == true ) { ID ( true ) } else { false ; true }</textarea>
 
    • If the grammar contains no nonterminal named <span style="color: green; ">START</span>, then
      Tidyparse will add <span style="color: green; ">START</span> <span style="color: gray; ">-></span> {V} for every nonterminal, V.
+
 </div>
 </div>
 <div title="Minimizes total edits per repair." id="check1">
