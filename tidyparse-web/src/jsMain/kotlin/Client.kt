@@ -1,5 +1,5 @@
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.kaliningraph.repair.TIMEOUT_MS
+import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.types.PlatformVars
 import kotlinx.browser.*
 import org.w3c.dom.*
@@ -43,9 +43,12 @@ fun main() {
   if (window.navigator.userAgent.indexOf("hrome") != -1) {
     PlatformVars.PLATFORM_CALLER_STACKTRACE_DEPTH = 4
   }
-  TIMEOUT_MS = 3_000
   jsEditor.getLatestCFG()
-  window.onload = { jsEditor.redecorateLines() }
+  window.onload = {
+    jsEditor.redecorateLines();
+    LED_BUFFER = maxEdits.value.toInt();
+    TIMEOUT_MS = timeout.value.toInt()
+  }
   inputField.addEventListener("input", { jsEditor.run { continuation { handleInput() } } })
   inputField.addEventListener("input", { jsEditor.redecorateLines() })
   inputField.addEventListener("keydown", { event -> jsEditor.navUpdate(event as KeyboardEvent) })
@@ -58,6 +61,8 @@ fun main() {
     } catch (e: Exception) {}
     jsEditor.redecorateLines()
   })
+  timeout.addEventListener("change", { LED_BUFFER = maxEdits.value.toInt() })
+  timeout.addEventListener("change", { TIMEOUT_MS = timeout.value.toInt() })
 }
 
 val decorator by lazy { TextareaDecorator(inputField, parser) }
@@ -66,3 +71,5 @@ val inputField by lazy { document.getElementById("tidyparse-input") as HTMLTextA
 val outputField by lazy { document.getElementById("tidyparse-output") as Node }
 val mincheck by lazy { document.getElementById("minimize-checkbox") as HTMLInputElement }
 val ntscheck by lazy { document.getElementById("ntstubs-checkbox") as HTMLInputElement }
+val timeout by lazy { document.getElementById("timeout") as HTMLInputElement }
+val maxEdits by lazy { document.getElementById("max-edits") as HTMLInputElement }

@@ -214,7 +214,7 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
     nonemptyLevInt(cfg, makeLevFSA(brokenStr, it, monoEditBounds))
   } ?: upperBound
 
-  val levFSA = makeLevFSA(brokenStr, radius + 1, monoEditBounds)
+  val levFSA = makeLevFSA(brokenStr, radius + LED_BUFFER, monoEditBounds)
 
   val nStates = levFSA.numStates
   val startIdx = bindex[START_SYMBOL]

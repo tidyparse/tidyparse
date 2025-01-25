@@ -92,7 +92,7 @@ u {
     color: var(--no-value-color);
 }
 
-#check1, #check2 {
+#confrow1, #confrow2 {
     display: flex;
     justify-content: flex-end;
     margin-top: 20px;
