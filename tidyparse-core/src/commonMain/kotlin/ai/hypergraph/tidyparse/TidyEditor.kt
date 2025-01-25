@@ -4,7 +4,9 @@ import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.automata.FSA
 import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.parsing.*
+import ai.hypergraph.kaliningraph.parsing.contains
 import ai.hypergraph.kaliningraph.repair.MAX_RADIUS
+import ai.hypergraph.kaliningraph.repair.minimizeFix
 import ai.hypergraph.kaliningraph.types.to
 import kotlinx.coroutines.delay
 import org.kosat.round
@@ -25,7 +27,7 @@ abstract class TidyEditor {
   var currentWorkHash = 0
   var minimize = false
   var ntStubs = true
-  val toTake = 27
+  val toTake = 28
 
   abstract fun readDisplayText(): Σᐩ
   abstract fun readEditorText(): Σᐩ
@@ -150,6 +152,10 @@ abstract class TidyEditor {
     PTree(START_SYMBOL, allParses.flatMap { forest -> forest.branches })
 //      .toCFG.also { println("CFG Size: ${it.size}") }.toPTree().also { println("Words: ${it.totalTreesStr}") }
       .sampleStrWithoutReplacement()
+      .let {
+        if (!minimize) it
+        else it.flatMap { minimizeFix(brokenStr, it.tokenizeByWhitespace()) { this in cfg.language } }
+      }
       .enumerateCompletionsInteractively(
         metric = metric,
         shouldContinue = shouldContinue,

@@ -60,10 +60,11 @@ class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): TidyEdito
     val key = event.keyCode.toSelectorAction() ?: return
     val currentText = rawDisplayHTML()
     val lines = currentText.lines()
-    val idx = lines.indexOfFirst { it.startsWith("<mark>") }
-    if (idx == -1) return
+    val htmlIndex = lines.indexOfFirst { it.startsWith("<mark>") }
+    if (htmlIndex == -1) return
     event.preventDefault()
-    selIdx = ModInt(lines[idx].substringBefore(".)").substringAfterLast('>').trim().toInt(), toTake) +
+    val currentIdx = lines[htmlIndex].substringBefore(".)").substringAfterLast('>').trim().toInt()
+    selIdx = ModInt(currentIdx, minOf(toTake, lines.size - 4)) +
         when (key) {
           SelectorAction.ENTER -> {
             val selection = readDisplayText().lines()[selIdx.v + 2].substringAfter(".) ")
@@ -76,7 +77,7 @@ class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): TidyEdito
           SelectorAction.ARROW_UP -> -1
         }
     writeDisplayText(lines.mapIndexed { i, line ->
-      if (i == idx) line.drop(6).dropLast(7)
+      if (i == htmlIndex) line.drop(6).dropLast(7)
       else if (i == selIdx.v + 2) "<mark>$line</mark>"
       else line
     }.joinToString("\n"))
