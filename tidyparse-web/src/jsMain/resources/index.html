@@ -13,7 +13,7 @@
 <div id="content">
     <textarea id="tidyparse-input" class="ldt" spellcheck="false">
 START -> STM+
-STM+ -> STM+ STM | STM
+STM+ -> STM+ ; STM | STM
  STM -> ID = EXP ; | IFS | while ( BEXP ) { STM+ }
  IFS -> ID = if ( BEXP ) { EXP } else { EXP }
  IFS -> if ( BEXP ) { STM+ } else { STM+ } | if ( BEXP ) { STM+ }
