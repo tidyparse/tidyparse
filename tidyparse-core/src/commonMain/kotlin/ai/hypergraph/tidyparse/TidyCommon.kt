@@ -223,7 +223,8 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
   val dp: Array<Array<Array<PTree?>>> = Array(nStates) { Array(nStates) { Array(width) { null } } }
 
   // 2) Initialize terminal productions A -> a
-  for ((p, σ, q) in levFSA.allIndexedTxs1(cfg)) {
+  val aitx = levFSA.allIndexedTxs1(cfg)
+  for ((p, σ, q) in aitx) {
     val Aidxs = bimap.TDEPS[σ]!!.map { bindex[it] }
     for (Aidx in Aidxs) {
       pause()

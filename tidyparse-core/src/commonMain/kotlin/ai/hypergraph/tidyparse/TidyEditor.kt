@@ -36,7 +36,7 @@ abstract class TidyEditor {
   fun getLatestCFG(): CFG {
     val grammar: String = getGrammarText()
     return try {
-      if (grammar != grammarFileCache || cfg.isNotEmpty()) {
+      if (grammar != grammarFileCache || cfg.isEmpty()) {
         grammar.also { grammarFileCache = it }
           .parseCFG(validate = true)
           .let { if (ntStubs) it else it.noNonterminalStubs }
