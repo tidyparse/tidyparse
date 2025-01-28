@@ -1,5 +1,5 @@
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.kaliningraph.repair.pythonCNF
+import ai.hypergraph.kaliningraph.repair.pythonStatementCNF
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.tidyparse.*
 import kotlinx.coroutines.*
@@ -7,9 +7,9 @@ import org.w3c.dom.*
 
 class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val output: Node) : JSTidyEditor(editor, output) {
 
-  override var cfg = pythonCNF
+  override var cfg = pythonStatementCNF
 
-  override fun getLatestCFG(): CFG = pythonCNF
+  override fun getLatestCFG(): CFG = pythonStatementCNF
 
   override fun redecorateLines(cfg: CFG) {
     val currentHash = ++hashIter
@@ -17,8 +17,8 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     fun decorate() {
       if (currentHash != hashIter) return
       val decCFG = getLatestCFG()
-      preparseParseableLines(pythonCNF, readEditorText()) {
-        PyCodeSnippet(it).lexedTokens() in pythonCNF.language
+      preparseParseableLines(pythonStatementCNF, readEditorText()) {
+        PyCodeSnippet(it).lexedTokens() in pythonStatementCNF.language
       }
       if (currentHash == hashIter) decorator.fullDecorate(decCFG)
     }
@@ -34,7 +34,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     val tokens = pcs.lexedTokens().tokenizeByWhitespace()
 
     println("Repairing: " + tokens.dropLast(1).joinToString(" "))
-    val cfg = pythonCNF
+    val cfg = pythonStatementCNF
 
     var containsUnk = false
     val abstractUnk = tokens.map { if (it in cfg.terminals) it else { containsUnk = true; "_" } }
@@ -53,7 +53,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     } else /* Repair */ Unit.also {
       runningJob = MainScope().launch {
         initiateSuspendableRepair(tokens, cfg)
-          .map { it.replace("NEWLINE", "").trim() }
+          .map { it.dropLast(8) }
           .enumerateInteractively(workHash, tokens.dropLast(1),
             customDiff = {
               val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())
