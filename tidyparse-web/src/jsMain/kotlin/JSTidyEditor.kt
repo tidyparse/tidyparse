@@ -6,7 +6,7 @@ import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
 
 /** Compare with [ai.hypergraph.tidyparse.IJTidyEditor] */
-class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): TidyEditor() {
+open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: Node): TidyEditor() {
   companion object {
     private fun HTMLTextAreaElement.getEndOfLineIdx() =
       // Gets the end of the line or the end of the string, whichever comes first
@@ -70,7 +70,7 @@ class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): TidyEdito
           val selection = readDisplayText().lines()[selIdx.v + 2].substringAfter(".) ")
           overwriteCurrentLine(selection.tokenizeByWhitespace().joinToString(" "))
           redecorateLines()
-          jsEditor.run { continuation { handleInput() } }
+          continuation { handleInput() }
           return
         }
         SelectorAction.ARROW_DOWN -> 1

@@ -43,12 +43,20 @@ fun main() {
   if (window.navigator.userAgent.indexOf("hrome") != -1) {
     PlatformVars.PLATFORM_CALLER_STACKTRACE_DEPTH = 4
   }
+
+  if (window["PROGRAMMING_LANG"] == "python") pythonSetup() else defaultSetup()
+}
+
+fun defaultSetup() {
+  println("Starting Tidyparse/CFG")
   jsEditor.getLatestCFG()
+
   window.onload = {
-    jsEditor.redecorateLines();
-    LED_BUFFER = maxEdits.value.toInt();
+    jsEditor.redecorateLines()
+    LED_BUFFER = maxEdits.value.toInt()
     TIMEOUT_MS = timeout.value.toInt()
   }
+
   inputField.addEventListener("input", { jsEditor.run { continuation { handleInput() } } })
   inputField.addEventListener("input", { jsEditor.redecorateLines() })
   inputField.addEventListener("keydown", { event -> jsEditor.navUpdate(event as KeyboardEvent) })
@@ -65,8 +73,29 @@ fun main() {
   timeout.addEventListener("change", { TIMEOUT_MS = timeout.value.toInt() })
 }
 
+fun pythonSetup() {
+  println("Starting TidyPython")
+
+//  println(PyCodeSnippet("[j for j in i]").lexedTokens())
+  inputField.addEventListener("input", { jsPyEditor.run { continuation { handleInput() } } })
+
+  window.onload = {
+    jsPyEditor.redecorateLines()
+//    LED_BUFFER = maxEdits.value.toInt()
+    TIMEOUT_MS = timeout.value.toInt()
+    jsPyEditor.minimize = true
+  }
+  inputField.addEventListener("input", { jsPyEditor.redecorateLines() })
+  inputField.addEventListener("keydown", { event -> jsPyEditor.navUpdate(event as KeyboardEvent) })
+
+  mincheck.addEventListener("change", { jsEditor.minimize = mincheck.checked })
+  timeout.addEventListener("change", { LED_BUFFER = maxEdits.value.toInt() })
+  timeout.addEventListener("change", { TIMEOUT_MS = timeout.value.toInt() })
+}
+
 val decorator by lazy { TextareaDecorator(inputField, parser) }
 val jsEditor by lazy { JSTidyEditor(inputField, outputField) }
+val jsPyEditor by lazy { JSTidyPyEditor(inputField, outputField) }
 val inputField by lazy { document.getElementById("tidyparse-input") as HTMLTextAreaElement }
 val outputField by lazy { document.getElementById("tidyparse-output") as Node }
 val mincheck by lazy { document.getElementById("minimize-checkbox") as HTMLInputElement }

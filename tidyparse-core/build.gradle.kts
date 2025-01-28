@@ -62,6 +62,8 @@ kotlin {
   }
 }
 
+val pkgName = "com.strumenta.antlrkotlin.parsers.generated"
+val outDir = "generatedAntlr/${pkgName.replace(".", "/")}"
 // https://github.com/Strumenta/antlr-kotlin/tree/master?tab=readme-ov-file#gradle-setup
 val generateKotlinGrammarSource = tasks.register<AntlrKotlinTask>("generateKotlinGrammarSource") {
   dependsOn("cleanGenerateKotlinGrammarSource")
@@ -74,7 +76,6 @@ val generateKotlinGrammarSource = tasks.register<AntlrKotlinTask>("generateKotli
   }
 
   // We want the generated source files to have this package name
-  val pkgName = "com.strumenta.antlrkotlin.parsers.generated"
   packageName = pkgName
 
   // We want visitors alongside listeners.
@@ -82,8 +83,23 @@ val generateKotlinGrammarSource = tasks.register<AntlrKotlinTask>("generateKotli
   arguments = listOf("-visitor")
 
   // Generated files are outputted inside build/generatedAntlr/{package-name}
-  val outDir = "generatedAntlr/${pkgName.replace(".", "/")}"
   outputDirectory = layout.buildDirectory.dir(outDir).get().asFile
+
 }
 
-tasks.withType<KotlinCompile<*>> { dependsOn(generateKotlinGrammarSource) }
+val modifyGeneratedAntlrSources = tasks.register("modifyGeneratedAntlrSources") {
+  dependsOn(generateKotlinGrammarSource)
+  doLast {
+    val python3LexerFile = layout.buildDirectory.file("$outDir/Python3Lexer.kt").get().asFile
+    if (python3LexerFile.exists()) {
+      val original = python3LexerFile.readText()
+      val modified = original.replace("private ", "")
+      python3LexerFile.writeText(modified)
+      println("Modified ${python3LexerFile.name}")
+    }
+  }
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
+  dependsOn(modifyGeneratedAntlrSources)
+}

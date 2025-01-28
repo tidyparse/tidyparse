@@ -1,0 +1,66 @@
+import ai.hypergraph.kaliningraph.parsing.*
+import ai.hypergraph.kaliningraph.repair.pythonCNF
+import ai.hypergraph.kaliningraph.tokenizeByWhitespace
+import ai.hypergraph.tidyparse.*
+import kotlinx.coroutines.*
+import org.w3c.dom.*
+
+class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val output: Node) : JSTidyEditor(editor, output) {
+
+  override var cfg = pythonCNF
+
+  override fun getLatestCFG(): CFG = pythonCNF
+
+  override fun redecorateLines(cfg: CFG) {
+    val currentHash = ++hashIter
+
+    fun decorate() {
+      if (currentHash != hashIter) return
+      val decCFG = getLatestCFG()
+      preparseParseableLines(pythonCNF, readEditorText()) {
+        PyCodeSnippet(it).lexedTokens() in pythonCNF.language
+      }
+      if (currentHash == hashIter) decorator.fullDecorate(decCFG)
+    }
+
+    continuation { decorate() }
+//    println("Redecorated in ${timer.elapsedNow()}")
+  }
+
+  override fun handleInput() {
+    val currentLine = currentLine().also { println("Current line is: $it") }
+    if (currentLine.isBlank()) return
+    val pcs = PyCodeSnippet(currentLine)
+    val tokens = pcs.lexedTokens().tokenizeByWhitespace()
+
+    println("Repairing: " + tokens.dropLast(1).joinToString(" "))
+    val cfg = pythonCNF
+
+    var containsUnk = false
+    val abstractUnk = tokens.map { if (it in cfg.terminals) it else { containsUnk = true; "_" } }
+
+    val workHash = abstractUnk.hashCode() + cfg.hashCode()
+    if (workHash == currentWorkHash) return
+    currentWorkHash = workHash
+
+    if (workHash in cache) return writeDisplayText(cache[workHash]!!)
+
+    runningJob?.cancel()
+
+    if (!containsUnk && tokens in cfg.language) {
+//      val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
+      writeDisplayText("✅ ${tokens.joinToString(" ")}".also { cache[workHash] = it })
+    } else /* Repair */ Unit.also {
+      runningJob = MainScope().launch {
+        initiateSuspendableRepair(tokens, cfg)
+          .map { it.replace("NEWLINE", "").trim() }
+          .enumerateInteractively(workHash, tokens.dropLast(1),
+            customDiff = {
+              val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())
+              pcs.paintDiff(levAlign)
+            }
+          )
+      }
+    }
+  }
+}

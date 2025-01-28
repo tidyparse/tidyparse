@@ -19,7 +19,7 @@ val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
 
 abstract class TidyEditor {
   // TODO: eliminate this completely
-  var cfg: CFG = setOf()
+  open var cfg: CFG = setOf()
   var grammarFileCache: String = ""
   var cache = mutableMapOf<Int, String>()
   var currentWorkHash = 0
@@ -33,7 +33,7 @@ abstract class TidyEditor {
   abstract fun writeDisplayText(s: Σᐩ)
   abstract fun writeDisplayText(s: (Σᐩ) -> Σᐩ)
 
-  fun getLatestCFG(): CFG {
+  open fun getLatestCFG(): CFG {
     val grammar: String = getGrammarText()
     return try {
       if (grammar != grammarFileCache || cfg.isEmpty()) {
@@ -86,18 +86,18 @@ abstract class TidyEditor {
     }
   }
 
-  private fun Sequence<String>.enumerateInteractively(
+  protected fun Sequence<String>.enumerateInteractively(
     workHash: Int,
     tokens: List<String>,
     timer: TimeSource.Monotonic.ValueTimeMark = TimeSource.Monotonic.markNow(),
     metric: (List<String>) -> Int = { levenshtein(tokens, it) * 7919 +
         (tokens.sumOf { it.length } - it.sumOf { it.length }).absoluteValue},
     shouldContinue: () -> Boolean = { currentWorkHash == workHash && timer.hasTimeLeft() },
+    customDiff: (String) -> String = { levenshteinAlign(tokens.joinToString(" "), it).paintDiffs() }
   ) = this.let {
     if (!minimize) it
     else it.flatMap { minimizeFix(tokens, it.tokenizeByWhitespace()) { this in cfg.language } }
   }.enumerateCompletionsInteractively(
-    currentLine(),
     metric = metric,
     shouldContinue = shouldContinue,
     postResults = { writeDisplayText("$invalidPrefix$it") },
@@ -106,7 +106,8 @@ abstract class TidyEditor {
       if (currentWorkHash == workHash)
         writeDisplayText("$invalidPrefix$it".also { cache[workHash] = it })
       println("Completed in ${timer.elapsedNow().inWholeMilliseconds}ms")
-    }
+    },
+    customDiff = customDiff
   )
 
   fun caretInGrammar(): Boolean =

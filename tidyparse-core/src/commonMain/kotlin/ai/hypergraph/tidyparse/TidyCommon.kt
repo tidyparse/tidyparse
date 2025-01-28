@@ -109,13 +109,13 @@ suspend fun CFG.maxParsableFragmentB(tokens: List<Σᐩ>, pad: Int = 3): Pair<In
 val toTake = 29
 
 fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
-  currentLine: Σᐩ,
   resultsToPost: Int = toTake,
   metric: (List<Σᐩ>) -> Int,
   shouldContinue: () -> Boolean,
   postResults: (Σᐩ) -> Unit,
   finally: (Σᐩ) -> Unit = { postResults(it) },
-  localContinuation: (() -> Unit) -> Any = { it() }
+  localContinuation: (() -> Unit) -> Any = { it() },
+  customDiff: (String) -> String
 ) {
   val results = mutableSetOf<Σᐩ>()
   val topNResults = mutableListOf<Pair<Σᐩ, Int>>()
@@ -145,11 +145,11 @@ fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
     val next = iter.next()
     totalResults++
     if (next.isNotEmpty() && next !in results) {
-      println("Found: $next")
+//      println("Found: $next")
       results.add(next)
       val score = metric(next.tokenizeByWhitespace())
       if (topNResults.size < resultsToPost || score < topNResults.last().second) {
-        val html = levenshteinAlign(currentLine, next).paintDiffs()
+        val html = customDiff(next)
         val loc = topNResults.binarySearch { it.second.compareTo(score) }
         val idx = if (loc < 0) { -loc - 1 } else loc
         topNResults.add(idx, html to score)
@@ -170,6 +170,7 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
   var i = 0
   val upperBound = MAX_RADIUS * 2
   val monoEditBounds = cfg.maxParsableFragmentB(brokenStr, pad = upperBound)
+  val timer = TimeSource.Monotonic.markNow()
   val bindex = cfg.bindex
   val bimap = cfg.bimap
   val prods = cfg.tripleIntProds
@@ -228,7 +229,7 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
     val Aidxs = bimap.TDEPS[σ]!!.map { bindex[it] }
     for (Aidx in Aidxs) {
       pause()
-      val newLeaf = PTree(root = bindex[Aidx], branches = PSingleton(σ))
+      val newLeaf = PTree(root = ""/*bindex[Aidx]*/, branches = PSingleton(σ))
       dp[p][q][Aidx] = newLeaf + dp[p][q][Aidx]
     }
   }
@@ -247,7 +248,7 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
           val right = dp[r][q][Cidx]
           if (left != null && right != null) {
             // Found a parse for A
-            val newTree = PTree(bindex[Aidx], listOf(left to right))
+            val newTree = PTree(""/*bindex[Aidx]*/, listOf(left to right))
             dp[p][q][Aidx] = newTree + dp[p][q][Aidx]
           }
         }
@@ -258,11 +259,13 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
   // 4) Gather final parse trees from dp[0][f][startIdx], for all final states f
   val allParses = levFSA.finalIdxs.mapNotNull { q -> dp[0][q][startIdx] }
 
-  return if (allParses.isEmpty()) sequenceOf()
+  return (if (allParses.isEmpty()) sequenceOf()
   // 5) Combine them under a single "super‐root"
   else PTree(START_SYMBOL, allParses.flatMap { forest -> forest.branches })
 //      .toCFG.also { println("CFG Size: ${it.size}") }.toPTree().also { println("Words: ${it.totalTreesStr}") }
-    .sampleStrWithoutReplacement()
+    .sampleStrWithoutReplacement()).also {
+    println("Took ${timer.elapsedNow()} parse for |A|=$nStates, |G|=${cfg.size}")
+  }
 }
 
 fun displayComparator(tokens: List<Σᐩ>): Comparator<Σᐩ> =
