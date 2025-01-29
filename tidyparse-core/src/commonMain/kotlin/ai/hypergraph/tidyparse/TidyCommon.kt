@@ -173,8 +173,8 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
   val timer = TimeSource.Monotonic.markNow()
   val bindex = cfg.bindex
   val bimap = cfg.bimap
-  val prods = cfg.tripleIntProds
   val width = cfg.nonterminals.size
+  val vindex = cfg.vindex
   suspend fun pause(freq: Int = 100_000) { if (i++ % freq == 0) { delay(100.nanoseconds) }}
 
   suspend fun nonemptyLevInt(cfg: CFG, levFSA: FSA): Boolean {
@@ -190,20 +190,22 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
       for (iP in 0 until levFSA.numStates - dist) {
         val p = iP
         val q = iP + dist
-        if (p to q !in levFSA.allPairs) continue
-        for ((A, /*->*/ B, C) in prods) {
-          if (!dp[p][q][A]) {
-            // Check possible midpoints r in [p+1, q-1]
-            // or in general, r in levFSA.allPairs[p->q]
-            for (r in ap[p to q]!!) {
-              pause()
+        if (p to q !in ap) continue
+        val appq = ap[p to q]!!
+        for ((A, indexArray) in vindex.withIndex()) {
+          pause()
+          outerloop@for(j in 0..<indexArray.size step 2) {
+            val B = indexArray[j]
+            val C = indexArray[j + 1]
+            for (r in appq) {
               if (dp[p][r][B] && dp[r][q][C]) {
-                if (p == 0 && A == startIdx && q in levFSA.finalIdxs) return true
                 dp[p][q][A] = true
-                break
+                break@outerloop
               }
             }
           }
+
+          if (p == 0 && A == startIdx && q in levFSA.finalIdxs && dp[p][q][A]) return true
         }
       }
     }
@@ -214,6 +216,8 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
   val radius = (2 until upperBound).firstOrNull {
     nonemptyLevInt(cfg, makeLevFSA(brokenStr, it, monoEditBounds))
   } ?: upperBound
+
+  println("Identified LED=$radius in ${timer.elapsedNow()}")
 
   val levFSA = makeLevFSA(brokenStr, radius + LED_BUFFER, monoEditBounds)
 
@@ -239,22 +243,31 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
     for (p in 0 until (nStates - dist)) {
       val q = p + dist
       if (p to q !in levFSA.allPairs) continue
-
-      for (r in levFSA.allPairs[p to q]!!) {
-        for ((Aidx, /*->*/ Bidx, Cidx) in prods) {
-          // Check all possible midpoint states r in the DAG from p to q
+      val appq = levFSA.allPairs[p to q]!!
+      for ((Aidx, indexArray) in vindex.withIndex()) {
+//        println("${cfg.bindex[Aidx]}(${pm!!.ntLengthBounds[Aidx]}):${levFSA.stateLst[p]}-${levFSA.stateLst[q]}(${levFSA.SPLP(p, q)})")
+        val rhsPairs = dp[p][q][Aidx]?.branches?.toMutableList() ?: mutableListOf()
+        outerLoop@for (j in 0..<indexArray.size step 2) {
           pause()
-          val left = dp[p][r][Bidx]
-          val right = dp[r][q][Cidx]
-          if (left != null && right != null) {
-            // Found a parse for A
-            val newTree = PTree(""/*bindex[Aidx]*/, listOf(left to right))
-            dp[p][q][Aidx] = newTree + dp[p][q][Aidx]
+          val Bidx = indexArray[j]
+          val Cidx = indexArray[j + 1]
+          for (r in appq) {
+            val left = dp[p][r][Bidx]
+            val right = dp[r][q][Cidx]
+            if (left != null && right != null) {
+              // Found a parse for A
+              rhsPairs += left to right
+//              if (rhsPairs.size > 10) break@outerLoop
+            }
           }
         }
+
+        if (rhsPairs.isNotEmpty()) dp[p][q][Aidx] = PTree("", rhsPairs)
       }
     }
   }
+
+  println("Completed parse matrix in: ${timer.elapsedNow()}")
 
   // 4) Gather final parse trees from dp[0][f][startIdx], for all final states f
   val allParses = levFSA.finalIdxs.mapNotNull { q -> dp[0][q][startIdx] }

@@ -39,7 +39,7 @@ data class PyCodeSnippet(val rawCode: String) {
    * The patch is given as a list of (oldTokenType?, newTokenType?) pairs.
    */
   fun paintDiff(levAlignedPatch: List<Pair<String?, String?>>): String {
-    println("TOKENS: ${tokens.map { Python3Lexer.VOCABULARY.getDisplayName(it.type) }}")
+//    println("TOKENS: ${tokens.map { Python3Lexer.VOCABULARY.getDisplayName(it.type) }}")
     val sb = StringBuilder()
     var indexInOriginal = 0
 

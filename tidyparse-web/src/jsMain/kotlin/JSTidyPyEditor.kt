@@ -9,7 +9,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
   override var cfg = pythonStatementCNF
 
-  override fun getLatestCFG(): CFG = pythonStatementCNF
+  override fun getLatestCFG(): CFG = cfg
 
   override fun redecorateLines(cfg: CFG) {
     val currentHash = ++hashIter
@@ -34,7 +34,6 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     val tokens = pcs.lexedTokens().tokenizeByWhitespace()
 
     println("Repairing: " + tokens.dropLast(1).joinToString(" "))
-    val cfg = pythonStatementCNF
 
     var containsUnk = false
     val abstractUnk = tokens.map { if (it in cfg.terminals) it else { containsUnk = true; "_" } }
@@ -53,7 +52,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     } else /* Repair */ Unit.also {
       runningJob = MainScope().launch {
         initiateSuspendableRepair(tokens, cfg)
-          .map { it.dropLast(8) }
+          .map { it.dropLast(8).replace("OR", "|") }
           .enumerateInteractively(workHash, tokens.dropLast(1),
             customDiff = {
               val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())
