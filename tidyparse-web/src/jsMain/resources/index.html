@@ -11,39 +11,7 @@
 <!-- Now render the pluginIcon.svg next to the header: -->
 <h1><img style="display: inline;" src="/pluginIcon.svg" width="26">&nbsp;&nbsp;Tidyparse Browser Demonstration</h1>
 <div id="content">
-    <textarea id="tidyparse-input" class="ldt" spellcheck="false">
-START -> STM+
-STM+ -> STM+ ; STM | STM
- STM -> ID = EXP ; | IFS | while ( BEXP ) { STM+ }
- IFS -> ID = if ( BEXP ) { EXP } else { EXP }
- IFS -> if ( BEXP ) { STM+ } else { STM+ } | if ( BEXP ) { STM+ }
- EXP -> ID | NUM | EXP + EXP | ( EXP ) | ID ( ARGS ) | BEXP
-ARGS -> EXP | EXP , ARGS
-BEXP -> EXP == EXP | EXP < EXP | ( BEXP ) | LIT | ! BEXP
- LIT -> true | false
----
-
-ID = NUM ;
-
-ID = _ _ _ ;
-
-_ _ _ <LIT> _ ID ) _ _ _
-
-<LIT> ( <LIT> + ID )
-
-if ( ID < NUM ) { ID = ID ; } else { ID = ID + NUM ; }
-
-if ( ID < NUM ) { ID = ID ; } else { ID = ID + NUM ;
-
-while ( ID == NUM ) { ID = ID + NUM ; }
-
-while ( ID == NUM ) { ID ID + NUM ; }
-
-while ( ID == NUM { ID ID + NUM ; } }
-
-ID = if ( ID == true ) { ID ( true ) } else { false < true }
-
-ID = if ( ID == true ) { ID ( true ) } else { false ; true }</textarea>
+<textarea id="tidyparse-input" class="ldt" spellcheck="false"></textarea>
 <div id="tidyparse-output" class="panel">
    Usage Tips:
 
@@ -76,15 +44,21 @@ ID = if ( ID == true ) { ID ( true ) } else { false ; true }</textarea>
 
    • If the grammar contains no nonterminal named <span style="color: green; ">START</span>, then
      Tidyparse will add <span style="color: green; ">START</span> <span style="color: gray; ">-></span> {V} for every nonterminal, V.
-
 </div>
 </div>
-<div title="Minimizes total edits per repair." id="confrow1">
+<div id="confrow1">
+    <label for="ex-selector">Editor example:</label>
+    <select id="ex-selector" style="margin-right: 430px; margin-left: 0.4em">
+        <option value="examples/nontrivial/pl_while.tidy">Toy While Language</option>
+        <option value="examples/arithmetic/checked/arithmetic.tidy">Checked Arithmetic</option>
+        <option value="examples/lambda/lambda_app.tidy">Lambda Calculus</option>
+        <option value="examples/def_before_use/def_before_use.tidy">Def-Before-Use</option>
+    </select>
   <label>Generation timeout:<input id="timeout" type="number" value="1000" min="100" step="100" style="margin-left: 0.4em; margin-right: 0.4em; width: 5em" >ms</label><div style="margin-right: 4em"></div>
   <label for="minimize-checkbox">Minimize repairs&nbsp;</label>
   <input type="checkbox" id="minimize-checkbox">
 </div>
-<div title="Adds nonterminal stubs to CFG." id="confrow2">
+<div id="confrow2">
   <label>Max edit distance: <a href="https://en.wikipedia.org/wiki/Edit_distance#Language_edit_distance">LED</a> + <input id="max-edits" type="number" value="1" min="1" max="3" step="1" style="margin-right: 0.4em"></label><div style="margin-right: 4.43em"></div>
   <label for="ntstubs-checkbox">Nonterminal stubs&nbsp;</label>
   <input type="checkbox" id="ntstubs-checkbox" checked>

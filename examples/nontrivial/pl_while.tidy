@@ -1,15 +1,17 @@
 START -> STM+
-STM+ -> STM+ STM | STM
+STM+ -> STM+ ; STM | STM
  STM -> ID = EXP ; | IFS | while ( BEXP ) { STM+ }
  IFS -> ID = if ( BEXP ) { EXP } else { EXP }
  IFS -> if ( BEXP ) { STM+ } else { STM+ } | if ( BEXP ) { STM+ }
  EXP -> ID | NUM | EXP + EXP | ( EXP ) | ID ( ARGS ) | BEXP
-ARGS -> EXP | EXP , EXP
+ARGS -> EXP | EXP , ARGS
 BEXP -> EXP == EXP | EXP < EXP | ( BEXP ) | LIT | ! BEXP
  LIT -> true | false
 ---
 
 ID = NUM ;
+
+ID = _ _ _ ;
 
 _ _ _ <LIT> _ ID ) _ _ _
 

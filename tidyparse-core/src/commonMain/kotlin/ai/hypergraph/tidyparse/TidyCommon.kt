@@ -269,6 +269,22 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
 
   println("Completed parse matrix in: ${timer.elapsedNow()}")
 
+  /* Too slow?
+  // 4) Gather successful PTrees for each Levenshtein distance shell from LED to max radius
+  //    and enumerate repairs in increasing order by Levenshtein distance
+  val allParses = levFSA.finalIdxs.groupBy { levFSA.idsToCoords[it]!!.second }
+    .let { distToFinalStates ->
+      distToFinalStates.keys.sorted().map { dist ->
+        distToFinalStates[dist]!!.mapNotNull { dp[0][it][startIdx]?.branches }.flatten().let {
+          if (it.isEmpty()) emptySequence()
+          else PTree(START_SYMBOL, it).sampleStrWithoutReplacement()
+        }
+      }.fold(emptySequence<Σᐩ>()) { acc, p -> acc + p }
+    }.also { println("Took ${timer.elapsedNow()} parse for |A|=$nStates, |G|=${cfg.size}") }
+
+  return allParses
+   */
+
   // 4) Gather final parse trees from dp[0][f][startIdx], for all final states f
   val allParses = levFSA.finalIdxs.mapNotNull { q -> dp[0][q][startIdx] }
 

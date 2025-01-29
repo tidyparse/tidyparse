@@ -68,7 +68,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
       when (key) {
         SelectorAction.ENTER -> {
           val selection = readDisplayText().lines()[selIdx.v + 2].substringAfter(".) ")
-          println("SEL: " + selection)
+          println("SEL: $selection")
           overwriteCurrentLine(selection.tokenizeByWhitespace().joinToString(" "))
           redecorateLines()
           continuation { handleInput() }

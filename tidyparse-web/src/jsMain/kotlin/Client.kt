@@ -2,6 +2,7 @@ import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.types.PlatformVars
 import kotlinx.browser.*
+import kotlinx.coroutines.*
 import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
 
@@ -49,9 +50,10 @@ fun main() {
 
 fun defaultSetup() {
   println("Starting Tidyparse/CFG")
-  jsEditor.getLatestCFG()
 
   window.onload = {
+    handleSelect()
+    jsEditor.getLatestCFG()
     jsEditor.redecorateLines()
     LED_BUFFER = maxEdits.value.toInt()
     TIMEOUT_MS = timeout.value.toInt()
@@ -59,6 +61,8 @@ fun defaultSetup() {
 
   inputField.addEventListener("input", { jsEditor.run { continuation { handleInput() } } })
   inputField.addEventListener("input", { jsEditor.redecorateLines() })
+  selectElement?.addEventListener("change", { handleSelect() })
+
   inputField.addEventListener("keydown", { event -> jsEditor.navUpdate(event as KeyboardEvent) })
   mincheck.addEventListener("change", { jsEditor.minimize = mincheck.checked })
   ntscheck.addEventListener("change", {
@@ -66,7 +70,7 @@ fun defaultSetup() {
     try {
       jsEditor.cfg = jsEditor.getGrammarText().parseCFG(validate = true)
         .let { if (ntscheck.checked) it else it.noNonterminalStubs }
-    } catch (e: Exception) {}
+    } catch (_: Exception) {}
     jsEditor.redecorateLines()
   })
   timeout.addEventListener("change", { LED_BUFFER = maxEdits.value.toInt() })
@@ -93,6 +97,7 @@ fun pythonSetup() {
   timeout.addEventListener("change", { TIMEOUT_MS = timeout.value.toInt() })
 }
 
+val selectElement by lazy { document.getElementById("ex-selector") as? HTMLSelectElement }
 val decorator by lazy { TextareaDecorator(inputField, parser) }
 val jsEditor by lazy { JSTidyEditor(inputField, outputField) }
 val jsPyEditor by lazy { JSTidyPyEditor(inputField, outputField) }
@@ -102,3 +107,17 @@ val mincheck by lazy { document.getElementById("minimize-checkbox") as HTMLInput
 val ntscheck by lazy { document.getElementById("ntstubs-checkbox") as HTMLInputElement }
 val timeout by lazy { document.getElementById("timeout") as HTMLInputElement }
 val maxEdits by lazy { document.getElementById("max-edits") as HTMLInputElement }
+
+fun handleSelect() {
+  MainScope().launch {
+    val response = window.fetch(selectElement!!.value).await()
+    if (response.ok) {
+      val text = response.text().await()
+      inputField.apply {
+        value = text
+        window.setTimeout({scrollIntoView(js("{ behavior: 'instant', block: 'end' }"))}, 1)
+      }
+      jsEditor.redecorateLines()
+    } else console.error("Failed to load file: ${response.status}")
+  }
+}
