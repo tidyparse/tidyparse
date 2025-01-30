@@ -1,19 +1,12 @@
 package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.*
-import ai.hypergraph.kaliningraph.automata.FSA
 import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.kaliningraph.parsing.contains
-import ai.hypergraph.kaliningraph.repair.MAX_RADIUS
 import ai.hypergraph.kaliningraph.repair.minimizeFix
-import kotlinx.coroutines.delay
-import org.kosat.round
-import kotlin.math.absoluteValue
-import kotlin.time.*
-import kotlin.time.DurationUnit.SECONDS
 import kotlinx.coroutines.*
-import kotlin.time.Duration.Companion.nanoseconds
+import kotlin.math.absoluteValue
+import kotlin.time.TimeSource
 
 val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
 
@@ -95,7 +88,7 @@ abstract class TidyEditor {
     shouldContinue: () -> Boolean = { currentWorkHash == workHash && timer.hasTimeLeft() },
     customDiff: (String) -> String = { levenshteinAlign(tokens.joinToString(" "), it).paintDiffs() }
   ) = this.let {
-    if (!minimize) it
+    if (!minimize || "_" in tokens) it
     else it.flatMap { minimizeFix(tokens, it.tokenizeByWhitespace()) { this in cfg.language } }
   }.enumerateCompletionsInteractively(
     metric = metric,

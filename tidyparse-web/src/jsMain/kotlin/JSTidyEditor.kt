@@ -45,7 +45,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
   class ModInt(val v: Int, val j: Int) { operator fun plus(i: Int) = ModInt(((v + i) % j + j) % j, j) }
 
-  var selIdx: ModInt = ModInt(0, toTake)
+  var selIdx: ModInt = ModInt(2, toTake)
 
   enum class SelectorAction { ENTER, ARROW_DOWN, ARROW_UP }
 
@@ -64,19 +64,17 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     if (htmlIndex == -1) return
     event.preventDefault()
     val currentIdx = lines[htmlIndex].substringBefore(".)").substringAfterLast('>').trim().toInt()
-    selIdx = ModInt(currentIdx, minOf(toTake, lines.size - 4)) +
-      when (key) {
-        SelectorAction.ENTER -> {
-          val selection = readDisplayText().lines()[selIdx.v + 2].substringAfter(".) ")
-          println("SEL: $selection")
-          overwriteCurrentLine(selection.tokenizeByWhitespace().joinToString(" "))
-          redecorateLines()
-          continuation { handleInput() }
-          return
-        }
-        SelectorAction.ARROW_DOWN -> 1
-        SelectorAction.ARROW_UP -> -1
+    when (key) {
+      SelectorAction.ENTER -> {
+        val selection = readDisplayText().lines()[currentIdx + 2].substringAfter(".) ")
+        overwriteCurrentLine(selection.tokenizeByWhitespace().joinToString(" "))
+        redecorateLines()
+        continuation { handleInput() }
+        return
       }
+      SelectorAction.ARROW_DOWN -> selIdx = ModInt(currentIdx, minOf(toTake, lines.size - 4)) + 1
+      SelectorAction.ARROW_UP -> selIdx = ModInt(currentIdx, minOf(toTake, lines.size - 4)) + -1
+    }
     writeDisplayText(lines.mapIndexed { i, line ->
       if (i == htmlIndex) line.drop(6).dropLast(7)
       else if (i == selIdx.v + 2) "<mark>$line</mark>"
