@@ -52,7 +52,7 @@ fun defaultSetup() {
   println("Starting Tidyparse/CFG")
 
   window.onload = {
-    handleSelect()
+    fetchSelectedExample()
     jsEditor.getLatestCFG()
     jsEditor.redecorateLines()
     LED_BUFFER = maxEdits.value.toInt()
@@ -61,7 +61,7 @@ fun defaultSetup() {
 
   inputField.addEventListener("input", { jsEditor.run { continuation { handleInput() } } })
   inputField.addEventListener("input", { jsEditor.redecorateLines() })
-  selectElement?.addEventListener("change", { handleSelect() })
+  exSelector.addEventListener("change", { fetchSelectedExample() })
 
   inputField.addEventListener("keydown", { event -> jsEditor.navUpdate(event as KeyboardEvent) })
   mincheck.addEventListener("change", { jsEditor.minimize = mincheck.checked })
@@ -97,7 +97,7 @@ fun pythonSetup() {
   timeout.addEventListener("change", { TIMEOUT_MS = timeout.value.toInt() })
 }
 
-val selectElement by lazy { document.getElementById("ex-selector") as? HTMLSelectElement }
+val exSelector by lazy { document.getElementById("ex-selector") as HTMLSelectElement }
 val decorator by lazy { TextareaDecorator(inputField, parser) }
 val jsEditor by lazy { JSTidyEditor(inputField, outputField) }
 val jsPyEditor by lazy { JSTidyPyEditor(inputField, outputField) }
@@ -108,16 +108,14 @@ val ntscheck by lazy { document.getElementById("ntstubs-checkbox") as HTMLInputE
 val timeout by lazy { document.getElementById("timeout") as HTMLInputElement }
 val maxEdits by lazy { document.getElementById("max-edits") as HTMLInputElement }
 
-fun handleSelect() {
-  MainScope().launch {
-    val response = window.fetch(selectElement!!.value).await()
-    if (response.ok) {
-      val text = response.text().await()
-      inputField.apply {
-        value = text
-        window.setTimeout({scrollIntoView(js("{ behavior: 'instant', block: 'end' }"))}, 1)
-      }
-      jsEditor.redecorateLines()
-    } else console.error("Failed to load file: ${response.status}")
-  }
+fun fetchSelectedExample() = MainScope().launch {
+  val response = window.fetch(exSelector!!.value).await()
+  if (response.ok) {
+    val text = response.text().await()
+    inputField.apply {
+      value = text
+      window.setTimeout({scrollIntoView(js("{ behavior: 'instant', block: 'end' }"))}, 1)
+    }
+    jsEditor.redecorateLines()
+  } else console.error("Failed to load file: ${response.status}")
 }

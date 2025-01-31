@@ -76,7 +76,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
       SelectorAction.ARROW_UP -> selIdx = ModInt(currentIdx, minOf(toTake, lines.size - 4)) + -1
     }
     writeDisplayText(lines.mapIndexed { i, line ->
-      if (i == htmlIndex) line.drop(6).dropLast(7)
+      if (i == htmlIndex) line.substring(6, line.length - 7)
       else if (i == selIdx.v + 2) "<mark>$line</mark>"
       else line
     }.joinToString("\n"))
