@@ -127,9 +127,9 @@ fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
     var i = 0
     if (!iter.hasNext() || !shouldContinue()) {
       val throughput = (results.size /
-          startTime.elapsedNow().toDouble(SECONDS)).round(3)
+          (startTime.elapsedNow().toDouble(SECONDS) + 0.001)).round(3)
       val throughputTot = (totalResults /
-          startTime.elapsedNow().toDouble(SECONDS)).round(3)
+          (startTime.elapsedNow().toDouble(SECONDS) + 0.001)).round(3)
       val summary = if (throughput != throughputTot)
         "~$throughput unique res/s, ~$throughputTot total res/s"
       else "~$throughput res/s"
