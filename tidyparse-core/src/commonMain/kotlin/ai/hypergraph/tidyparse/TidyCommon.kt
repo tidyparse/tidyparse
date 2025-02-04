@@ -1,7 +1,7 @@
 package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.*
-import ai.hypergraph.kaliningraph.automata.FSA
+import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.image.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
@@ -225,7 +225,7 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
   val startIdx = bindex[START_SYMBOL]
 
   // 1) Create dp array of parse trees
-  val dp: Array<Array<Array<PTree?>>> = Array(nStates) { Array(nStates) { Array(width) { null } } }
+  val dp: Array<Array<Array<GRE?>>> = Array(nStates) { Array(nStates) { Array(width) { null } } }
 
   // 2) Initialize terminal productions A -> a
   val aitx = levFSA.allIndexedTxs1(cfg)
@@ -233,8 +233,9 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
     val Aidxs = bimap.TDEPS[σ]!!.map { bindex[it] }
     for (Aidx in Aidxs) {
       pause()
-      val newLeaf = PTree(root = ""/*bindex[Aidx]*/, branches = PSingleton(σ))
-      dp[p][q][Aidx] = newLeaf + dp[p][q][Aidx]
+//      val newLeaf = PTree(root = ""/*bindex[Aidx]*/, branches = PSingleton(σ))
+      val prev = (dp[p][q][Aidx] as? GRE.SET)?.s ?: emptySet()
+      dp[p][q][Aidx] = GRE.SET(prev + σ)
     }
   }
 
@@ -246,7 +247,7 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
       val appq = levFSA.allPairs[p to q]!!
       for ((Aidx, indexArray) in vindex.withIndex()) {
 //        println("${cfg.bindex[Aidx]}(${pm!!.ntLengthBounds[Aidx]}):${levFSA.stateLst[p]}-${levFSA.stateLst[q]}(${levFSA.SPLP(p, q)})")
-        val rhsPairs = dp[p][q][Aidx]?.branches?.toMutableList() ?: mutableListOf()
+        val rhsPairs = dp[p][q][Aidx]?.let { mutableListOf(it) } ?: mutableListOf()
         outerLoop@for (j in 0..<indexArray.size step 2) {
           pause()
           val Bidx = indexArray[j]
@@ -256,13 +257,13 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
             val right = dp[r][q][Cidx]
             if (left != null && right != null) {
               // Found a parse for A
-              rhsPairs += left to right
+              rhsPairs += left * right
 //              if (rhsPairs.size > 10) break@outerLoop
             }
           }
         }
 
-        if (rhsPairs.isNotEmpty()) dp[p][q][Aidx] = PTree("", rhsPairs)
+        if (rhsPairs.isNotEmpty()) dp[p][q][Aidx] = GRE.UNI(*rhsPairs.toTypedArray())
       }
     }
   }
@@ -288,13 +289,9 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
   // 4) Gather final parse trees from dp[0][f][startIdx], for all final states f
   val allParses = levFSA.finalIdxs.mapNotNull { q -> dp[0][q][startIdx] }
 
-  return (if (allParses.isEmpty()) sequenceOf()
-  // 5) Combine them under a single "super‐root"
-  else PTree(START_SYMBOL, allParses.flatMap { forest -> forest.branches })
-//      .toCFG.also { println("CFG Size: ${it.size}") }.toPTree().also { println("Words: ${it.totalTreesStr}") }
-    .sampleStrWithoutReplacement()).also {
-    println("Took ${timer.elapsedNow()} parse for |A|=$nStates, |G|=${cfg.size}")
-  }
+  // 5) Combine them under a single GRE
+  return (if (allParses.isEmpty()) sequenceOf() else GRE.UNI(*allParses.toTypedArray()).words())
+    .also { println("Took ${timer.elapsedNow()} parse for |A|=$nStates, |G|=${cfg.size}") }
 }
 
 fun displayComparator(tokens: List<Σᐩ>): Comparator<Σᐩ> =
