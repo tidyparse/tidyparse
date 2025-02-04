@@ -4,8 +4,12 @@ import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.tidyparse.*
 import kotlinx.coroutines.*
 import org.w3c.dom.*
+import kotlin.math.ln
 
 class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val output: Node) : JSTidyEditor(editor, output) {
+  val ngrams: MutableMap<List<String>, Double> = mutableMapOf<List<String>, Double>()
+  val order: Int by lazy { ngrams.keys.firstOrNull()!!.size }
+  val normalizingConst by lazy { ngrams.keys.map { it.last() }.distinct().size }
 
   override var cfg = pythonStatementCNF
 
@@ -26,6 +30,10 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     continuation { decorate() }
 //    println("Redecorated in ${timer.elapsedNow()}")
   }
+
+  fun score(text: List<String>): Double = if (text.size < order) 0.0
+    else -(listOf("BOS") + text + listOf("EOS")).windowed(order, 1)
+      .sumOf { ngram -> ln((ngrams[ngram] ?: 1.0) / normalizingConst) }
 
   override fun handleInput() {
     val currentLine = currentLine().also { println("Current line is: $it") }
@@ -55,6 +63,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
           // Drop NEWLINE (added by default to PyCodeSnippets)
           .map { it.substring(0, it.length - 8).replace("OR", "|") }
           .enumerateInteractively(workHash, tokens.dropLast(1),
+            metric = { levenshtein(tokens, it) * 7919 + (score(it) * 1_000.0).toInt() },
             customDiff = {
               val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())
               pcs.paintDiff(levAlign)

@@ -88,6 +88,7 @@ fun pythonSetup() {
 //    LED_BUFFER = maxEdits.value.toInt()
     TIMEOUT_MS = timeout.value.toInt()
     jsPyEditor.minimize = true
+    fetchNgrams()
   }
   inputField.addEventListener("input", { jsPyEditor.redecorateLines() })
   inputField.addEventListener("keydown", { event -> jsPyEditor.navUpdate(event as KeyboardEvent) })
@@ -108,8 +109,24 @@ val ntscheck by lazy { document.getElementById("ntstubs-checkbox") as HTMLInputE
 val timeout by lazy { document.getElementById("timeout") as HTMLInputElement }
 val maxEdits by lazy { document.getElementById("max-edits") as HTMLInputElement }
 
+fun fetchNgrams(file: String = "python_4grams.txt") =
+  MainScope().launch {
+    val response = window.fetch(file).await()
+    if (response.ok) {
+      var numNgrams = 0
+      var n = 0
+      response.text().await().lines().forEach { line ->
+        val (ngram, count) = line.split(" ::: ")
+        jsPyEditor.ngrams[ngram.split(" ").also { n = it.size }] = count.toDouble()
+        numNgrams++
+      }
+      console.info("Processed $numNgrams $n-grams.")
+    }
+  }
+
+
 fun fetchSelectedExample() = MainScope().launch {
-  val response = window.fetch(exSelector!!.value).await()
+  val response = window.fetch(exSelector.value).await()
   if (response.ok) {
     val text = response.text().await()
     inputField.apply {
