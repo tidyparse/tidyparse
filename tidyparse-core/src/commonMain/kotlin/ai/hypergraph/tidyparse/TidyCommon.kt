@@ -175,13 +175,14 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
   val bimap = cfg.bimap
   val width = cfg.nonterminals.size
   val vindex = cfg.vindex
-  suspend fun pause(freq: Int = 100_000) { if (i++ % freq == 0) { delay(100.nanoseconds) }}
+  val ups = cfg.unitProductions
+  suspend fun pause(freq: Int = 100_000) { if (i++ % freq == 0) { delay(50.nanoseconds) }}
 
-  suspend fun nonemptyLevInt(cfg: CFG, levFSA: FSA): Boolean {
-    val ap: Map<Pair<Int, Int>, Set<Int>> = levFSA.allPairs
+  suspend fun nonemptyLevInt(levFSA: FSA): Boolean {
+    val ap: List<List<List<Int>?>> = levFSA.allPairs
     val dp = Array(levFSA.numStates) { Array(levFSA.numStates) { BooleanArray(width) { false } } }
 
-    levFSA.allIndexedTxs0(cfg).forEach { (q0, nt, q1) -> dp[q0][q1][nt] = true }
+    levFSA.allIndexedTxs0(ups, bindex).forEach { (q0, nt, q1) -> dp[q0][q1][nt] = true }
 
     val startIdx = bindex[START_SYMBOL]
 
@@ -190,19 +191,18 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
       for (iP in 0 until levFSA.numStates - dist) {
         val p = iP
         val q = iP + dist
-        if (p to q !in ap) continue
-        val appq = ap[p to q]!!
+        if (ap[p][q] == null) continue
+        val appq = ap[p][q]!!
         for ((A, indexArray) in vindex.withIndex()) {
           pause()
           outerloop@for(j in 0..<indexArray.size step 2) {
             val B = indexArray[j]
             val C = indexArray[j + 1]
-            for (r in appq) {
+            for (r in appq)
               if (dp[p][r][B] && dp[r][q][C]) {
                 dp[p][q][A] = true
                 break@outerloop
               }
-            }
           }
 
           if (p == 0 && A == startIdx && q in levFSA.finalIdxs && dp[p][q][A]) return true
@@ -214,7 +214,7 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
   }
 
   val radius = (2 until upperBound).firstOrNull {
-    nonemptyLevInt(cfg, makeLevFSA(brokenStr, it, monoEditBounds))
+    nonemptyLevInt(makeLevFSA(brokenStr, it, monoEditBounds))
   } ?: upperBound
 
   println("Identified LED=$radius in ${timer.elapsedNow()}")
@@ -223,19 +223,19 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
 
   val nStates = levFSA.numStates
   val startIdx = bindex[START_SYMBOL]
+  val tms = cfg.tmLst.size
+  val tmm = cfg.tmMap
 
   // 1) Create dp array of parse trees
   val dp: Array<Array<Array<GRE?>>> = Array(nStates) { Array(nStates) { Array(width) { null } } }
 
   // 2) Initialize terminal productions A -> a
-  val aitx = levFSA.allIndexedTxs1(cfg)
+  val aitx = levFSA.allIndexedTxs1(ups)
   for ((p, σ, q) in aitx) {
     val Aidxs = bimap.TDEPS[σ]!!.map { bindex[it] }
     for (Aidx in Aidxs) {
       pause()
-//      val newLeaf = PTree(root = ""/*bindex[Aidx]*/, branches = PSingleton(σ))
-      val prev = (dp[p][q][Aidx] as? GRE.SET)?.s ?: emptySet()
-      dp[p][q][Aidx] = GRE.SET(prev + σ)
+      dp[p][q][Aidx] = ((dp[p][q][Aidx] as? GRE.SET) ?: GRE.SET(tms)).apply { s.set(tmm[σ]!!) }
     }
   }
 
@@ -243,8 +243,8 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
   for (dist in 0 until nStates) {
     for (p in 0 until (nStates - dist)) {
       val q = p + dist
-      if (p to q !in levFSA.allPairs) continue
-      val appq = levFSA.allPairs[p to q]!!
+      if (levFSA.allPairs[p][q] == null) continue
+      val appq = levFSA.allPairs[p][q]!!
       for ((Aidx, indexArray) in vindex.withIndex()) {
 //        println("${cfg.bindex[Aidx]}(${pm!!.ntLengthBounds[Aidx]}):${levFSA.stateLst[p]}-${levFSA.stateLst[q]}(${levFSA.SPLP(p, q)})")
         val rhsPairs = dp[p][q][Aidx]?.let { mutableListOf(it) } ?: mutableListOf()
@@ -289,8 +289,10 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
   // 4) Gather final parse trees from dp[0][f][startIdx], for all final states f
   val allParses = levFSA.finalIdxs.mapNotNull { q -> dp[0][q][startIdx] }
 
+  println("Terms: " + cfg.tmLst)
+
   // 5) Combine them under a single GRE
-  return (if (allParses.isEmpty()) sequenceOf() else GRE.UNI(*allParses.toTypedArray()).words())
+  return (if (allParses.isEmpty()) sequenceOf() else GRE.UNI(*allParses.toTypedArray()).words(cfg.tmLst))
     .also { println("Took ${timer.elapsedNow()} parse for |A|=$nStates, |G|=${cfg.size}") }
 }
 

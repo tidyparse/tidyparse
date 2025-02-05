@@ -93,7 +93,7 @@ fun pythonSetup() {
   inputField.addEventListener("input", { jsPyEditor.redecorateLines() })
   inputField.addEventListener("keydown", { event -> jsPyEditor.navUpdate(event as KeyboardEvent) })
 
-  mincheck.addEventListener("change", { jsEditor.minimize = mincheck.checked })
+  mincheck.addEventListener("change", { jsPyEditor.minimize = mincheck.checked })
   timeout.addEventListener("change", { LED_BUFFER = maxEdits.value.toInt() })
   timeout.addEventListener("change", { TIMEOUT_MS = timeout.value.toInt() })
 }

@@ -84,7 +84,7 @@ abstract class TidyEditor {
     tokens: List<String>,
     timer: TimeSource.Monotonic.ValueTimeMark = TimeSource.Monotonic.markNow(),
     metric: (List<String>) -> Int = { levenshtein(tokens, it) * 7919 +
-        (tokens.sumOf { it.length } - it.sumOf { it.length }).absoluteValue},
+        (tokens.sumOf { it.length } - it.sumOf { it.length }).absoluteValue },
     shouldContinue: () -> Boolean = { currentWorkHash == workHash && timer.hasTimeLeft() },
     customDiff: (String) -> String = { levenshteinAlign(tokens.joinToString(" "), it).paintDiffs() }
   ) = this.let {

@@ -62,7 +62,9 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
         initiateSuspendableRepair(tokens, cfg)
           // Drop NEWLINE (added by default to PyCodeSnippets)
           .map { it.substring(0, it.length - 8).replace("OR", "|") }
-          .enumerateInteractively(workHash, tokens.dropLast(1),
+          .enumerateInteractively(
+            workHash,
+            tokens.dropLast(1),
             metric = { levenshtein(tokens, it) * 7919 + (score(it) * 1_000.0).toInt() },
             customDiff = {
               val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())
