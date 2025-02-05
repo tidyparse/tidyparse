@@ -1,7 +1,7 @@
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.kaliningraph.repair.pythonStatementCNF
+import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
-import ai.hypergraph.tidyparse.*
+import ai.hypergraph.tidyparse.initiateSuspendableRepair
 import kotlinx.coroutines.*
 import org.w3c.dom.*
 import kotlin.math.ln
@@ -11,7 +11,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
   val order: Int by lazy { ngrams.keys.firstOrNull()!!.size }
   val normalizingConst by lazy { ngrams.keys.map { it.last() }.distinct().size }
 
-  override var cfg = pythonStatementCNF
+  override var cfg = pythonStatementCNFAllProds
 
   override fun getLatestCFG(): CFG = cfg
 
@@ -21,8 +21,8 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     fun decorate() {
       if (currentHash != hashIter) return
       val decCFG = getLatestCFG()
-      preparseParseableLines(pythonStatementCNF, readEditorText()) {
-        PyCodeSnippet(it).lexedTokens() in pythonStatementCNF.language
+      preparseParseableLines(pythonStatementCNFAllProds, readEditorText()) {
+        PyCodeSnippet(it).lexedTokens() in pythonStatementCNFAllProds.language
       }
       if (currentHash == hashIter) decorator.fullDecorate(decCFG)
     }
