@@ -21,8 +21,13 @@ abstract class TidyEditor {
 
   abstract fun readDisplayText(): Σᐩ
   abstract fun readEditorText(): Σᐩ
-  abstract fun getCaretPosition(): Int
-  abstract fun setCaretPosition(range: IntRange)
+  open fun getCaretPosition(): IntRange = TODO()
+  open fun getLineBounds(): IntRange = TODO()
+  fun getSelection(): Σᐩ = getCaretPosition().let {
+    if (it.let { it.isEmpty() || it.last - it.first == 0 }) ""
+    else readEditorText().substring(it).trim().also { println("Selection: $it") }
+  }
+  open fun setCaretPosition(range: IntRange): Unit = TODO()
   abstract fun currentLine(): Σᐩ
   abstract fun writeDisplayText(s: Σᐩ)
   abstract fun writeDisplayText(s: (Σᐩ) -> Σᐩ)
@@ -43,12 +48,31 @@ abstract class TidyEditor {
   }
 
   var runningJob: Job? = null
+  open val stubMatcher = Regex("<\\S+>")
+
+  fun handleTab() {
+    val lineIdx = getLineBounds().first
+    val line = currentLine()
+    var firstPlaceholder = stubMatcher.find(line, (getCaretPosition().first - lineIdx + 1).coerceAtMost(line.length))
+    if (firstPlaceholder == null) firstPlaceholder = stubMatcher.find(line, 0)
+    if (firstPlaceholder == null) return
+
+    setCaretPosition((lineIdx + firstPlaceholder.range.first)..(lineIdx + firstPlaceholder.range.last + 1))
+    handleInput() // This will update the completions view
+  }
+
+  open fun getApplicableContext(): Σᐩ =
+    getSelection().let {
+      if (it.isNotEmpty() && stubMatcher.matches(it)) it
+      else currentLine()
+    }
 
   open fun handleInput() {
-    val currentLine = currentLine().also { println("Current line is: $it") }
-    if (currentLine.isBlank()) return
     val caretInGrammar = caretInGrammar()
-    val tokens = currentLine.tokenizeByWhitespace()
+    val context = getApplicableContext()
+    if (context.isEmpty()) return
+    println("Applicable context:\n$context")
+    val tokens = context.tokenizeByWhitespace()
 
     val cfg =
       if (caretInGrammar)
@@ -57,8 +81,8 @@ abstract class TidyEditor {
 
     if (cfg.isEmpty()) return
 
-    var containsUnk = false
-    val abstractUnk = tokens.map { if (it in cfg.terminals) it else { containsUnk = true; "_" } }
+    var hasHole = false
+    val abstractUnk = tokens.map { if (it in cfg.terminals) it else { hasHole = true; "_" } }
 
     val workHash = abstractUnk.hashCode() + cfg.hashCode()
     if (workHash == currentWorkHash) return
@@ -68,9 +92,11 @@ abstract class TidyEditor {
 
     runningJob?.cancel()
 
-    /* Completion */ if (HOLE_MARKER in tokens) {
+    if (tokens.size == 1 && stubMatcher.matches(tokens[0])) {
+      cfg.enumNTSmall(tokens[0].stripStub()).enumerateInteractively(workHash, tokens)
+    } else /* Completion */ if (HOLE_MARKER in tokens) {
       cfg.enumSeqSmart(tokens).enumerateInteractively(workHash, tokens)
-    } else /* Parseable */ if (!containsUnk && tokens in cfg.language) {
+    } else /* Parseable */ if (!hasHole && tokens in cfg.language) {
       val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
       writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it })
     } else /* Repair */ Unit.also {
@@ -105,8 +131,7 @@ abstract class TidyEditor {
   )
 
   fun caretInGrammar(): Boolean =
-    readEditorText().indexOf("---")
-      .let { it == -1 || getCaretPosition() < it }
+    readEditorText().indexOf("---").let { it == -1 || getCaretPosition().start < it }
 
   open fun diffAsHtml(l1: List<Σᐩ>, l2: List<Σᐩ>): Σᐩ = l2.joinToString(" ")
   abstract fun repair(cfg: CFG, str: Σᐩ): List<Σᐩ>

@@ -11,6 +11,9 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
   val order: Int by lazy { ngrams.keys.firstOrNull()!!.size }
   val normalizingConst by lazy { ngrams.keys.map { it.last() }.distinct().size }
 
+  val PLACEHOLDERS = listOf("STRING", "NAME", "NUMBER")
+  override val stubMatcher: Regex = Regex(PLACEHOLDERS.joinToString("|") { Regex.escape(it) } + "|<\\S+>")
+
   override var cfg = pythonStatementCNFAllProds
 
   override fun getLatestCFG(): CFG = cfg

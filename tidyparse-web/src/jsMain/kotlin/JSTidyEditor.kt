@@ -11,22 +11,20 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     private fun HTMLTextAreaElement.getEndOfLineIdx() =
       // Gets the end of the line or the end of the string, whichever comes first
       value.indexOf("\n", selectionStart!!).takeIf { it != -1 } ?: value.length
+    private fun HTMLTextAreaElement.getLineStartIdx() =
+      value.lastIndexOf('\n', selectionStart!! - 1).takeIf { it != -1 } ?.plus(1) ?: 0
+    private fun HTMLTextAreaElement.lineBounds() = getLineStartIdx()..getEndOfLineIdx()
     private fun HTMLTextAreaElement.getCurrentLine() =
       value.substring(0, getEndOfLineIdx()).substringAfterLast("\n")
-    private fun HTMLTextAreaElement.lineIdx() =
-      value.substring(0, selectionStart!!).lastIndexOf("\n")
 
-    fun HTMLTextAreaElement.overwriteCurrentLineWith(text: String) {
-      val lineStartIdx = value.lastIndexOf('\n', selectionStart!! - 1) .takeIf { it != -1 } ?.plus(1) ?: 0
-      val lineEndIdx = getEndOfLineIdx()
-
+    fun HTMLTextAreaElement.overwriteCurrentLineWith(region: IntRange, text: String) {
       value = buildString {
-        append(value.substring(0, lineStartIdx))
+        append(value.substring(0, region.first))
         append(text)
-        append(value.substring(lineEndIdx))
+        append(value.substring(region.last))
       }
 
-      val newSelectionStart = lineStartIdx + text.length
+      val newSelectionStart = region.first + text.length
       selectionStart = newSelectionStart
       selectionEnd = newSelectionStart
     }
@@ -34,10 +32,11 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
   override fun continuation(f: () -> Unit): Any = window.setTimeout(f, 0)
 
+  override fun getLineBounds(): IntRange = editor.lineBounds()
   override fun currentLine(): Σᐩ = editor.getCurrentLine()
-  fun overwriteCurrentLine(s: Σᐩ) { editor.overwriteCurrentLineWith(s) }
+  fun overwriteRegion(region: IntRange, s: Σᐩ) { editor.overwriteCurrentLineWith(region, s) }
   override fun readEditorText(): Σᐩ = editor.value
-  override fun getCaretPosition(): Int = editor.selectionStart!!
+  override fun getCaretPosition(): IntRange = editor.selectionStart!!..editor.selectionEnd!!
   override fun setCaretPosition(range: IntRange) = editor.setSelectionRange(range.first, range.last)
   private fun rawDisplayHTML() = (outputField as HTMLDivElement).innerHTML
   override fun readDisplayText(): Σᐩ = output.textContent ?: ""
@@ -48,7 +47,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
   class ModInt(val v: Int, val j: Int) { operator fun plus(i: Int) = ModInt(((v + i) % j + j) % j, j) }
 
-  var selIdx: ModInt = ModInt(2, toTake)
+  var selIdx: ModInt = ModInt(2, MAX_DISP_RESULTS)
 
   enum class SelectorAction { ENTER, ARROW_DOWN, ARROW_UP, TAB }
 
@@ -60,38 +59,26 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     else -> null
   }
 
-  fun handleTab() {
-    val PLACEHOLDERS = listOf("STRING", "NAME", "NUMBER")
-    val lineIdx = editor.lineIdx() + 1
-    val line = currentLine()
-    val regex = Regex(PLACEHOLDERS.joinToString("|") { Regex.escape(it) } + "|<\\S+>")
-    var firstPlaceholder = regex.find(line, (getCaretPosition() + 1 - lineIdx).coerceAtMost(line.length))
-    if (firstPlaceholder == null) firstPlaceholder = regex.find(line, 0)
-    if (firstPlaceholder == null) return
-
-    setCaretPosition((lineIdx + firstPlaceholder.range.first)..(lineIdx + firstPlaceholder.range.last + 1))
-  }
-
   fun navUpdate(event: KeyboardEvent) {
     val key = event.keyCode.toSelectorAction() ?: return
-    event.preventDefault()
-    if (key == SelectorAction.TAB) { handleTab(); return }
+    if (key == SelectorAction.TAB) { event.preventDefault(); handleTab(); return }
     val currentText = rawDisplayHTML()
     val lines = currentText.lines()
     val htmlIndex = lines.indexOfFirst { it.startsWith("<mark>") }
     if (htmlIndex == -1) return
+    event.preventDefault()
     val currentIdx = lines[htmlIndex].substringBefore(".)").substringAfterLast('>').trim().toInt()
     when (key) {
       SelectorAction.ENTER -> {
         val selection = readDisplayText().lines()[currentIdx + 2].substringAfter(".) ")
-        overwriteCurrentLine(selection.tokenizeByWhitespace().joinToString(" "))
+        overwriteRegion(getCaretPosition().takeIf { it.last - it.first > 0 } ?: getLineBounds(), selection.tokenizeByWhitespace().joinToString(" "))
         redecorateLines()
         continuation { handleInput() }
         continuation { handleTab() }
         return
       }
-      SelectorAction.ARROW_DOWN -> selIdx = ModInt(currentIdx, minOf(toTake, lines.size - 4)) + 1
-      SelectorAction.ARROW_UP -> selIdx = ModInt(currentIdx, minOf(toTake, lines.size - 4)) + -1
+      SelectorAction.ARROW_DOWN -> selIdx = ModInt(currentIdx, minOf(MAX_DISP_RESULTS, lines.size - 4)) + 1
+      SelectorAction.ARROW_UP -> selIdx = ModInt(currentIdx, minOf(MAX_DISP_RESULTS, lines.size - 4)) + -1
       SelectorAction.TAB -> {}
     }
     writeDisplayText(lines.mapIndexed { i, line ->

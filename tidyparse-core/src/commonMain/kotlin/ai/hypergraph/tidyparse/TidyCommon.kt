@@ -107,10 +107,10 @@ suspend fun CFG.maxParsableFragmentB(tokens: List<Σᐩ>, pad: Int = 3): Pair<In
   return monoEditBounds
 }
 
-val toTake = 29
+val MAX_DISP_RESULTS = 29
 
 fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
-  resultsToPost: Int = toTake,
+  resultsToPost: Int = MAX_DISP_RESULTS,
   metric: (List<Σᐩ>) -> Int,
   shouldContinue: () -> Boolean,
   postResults: (Σᐩ) -> Unit,
