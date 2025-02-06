@@ -22,6 +22,7 @@ abstract class TidyEditor {
   abstract fun readDisplayText(): Σᐩ
   abstract fun readEditorText(): Σᐩ
   abstract fun getCaretPosition(): Int
+  abstract fun setCaretPosition(range: IntRange)
   abstract fun currentLine(): Σᐩ
   abstract fun writeDisplayText(s: Σᐩ)
   abstract fun writeDisplayText(s: (Σᐩ) -> Σᐩ)
