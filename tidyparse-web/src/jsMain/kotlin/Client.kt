@@ -41,6 +41,7 @@ val parser = Parser(
 
 // ./gradlew browserDevelopmentRun --continuous
 fun main() {
+//  benchmarkWGPU()
   if (window.navigator.userAgent.indexOf("hrome") != -1) {
     PlatformVars.PLATFORM_CALLER_STACKTRACE_DEPTH = 4
   }

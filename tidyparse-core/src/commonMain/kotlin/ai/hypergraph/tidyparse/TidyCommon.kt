@@ -10,6 +10,7 @@ import ai.hypergraph.kaliningraph.types.*
 import kotlinx.coroutines.delay
 import org.kosat.round
 import kotlin.math.ceil
+import kotlin.math.max
 import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.DurationUnit.SECONDS
 import kotlin.time.TimeSource
@@ -169,33 +170,34 @@ fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
 suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequence<Σᐩ> {
   var i = 0
   val upperBound = MAX_RADIUS * 2
-  val monoEditBounds = cfg.maxParsableFragmentB(brokenStr, pad = upperBound)
+//  val monoEditBounds = cfg.maxParsableFragmentB(brokenStr, pad = upperBound)
   val timer = TimeSource.Monotonic.markNow()
   val bindex = cfg.bindex
-  val bimap = cfg.bimap
   val width = cfg.nonterminals.size
   val vindex = cfg.vindex
   val ups = cfg.unitProductions
-  suspend fun pause(freq: Int = 100_000) { if (i++ % freq == 0) { delay(50.nanoseconds) }}
+  val t2vs = cfg.tmToVidx
+  val startIdx = bindex[START_SYMBOL]
 
-  suspend fun nonemptyLevInt(levFSA: FSA): Boolean {
+  suspend fun pause(freq: Int = 300_000) { if (i++ % freq == 0) { delay(50.nanoseconds) }}
+
+  suspend fun nonemptyLevInt(levFSA: FSA): Int? {
     val ap: List<List<List<Int>?>> = levFSA.allPairs
     val dp = Array(levFSA.numStates) { Array(levFSA.numStates) { BooleanArray(width) { false } } }
 
     levFSA.allIndexedTxs0(ups, bindex).forEach { (q0, nt, q1) -> dp[q0][q1][nt] = true }
-
-    val startIdx = bindex[START_SYMBOL]
+    var min: Int = Int.MAX_VALUE
 
     // For pairs (p,q) in topological order
-    for (dist in 0 until levFSA.numStates) {
-      for (iP in 0 until levFSA.numStates - dist) {
+    for (dist: Int in 0 until levFSA.numStates) {
+      for (iP: Int in 0 until levFSA.numStates - dist) {
         val p = iP
         val q = iP + dist
         if (ap[p][q] == null) continue
         val appq = ap[p][q]!!
-        for ((A, indexArray) in vindex.withIndex()) {
+        for ((A: Int, indexArray: IntArray) in vindex.withIndex()) {
           pause()
-          outerloop@for(j in 0..<indexArray.size step 2) {
+          outerloop@for(j: Int in 0..<indexArray.size step 2) {
             val B = indexArray[j]
             val C = indexArray[j + 1]
             for (r in appq)
@@ -205,24 +207,24 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
               }
           }
 
-          if (p == 0 && A == startIdx && q in levFSA.finalIdxs && dp[p][q][A]) return true
+          if (p == 0 && A == startIdx && q in levFSA.finalIdxs && dp[p][q][A])
+            min = minOf(min, levFSA.idsToCoords[q]!!.second)
         }
       }
     }
 
-    return false
+    return if (min == Int.MAX_VALUE) null else min
   }
 
-  val radius = (2 until upperBound).firstOrNull {
-    nonemptyLevInt(makeLevFSA(brokenStr, it, monoEditBounds))
-  } ?: upperBound
+  val led = (3 until upperBound)
+    .firstNotNullOfOrNull { nonemptyLevInt(makeLevFSA(brokenStr, it)) } ?: upperBound
+  val radius = max(3, led) + LED_BUFFER
 
   println("Identified LED=$radius in ${timer.elapsedNow()}")
 
-  val levFSA = makeLevFSA(brokenStr, radius + LED_BUFFER, monoEditBounds)
+  val levFSA = makeLevFSA(brokenStr, radius)
 
   val nStates = levFSA.numStates
-  val startIdx = bindex[START_SYMBOL]
   val tms = cfg.tmLst.size
   val tmm = cfg.tmMap
 
@@ -231,13 +233,9 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
 
   // 2) Initialize terminal productions A -> a
   val aitx = levFSA.allIndexedTxs1(ups)
-  for ((p, σ, q) in aitx) {
-    val Aidxs = bimap.TDEPS[σ]!!.map { bindex[it] }
-    for (Aidx in Aidxs) {
-      pause()
-      dp[p][q][Aidx] = ((dp[p][q][Aidx] as? GRE.SET) ?: GRE.SET(tms)).apply { s.set(tmm[σ]!!) }
-    }
-  }
+  for ((p, σ, q) in aitx) for (Aidx in t2vs[tmm[σ]!!])
+    dp[p][q][Aidx] = ((dp[p][q][Aidx] as? GRE.SET) ?: GRE.SET(tms))
+      .apply { pause(); s.set(tmm[σ]!!) }
 
   // 3) CYK + Floyd Warshall parsing
   for (dist in 0 until nStates) {
@@ -289,11 +287,9 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
   // 4) Gather final parse trees from dp[0][f][startIdx], for all final states f
   val allParses = levFSA.finalIdxs.mapNotNull { q -> dp[0][q][startIdx] }
 
-  println("Terms: " + cfg.tmLst)
-
   // 5) Combine them under a single GRE
   return (if (allParses.isEmpty()) sequenceOf() else GRE.UNI(*allParses.toTypedArray()).words(cfg.tmLst))
-    .also { println("Took ${timer.elapsedNow()} parse for |A|=$nStates, |G|=${cfg.size}") }
+    .also { println("Took ${timer.elapsedNow()} to parse with |σ|=${brokenStr.size}, |A|=$nStates, |G|=${cfg.size}") }
 }
 
 fun displayComparator(tokens: List<Σᐩ>): Comparator<Σᐩ> =

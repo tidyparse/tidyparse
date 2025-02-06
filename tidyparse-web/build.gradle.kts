@@ -1,4 +1,6 @@
+import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.*
+import org.jetbrains.kotlin.gradle.targets.js.webpack.WebpackDevtool
 
 plugins {
   kotlin("multiplatform")
@@ -16,6 +18,8 @@ kotlin {
     browser {
       runTask {
         mainOutputFileName = "tidyparse-web.js"
+        sourceMaps = true
+        devtool = WebpackDevtool.SOURCE_MAP
       }
 
       webpackTask {
