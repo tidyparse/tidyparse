@@ -170,7 +170,7 @@ fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
 suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequence<Σᐩ> {
   var i = 0
   val upperBound = MAX_RADIUS * 2
-//  val monoEditBounds = cfg.maxParsableFragmentB(brokenStr, pad = upperBound)
+  val monoEditBounds = cfg.maxParsableFragmentB(brokenStr, pad = upperBound)
   val timer = TimeSource.Monotonic.markNow()
   val bindex = cfg.bindex
   val width = cfg.nonterminals.size
@@ -217,12 +217,12 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
   }
 
   val led = (3 until upperBound)
-    .firstNotNullOfOrNull { nonemptyLevInt(makeLevFSA(brokenStr, it)) } ?: upperBound
+    .firstNotNullOfOrNull { nonemptyLevInt(makeLevFSA(brokenStr, it, monoEditBounds)) } ?: upperBound
   val radius = max(3, led) + LED_BUFFER
 
   println("Identified LED=$radius in ${timer.elapsedNow()}")
 
-  val levFSA = makeLevFSA(brokenStr, radius)
+  val levFSA = makeLevFSA(brokenStr, radius, monoEditBounds)
 
   val nStates = levFSA.numStates
   val tms = cfg.tmLst.size
@@ -366,18 +366,6 @@ fun render(
 
 fun TimeSource.Monotonic.ValueTimeMark.hasTimeLeft() =
   elapsedNow().inWholeMilliseconds < TIMEOUT_MS
-
-fun Σᐩ.synthesizeCachingAndDisplayProgress(tidyEditor: TidyEditor, cfg: CFG): List<Σᐩ> {
-  val sanitized: Σᐩ = tokenizeByWhitespace().joinToString(" ") { if (it in cfg.terminals) it else "_" }
-
-  val cacheResultOn: Pair<Σᐩ, CFG> = sanitized to cfg
-
-  val cached = synthCache[cacheResultOn]
-
-  return if (cached?.isNotEmpty() == true) cached
-  // Cache miss could be due to prior timeout or cold cache. Either way, we need to recompute
-  else tidyEditor.repair(cfg, this).also { synthCache.put(cacheResultOn, it) }
-}
 
 fun updateProgress(query: Σᐩ, editor: TidyEditor) {
   val sanitized = query.escapeHTML()

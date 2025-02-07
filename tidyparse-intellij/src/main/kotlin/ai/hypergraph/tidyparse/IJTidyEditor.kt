@@ -1,9 +1,6 @@
 package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.*
-import ai.hypergraph.kaliningraph.automata.FSA
-import ai.hypergraph.kaliningraph.automata.decodeDFA
-import ai.hypergraph.kaliningraph.automata.toDFA
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
@@ -27,10 +24,22 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor() {
 
   override fun readEditorText(): Σᐩ = runReadAction { editor.document.text }
 
-  override fun getCaretPosition(): Int = runReadAction { editor.caretModel.offset }
+  override fun getCaretPosition() = runReadAction { editor.caretModel.offset.let { it..it } }
 
   override fun currentLine(): Σᐩ =
     runReadAction { editor.currentLine() }.tokenizeByWhitespace().joinToString(" ")
+
+  fun Σᐩ.synthesizeCachingAndDisplayProgress(tidyEditor: TidyEditor, cfg: CFG): List<Σᐩ> {
+    val sanitized: Σᐩ = tokenizeByWhitespace().joinToString(" ") { if (it in cfg.terminals) it else "_" }
+
+    val cacheResultOn: Pair<Σᐩ, CFG> = sanitized to cfg
+
+    val cached = synthCache[cacheResultOn]
+
+    return if (cached?.isNotEmpty() == true) cached
+    // Cache miss could be due to prior timeout or cold cache. Either way, we need to recompute
+    else tidyEditor.repair(cfg, this).also { synthCache.put(cacheResultOn, it) }
+  }
 
   override fun handleInput() {
     val currentLine = currentLine()

@@ -25,10 +25,11 @@ abstract class TidyEditor {
   open fun getLineBounds(): IntRange = TODO()
   fun getSelection(): Σᐩ = getCaretPosition().let {
     if (it.let { it.isEmpty() || it.last - it.first == 0 }) ""
-    else readEditorText().substring(it).trim().also { println("Selection: $it") }
+    else readEditorText().substring(it).trim()
   }
   open fun setCaretPosition(range: IntRange): Unit = TODO()
   abstract fun currentLine(): Σᐩ
+  open fun overwriteRegion(region: IntRange, s: Σᐩ): Unit = TODO()
   abstract fun writeDisplayText(s: Σᐩ)
   abstract fun writeDisplayText(s: (Σᐩ) -> Σᐩ)
 
@@ -92,7 +93,7 @@ abstract class TidyEditor {
 
     runningJob?.cancel()
 
-    if (tokens.size == 1 && stubMatcher.matches(tokens[0])) {
+    if /* Stub completion */ (tokens.size == 1 && stubMatcher.matches(tokens[0])) {
       cfg.enumNTSmall(tokens[0].stripStub()).enumerateInteractively(workHash, tokens)
     } else /* Completion */ if (HOLE_MARKER in tokens) {
       cfg.enumSeqSmart(tokens).enumerateInteractively(workHash, tokens)
@@ -108,15 +109,15 @@ abstract class TidyEditor {
 
   protected fun Sequence<String>.enumerateInteractively(
     workHash: Int,
-    tokens: List<String>,
+    origTks: List<String>,
     timer: TimeSource.Monotonic.ValueTimeMark = TimeSource.Monotonic.markNow(),
-    metric: (List<String>) -> Int = { levenshtein(tokens, it) * 7919 +
-        (tokens.sumOf { it.length } - it.sumOf { it.length }).absoluteValue },
+    metric: (List<String>) -> Int = { levenshtein(origTks, it) * 7919 +
+        (origTks.sumOf { it.length } - it.sumOf { it.length }).absoluteValue },
     shouldContinue: () -> Boolean = { currentWorkHash == workHash && timer.hasTimeLeft() },
-    customDiff: (String) -> String = { levenshteinAlign(tokens.joinToString(" "), it).paintDiffs() }
+    customDiff: (String) -> String = { levenshteinAlign(origTks.joinToString(" "), it).paintDiffs() }
   ) = this.let {
-    if (!minimize || "_" in tokens) it
-    else it.flatMap { minimizeFix(tokens, it.tokenizeByWhitespace()) { this in cfg.language } }
+    if (!minimize || "_" in origTks) it
+    else it.flatMap { minimizeFix(origTks, it.tokenizeByWhitespace()) { this in cfg.language } }
   }.enumerateCompletionsInteractively(
     metric = metric,
     shouldContinue = shouldContinue,
@@ -134,7 +135,7 @@ abstract class TidyEditor {
     readEditorText().indexOf("---").let { it == -1 || getCaretPosition().start < it }
 
   open fun diffAsHtml(l1: List<Σᐩ>, l2: List<Σᐩ>): Σᐩ = l2.joinToString(" ")
-  abstract fun repair(cfg: CFG, str: Σᐩ): List<Σᐩ>
+  open fun repair(cfg: CFG, str: Σᐩ): List<Σᐩ> = TODO()
   open fun redecorateLines(cfg: CFG = setOf()) {}
 
   /** See: [JSTidyEditor.continuation] */

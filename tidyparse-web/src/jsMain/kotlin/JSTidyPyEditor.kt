@@ -12,11 +12,9 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
   val normalizingConst by lazy { ngrams.keys.map { it.last() }.distinct().size }
 
   val PLACEHOLDERS = listOf("STRING", "NAME", "NUMBER")
-  override val stubMatcher: Regex = Regex(PLACEHOLDERS.joinToString("|") { Regex.escape(it) } + "|<\\S+>")
+  override val stubMatcher: Regex = Regex(PLACEHOLDERS.joinToString("|") { Regex.escape(it) })
 
-  override var cfg = pythonStatementCNFAllProds
-
-  override fun getLatestCFG(): CFG = cfg
+  override fun getLatestCFG(): CFG = pythonStatementCNFAllProds.apply { cfg = this }
 
   override fun redecorateLines(cfg: CFG) {
     val currentHash = ++hashIter
@@ -24,8 +22,8 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     fun decorate() {
       if (currentHash != hashIter) return
       val decCFG = getLatestCFG()
-      preparseParseableLines(pythonStatementCNFAllProds, readEditorText()) {
-        PyCodeSnippet(it).lexedTokens() in pythonStatementCNFAllProds.language
+      preparseParseableLines(decCFG, readEditorText()) {
+        PyCodeSnippet(it).lexedTokens() in decCFG.language
       }
       if (currentHash == hashIter) decorator.fullDecorate(decCFG)
     }
@@ -66,8 +64,8 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
           // Drop NEWLINE (added by default to PyCodeSnippets)
           .map { it.substring(0, it.length - 8).replace("OR", "|") }
           .enumerateInteractively(
-            workHash,
-            tokens.dropLast(1),
+            workHash = workHash,
+            origTks = tokens.dropLast(1),
             metric = { levenshtein(tokens, it) * 7919 + (score(it) * 1_000.0).toInt() },
             customDiff = {
               val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())

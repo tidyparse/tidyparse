@@ -34,7 +34,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
   override fun getLineBounds(): IntRange = editor.lineBounds()
   override fun currentLine(): Σᐩ = editor.getCurrentLine()
-  fun overwriteRegion(region: IntRange, s: Σᐩ) { editor.overwriteCurrentLineWith(region, s) }
+  override fun overwriteRegion(region: IntRange, s: Σᐩ) { editor.overwriteCurrentLineWith(region, s) }
   override fun readEditorText(): Σᐩ = editor.value
   override fun getCaretPosition(): IntRange = editor.selectionStart!!..editor.selectionEnd!!
   override fun setCaretPosition(range: IntRange) = editor.setSelectionRange(range.first, range.last)
@@ -51,7 +51,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
   enum class SelectorAction { ENTER, ARROW_DOWN, ARROW_UP, TAB }
 
-  private fun Int.toSelectorAction(): SelectorAction? = when(this) {
+  private fun Int.toSelectorAction(): SelectorAction? = when (this) {
     13 -> SelectorAction.ENTER
     40 -> SelectorAction.ARROW_DOWN
     38 -> SelectorAction.ARROW_UP
@@ -104,7 +104,4 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     else if (currentLine().isValidProd()) window.setTimeout({ decorate() }, 100)
 //    println("Redecorated in ${timer.elapsedNow()}")
   }
-
-
-  override fun repair(cfg: CFG, str: Σᐩ): List<Σᐩ> = TODO()
 }
