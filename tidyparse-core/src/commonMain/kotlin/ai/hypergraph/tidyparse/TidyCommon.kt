@@ -252,12 +252,12 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
           val Cidx = indexArray[j + 1]
           for (r in appq) {
             val left = dp[p][r][Bidx]
+            if (left == null) continue
             val right = dp[r][q][Cidx]
-            if (left != null && right != null) {
-              // Found a parse for A
-              rhsPairs += left * right
+            if (right == null) continue
+            // Found a parse for A
+            rhsPairs += left * right
 //              if (rhsPairs.size > 10) break@outerLoop
-            }
           }
         }
 
