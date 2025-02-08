@@ -1,8 +1,5 @@
 import kotlin.random.Random
 
-@JsName("navigator")
-external val navigator: dynamic
-
 /**
  * WGSL code for naive matrix multiplication:
  *
@@ -114,10 +111,10 @@ fun squareAndSumGPU(mat: IntArray, N: Int): dynamic {
     //    Out => STORAGE + COPY_SRC = 132
     //    Staging => MAP_READ + COPY_DST = 9
     //    Param => UNIFORM + COPY_DST = 72
-    val bufM = createBuf(device, bytes, 136)
-    val bufOut = createBuf(device, bytes, 132)
-    val bufStaging = createBuf(device, bytes, 9)
-    val bufParam = createBuf(device, paramBytes, 72)
+    val bufM = createBuffer(device, bytes, 136)
+    val bufOut = createBuffer(device, bytes, 132)
+    val bufStaging = createBuffer(device, bytes, 9)
+    val bufParam = createBuffer(device, paramBytes, 72)
 
     // 3) Write data into GPU buffers
     device.queue.writeBuffer(bufM, 0, jsMat)
@@ -173,14 +170,6 @@ fun squareAndSumGPU(mat: IntArray, N: Int): dynamic {
       sum
     }
   }
-}
-
-/** Helper: create a GPU buffer with given size & usage */
-fun createBuf(device: dynamic, size: Int, usage: Int): dynamic {
-  val desc = js("{}")
-  desc.size = size
-  desc.usage = usage
-  return device.createBuffer(desc)
 }
 
 /** Simple timing helper. */

@@ -57,7 +57,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
     if (!containsUnk && tokens in cfg.language) {
 //      val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
-      writeDisplayText("✅ ${tokens.joinToString(" ")}".also { cache[workHash] = it })
+      writeDisplayText("✅ ${tokens.dropLast(1).joinToString(" ")}".also { cache[workHash] = it })
     } else /* Repair */ Unit.also {
       runningJob = MainScope().launch {
         initiateSuspendableRepair(tokens, cfg)

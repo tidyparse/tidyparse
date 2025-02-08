@@ -189,8 +189,8 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
     var min: Int = Int.MAX_VALUE
 
     // For pairs (p,q) in topological order
-    for (dist: Int in 0 until levFSA.numStates) {
-      for (iP: Int in 0 until levFSA.numStates - dist) {
+    for (dist: Int in 0 until dp.size) {
+      for (iP: Int in 0 until dp.size - dist) {
         val p = iP
         val q = iP + dist
         if (ap[p][q] == null) continue
