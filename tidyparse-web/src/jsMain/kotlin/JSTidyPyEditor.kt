@@ -9,7 +9,7 @@ import kotlin.math.ln
 class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val output: Node) : JSTidyEditor(editor, output) {
   val ngrams: MutableMap<List<String>, Double> = mutableMapOf<List<String>, Double>()
   val order: Int by lazy { ngrams.keys.firstOrNull()!!.size }
-  val normalizingConst by lazy { ngrams.keys.map { it.last() }.distinct().size }
+  val normalizingConst by lazy { ngrams.values.sum() }
 
   val PLACEHOLDERS = listOf("STRING", "NAME", "NUMBER")
   override val stubMatcher: Regex = Regex(PLACEHOLDERS.joinToString("|") { Regex.escape(it) })
@@ -33,7 +33,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
   }
 
   fun score(text: List<String>): Double = if (text.size < order) 0.0
-    else -(listOf("BOS") + text + listOf("EOS")).windowed(order, 1)
+    else -(listOf("BOS", "NEWLINE") + text + listOf("NEWLINE", "EOS")).windowed(order, 1)
       .sumOf { ngram -> ln((ngrams[ngram] ?: 1.0) / normalizingConst) }
 
   override fun handleInput() {
@@ -60,13 +60,13 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
       writeDisplayText("✅ ${tokens.dropLast(1).joinToString(" ")}".also { cache[workHash] = it })
     } else /* Repair */ Unit.also {
       runningJob = MainScope().launch {
-        initiateSuspendableRepair(tokens, cfg)
+        initiateSuspendableRepair(tokens, cfg, ngrams)
           // Drop NEWLINE (added by default to PyCodeSnippets)
           .map { it.substring(0, it.length - 8).replace("OR", "|") }
           .enumerateInteractively(
             workHash = workHash,
             origTks = tokens.dropLast(1),
-            metric = { levenshtein(tokens, it) * 7919 + (score(it) * 1_000.0).toInt() },
+            metric = { (score(it) * 1_000.0).toInt() }, // TODO: Is reordering really necessary if we are decoding GREs by ngram score?
             customDiff = {
               val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())
               pcs.paintDiff(levAlign)

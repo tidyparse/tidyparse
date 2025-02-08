@@ -167,7 +167,8 @@ fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
   findNextCompletion()
 }
 
-suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequence<Σᐩ> {
+suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG,
+                                      ngrams: MutableMap<List<String>, Double>? = null): Sequence<Σᐩ> {
   var i = 0
   val upperBound = MAX_RADIUS * 2
   val monoEditBounds = cfg.maxParsableFragmentB(brokenStr, pad = upperBound)
@@ -261,7 +262,7 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
           }
         }
 
-        if (rhsPairs.isNotEmpty()) dp[p][q][Aidx] = GRE.UNI(*rhsPairs.toTypedArray())
+        if (rhsPairs.isNotEmpty()) dp[p][q][Aidx] = GRE.CUP(*rhsPairs.toTypedArray())
       }
     }
   }
@@ -288,8 +289,9 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequenc
   val allParses = levFSA.finalIdxs.mapNotNull { q -> dp[0][q][startIdx] }
 
   // 5) Combine them under a single GRE
-  return (if (allParses.isEmpty()) sequenceOf() else GRE.UNI(*allParses.toTypedArray()).words(cfg.tmLst))
-    .also { println("Took ${timer.elapsedNow()} to parse with |σ|=${brokenStr.size}, |A|=$nStates, |G|=${cfg.size}") }
+  return (if (allParses.isEmpty()) sequenceOf() else GRE.CUP(*allParses.toTypedArray())
+    .let { if (ngrams == null) it.words(cfg.tmLst) else it.wordsOrdered(cfg.tmLst, ngrams) })
+    .also { println("Took ${timer.elapsedNow()} to parse with |σ|=${brokenStr.size}, |Q|=$nStates, |G|=${cfg.size}") }
 }
 
 fun displayComparator(tokens: List<Σᐩ>): Comparator<Σᐩ> =
