@@ -9,8 +9,7 @@ import ai.hypergraph.kaliningraph.tensor.FreeMatrix
 import ai.hypergraph.kaliningraph.types.*
 import kotlinx.coroutines.delay
 import org.kosat.round
-import kotlin.math.ceil
-import kotlin.math.max
+import kotlin.math.*
 import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.DurationUnit.SECONDS
 import kotlin.time.TimeSource
@@ -167,17 +166,20 @@ fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
   findNextCompletion()
 }
 
-suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG,
-                                      ngrams: MutableMap<List<String>, Double>? = null): Sequence<Σᐩ> {
+suspend fun initiateSuspendableRepair(
+  brokenStr: List<Σᐩ>, cfg: CFG,
+  ngrams: MutableMap<List<String>, Double>? = null
+): Sequence<Σᐩ> {
   var i = 0
   val upperBound = MAX_RADIUS * 2
-  val monoEditBounds = cfg.maxParsableFragmentB(brokenStr, pad = upperBound)
+//  val monoEditBounds = cfg.maxParsableFragmentB(brokenStr, pad = upperBound)
   val timer = TimeSource.Monotonic.markNow()
   val bindex = cfg.bindex
   val width = cfg.nonterminals.size
   val vindex = cfg.vindex
   val ups = cfg.unitProductions
   val t2vs = cfg.tmToVidx
+//  val R2LHSI = cfg.bimap.R2LHSI
   val startIdx = bindex[START_SYMBOL]
 
   suspend fun pause(freq: Int = 300_000) { if (i++ % freq == 0) { delay(50.nanoseconds) }}
@@ -196,6 +198,16 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG,
         val q = iP + dist
         if (ap[p][q] == null) continue
         val appq = ap[p][q]!!
+//        for (r in appq) {
+//          (dp[p][r].set * dp[r][q].set).forEach { (lt, rt) ->
+//            R2LHSI[lt][rt].forEach {
+//              pause()
+//              dp[p][q].set(it)
+//              if (p == 0 && it == startIdx && q in levFSA.finalIdxs)
+//                min = minOf(min, levFSA.idsToCoords[q]!!.second)
+//            }
+//          }
+//        }
         for ((A: Int, indexArray: IntArray) in vindex.withIndex()) {
           pause()
           outerloop@for(j: Int in 0..<indexArray.size step 2) {
@@ -217,13 +229,58 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG,
     return if (min == Int.MAX_VALUE) null else min
   }
 
+//  suspend fun pc(levFSA: FSA): Pair<Array<Array<Boolean>>,Array<Array<KBitSet>>>   {
+//    val ap: List<List<List<Int>?>> = levFSA.allPairs
+//    val dp = Array(levFSA.numStates) { Array(levFSA.numStates) { KBitSet(width) } }
+//    val filled = Array(levFSA.numStates) { Array(levFSA.numStates) { false } }
+//
+//    levFSA.allIndexedTxs0(ups, bindex).forEach { (q0, nt, q1) -> dp[q0][q1].set(nt) }
+//
+//    // For pairs (p,q) in topological order
+//    for (dist: Int in 0 until dp.size) {
+//      for (iP: Int in 0 until dp.size - dist) {
+//        val p = iP
+//        val q = iP + dist
+//        if (ap[p][q] == null) continue
+//        val appq = ap[p][q]!!
+////        for (r in appq) {
+////          (dp[p][r].set * dp[r][q].set).forEach { (lt, rt) ->
+////            bimap.R2LHSI[listOf(lt, rt)]?.forEach {
+////              pause()
+////              dp[p][q].set(it)
+////              if (p == 0 && it == startIdx && q in levFSA.finalIdxs)
+////                min = minOf(min, levFSA.idsToCoords[q]!!.second)
+////            }
+////          }
+////        }
+//        for ((A: Int, indexArray: IntArray) in vindex.withIndex()) {
+//          pause()
+//          outerloop@for(j: Int in 0..<indexArray.size step 2) {
+//            val B = indexArray[j]
+//            val C = indexArray[j + 1]
+//            for (r in appq)
+//              if (dp[p][r][B] && dp[r][q][C]) {
+//                filled[p][q] = true
+//                dp[p][q].set(A)
+////                break@outerloop
+//              }
+//          }
+//        }
+//      }
+//    }
+//
+//    return filled to dp
+//  }
+
   val led = (3 until upperBound)
-    .firstNotNullOfOrNull { nonemptyLevInt(makeLevFSA(brokenStr, it, monoEditBounds)) } ?: upperBound
+    .firstNotNullOfOrNull { nonemptyLevInt(makeLevFSA(brokenStr, it)) } ?: upperBound
   val radius = max(3, led) + LED_BUFFER
 
   println("Identified LED=$radius in ${timer.elapsedNow()}")
 
-  val levFSA = makeLevFSA(brokenStr, radius, monoEditBounds)
+  val levFSA = makeLevFSA(brokenStr, radius)
+
+//  val (pc, ed) = pc(levFSA)
 
   val nStates = levFSA.numStates
   val tms = cfg.tmLst.size
@@ -231,12 +288,17 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG,
 
   // 1) Create dp array of parse trees
   val dp: Array<Array<Array<GRE?>>> = Array(nStates) { Array(nStates) { Array(width) { null } } }
+//  val dq: Array<Array<KBitSet>> = Array(nStates) { Array(nStates) { KBitSet(width) } }
 
   // 2) Initialize terminal productions A -> a
   val aitx = levFSA.allIndexedTxs1(ups)
   for ((p, σ, q) in aitx) for (Aidx in t2vs[tmm[σ]!!])
     dp[p][q][Aidx] = ((dp[p][q][Aidx] as? GRE.SET) ?: GRE.SET(tms))
-      .apply { pause(); s.set(tmm[σ]!!) }
+      .apply { pause(); s.set(tmm[σ]!!)/*; dq[p][q].set(Aidx)*/ }
+
+//  val threshold = vindex.sumOf { it.size / 2 }
+
+  var maxChildren = 0
 
   // 3) CYK + Floyd Warshall parsing
   for (dist in 0 until nStates) {
@@ -244,8 +306,35 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG,
       val q = p + dist
       if (levFSA.allPairs[p][q] == null) continue
       val appq = levFSA.allPairs[p][q]!!
+
+//      var wkload = 0
+//      for (r in appq) {
+//        wkload += dq[p][r].set.size * dq[r][q].set.size
+//        if (wkload > 1000) break
+//      }
+//      val workload = appq.sumOf { r -> dq[p][r].set.size * dq[r][q].set.size }
+
+//      println("Workload ([${levFSA.idsToCoords[p]}], [${levFSA.idsToCoords[q]}]): $wkload / ${threshold * appq.size}")
+//      if (wkload < 1000) {
+//        for (r in appq) {
+//          if (!dq[p][r].modified || !dq[r][q].modified) continue
+//          val gens = mutableMapOf<Int, MutableList<GRE>>()
+//          for (a in dq[p][r].set) for (b in dq[r][q].set) {
+//            pause()
+////        (dq[p][r].set * dq[r][q].set).mapNotNull { (a, b) ->
+//            R2LHSI[a][b].forEach { lhs -> gens[lhs] = (gens[lhs] ?: mutableListOf()).apply { add(dp[p][r][a]!! * dp[r][q][b]!!) } }
+//          }
+//          gens.forEach { (k, v) ->
+//            if (v.isNotEmpty()) {
+//              dp[p][q][k] = if (dp[p][q][k] == null) GRE.CUP(*v.toTypedArray())
+//              else GRE.CUP(*v.toTypedArray()) + dp[p][q][k]!!
+//              dq[p][q].set(k)
+//            }
+//          }
+//        }
+//      } else {
       for ((Aidx, indexArray) in vindex.withIndex()) {
-//        println("${cfg.bindex[Aidx]}(${pm!!.ntLengthBounds[Aidx]}):${levFSA.stateLst[p]}-${levFSA.stateLst[q]}(${levFSA.SPLP(p, q)})")
+  //      println("${cfg.bindex[Aidx]}(${pm!!.ntLengthBounds[Aidx]}):${levFSA.stateLst[p]}-${levFSA.stateLst[q]}(${levFSA.SPLP(p, q)})")
         val rhsPairs = dp[p][q][Aidx]?.let { mutableListOf(it) } ?: mutableListOf()
         outerLoop@for (j in 0..<indexArray.size step 2) {
           pause()
@@ -258,12 +347,15 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG,
             if (right == null) continue
             // Found a parse for A
             rhsPairs += left * right
-//              if (rhsPairs.size > 10) break@outerLoop
+  //            if (rhsPairs.size > 10) break@outerLoop
           }
         }
 
-        if (rhsPairs.isNotEmpty()) dp[p][q][Aidx] = GRE.CUP(*rhsPairs.toTypedArray())
+        val list = rhsPairs.toTypedArray()
+        maxChildren = max(maxChildren, list.size)
+        if (rhsPairs.isNotEmpty()) dp[p][q][Aidx] = GRE.CUP(*list)
       }
+//      }
     }
   }
 
@@ -291,7 +383,8 @@ suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG,
   // 5) Combine them under a single GRE
   return (if (allParses.isEmpty()) sequenceOf() else GRE.CUP(*allParses.toTypedArray())
     .let { if (ngrams == null) it.words(cfg.tmLst) else it.wordsOrdered(cfg.tmLst, ngrams) })
-    .also { println("Took ${timer.elapsedNow()} to parse with |σ|=${brokenStr.size}, |Q|=$nStates, |G|=${cfg.size}") }
+    .also { println("Parsing took ${timer.elapsedNow()} with |σ|=${brokenStr.size}, " +
+        "|Q|=$nStates, |G|=${cfg.size}, |V|=$width, |Σ|=$tms, maxChildren=$maxChildren") }
 }
 
 fun displayComparator(tokens: List<Σᐩ>): Comparator<Σᐩ> =
