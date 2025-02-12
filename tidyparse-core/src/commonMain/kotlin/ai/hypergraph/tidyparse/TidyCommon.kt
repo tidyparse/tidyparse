@@ -198,16 +198,6 @@ suspend fun initiateSuspendableRepair(
         val q = iP + dist
         if (ap[p][q] == null) continue
         val appq = ap[p][q]!!
-//        for (r in appq) {
-//          (dp[p][r].set * dp[r][q].set).forEach { (lt, rt) ->
-//            R2LHSI[lt][rt].forEach {
-//              pause()
-//              dp[p][q].set(it)
-//              if (p == 0 && it == startIdx && q in levFSA.finalIdxs)
-//                min = minOf(min, levFSA.idsToCoords[q]!!.second)
-//            }
-//          }
-//        }
         for ((A: Int, indexArray: IntArray) in vindex.withIndex()) {
           pause()
           outerloop@for(j: Int in 0..<indexArray.size step 2) {
@@ -229,54 +219,11 @@ suspend fun initiateSuspendableRepair(
     return if (min == Int.MAX_VALUE) null else min
   }
 
-//  suspend fun pc(levFSA: FSA): Pair<Array<Array<Boolean>>,Array<Array<KBitSet>>>   {
-//    val ap: List<List<List<Int>?>> = levFSA.allPairs
-//    val dp = Array(levFSA.numStates) { Array(levFSA.numStates) { KBitSet(width) } }
-//    val filled = Array(levFSA.numStates) { Array(levFSA.numStates) { false } }
-//
-//    levFSA.allIndexedTxs0(ups, bindex).forEach { (q0, nt, q1) -> dp[q0][q1].set(nt) }
-//
-//    // For pairs (p,q) in topological order
-//    for (dist: Int in 0 until dp.size) {
-//      for (iP: Int in 0 until dp.size - dist) {
-//        val p = iP
-//        val q = iP + dist
-//        if (ap[p][q] == null) continue
-//        val appq = ap[p][q]!!
-////        for (r in appq) {
-////          (dp[p][r].set * dp[r][q].set).forEach { (lt, rt) ->
-////            bimap.R2LHSI[listOf(lt, rt)]?.forEach {
-////              pause()
-////              dp[p][q].set(it)
-////              if (p == 0 && it == startIdx && q in levFSA.finalIdxs)
-////                min = minOf(min, levFSA.idsToCoords[q]!!.second)
-////            }
-////          }
-////        }
-//        for ((A: Int, indexArray: IntArray) in vindex.withIndex()) {
-//          pause()
-//          outerloop@for(j: Int in 0..<indexArray.size step 2) {
-//            val B = indexArray[j]
-//            val C = indexArray[j + 1]
-//            for (r in appq)
-//              if (dp[p][r][B] && dp[r][q][C]) {
-//                filled[p][q] = true
-//                dp[p][q].set(A)
-////                break@outerloop
-//              }
-//          }
-//        }
-//      }
-//    }
-//
-//    return filled to dp
-//  }
-
   val led = (3 until upperBound)
     .firstNotNullOfOrNull { nonemptyLevInt(makeLevFSA(brokenStr, it)) } ?: upperBound
-  val radius = max(3, led) + LED_BUFFER
+  val radius = led + LED_BUFFER
 
-  println("Identified LED=$radius in ${timer.elapsedNow()}")
+  println("Identified LED=$led, radius=$radius in ${timer.elapsedNow()}")
 
   val levFSA = makeLevFSA(brokenStr, radius)
 

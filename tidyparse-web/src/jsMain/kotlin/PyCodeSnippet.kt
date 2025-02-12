@@ -46,45 +46,21 @@ data class PyCodeSnippet(val rawCode: String) {
     for ((oldToken, newToken) in levAlignedPatch) {
       when {
         // (1) Insertions (oldToken == null)
-        // Paint the new token in green
-        oldToken == null && newToken != null -> {
-          sb.append(
-            """ <span style="color: green">${newToken.escapeHTML()}</span> """
-          )
-        }
+        oldToken == null && newToken != null ->
+          sb.append(""" <span style="color: green">${newToken.escapeHTML()}</span> """).also { indexInOriginal-- }
 
         // (2) Deletions (newToken == null)
-        // Show a gray “blank” of the same length as the original token
-        oldToken != null && newToken == null -> {
-          if (indexInOriginal < tokens.size) {
-            val blank = " "
-            sb.append("""<span style="background-color: gray"><span class="noselect">$blank</span></span>""")
-            indexInOriginal++
-          }
-        }
+        oldToken != null && newToken == null ->
+            sb.append("""<span style="background-color: gray"><span class="noselect"> </span></span>""")
 
         // (4) Substitution (oldToken != null && newToken != null && oldToken != newToken)
-        oldToken != null && newToken != null && oldToken != newToken -> {
-          if (indexInOriginal < tokens.size) {
-            // Paint the new token in orange
-            sb.append(
-              """ <span style="color: orange">${newToken.escapeHTML()}</span> """
-            )
-            indexInOriginal++
-          }
-        }
+        oldToken != null && newToken != null && oldToken != newToken ->
+            sb.append(""" <span style="color: orange">${newToken.escapeHTML()}</span> """)
 
         // (5) Match (oldToken == newToken)
-        else -> {
-          // Output the exact original text, uncolored
-          if (indexInOriginal < tokens.size) {
-            val tk = if (Python3Lexer.VOCABULARY.getDisplayName(tokens[indexInOriginal].type) == "NEWLINE") " "
-            else " " + tokens[indexInOriginal].text!!.escapeHTML() + " "
-            sb.append(tk)
-            indexInOriginal++
-          }
-        }
+        else -> sb.append(" " + tokens[indexInOriginal].text!!.escapeHTML() + " ")
       }
+      indexInOriginal++
     }
 
     // Append any leftover original tokens if the patch ended early
