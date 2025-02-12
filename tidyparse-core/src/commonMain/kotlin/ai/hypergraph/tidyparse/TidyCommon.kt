@@ -191,7 +191,7 @@ suspend fun initiateSuspendableRepair(
     var minRad: Int = Int.MAX_VALUE
 
     // For pairs (p,q) in topological order
-    for (dist: Int in 0 until dp.size) {
+    for (dist: Int in 1 until dp.size) {
       for (iP: Int in 0 until dp.size - dist) {
         val p = iP
         val q = iP + dist
@@ -225,7 +225,7 @@ suspend fun initiateSuspendableRepair(
   val led = (3 until upperBound)
     .firstNotNullOfOrNull { nonemptyLevInt(makeLevFSA(brokenStr, it)) } ?:
     upperBound.also { println("Hit upper bound") }
-  val radius = led + LED_BUFFER.also { println("Buffer was: $it") }
+  val radius = led + LED_BUFFER
 
   println("Identified LED=$led, radius=$radius in ${timer.elapsedNow()}")
 
@@ -244,11 +244,10 @@ suspend fun initiateSuspendableRepair(
     dp[p][q][Aidx] = ((dp[p][q][Aidx] as? GRE.SET) ?: GRE.SET(tms))
       .apply { pause(); s.set(tmm[σ]!!)/*; dq[p][q].set(Aidx)*/ }
 
-
   var maxChildren = 0
 
   // 3) CYK + Floyd Warshall parsing
-  for (dist in 0 until nStates) {
+  for (dist in 1 until nStates) {
     for (p in 0 until (nStates - dist)) {
       val q = p + dist
       if (levFSA.allPairs[p][q] == null) continue
@@ -273,8 +272,10 @@ suspend fun initiateSuspendableRepair(
         }
 
         val list = rhsPairs.toTypedArray()
-        maxChildren = max(maxChildren, list.size)
-        if (rhsPairs.isNotEmpty()) dp[p][q][Aidx] = GRE.CUP(*list)
+        if (rhsPairs.isNotEmpty()) {
+          maxChildren = max(maxChildren, list.size)
+          dp[p][q][Aidx] = GRE.CUP(*list)
+        }
       }
     }
   }
