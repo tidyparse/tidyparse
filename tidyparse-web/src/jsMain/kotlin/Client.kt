@@ -74,7 +74,7 @@ fun defaultSetup() {
     } catch (_: Exception) {}
     jsEditor.redecorateLines()
   })
-  timeout.addEventListener("change", { LED_BUFFER = maxEdits.value.toInt() })
+  maxEdits.addEventListener("change", { LED_BUFFER = maxEdits.value.toInt().also { println("Set buffer to $it") } })
   timeout.addEventListener("change", { TIMEOUT_MS = timeout.value.toInt() })
 }
 

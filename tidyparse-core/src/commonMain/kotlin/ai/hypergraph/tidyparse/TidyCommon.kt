@@ -171,7 +171,7 @@ suspend fun initiateSuspendableRepair(
   ngrams: MutableMap<List<String>, Double>? = null
 ): Sequence<Σᐩ> {
   var i = 0
-  val upperBound = MAX_RADIUS * 2
+  val upperBound = MAX_RADIUS * 3
 //  val monoEditBounds = cfg.maxParsableFragmentB(brokenStr, pad = upperBound)
   val timer = TimeSource.Monotonic.markNow()
   val bindex = cfg.bindex
@@ -179,7 +179,6 @@ suspend fun initiateSuspendableRepair(
   val vindex = cfg.vindex
   val ups = cfg.unitProductions
   val t2vs = cfg.tmToVidx
-//  val R2LHSI = cfg.bimap.R2LHSI
   val startIdx = bindex[START_SYMBOL]
 
   suspend fun pause(freq: Int = 300_000) { if (i++ % freq == 0) { delay(50.nanoseconds) }}
@@ -189,7 +188,7 @@ suspend fun initiateSuspendableRepair(
     val dp = Array(levFSA.numStates) { Array(levFSA.numStates) { BooleanArray(width) { false } } }
 
     levFSA.allIndexedTxs0(ups, bindex).forEach { (q0, nt, q1) -> dp[q0][q1][nt] = true }
-    var min: Int = Int.MAX_VALUE
+    var minRad: Int = Int.MAX_VALUE
 
     // For pairs (p,q) in topological order
     for (dist: Int in 0 until dp.size) {
@@ -210,24 +209,27 @@ suspend fun initiateSuspendableRepair(
               }
           }
 
-          if (p == 0 && A == startIdx && q in levFSA.finalIdxs && dp[p][q][A])
-            min = minOf(min, levFSA.idsToCoords[q]!!.second)
+          if (p == 0 && A == startIdx && q in levFSA.finalIdxs && dp[p][q][A]) {
+            val (x, y) = levFSA.idsToCoords[q]!!
+            /** See final state conditions for [makeExactLevCFL] */
+            // The minimum radius such that this final state is included in the L-FSA
+            minRad = minOf(minRad, (brokenStr.size - x + y).absoluteValue)
+          }
         }
       }
     }
 
-    return if (min == Int.MAX_VALUE) null else min
+    return if (minRad == Int.MAX_VALUE) null else minRad
   }
 
   val led = (3 until upperBound)
-    .firstNotNullOfOrNull { nonemptyLevInt(makeLevFSA(brokenStr, it)) } ?: upperBound
-  val radius = led + LED_BUFFER
+    .firstNotNullOfOrNull { nonemptyLevInt(makeLevFSA(brokenStr, it)) } ?:
+    upperBound.also { println("Hit upper bound") }
+  val radius = led + LED_BUFFER.also { println("Buffer was: $it") }
 
   println("Identified LED=$led, radius=$radius in ${timer.elapsedNow()}")
 
   val levFSA = makeLevFSA(brokenStr, radius)
-
-//  val (pc, ed) = pc(levFSA)
 
   val nStates = levFSA.numStates
   val tms = cfg.tmLst.size
@@ -235,7 +237,6 @@ suspend fun initiateSuspendableRepair(
 
   // 1) Create dp array of parse trees
   val dp: Array<Array<Array<GRE?>>> = Array(nStates) { Array(nStates) { Array(width) { null } } }
-//  val dq: Array<Array<KBitSet>> = Array(nStates) { Array(nStates) { KBitSet(width) } }
 
   // 2) Initialize terminal productions A -> a
   val aitx = levFSA.allIndexedTxs1(ups)
@@ -243,7 +244,6 @@ suspend fun initiateSuspendableRepair(
     dp[p][q][Aidx] = ((dp[p][q][Aidx] as? GRE.SET) ?: GRE.SET(tms))
       .apply { pause(); s.set(tmm[σ]!!)/*; dq[p][q].set(Aidx)*/ }
 
-//  val threshold = vindex.sumOf { it.size / 2 }
 
   var maxChildren = 0
 
@@ -254,32 +254,6 @@ suspend fun initiateSuspendableRepair(
       if (levFSA.allPairs[p][q] == null) continue
       val appq = levFSA.allPairs[p][q]!!
 
-//      var wkload = 0
-//      for (r in appq) {
-//        wkload += dq[p][r].set.size * dq[r][q].set.size
-//        if (wkload > 1000) break
-//      }
-//      val workload = appq.sumOf { r -> dq[p][r].set.size * dq[r][q].set.size }
-
-//      println("Workload ([${levFSA.idsToCoords[p]}], [${levFSA.idsToCoords[q]}]): $wkload / ${threshold * appq.size}")
-//      if (wkload < 1000) {
-//        for (r in appq) {
-//          if (!dq[p][r].modified || !dq[r][q].modified) continue
-//          val gens = mutableMapOf<Int, MutableList<GRE>>()
-//          for (a in dq[p][r].set) for (b in dq[r][q].set) {
-//            pause()
-////        (dq[p][r].set * dq[r][q].set).mapNotNull { (a, b) ->
-//            R2LHSI[a][b].forEach { lhs -> gens[lhs] = (gens[lhs] ?: mutableListOf()).apply { add(dp[p][r][a]!! * dp[r][q][b]!!) } }
-//          }
-//          gens.forEach { (k, v) ->
-//            if (v.isNotEmpty()) {
-//              dp[p][q][k] = if (dp[p][q][k] == null) GRE.CUP(*v.toTypedArray())
-//              else GRE.CUP(*v.toTypedArray()) + dp[p][q][k]!!
-//              dq[p][q].set(k)
-//            }
-//          }
-//        }
-//      } else {
       for ((Aidx, indexArray) in vindex.withIndex()) {
   //      println("${cfg.bindex[Aidx]}(${pm!!.ntLengthBounds[Aidx]}):${levFSA.stateLst[p]}-${levFSA.stateLst[q]}(${levFSA.SPLP(p, q)})")
         val rhsPairs = dp[p][q][Aidx]?.let { mutableListOf(it) } ?: mutableListOf()
@@ -302,27 +276,10 @@ suspend fun initiateSuspendableRepair(
         maxChildren = max(maxChildren, list.size)
         if (rhsPairs.isNotEmpty()) dp[p][q][Aidx] = GRE.CUP(*list)
       }
-//      }
     }
   }
 
   println("Completed parse matrix in: ${timer.elapsedNow()}")
-
-  /* Too slow?
-  // 4) Gather successful PTrees for each Levenshtein distance shell from LED to max radius
-  //    and enumerate repairs in increasing order by Levenshtein distance
-  val allParses = levFSA.finalIdxs.groupBy { levFSA.idsToCoords[it]!!.second }
-    .let { distToFinalStates ->
-      distToFinalStates.keys.sorted().map { dist ->
-        distToFinalStates[dist]!!.mapNotNull { dp[0][it][startIdx]?.branches }.flatten().let {
-          if (it.isEmpty()) emptySequence()
-          else PTree(START_SYMBOL, it).sampleStrWithoutReplacement()
-        }
-      }.fold(emptySequence<Σᐩ>()) { acc, p -> acc + p }
-    }.also { println("Took ${timer.elapsedNow()} parse for |A|=$nStates, |G|=${cfg.size}") }
-
-  return allParses
-   */
 
   // 4) Gather final parse trees from dp[0][f][startIdx], for all final states f
   val allParses = levFSA.finalIdxs.mapNotNull { q -> dp[0][q][startIdx] }
