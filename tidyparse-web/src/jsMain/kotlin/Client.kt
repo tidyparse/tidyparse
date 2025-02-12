@@ -74,7 +74,7 @@ fun defaultSetup() {
     } catch (_: Exception) {}
     jsEditor.redecorateLines()
   })
-  maxEdits.addEventListener("change", { LED_BUFFER = maxEdits.value.toInt().also { println("Set buffer to $it") } })
+  maxEdits.addEventListener("change", { LED_BUFFER = maxEdits.value.toInt() })
   timeout.addEventListener("change", { TIMEOUT_MS = timeout.value.toInt() })
 }
 
@@ -91,13 +91,12 @@ fun pythonSetup() {
     TIMEOUT_MS = timeout.value.toInt()
     jsPyEditor.minimize = true
     fetchNgrams()
-    prepopPPM()
   }
   inputField.addEventListener("input", { jsPyEditor.redecorateLines() })
   inputField.addEventListener("keydown", { event -> jsPyEditor.navUpdate(event as KeyboardEvent) })
 
   mincheck.addEventListener("change", { jsPyEditor.minimize = mincheck.checked })
-  timeout.addEventListener("change", { LED_BUFFER = maxEdits.value.toInt() })
+  maxEdits.addEventListener("change", { LED_BUFFER = maxEdits.value.toInt() })
   timeout.addEventListener("change", { TIMEOUT_MS = timeout.value.toInt() })
 }
 
@@ -111,19 +110,6 @@ val mincheck by lazy { document.getElementById("minimize-checkbox") as HTMLInput
 val ntscheck by lazy { document.getElementById("ntstubs-checkbox") as HTMLInputElement }
 val timeout by lazy { document.getElementById("timeout") as HTMLInputElement }
 val maxEdits by lazy { document.getElementById("max-edits") as HTMLInputElement }
-
-fun prepopPPM(file: String = "1566012639.cache") =
-  MainScope().launch {
-    val response = window.fetch(file).await()
-    if (response.ok) {
-      val str = response.text().await()
-
-      val upperBound = str.lines().last().substringBefore(" ")
-      println("Prepopulated Parikh Map ($upperBound) for vanillaS2PCFG")
-
-      langCache[1566012639] = str
-    }
-  }
 
 fun fetchNgrams(file: String = "python_4grams.txt") =
   MainScope().launch {
