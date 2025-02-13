@@ -232,7 +232,8 @@ suspend fun initiateSuspendableRepair(
   val levFSA = makeLevFSA(brokenStr, radius)
 
   val nStates = levFSA.numStates
-  val tms = cfg.tmLst.size
+  val tml = cfg.tmLst
+  val tms = tml.size
   val tmm = cfg.tmMap
 
   // 1) Create dp array of parse trees
@@ -286,9 +287,14 @@ suspend fun initiateSuspendableRepair(
   val allParses = levFSA.finalIdxs.mapNotNull { q -> dp[0][q][startIdx] }
 
   // 5) Combine them under a single GRE
-  return (if (allParses.isEmpty()) sequenceOf() else GRE.CUP(*allParses.toTypedArray())
-    .let { if (ngrams == null) it.words(cfg.tmLst) else it.wordsOrdered(cfg.tmLst, ngrams) })
-    .also { println("Parsing took ${timer.elapsedNow()} with |σ|=${brokenStr.size}, " +
+  return (
+    if (allParses.isEmpty()) sequenceOf()
+    else GRE.CUP(*allParses.toTypedArray()).let {
+      if (ngrams == null) it.words(tml)
+//      else it.enumerateDepthFirst(ngrams, tml)
+      else it.wordsOrdered(tml, ngrams)
+    }
+  ).also { println("Parsing took ${timer.elapsedNow()} with |σ|=${brokenStr.size}, " +
         "|Q|=$nStates, |G|=${cfg.size}, |V|=$width, |Σ|=$tms, maxChildren=$maxChildren") }
 }
 
