@@ -179,6 +179,7 @@ suspend fun initiateSuspendableRepair(
   val vindex = cfg.vindex
   val ups = cfg.unitProductions
   val t2vs = cfg.tmToVidx
+  val maxBranch = vindex.maxOf { it.size }
   val startIdx = bindex[START_SYMBOL]
 
   suspend fun pause(freq: Int = 300_000) { if (i++ % freq == 0) { delay(50.nanoseconds) }}
@@ -246,6 +247,7 @@ suspend fun initiateSuspendableRepair(
       .apply { pause(); s.set(tmm[σ]!!)/*; dq[p][q].set(Aidx)*/ }
 
   var maxChildren = 0
+  var location = -1 to -1
 
   // 3) CYK + Floyd Warshall parsing
   for (dist in 1 until nStates) {
@@ -274,7 +276,10 @@ suspend fun initiateSuspendableRepair(
 
         val list = rhsPairs.toTypedArray()
         if (rhsPairs.isNotEmpty()) {
-          maxChildren = max(maxChildren, list.size)
+          if (list.size > maxChildren) {
+            maxChildren = list.size
+            location = p to q
+          }
           dp[p][q][Aidx] = GRE.CUP(*list)
         }
       }
@@ -286,16 +291,17 @@ suspend fun initiateSuspendableRepair(
   // 4) Gather final parse trees from dp[0][f][startIdx], for all final states f
   val allParses = levFSA.finalIdxs.mapNotNull { q -> dp[0][q][startIdx] }
 
+  val clock = TimeSource.Monotonic.markNow()
   // 5) Combine them under a single GRE
   return (
     if (allParses.isEmpty()) sequenceOf()
     else GRE.CUP(*allParses.toTypedArray()).let {
-      if (ngrams == null) it.words(tml)
+      if (ngrams == null) it.words(tml) { clock.hasTimeLeft() }
 //      else it.enumerateDepthFirst(ngrams, tml)
-      else it.wordsOrdered(tml, ngrams)
+      else it.wordsOrdered(tml, ngrams) { clock.hasTimeLeft() }
     }
   ).also { println("Parsing took ${timer.elapsedNow()} with |σ|=${brokenStr.size}, " +
-        "|Q|=$nStates, |G|=${cfg.size}, |V|=$width, |Σ|=$tms, maxChildren=$maxChildren") }
+    "|Q|=$nStates, |G|=${cfg.size}, maxBranch=$maxBranch, |V|=$width, |Σ|=$tms, maxChildren=$maxChildren@$location") }
 }
 
 fun displayComparator(tokens: List<Σᐩ>): Comparator<Σᐩ> =

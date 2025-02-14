@@ -115,7 +115,7 @@ abstract class TidyEditor {
         (origTks.sumOf { it.length } - it.sumOf { it.length }).absoluteValue },
     shouldContinue: () -> Boolean = { currentWorkHash == workHash && timer.hasTimeLeft() },
     customDiff: (String) -> String = { levenshteinAlign(origTks.joinToString(" "), it).paintDiffs() }
-  ) = this.let {
+  ) = let {
     if (!minimize || "_" in origTks) it
     else it.flatMap { minimizeFix(origTks, it.tokenizeByWhitespace()) { this in cfg.language } }
   }.enumerateCompletionsInteractively(

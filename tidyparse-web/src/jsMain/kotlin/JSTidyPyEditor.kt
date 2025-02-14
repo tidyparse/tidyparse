@@ -32,9 +32,13 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 //    println("Redecorated in ${timer.elapsedNow()}")
   }
 
-  fun score(text: List<String>): Double = if (text.size < order) 0.0
-    else -(listOf("BOS", "NEWLINE") + text + listOf("NEWLINE", "EOS")).windowed(order, 1)
-      .sumOf { ngram -> ln((ngrams[ngram] ?: 1.0) / normalizingConst) }
+  companion object {
+    val prefix = listOf("BOS", "NEWLINE")
+    val suffix = listOf("NEWLINE", "EOS")
+  }
+
+  fun score(text: List<String>): Double =
+    -(prefix + text + suffix).windowed(order, 1).sumOf { ngram -> ln((ngrams[ngram] ?: 1.0) / normalizingConst) }
 
   override fun handleInput() {
     val currentLine = currentLine().also { println("Current line is: $it") }
