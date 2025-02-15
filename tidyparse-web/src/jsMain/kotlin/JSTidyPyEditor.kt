@@ -1,4 +1,6 @@
 import ai.hypergraph.kaliningraph.parsing.*
+import ai.hypergraph.kaliningraph.repair.LED_BUFFER
+import ai.hypergraph.kaliningraph.repair.TIMEOUT_MS
 import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.tidyparse.initiateSuspendableRepair
@@ -51,7 +53,8 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     var containsUnk = false
     val abstractUnk = tokens.map { if (it in cfg.terminals) it else { containsUnk = true; "_" } }
 
-    val workHash = abstractUnk.hashCode() + cfg.hashCode()
+    val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, minimize).hashCode()
+    val workHash = abstractUnk.hashCode() + cfg.hashCode() + settingsHash
     if (workHash == currentWorkHash) return
     currentWorkHash = workHash
 

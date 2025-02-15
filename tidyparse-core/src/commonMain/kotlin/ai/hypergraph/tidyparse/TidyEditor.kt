@@ -3,6 +3,9 @@ package ai.hypergraph.tidyparse
 import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.parsing.*
+import ai.hypergraph.kaliningraph.repair.LED_BUFFER
+import ai.hypergraph.kaliningraph.repair.MAX_REPAIR
+import ai.hypergraph.kaliningraph.repair.TIMEOUT_MS
 import ai.hypergraph.kaliningraph.repair.minimizeFix
 import kotlinx.coroutines.*
 import kotlin.math.absoluteValue
@@ -88,7 +91,8 @@ abstract class TidyEditor {
     var hasHole = false
     val abstractUnk = tokens.map { if (it in cfg.terminals) it else { hasHole = true; "_" } }
 
-    val workHash = abstractUnk.hashCode() + cfg.hashCode()
+    val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, minimize, ntStubs).hashCode()
+    val workHash = abstractUnk.hashCode() + cfg.hashCode() + settingsHash.hashCode()
     if (workHash == currentWorkHash) return
     currentWorkHash = workHash
 
