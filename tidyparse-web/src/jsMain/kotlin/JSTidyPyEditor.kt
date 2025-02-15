@@ -5,7 +5,10 @@ import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.tidyparse.initiateSuspendableRepair
 import kotlinx.coroutines.*
+import kotlinx.coroutines.await
 import org.w3c.dom.*
+import kotlin.js.Promise
+import kotlin.js.unsafeCast
 import kotlin.math.ln
 
 class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val output: Node) : JSTidyEditor(editor, output) {
@@ -41,6 +44,20 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
   fun score(text: List<String>): Double =
     -(prefix + text + suffix).windowed(order, 1).sumOf { ngram -> ln((ngrams[ngram] ?: 1.0) / normalizingConst) }
+
+  var pyodide: dynamic? = null
+
+  override fun formatCode(pythonCode: String): String = try {
+    jsPyEditor.pyodide.runPython("""
+      from black import format_str, FileMode
+      pretty_code = format_str("$pythonCode", mode=FileMode())
+    """.trimIndent())
+    jsPyEditor.pyodide.globals.get("pretty_code").trim()
+  } catch (error: dynamic) {
+    // If there's any issue, log the error and return the original
+    println("Error formatting Python code: $error")
+    pythonCode
+  }
 
   override fun handleInput() {
     val currentLine = currentLine().also { println("Current line is: $it") }

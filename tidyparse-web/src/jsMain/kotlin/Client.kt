@@ -134,17 +134,17 @@ fun initPyodide() = MainScope().launch {
   jsPyEditor.pyodide.loadPackage("micropip").unsafeCast<Promise<dynamic>>().await()
 
   val micropip = jsPyEditor.pyodide.pyimport("micropip")
-  micropip.install("yapf").unsafeCast<Promise<dynamic>>().await()
+  micropip.install("black").unsafeCast<Promise<dynamic>>().await()
 
   val runPromise = jsPyEditor.pyodide.runPythonAsync(
     """
-    from yapf.yapflib.yapf_api import FormatCode
-    FormatCode("1+1")[0]
+      from black import format_str, FileMode
+      format_str("1+1", mode=FileMode())
     """.trimIndent()
   ).unsafeCast<Promise<String>>()
 
   val beautified = runPromise.await()
-  println("Pyodide test => $beautified")
+  println("Black test => $beautified")
 }
 
 fun fetchSelectedExample() = MainScope().launch {

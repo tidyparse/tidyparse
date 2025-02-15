@@ -64,6 +64,8 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     else -> null
   }
 
+  open fun formatCode(code: String): String = code
+
   fun navUpdate(event: KeyboardEvent) {
     val key = event.keyCode.toSelectorAction() ?: return
     if (key == SelectorAction.TAB) { event.preventDefault(); handleTab(); return }
@@ -77,15 +79,13 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
       SelectorAction.ENTER -> {
         val selection = readDisplayText().lines()[currentIdx + 2].substringAfter(".) ")
 
-        MainScope().launch {
-          overwriteRegion(
-            getCaretPosition().takeIf { it.last - it.first > 0 } ?: getLineBounds(),
-            beautifyPythonCode(selection.tokenizeByWhitespace().joinToString(" "))
-          )
-          redecorateLines()
-          continuation { handleInput() }
-          continuation { handleTab() }
-        }
+        overwriteRegion(
+          getCaretPosition().takeIf { it.last - it.first > 0 } ?: getLineBounds(),
+          formatCode(selection.tokenizeByWhitespace().joinToString(" "))
+        )
+        redecorateLines()
+        continuation { handleInput() }
+        continuation { handleTab() }
 
         return
       }
@@ -98,24 +98,6 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
       else if (i == selIdx.v + 2) "<mark>$line</mark>"
       else line
     }.joinToString("\n"))
-  }
-
-  var pyodide: dynamic? = null
-
-  suspend fun beautifyPythonCode(pythonCode: String): String = try {
-    // 6. Run Python code asynchronously to format with yapf
-    val runPromise = jsPyEditor.pyodide.runPythonAsync(
-      """
-      from yapf.yapflib.yapf_api import FormatCode
-      FormatCode("$pythonCode")[0]
-      """.trimIndent()
-    ).unsafeCast<Promise<String>>()
-    val beautified = runPromise.await()
-    beautified.unsafeCast<String>().trim()
-  } catch (error: dynamic) {
-    // If there's any issue, log the error and return the original
-    println("Error beautifying Python code: $error")
-    pythonCode
   }
 
   override fun redecorateLines(cfg: CFG) {
