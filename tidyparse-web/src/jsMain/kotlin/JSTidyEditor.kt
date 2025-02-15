@@ -2,8 +2,13 @@ import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.tidyparse.*
 import kotlinx.browser.window
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.await
+import kotlinx.coroutines.launch
 import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
+import kotlin.js.Promise
+import kotlin.js.unsafeCast
 
 /** Compare with [ai.hypergraph.tidyparse.IJTidyEditor] */
 open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: Node): TidyEditor() {
@@ -71,10 +76,17 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     when (key) {
       SelectorAction.ENTER -> {
         val selection = readDisplayText().lines()[currentIdx + 2].substringAfter(".) ")
-        overwriteRegion(getCaretPosition().takeIf { it.last - it.first > 0 } ?: getLineBounds(), selection.tokenizeByWhitespace().joinToString(" "))
-        redecorateLines()
-        continuation { handleInput() }
-        continuation { handleTab() }
+
+        MainScope().launch {
+          overwriteRegion(
+            getCaretPosition().takeIf { it.last - it.first > 0 } ?: getLineBounds(),
+            beautifyPythonCode(selection.tokenizeByWhitespace().joinToString(" "))
+          )
+          redecorateLines()
+          continuation { handleInput() }
+          continuation { handleTab() }
+        }
+
         return
       }
       SelectorAction.ARROW_DOWN -> selIdx = ModInt(currentIdx, minOf(MAX_DISP_RESULTS, lines.size - 4)) + 1
@@ -86,6 +98,24 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
       else if (i == selIdx.v + 2) "<mark>$line</mark>"
       else line
     }.joinToString("\n"))
+  }
+
+  var pyodide: dynamic? = null
+
+  suspend fun beautifyPythonCode(pythonCode: String): String = try {
+    // 6. Run Python code asynchronously to format with yapf
+    val runPromise = jsPyEditor.pyodide.runPythonAsync(
+      """
+      from yapf.yapflib.yapf_api import FormatCode
+      FormatCode("$pythonCode")[0]
+      """.trimIndent()
+    ).unsafeCast<Promise<String>>()
+    val beautified = runPromise.await()
+    beautified.unsafeCast<String>().trim()
+  } catch (error: dynamic) {
+    // If there's any issue, log the error and return the original
+    println("Error beautifying Python code: $error")
+    pythonCode
   }
 
   override fun redecorateLines(cfg: CFG) {

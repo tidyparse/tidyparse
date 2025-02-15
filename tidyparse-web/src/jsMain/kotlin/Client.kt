@@ -5,6 +5,7 @@ import kotlinx.browser.*
 import kotlinx.coroutines.*
 import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
+import kotlin.js.Promise
 
 /**
 TODO (soon):
@@ -89,6 +90,7 @@ fun pythonSetup() {
     TIMEOUT_MS = timeout.value.toInt()
     jsPyEditor.minimize = true
     loadNgrams()
+    initPyodide()
   }
   inputField.addEventListener("input", { jsPyEditor.redecorateLines() })
   inputField.addEventListener("keydown", { event -> jsPyEditor.navUpdate(event as KeyboardEvent) })
@@ -124,6 +126,26 @@ fun loadNgrams(file: String = "python_4grams.txt") =
     }
   }
 
+fun initPyodide() = MainScope().launch {
+  jsPyEditor.pyodide = window.asDynamic()
+    .loadPyodide(js("{ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.27.2/full/' }"))
+    .unsafeCast<Promise<dynamic>>().await()
+
+  jsPyEditor.pyodide.loadPackage("micropip").unsafeCast<Promise<dynamic>>().await()
+
+  val micropip = jsPyEditor.pyodide.pyimport("micropip")
+  micropip.install("yapf").unsafeCast<Promise<dynamic>>().await()
+
+  val runPromise = jsPyEditor.pyodide.runPythonAsync(
+    """
+    from yapf.yapflib.yapf_api import FormatCode
+    FormatCode("1+1")[0]
+    """.trimIndent()
+  ).unsafeCast<Promise<String>>()
+
+  val beautified = runPromise.await()
+  println("Pyodide test => $beautified")
+}
 
 fun fetchSelectedExample() = MainScope().launch {
   val response = window.fetch(exSelector.value).await()
