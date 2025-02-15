@@ -81,8 +81,6 @@ fun defaultSetup() {
 fun pythonSetup() {
   println("Starting TidyPython")
 //  benchmarkWGPU(); return
-//  println("Nonterminals: ${pythonStatementCNFAllProds.nonterminals.size}")
-//  println(PyCodeSnippet("[j for j in i]").lexedTokens())
   inputField.addEventListener("input", { jsPyEditor.run { continuation { handleInput() } } })
 
   window.onload = {

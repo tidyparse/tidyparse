@@ -23,7 +23,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
       if (currentHash != hashIter) return
       val decCFG = getLatestCFG()
       preparseParseableLines(decCFG, readEditorText()) {
-        PyCodeSnippet(it).lexedTokens() in decCFG.language
+        PyCodeSnippet(it).lexedTokens().replace("|", "OR") in decCFG.language
       }
       if (currentHash == hashIter) decorator.fullDecorate(decCFG)
     }
@@ -44,7 +44,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     val currentLine = currentLine().also { println("Current line is: $it") }
     if (currentLine.isBlank()) return
     val pcs = PyCodeSnippet(currentLine)
-    val tokens = pcs.lexedTokens().tokenizeByWhitespace()
+    val tokens = pcs.lexedTokens().tokenizeByWhitespace().map { if (it == "|") "OR" else it }
 
     println("Repairing: " + tokens.dropLast(1).joinToString(" "))
 
@@ -59,10 +59,10 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
     runningJob?.cancel()
 
-    if (!containsUnk && tokens in cfg.language) {
+    if (!containsUnk && tokens in cfg.language)
 //      val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
       writeDisplayText("✅ ${tokens.dropLast(1).joinToString(" ")}".also { cache[workHash] = it })
-    } else /* Repair */ Unit.also {
+    else /* Repair */ Unit.also {
       runningJob = MainScope().launch {
         initiateSuspendableRepair(tokens, cfg, ngrams)
           // Drop NEWLINE (added by default to PyCodeSnippets)
@@ -70,6 +70,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
           .enumerateInteractively(
             workHash = workHash,
             origTks = tokens.dropLast(1),
+            recognizer = { "$it NEWLINE".replace("|", "OR") in cfg.language },
             metric = { (score(it) * 1_000.0).toInt() }, // TODO: Is reordering really necessary if we are decoding GREs by ngram score?
 //            metric = { (levenshtein(tokens.dropLast(1), it) * 10000 + score(it) * 1_000.0).toInt() },
             customDiff = {

@@ -56,7 +56,10 @@ abstract class TidyEditor {
     val line = currentLine()
     var firstPlaceholder = stubMatcher.find(line, (getCaretPosition().first - lineIdx + 1).coerceAtMost(line.length))
     if (firstPlaceholder == null) firstPlaceholder = stubMatcher.find(line, 0)
-    if (firstPlaceholder == null) return
+    if (firstPlaceholder == null) {
+      setCaretPosition((lineIdx + line.length).let { it..it })
+      return
+    }
 
     setCaretPosition((lineIdx + firstPlaceholder.range.first)..(lineIdx + firstPlaceholder.range.last + 1))
     handleInput() // This will update the completions view
@@ -114,10 +117,11 @@ abstract class TidyEditor {
     metric: (List<String>) -> Int = { levenshtein(origTks, it) * 7919 +
         (origTks.sumOf { it.length } - it.sumOf { it.length }).absoluteValue },
     shouldContinue: () -> Boolean = { currentWorkHash == workHash && timer.hasTimeLeft() },
-    customDiff: (String) -> String = { levenshteinAlign(origTks.joinToString(" "), it).paintDiffs() }
+    customDiff: (String) -> String = { levenshteinAlign(origTks.joinToString(" "), it).paintDiffs() },
+    recognizer: (String) -> Boolean = { it in cfg.language }
   ) = let {
     if (!minimize || "_" in origTks) it
-    else it.flatMap { minimizeFix(origTks, it.tokenizeByWhitespace()) { this in cfg.language } }
+    else it.flatMap { minimizeFix(origTks, it.tokenizeByWhitespace()) { recognizer(this) } }
   }.enumerateCompletionsInteractively(
     metric = metric,
     shouldContinue = shouldContinue,
