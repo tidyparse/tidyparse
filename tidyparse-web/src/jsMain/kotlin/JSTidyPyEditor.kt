@@ -47,6 +47,29 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
   var pyodide: dynamic? = null
 
+  fun getOutput(code: String): String {
+    val types = code.replace("NUMBER", "1").replace("STRING", "\"\"")
+    val pyCode = """
+        import sys
+        from io import StringIO
+        _output = StringIO()
+        sys.stdout = sys.stderr = _output
+        try:
+            exec(""${'"'}${types.trimIndent()}${'"'}"")
+        except Exception:
+            import traceback
+            traceback.print_exc()
+        _result = _output.getvalue()
+    """.trimIndent()
+
+    // Run the Python code synchronously.
+    jsPyEditor.pyodide.runPython(pyCode)
+    // Retrieve _result from the Pyodide globals.
+    return jsPyEditor.pyodide.globals.get("_result") as String
+  }
+
+  private fun String.getErrorType(): String = lines().dropLast(1).lastOrNull()?.substringBefore(":") ?: ""
+
   override fun formatCode(pythonCode: String): String = try {
     jsPyEditor.pyodide.runPython("""
       from black import format_str, FileMode
@@ -87,7 +110,12 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
         initiateSuspendableRepair(tokens, cfg, ngrams)
           // Drop NEWLINE (added by default to PyCodeSnippets)
           .map { it.substring(0, it.length - 8).replace("OR", "|") }
-          .enumerateInteractively(
+          .filter { s ->
+            when (getOutput(s).getErrorType()) {
+              "SyntaxError", "TypeError" -> false
+              else -> true
+            }
+          }.enumerateInteractively(
             workHash = workHash,
             origTks = tokens.dropLast(1),
             recognizer = { "$it NEWLINE".replace("|", "OR") in cfg.language },

@@ -138,13 +138,14 @@ fun initPyodide() = MainScope().launch {
 
   val runPromise = jsPyEditor.pyodide.runPythonAsync(
     """
-      from black import format_str, FileMode
-      format_str("1+1", mode=FileMode())
+    from black import format_str, FileMode
+    format_str("1+1", mode=FileMode())
     """.trimIndent()
   ).unsafeCast<Promise<String>>()
 
   val beautified = runPromise.await()
   println("Black test => $beautified")
+  println(jsPyEditor.getOutput("1+"))
 }
 
 fun fetchSelectedExample() = MainScope().launch {
