@@ -73,7 +73,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
   override fun formatCode(pythonCode: String): String = try {
     jsPyEditor.pyodide.runPython("""
       from black import format_str, FileMode
-      pretty_code = format_str("$pythonCode", mode=FileMode())
+      pretty_code = format_str("${pythonCode.replace("\"", "\\\"")}", mode=FileMode())
     """.trimIndent())
     jsPyEditor.pyodide.globals.get("pretty_code").trim()
   } catch (error: dynamic) {
