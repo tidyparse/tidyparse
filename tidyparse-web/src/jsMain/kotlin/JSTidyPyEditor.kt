@@ -55,7 +55,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
         _output = StringIO()
         sys.stdout = sys.stderr = _output
         try:
-            exec(""${'"'}${types.trimIndent()}${'"'}"")
+            compile(""${'"'}${types.trimIndent()}${'"'}"", 'test_compile.py', 'exec')
         except Exception:
             import traceback
             traceback.print_exc()
@@ -68,7 +68,8 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     return jsPyEditor.pyodide.globals.get("_result") as String
   }
 
-  private fun String.getErrorType(): String = lines().dropLast(1).lastOrNull()?.substringBefore(":") ?: ""
+  private fun String.getErrorType(): String =
+    if (isEmpty()) "" else lines().dropLast(1).lastOrNull()?.substringBeforeLast(":") ?: this
 
   override fun formatCode(pythonCode: String): String = try {
     jsPyEditor.pyodide.runPython("""
@@ -81,6 +82,9 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     println("Error formatting Python code: $error")
     pythonCode
   }
+
+  fun String.replacePythonKeywords() =
+    replace("OR", "|").replace("not_in", "not in").replace("is_not", "is not")
 
   override fun handleInput() {
     val currentLine = currentLine().also { println("Current line is: $it") }
@@ -109,11 +113,13 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
       runningJob = MainScope().launch {
         initiateSuspendableRepair(tokens, cfg, ngrams)
           // Drop NEWLINE (added by default to PyCodeSnippets)
-          .map { it.substring(0, it.length - 8).replace("OR", "|") }
+          .map { it.substring(0, it.length - 8).replacePythonKeywords() }
           .filter { s ->
-            when (getOutput(s).getErrorType()) {
+            val errorType = getOutput(s).getErrorType()
+            when (errorType) {
               "SyntaxError", "TypeError" -> false
-              else -> true
+              "" -> true
+              else -> false
             }
           }.enumerateInteractively(
             workHash = workHash,
