@@ -119,8 +119,8 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
             workHash = workHash,
             origTks = tokens.dropLast(1),
             recognizer = { "$it NEWLINE".replace("|", "OR") in cfg.language },
-            metric = { (score(it) * 1_000.0).toInt() }, // TODO: Is reordering really necessary if we are decoding GREs by ngram score?
-//            metric = { (levenshtein(tokens.dropLast(1), it) * 10000 + score(it) * 1_000.0).toInt() },
+//            metric = { (score(it) * 1_000.0).toInt() }, // TODO: Is reordering really necessary if we are decoding GREs by ngram score?
+            metric = { (levenshtein(tokens.dropLast(1), it) * 10000 + score(it) * 1_000.0).toInt() },
             customDiff = {
               val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())
               pcs.paintDiff(levAlign)
