@@ -38,6 +38,7 @@ changelog {
 }
 
 dependencies {
+  implementation("net.java.dev.jna:jna:5.16.0")
   implementation(project(":tidyparse-core")) {
     exclude(group = "org.jetbrains.kotlin")
     exclude(group = "org.jetbrains.kotlinx")
