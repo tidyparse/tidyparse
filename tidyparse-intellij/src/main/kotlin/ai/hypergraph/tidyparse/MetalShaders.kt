@@ -8,6 +8,9 @@ import kotlin.random.Random
 import kotlin.system.measureTimeMillis
 import kotlin.time.*
 
+/*
+./gradlew generateDylib
+ */
 fun main() {
   val t = 1000
   var arr = IntArray(t * t) { Random.nextInt(100) }
@@ -49,10 +52,12 @@ object GPUBridge {
     fun imm(a: Pointer, n: Int, out: Pointer)
   }
 
-  private val nativeBridge: NativeBridge = if (System.getProperty("os.name").startsWith("Mac")) getMetalBridge() else TODO()
+  private val nativeBridge: NativeBridge =
+    if (System.getProperty("os.name").startsWith("Mac")) getMetalBridge() else TODO()
 
   private fun getMetalBridge(): NativeBridge {
-    val dylib = File("libMetalBridge.dylib")
+    val directory = "src/main/resources/dlls"
+    val dylib = File("$directory/libMetalBridge.dylib")
 
     @Language("c++") val mpsSrc = """
   #include <metal_stdlib>
@@ -72,10 +77,10 @@ object GPUBridge {
   }
 
   kernel void add_buf(
-      const device int* bufferA[[buffer(0)]],
-      const device int* bufferB[[buffer(1)]],
-      device int* output[[buffer(2)]],
-      uint index[[thread_position_in_grid]]
+    const device int* bufferA[[buffer(0)]],
+    const device int* bufferB[[buffer(1)]],
+    device int* output[[buffer(2)]],
+    uint index[[thread_position_in_grid]]
   ) { output[index] = bufferA[index] + bufferB[index]; }
 
   inline int getBit(int value, uint bitIndex) { return (value >> bitIndex) & 1; }
@@ -87,7 +92,7 @@ import Metal
 private var dvc: MTLDevice!, mtq: MTLCommandQueue!, cpsmm: MTLComputePipelineState!, cpsab: MTLComputePipelineState!
   
 @_cdecl("setup") public func setup() {
-  let metalSrc = #${"\"\"\""}$mpsSrc${"\"\"\""}#
+  let metalSrc = #""${'"'}$mpsSrc${'"'}""#
   dvc = MTLCreateSystemDefaultDevice()!
   mtq = dvc.makeCommandQueue()!
   let lib = try! dvc.makeLibrary(source: metalSrc, options:nil)
@@ -114,14 +119,14 @@ private var dvc: MTLDevice!, mtq: MTLCommandQueue!, cpsmm: MTLComputePipelineSta
 }""".trimIndent()
 
     val hash = swiftSrc.hashCode().toString()
-    val hashFile = File(".swiftHash")
+    val hashFile = File("$directory/.swiftHash")
     fun needsRebuild() = !dylib.exists() || !hashFile.exists() || hashFile.readText() != hash
 
     if (needsRebuild()) {
       val clock = TimeSource.Monotonic.markNow()
-      File("MetalBridge.swift").writeText(swiftSrc)
-      ("xcrun swiftc -emit-library MetalBridge.swift -o ${dylib.absolutePath} -module-name M " +
-          "-Xlinker -install_name -Xlinker @rpath/libMetalBridge.dylib")
+      val metalBridgePath = File("$directory/MetalBridge.swift").apply { writeText(swiftSrc) }.path
+      ("xcrun swiftc -emit-library $metalBridgePath -o ${dylib.absolutePath} -module-name M " +
+          "-Xlinker -install_name -Xlinker @rpath/${dylib.path}")
         .run { ProcessBuilder(split(" ")).inheritIO().start().waitFor() }
         .also { if (it != 0) error("Failed to build Swift bridging code!") }
 

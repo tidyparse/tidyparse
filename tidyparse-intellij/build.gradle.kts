@@ -37,6 +37,7 @@ changelog {
   groups = emptyList()
 }
 
+val swiftGenerator by configurations.creating
 dependencies {
   implementation("net.java.dev.jna:jna:5.16.0")
   implementation(project(":tidyparse-core")) {
@@ -44,6 +45,7 @@ dependencies {
     exclude(group = "org.jetbrains.kotlinx")
   }
 //  testImplementation(kotlin("test"))
+  swiftGenerator(kotlin("stdlib"))
   testImplementation("org.opentest4j:opentest4j:1.3.0")
   intellijPlatform {
     testImplementation("junit:junit:4.13.2")
@@ -121,5 +123,10 @@ tasks {
   runIde {
     maxHeapSize = "4g"
     args = listOf(projectDir.parent + "/examples")
+  }
+
+  val generateDylib by registering(JavaExec::class) {
+    mainClass.set("ai.hypergraph.tidyparse.MetalShadersKt")
+    classpath = sourceSets["main"].runtimeClasspath + swiftGenerator
   }
 }

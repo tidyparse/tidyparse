@@ -12,7 +12,7 @@ import com.intellij.testFramework.FileEditorManagerTestCase
 import com.intellij.util.ui.UIUtil
 import com.jetbrains.rd.util.measureTimeMillis
 
-abstract class BaseTest: FileEditorManagerTestCase() {
+abstract class BaseTest : FileEditorManagerTestCase() {
   companion object {
     inline fun averageTimeWithWarmup(warmupRuns: Int, timedRuns: Int, action: () -> Long): Long {
       repeat(warmupRuns) { action() }
@@ -68,7 +68,8 @@ abstract class BaseTest: FileEditorManagerTestCase() {
     val results = getCodeCompletionResults()
     val lastLine = lines().last()
     if (results.isEmpty() && lastLine.containsHole() &&
-      lastLine.tokenizeByWhitespace().all { it in cfg.terminals }) {
+      lastLine.tokenizeByWhitespace().all { it in cfg.terminals }
+    ) {
       val satResult = lastLine.synthesizeIncrementally(cfg).firstOrNull()
       assertNull("No result produced for: $this\nBut a solution exists: $satResult", satResult)
     }
@@ -82,7 +83,16 @@ abstract class BaseTest: FileEditorManagerTestCase() {
 
   fun String.invokeOnAllLines() {
     measureTimeMillis {
-      lines().fold("") { acc, s -> "$acc\n$s".also { it.simulateKeystroke() } }
+      lines().fold("") { acc, s ->
+        "$acc\n$s".also {
+          try {
+            it.simulateKeystroke()
+          } catch (exception: Exception) {
+            println("Repair error ${exception.message} on line: $s")
+            throw exception
+          }
+        }
+      }
     }.also { println("Round trip latency: ${it}ms") }
   }
 }
