@@ -75,7 +75,7 @@ abstract class BaseTest : FileEditorManagerTestCase() {
     }
     results.forEach {
       assertNotNull(
-        "Unrecognized: \"$it\" for CFG:\n${cfg.prettyPrint()}",
+        "Unrecognized: \"$it\" for CFG:\n${cfg.prettyPrint()} in $this",
         cfg.parse(it)
       )
     }
