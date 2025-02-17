@@ -56,7 +56,7 @@ object GPUBridge {
     if (System.getProperty("os.name").startsWith("Mac")) getMetalBridge() else TODO()
 
   private fun getMetalBridge(): NativeBridge {
-    val directory = "src/main/resources/dlls"
+    val directory = "src/main/resources/dlls".also { File(it).mkdirs() }
     val dylib = File("$directory/libMetalBridge.dylib")
 
     @Language("c++") val mpsSrc = """
