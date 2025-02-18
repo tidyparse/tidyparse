@@ -155,9 +155,7 @@ class IJTidyEditor(val editor: Editor, val psiFile: PsiFile): TidyEditor() {
   }
 
   fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequence<Σᐩ> {
-    var i = 0
     val upperBound = MAX_RADIUS * 3
-//  val monoEditBounds = cfg.maxParsableFragmentB(brokenStr, pad = upperBound)
     val timer = TimeSource.Monotonic.markNow()
     val bindex = cfg.bindex
     val width = cfg.nonterminals.size
