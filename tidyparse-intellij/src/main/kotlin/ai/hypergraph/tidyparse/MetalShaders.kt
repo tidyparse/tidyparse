@@ -68,6 +68,7 @@ fun main() {
     ).also { resultGPU = it.map { it > 0.toByte() } }
 
     println("GPU size: " + outGPU.size)
+    println("GPU sum: " + resultGPU.sumBy { if(it) 1 else 0 })
   }.also { println("GPU time: ${it}ms\n") }
 
   measureTimeMillis {
@@ -131,7 +132,7 @@ kernel void cfl_mul_upper(
   constant int&        grammarOffsetsSize      [[buffer(9)]],
   constant int&        allFSAPairsSize         [[buffer(10)]],
   constant int&        allFSAPairsOffsetsSize  [[buffer(11)]],
-  device atomic_uint&  changedFlag             [[buffer(12)]],
+  device atomic_uint&  numNonzero              [[buffer(12)]],
   uint                 tid                     [[thread_position_in_grid]]
 ) {
     // We are only covering the strict upper triangle (c > r)
@@ -155,6 +156,7 @@ kernel void cfl_mul_upper(
 
     if (dp_in[dpIndex]) {
         dp_out[dpIndex] = dp_in[dpIndex];
+        atomic_fetch_add_explicit(&numNonzero, 1, memory_order_relaxed);
         return;
     }
 
@@ -182,11 +184,268 @@ kernel void cfl_mul_upper(
             int idxMC = m * (N*numNonterminals) + c * numNonterminals + C;
             if (dp_in[idxBM] != 0 && dp_in[idxMC] != 0) {
                 dp_out[dpIndex] = 1;
-                atomic_store_explicit(&changedFlag, 1, memory_order_relaxed);
+                atomic_fetch_add_explicit(&numNonzero, 1, memory_order_relaxed);
                 return;
             }
         }
     }
+}
+
+kernel void bp_count(
+    const device uchar* dp_in                   [[buffer(0)]],
+    const device int*   grammar                 [[buffer(1)]],
+    const device int*   grammarOffsets          [[buffer(2)]],
+    const device int*   allFSAPairs             [[buffer(3)]],
+    const device int*   allFSAPairsOffsets      [[buffer(4)]],
+    constant int&       numStates               [[buffer(5)]],
+    constant int&       numNonterminals         [[buffer(6)]],
+    constant int&       grammarSize             [[buffer(7)]],
+    constant int&       grammarOffsetsSize      [[buffer(8)]],
+    constant int&       allFSAPairsSize         [[buffer(9)]],
+    constant int&       allFSAPairsOffsetsSize  [[buffer(10)]],
+    device int*         bpCount                 [[buffer(11)]],
+    uint tid [[thread_position_in_grid]]
+) {
+    int N = numStates;
+    int totalPairs = (N*(N-1))/2;
+    int totalCells = totalPairs * numNonterminals;
+    if (tid >= totalCells) return;
+
+    // Decode A and (r,c)
+    int A = tid % numNonterminals;
+    int pairIndex = tid / numNonterminals;
+
+    // decodeUpperTriangle or your usual method:
+    int r, c;
+    decodeUpperTriangle(pairIndex, N, r, c);
+
+    // If dp_in[r,c,A] == 0, then no expansions. 
+    // But be careful: dp_in might only store presence/absence for A. 
+    // Even if dp_in[r,c,A] is 1, we want to see how many expansions it *can* have.
+    // If dp_in[r,c,A] == 0, skip quickly:
+    if (dp_in[r*(N*numNonterminals) + c*numNonterminals + A] == 0) {
+        bpCount[r*(N*numNonterminals) + c*numNonterminals + A] = 0;
+        return;
+    }
+
+    // Grammar offsets for A
+    int startGC = grammarOffsets[A];
+    int endGC   = (A+1 < grammarOffsetsSize) ? grammarOffsets[A+1] : grammarSize;
+
+    // All possible midpoints
+    int pairOffset = allFSAPairsOffsets[r * N + c];
+    int pairOffsetNext = ( (r * N + c) + 1 < allFSAPairsOffsetsSize )
+                       ? allFSAPairsOffsets[r * N + c + 1]
+                       : allFSAPairsSize;
+
+    int count = 0;
+    // loop over midpoints
+    for (int idx = pairOffset; idx < pairOffsetNext; idx++) {
+        int m = allFSAPairs[idx];
+
+        // for each A -> B, C
+        for (int g = startGC; g < endGC; g += 2) {
+            int B = grammar[g];
+            int C = grammar[g+1];
+
+            int idxBM = r*(N*numNonterminals) + m*numNonterminals + B;
+            int idxMC = m*(N*numNonterminals) + c*numNonterminals + C;
+            // If (r,m,B) and (m,c,C) are both present:
+            if (dp_in[idxBM] != 0 && dp_in[idxMC] != 0) {
+                count++;
+            }
+        }
+    }
+
+    // Write out the total count for this cell
+    bpCount[r*(N*numNonterminals) + c*numNonterminals + A] = count;
+}
+
+kernel void bp_write(
+    const device uchar* dp_in                  [[buffer(0)]],
+    const device int*   grammar                [[buffer(1)]],
+    const device int*   grammarOffsets         [[buffer(2)]],
+    const device int*   allFSAPairs            [[buffer(3)]],
+    const device int*   allFSAPairsOffsets     [[buffer(4)]],
+    constant int&       numStates              [[buffer(5)]],
+    constant int&       numNonterminals        [[buffer(6)]],
+    constant int&       grammarSize            [[buffer(7)]],
+    constant int&       grammarOffsetsSize     [[buffer(8)]],
+    constant int&       allFSAPairsSize        [[buffer(9)]],
+    constant int&       allFSAPairsOffsetsSize [[buffer(10)]],
+    const device int*   bpCount                [[buffer(11)]],
+    const device int*   bpOffset               [[buffer(12)]],
+    // Suppose each entry in bpStorage is 3 x int. 
+    // Or you might define a struct for them. We'll assume int for B, M, C in a flat array
+    device int*         bpStorage              [[buffer(13)]],
+    uint tid [[thread_position_in_grid]]
+) {
+    int N = numStates;
+    int totalPairs = (N*(N-1))/2;
+    int totalCells = totalPairs * numNonterminals;
+    if (tid >= totalCells) return;
+
+    int A = tid % numNonterminals;
+    int pairIndex = tid / numNonterminals;
+
+    int r, c;
+    decodeUpperTriangle(pairIndex, N, r, c);
+
+    int dpIndex = r*(N*numNonterminals) + c*numNonterminals + A;
+
+    // If dp_in == 0 or bpCount == 0 => skip quickly
+    int count = bpCount[dpIndex];
+    if (count == 0) {
+        return;
+    }
+
+    // We'll fill from offset start
+    int offsetStart = bpOffset[dpIndex];
+    int outPos = offsetStart;
+
+    // Grammar offsets
+    int startGC = grammarOffsets[A];
+    int endGC   = (A+1 < grammarOffsetsSize) ? grammarOffsets[A+1] : grammarSize;
+
+    int pairOffset = allFSAPairsOffsets[r*N + c];
+    int pairOffsetNext = ( (r*N + c)+1 < allFSAPairsOffsetsSize )
+                       ? allFSAPairsOffsets[r*N + c + 1]
+                       : allFSAPairsSize;
+
+    // Exactly like bp_count, but now we store expansions
+    for (int idx = pairOffset; idx < pairOffsetNext; idx++) {
+        int m = allFSAPairs[idx];
+
+        for (int g = startGC; g < endGC; g += 2) {
+            int B = grammar[g];
+            int C = grammar[g+1];
+
+            int idxBM = r*(N*numNonterminals) + m*numNonterminals + B;
+            int idxMC = m*(N*numNonterminals) + c*numNonterminals + C;
+            if (dp_in[idxBM] != 0 && dp_in[idxMC] != 0) {
+                // store (B, m, C) in bpStorage
+                // Suppose each triple is 3 consecutive int in bpStorage:
+                bpStorage[outPos*3 + 0] = B;
+                bpStorage[outPos*3 + 1] = m;
+                bpStorage[outPos*3 + 2] = C;
+                outPos++;
+            }
+        }
+    }
+}
+
+inline uint lcg_random(thread uint& state) { return 1664525u * state + 1013904223u; }
+inline uint lcg_randomRange(thread uint& state, uint range) { return lcg_random(state) % range; }
+
+inline void sampleCell(
+   const device uchar*    dp_in,
+   const device int*      bpCount,
+   const device int*      bpOffset,
+   const device int*      bpStorage,
+   int N,
+   int numNonterminals,
+   int r,
+   int c,
+   int A,
+   thread uint& rngState,
+//   thread device char* localWord, // output buffer
+   thread int& wordLen,
+   const int maxWordLen
+) {
+    // If we've reached maximum length, just stop to avoid overflow
+    if (wordLen >= maxWordLen) { return; }
+
+    // If A is a terminal (leaf), append its "symbol" to localWord
+//    if (isTerminal[A] != 0) {
+//        localWord[wordLen] = char(A); // Example: store A as the character
+//        wordLen++;
+//        return;
+//    }
+
+    // Otherwise, A is internal. Let's see how many expansions it has:
+    int dpIndex = r*(N*numNonterminals) + c*numNonterminals + A;
+    int count   = bpCount[dpIndex];
+    // No expansions? Then do nothing or treat it as a dead end.
+    if (count == 0) { return; }
+
+    // Choose a random expansion among [0..count-1]
+    int offsetStart = bpOffset[dpIndex];
+    int randIndex   = offsetStart + int(lcg_randomRange(rngState, uint(count)));
+
+    // Read that expansion (B, m, C)
+    int B = bpStorage[randIndex*3 + 0];
+    int M = bpStorage[randIndex*3 + 1];
+    int C_= bpStorage[randIndex*3 + 2];
+
+    // Recurse on (r, M, B) and (M, c, C)
+    sampleCell(dp_in, bpCount, bpOffset, bpStorage,
+               N, numNonterminals, r, M, B,
+               rngState, 
+//               localWord, 
+               wordLen, maxWordLen);
+
+    // If that appended some terminals, continue with the second child
+    sampleCell(dp_in, bpCount, bpOffset, bpStorage,
+               N, numNonterminals, M, c, C_,
+               rngState, 
+//               localWord, 
+               wordLen, maxWordLen);
+}
+
+kernel void sample_words(
+    const device uchar*   dp_in           [[buffer(0)]],
+    const device int*     bpCount         [[buffer(1)]],
+    const device int*     bpOffset        [[buffer(2)]],
+    const device int*     bpStorage       [[buffer(3)]],
+    const device int*     startIndices    [[buffer(4)]],   // possible start cells
+    const device uint*    seeds           [[buffer(5)]],   // random seeds for each thread
+    device  char*         sampledWords    [[buffer(6)]],   // output words
+    constant int&         numStartIndices [[buffer(7)]],
+    constant int&         N               [[buffer(8)]],
+    constant int&         numNonterminals [[buffer(9)]],
+    constant int&         maxWordLen      [[buffer(10)]],
+    constant int&         maxSamples      [[buffer(11)]],
+    uint tid [[thread_position_in_grid]]
+) {
+    // If tid >= maxSamples, do nothing
+    if (tid >= (uint)maxSamples) { return; }
+
+    // We'll create a local array for the word in "thread" memory.
+    // Metal does not allow dynamic arrays in thread memory, so we fix size at compile time or "const int& maxWordLen".
+    // But we can do this with 'threadgroup' memory or a fixed-size array if maxWordLen is known at compile time.
+    // For demonstration, let's do a static approach for a maximum length:
+    thread uchar localWord[1024]; // or some maximum you can manage
+
+    // initialize localWord to 0
+    for (int i = 0; i < maxWordLen; i++) { localWord[i] = 0; }
+
+    // Each thread has a seed
+    uint rngState = seeds[tid];
+
+    // 1) Pick a random start index in [0..numStartIndices-1]
+    uint randIdx = lcg_randomRange(rngState, (uint)numStartIndices);
+    int startCell = startIndices[randIdx];
+
+    // Suppose startCell encodes (r, c, A). 
+    // You might store it in 32 bits as: (r << 16) | (c << 8) | A, etc.
+    // We'll decode that:
+    int A = (startCell & 0xFF);
+    int c = (startCell >> 8) & 0xFF;
+    int r = (startCell >> 16) & 0xFF;
+    // This depends on how you actually packed the triple. Adjust as needed.
+
+    // 2) Build the word
+    int wordLen = 0;
+    sampleCell(dp_in, bpCount, bpOffset, bpStorage,
+               N, numNonterminals, r, c, A,
+               rngState, 
+//               localWord, 
+               wordLen, maxWordLen);
+
+    // 3) Write the word to global output
+    // Each thread writes to sampledWords[tid * maxWordLen .. (tid * maxWordLen + maxWordLen-1)]
+    int baseIdx = int(tid) * maxWordLen;
+    for (int i = 0; i < maxWordLen; i++) { sampledWords[baseIdx + i] = localWord[i]; }
 }
 
 kernel void serialize_dpm(
@@ -211,7 +470,7 @@ kernel void serialize_dpm(
 }
 """
 
-  val swiftImports = "import Foundation\nimport Metal"
+  val swiftImports = "import Foundation\nimport Metal\nimport Dispatch"
 
   @JvmStatic fun cflClosure(
 /**[NativeBridge.cflMultiply] */
@@ -305,11 +564,12 @@ kernel void serialize_dpm(
     let pairsBuf = device.makeBuffer(bytes: allFSAPairs, length: Int(ap)*stride, options: [])!
     let pairsOffBuf = device.makeBuffer(bytes: allFSAPairsOffsets, length: Int(ao)*stride, options: [])!
 
-    let changedFlag = device.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared)!
+    let numNonzero = device.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared)!
+    var prevValue = numNonzero.contents().bindMemory(to: UInt32.self, capacity: 1).pointee
 
     for r in 0..<numStates {
         var zero: UInt32 = 0
-        memcpy(changedFlag.contents(), &zero, MemoryLayout<UInt32>.size)
+        memcpy(numNonzero.contents(), &zero, MemoryLayout<UInt32>.size)
 
         let cmb = queue.makeCommandBuffer()!
         let enc = cmb.makeComputeCommandEncoder()!
@@ -326,38 +586,205 @@ kernel void serialize_dpm(
         enc.setBytes(&go, length: stride, index: 9)
         enc.setBytes(&ap, length: stride, index: 10)
         enc.setBytes(&ao, length: stride, index: 11)
-        enc.setBuffer(changedFlag, offset: 0, index: 12)
+        enc.setBuffer(numNonzero, offset: 0, index: 12)
 
         enc.dispatchThreads(tiling, threadsPerThreadgroup: MTLSizeMake(1,1,1))
         enc.endEncoding()
         cmb.commit()
         cmb.waitUntilCompleted()
 
-        let changedValue = changedFlag.contents().bindMemory(to: UInt32.self, capacity: 1).pointee
-        if changedValue == 0 {
-            print("Fixpoint escape at round: \(r)/\(numStates)")
+        let currentValue = numNonzero.contents().bindMemory(to: UInt32.self, capacity: 1).pointee
+        if currentValue == prevValue {
+            print("Fixpoint escape at round: \(r)/\(numStates), total=\(currentValue), size: \(dpSizeBytes)"); fflush(stdout)
             break
         }
+        prevValue = currentValue
     }
 
-//var dpo: UnsafeMutablePointer<UInt16>? = nil
-//var dpSize: CInt = 0
-//
-//let start = DispatchTime.now()
-//deconstructDPBuffer(
-//    bufA: bufA,
-//    numStates: numStates,
-//    numNonterminals: numNonterminals,
-//    dpSize: &dpSize,
-//    dp_out: &dpo
-//)
-//let end = DispatchTime.now()
-//
-//let nanoTime = end.uptimeNanoseconds - start.uptimeNanoseconds
-//let timeMs = Double(nanoTime) / 1_000_000
-//print("Deconstruct time: \(timeMs) ms, \(Int(dpSize)) shorts") // ~1ms
+//    buildBackpointers(
+//      dp_in: bufA,
+//      grammar: grammarBuf,
+//      grammarOffsets: grammarOffBuf,
+//      allFSAPairs: pairsBuf,
+//      allFSAPairsOffsets: pairsOffBuf,
+//      numNonterminals: Int(numNonterminals),
+//      N: Int(ns),
+//      nt: Int(nt),
+//      gr: Int(gr),
+//      go: Int(go),
+//      ap: Int(ap),
+//      ao: Int(ao)
+//    )
 
     memcpy(dp_out, bufA.contents(), dpSizeBytes)
+}
+
+func buildBackpointers(
+  dp_in: MTLBuffer, // size = N*N*numNonterminals (bytes)
+  grammar: MTLBuffer,
+  grammarOffsets: MTLBuffer,
+  allFSAPairs: MTLBuffer,
+  allFSAPairsOffsets: MTLBuffer,
+  numNonterminals: Int,
+  N: Int,
+  nt: Int,
+  gr: Int,
+  go: Int,
+  ap: Int,
+  ao: Int
+) -> (MTLBuffer, MTLBuffer, MTLBuffer) {
+    let start = DispatchTime.now()
+    // 1) Allocate bpCount
+    let countSize = Int(N)*Int(N)*Int(numNonterminals) * MemoryLayout<Int32>.stride
+    let bpCountBuf = device.makeBuffer(length: countSize, options: [])!
+    
+    // 2) Launch bp_count kernel
+    let totalPairs = (Int(N)*(Int(N)-1))/2
+    let totalCells = totalPairs * Int(numNonterminals)
+    let threadsCount = MTLSizeMake(totalCells,1,1)
+
+    // Command buffer
+    let commandBuffer1 = queue.makeCommandBuffer()!
+    let encoder1 = commandBuffer1.makeComputeCommandEncoder()!
+    let stride = MemoryLayout<Int32>.stride
+    var ns = N
+    var nt = nt
+    var gr = gr
+    var go = go
+    var ap = ap
+    var ao = ao
+    encoder1.setComputePipelineState(psoBpCount)  // create psoBpCount from "bp_count" function
+    encoder1.setBuffer(dp_in,               offset: 0, index: 0)
+    encoder1.setBuffer(grammar,             offset: 0, index: 1)
+    encoder1.setBuffer(grammarOffsets,      offset: 0, index: 2)
+    encoder1.setBuffer(allFSAPairs,         offset: 0, index: 3)
+    encoder1.setBuffer(allFSAPairsOffsets,  offset: 0, index: 4)
+    encoder1.setBytes(&ns,                  length: stride, index: 5)
+    encoder1.setBytes(&nt,                  length: stride, index: 6)
+    encoder1.setBytes(&gr,                  length: stride, index: 7)
+    encoder1.setBytes(&go,                  length: stride, index: 8)
+    encoder1.setBytes(&ap,                  length: stride, index: 9)
+    encoder1.setBytes(&ao,                  length: stride, index: 10)
+    encoder1.setBuffer(bpCountBuf,          offset: 0, index: 11)
+
+    encoder1.dispatchThreads(threadsCount, threadsPerThreadgroup: MTLSizeMake(1,1,1))
+    encoder1.endEncoding()
+    commandBuffer1.commit()
+    commandBuffer1.waitUntilCompleted()
+
+    // 3) Compute prefix sum of bpCount --> bpOffset 
+    //    This can be done in GPU or CPU. We'll assume CPU. 
+    let bpOffsetBuf = device.makeBuffer(length: countSize, options: [])!
+    parallelPrefixSumCPU(countBuf: bpCountBuf, offsetBuf: bpOffsetBuf, totalCells: totalCells)
+
+
+    // 4) Figure out total expansions = last element's offset + last element's count
+    //    (We must read back the prefix sum array, or at least the last element.)
+    var totalExpansions: Int32 = 0
+    do {
+        let ptrOffset = bpOffsetBuf.contents().bindMemory(to: Int32.self, capacity: totalCells)
+        let ptrCount  = bpCountBuf.contents().bindMemory(to: Int32.self,  capacity: totalCells)
+        let lastOffset = ptrOffset[totalCells - 1]
+        let lastCount  = ptrCount[totalCells - 1]
+        totalExpansions = lastOffset + lastCount
+    }
+
+    // 5) Allocate bpStorage
+    //    Each expansion is 3 ints (B, M, C). So 3 * 4 = 12 bytes per expansion
+    let bpStorageSize = Int(totalExpansions) * 3 * MemoryLayout<Int32>.stride
+    let bpStorageBuf = device.makeBuffer(length: bpStorageSize, options: [])!
+
+    // 6) Launch bp_write kernel
+    let commandBuffer2 = queue.makeCommandBuffer()!
+    let encoder2 = commandBuffer2.makeComputeCommandEncoder()!
+    encoder2.setComputePipelineState(psoBpWrite)
+    encoder2.setBuffer(dp_in,              offset: 0, index: 0)
+    encoder2.setBuffer(grammar,            offset: 0, index: 1)
+    encoder2.setBuffer(grammarOffsets,     offset: 0, index: 2)
+    encoder2.setBuffer(allFSAPairs,        offset: 0, index: 3)
+    encoder2.setBuffer(allFSAPairsOffsets, offset: 0, index: 4)
+    encoder2.setBytes(&ns,                 length: stride, index: 5)
+    encoder2.setBytes(&nt,                 length: stride, index: 6)
+    encoder2.setBytes(&gr,                 length: stride, index: 7)
+    encoder2.setBytes(&go,                 length: stride, index: 8)
+    encoder2.setBytes(&ap,                 length: stride, index: 9)
+    encoder2.setBytes(&ao,                 length: stride, index: 10)
+    encoder2.setBuffer(bpCountBuf,         offset: 0, index: 11)
+    encoder2.setBuffer(bpOffsetBuf,        offset: 0, index: 12)
+    encoder2.setBuffer(bpStorageBuf,       offset: 0, index: 13)
+
+    encoder2.dispatchThreads(threadsCount, threadsPerThreadgroup: MTLSizeMake(1,1,1))
+    encoder2.endEncoding()
+    commandBuffer2.commit()
+    commandBuffer2.waitUntilCompleted()
+
+    let end = DispatchTime.now()
+    let nanoTime = end.uptimeNanoseconds - start.uptimeNanoseconds
+    let timeMs = Double(nanoTime) / 1_000_000
+    print("Built backpointers in \(timeMs) ms"); fflush(stdout)
+
+    return (bpCountBuf, bpOffsetBuf, bpStorageBuf)
+}
+
+func parallelPrefixSumCPU(countBuf: MTLBuffer, offsetBuf: MTLBuffer, totalCells: Int) {
+    let psStart = DispatchTime.now()
+    // Bind memory of each buffer to `Int32`.
+    let ptrCount  = countBuf.contents().bindMemory(to: Int32.self, capacity: totalCells)
+    let ptrOffset = offsetBuf.contents().bindMemory(to: Int32.self, capacity: totalCells)
+
+    // Decide how many chunks (and threads) we want to use.
+    // For large arrays, 8 or 16 is typical; for smaller arrays, fewer might be fine.
+    let numChunks = 8
+    let chunkSize = (totalCells + numChunks - 1) / numChunks
+
+    // This array will hold the total sum of each chunk (to be prefix-summed later).
+    var partialSum = [Int32](repeating: 0, count: numChunks)
+
+    // === Phase 1: Parallel local prefix sums ===
+    //
+    // Each chunk i does:
+    //   offset[start]   = 0
+    //   offset[start+1] = count[start]
+    //   ...
+    //   offset[end-1]   = sum of count from start..(end-2)
+    // The chunk's total sum is partialSum[i].
+    DispatchQueue.concurrentPerform(iterations: numChunks) { chunkIndex in
+        let start = chunkIndex * chunkSize
+        let end   = min(start + chunkSize, totalCells)
+        if start >= end {
+            // No work for this chunk
+            partialSum[chunkIndex] = 0
+            return
+        }
+
+        var sum: Int32 = 0
+        for i in start..<end {
+            ptrOffset[i] = sum
+            sum += ptrCount[i]
+        }
+        partialSum[chunkIndex] = sum
+    }
+
+    // === Phase 2: Prefix sum of partialSum array (single-threaded) ===
+    for i in 1..<numChunks { partialSum[i] += partialSum[i - 1] }
+
+    // === Phase 3: Add offsets to each chunk in parallel ===
+    //
+    // For chunk i > 0, we add partialSum[i-1] to everything in that chunk's offset array.
+    DispatchQueue.concurrentPerform(iterations: numChunks) { chunkIndex in
+        // chunk 0 doesn't need adjustment because it starts at 0
+        guard chunkIndex > 0 else { return }
+
+        let start = chunkIndex * chunkSize
+        let end   = min(start + chunkSize, totalCells)
+        let offsetAdjustment = partialSum[chunkIndex - 1]
+
+        for i in start..<end { ptrOffset[i] += offsetAdjustment }
+    }
+
+    let psEnd = DispatchTime.now()
+    let psTimeMs = Double(psEnd.uptimeNanoseconds - psStart.uptimeNanoseconds) / 1_000_000
+    print("Computed prefix sum in \(psTimeMs) ms"); fflush(stdout)
 }
 
 private func reconstructDPBuffer(
@@ -399,66 +826,19 @@ private func reconstructDPBuffer(
     return bufA
 }
 
-func deconstructDPBuffer(
-    bufA: MTLBuffer,
-    numStates: CInt,
-    numNonterminals: CInt,
-    dpSize: inout CInt,
-    dp_out: inout UnsafeMutablePointer<UInt16>?
-) {
-    // Calculate total size of bufA
-    let numStatesInt = Int(numStates)
-    let numNonterminalsInt = Int(numNonterminals)
-    let totalCount = numStatesInt * numNonterminalsInt * numStatesInt
-    
-    // Allocate dp_out with an upper-bound size (worst case: all elements are 1)
-    let maxTriples = totalCount // Maximum possible number of 1s
-    let maxDpSizeBytes = maxTriples * 3 * MemoryLayout<UInt16>.stride
-    let dpOutBuffer = device.makeBuffer(length: maxDpSizeBytes, options: .storageModeShared)!
-    dp_out = dpOutBuffer.contents().bindMemory(to: UInt16.self, capacity: maxTriples * 3)
-    
-    // Allocate a buffer for the atomic counter (initialized to 0)
-    let counterBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.stride, options: .storageModeShared)!
-    let counterPtr = counterBuffer.contents().bindMemory(to: UInt32.self, capacity: 1)
-    counterPtr[0] = 0
-    
-    // Set up command buffer and encoder
-    let commandBuffer = queue.makeCommandBuffer()!
-    let computeEncoder = commandBuffer.makeComputeCommandEncoder()!
-    computeEncoder.setComputePipelineState(serialize)
-    
-    // Bind buffers and constants
-    computeEncoder.setBuffer(bufA, offset: 0, index: 0)
-    computeEncoder.setBuffer(dpOutBuffer, offset: 0, index: 1)
-    computeEncoder.setBuffer(counterBuffer, offset: 0, index: 2)
-    var numStatesUInt = UInt32(numStates)
-    var numNonterminalsUInt = UInt32(numNonterminals)
-    computeEncoder.setBytes(&numStatesUInt, length: 4, index: 3)
-    computeEncoder.setBytes(&numNonterminalsUInt, length: 4, index: 4)
-    
-    // Dispatch threads
-    let threadsPerGroup = MTLSize(width: 1, height: 1, depth: 1)
-    let numThreadgroups = MTLSize(width: (totalCount + 255) / 256, height: 1, depth: 1)
-    computeEncoder.dispatchThreadgroups(numThreadgroups, threadsPerThreadgroup: threadsPerGroup)
-    
-    computeEncoder.endEncoding()
-    commandBuffer.commit()
-    commandBuffer.waitUntilCompleted()
-    
-    // Update dpSize with the actual number of triples * 3 (number of UInt16 elements)
-    dpSize = CInt(counterPtr[0]) * 3
-}
-
-private var device: MTLDevice!, queue: MTLCommandQueue!, psoCflMul: MTLComputePipelineState!, serialize: MTLComputePipelineState!
+private var device: MTLDevice!, queue: MTLCommandQueue!, 
+            psoCflMul: MTLComputePipelineState!, serialize: MTLComputePipelineState!,
+            psoBpCount: MTLComputePipelineState!, psoBpWrite: MTLComputePipelineState!
 
 @_cdecl("setup") public func setup() {
     device = MTLCreateSystemDefaultDevice()!
     queue = device.makeCommandQueue()!
 
-    let src = #""${'"'}$metalSrc${'"'}""#
-    let library = try! device.makeLibrary(source: src, options: nil)
-    psoCflMul = try! device.makeComputePipelineState(function: library.makeFunction(name: "cfl_mul_upper")!)
-    serialize = try! device.makeComputePipelineState(function: library.makeFunction(name: "serialize_dpm")!)
+    let library = try! device.makeLibrary(source: #""${'"'}$metalSrc${'"'}""#, options: nil)
+    psoCflMul   = try! device.makeComputePipelineState(function: library.makeFunction(name: "cfl_mul_upper")!)
+    serialize   = try! device.makeComputePipelineState(function: library.makeFunction(name: "serialize_dpm")!)
+    psoBpCount  = try! device.makeComputePipelineState(function: library.makeFunction(name: "bp_count")!)
+    psoBpWrite  = try! device.makeComputePipelineState(function: library.makeFunction(name: "bp_write")!)
 }"""
 
   private val nativeBridge: NativeBridge =
