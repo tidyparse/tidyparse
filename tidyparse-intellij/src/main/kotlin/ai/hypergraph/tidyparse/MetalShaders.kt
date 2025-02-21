@@ -3,11 +3,11 @@
 package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.automata.FSA
+import ai.hypergraph.kaliningraph.automata.StrPred
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.pythonStatementCNF
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
-import ai.hypergraph.kaliningraph.types.Π2A
-import ai.hypergraph.kaliningraph.types.π1
+import ai.hypergraph.kaliningraph.types.filter
 import ai.hypergraph.kaliningraph.types.π2
 import com.sun.jna.*
 import org.intellij.lang.annotations.Language
@@ -49,16 +49,23 @@ fun main() {
   var (resultGPU: List<Boolean>, resultCPU: List<Boolean>) = listOf<Boolean>() to listOf(true)
 
   measureTimeMillis {
-    fun FSA.buildParseMatrix(unitProds: Set<Π2A<Σᐩ>>, bindex: Bindex<Σᐩ>): UShortArray =
-      unitProds.parallelStream().flatMap { (A, σ) ->
-        nominalForm.flattenedTriples.stream().filter { arc -> arc.π2(σ) }
-          .map { arc -> Triple(stateMap[arc.π1]!!, bindex[A], stateMap[arc.third]!!) }
-      }.flatMap { (q0, nt, q1) -> listOf(q0.toUShort(), q1.toUShort(), nt.toUShort()).stream() }
-        .toList().toUShortArray()
-    val dpIn = levFSA.buildParseMatrix(ups, bindex)
+    fun FSA.byteFormat(cfg: CFG): UShortArray {
+      val tmMap = cfg.tmMap
+      fun StrPred.predByte(): UShort =
+        (if (arg == "[.*]") 127 // Maximum value means all possible terminals
+        else if (arg.startsWith("[!=]")) -(tmMap[arg.drop(4)] ?: 126) - 1 // Represent negation using negative sign bit
+        else tmMap[arg]!! + 1).toUShort() // Otherwise positive sign bit
+
+      return cfg.unitProductions.flatMap { (A, σ) ->
+        nominalForm.flattenedTriples.filter { arc -> arc.π2(σ) }.map { (q0, sp, q1) ->
+          listOf(stateMap[q0]!!, stateMap[q1]!!, cfg.bindex[A], 127).map { it.toUShort() } //+ 127.toUShort()//sp.predByte()
+        }.flatten()
+      }.toUShortArray()
+       .also { println("Encoded instance in ${it.size * 2} bytes / ${numStates*numStates*numNonterminals}") }
+    }
 
     val outGPU = GPUBridge.cflClosure(
-      dpIn.also { println("Sent ${it.size} shorts / ${numStates*numStates*numNonterminals}") },
+      levFSA.byteFormat(cfg),
       grammarFlattened,
       grammarOffsets,
       allFSAPairsFlattened,
@@ -107,6 +114,8 @@ object GPUBridge {
   @Language("c++") val metalSrc = """
 #include <metal_stdlib>
 using namespace metal;
+
+${encodeGrammarHeader()}
 
 // Helper to decode (row,col) in the upper-triangle from tid
 inline void decodeUpperTriangle(int i, int N, thread int &r, thread int &c) {
@@ -295,9 +304,7 @@ kernel void bp_write(
 
     // If dp_in == 0 or bpCount == 0 => skip quickly
     int count = bpCount[dpIndex];
-    if (count == 0) {
-        return;
-    }
+    if (count == 0) { return; }
 
     // We'll fill from offset start
     int offsetStart = bpOffset[dpIndex];
@@ -491,7 +498,7 @@ kernel void serialize_dpm(
         grammarOffsets = Memory(4L * grammarOffsets.size).apply { write(0, grammarOffsets, 0, grammarOffsets.size) },
         allFSAPairs = Memory(4L * allFSAPairs.size).apply { write(0, allFSAPairs, 0, allFSAPairs.size) },
         allFSAPairsOffsets = Memory(4L * allFSAPairsOffsets.size).apply { write(0, allFSAPairsOffsets, 0, allFSAPairsOffsets.size) },
-        dpIn.size, numStates, numNonterminals, grLen, goLen, apLen, aoLen
+        dpSize = dpIn.size, numStates, numNonterminals, grLen, goLen, apLen, aoLen
       )
     }.getByteArray(0, numStates * numStates * numNonterminals)
 
@@ -806,7 +813,8 @@ private func reconstructDPBuffer(
     // Reconstruct DP array from triples
     if let dp_in = dp_in {
         let triples = UnsafeBufferPointer(start: dp_in, count: Int(dpSize))
-        let numTriples = Int(dpSize) / 3  // Number of triples; assumes dpSize % 3 == 0
+        let stride = 4
+        let numTriples = Int(dpSize) / stride // Number of triples; assumes dpSize % 4 == 0
         
         // Process triples in batches to improve cache locality
         let batchSize = 10  // Adjust this value based on performance testing
@@ -814,11 +822,12 @@ private func reconstructDPBuffer(
             let batchStart = batchIdx * batchSize
             let batchEnd = min(batchStart + batchSize, numTriples)
             for i in batchStart..<batchEnd {
-                let r = Int(triples[3 * i])
-                let c = Int(triples[3 * i + 1])
-                let A = Int(triples[3 * i + 2])
+                let r = Int(triples[stride * i])
+                let c = Int(triples[stride * i + 1])
+                let A = Int(triples[stride * i + 2])
+                let s = UInt8(triples[stride * i + 3])
                 let index = r * rowMultiplier + c * colMultiplier + A
-                ptr[index] = 2
+                ptr[index] = s
             }
         }
     }
@@ -840,6 +849,14 @@ private var device: MTLDevice!, queue: MTLCommandQueue!,
     psoBpCount  = try! device.makeComputePipelineState(function: library.makeFunction(name: "bp_count")!)
     psoBpWrite  = try! device.makeComputePipelineState(function: library.makeFunction(name: "bp_write")!)
 }"""
+
+  // Assumes: |Σ| <= 126
+  fun encodeGrammarHeader(cfg: CFG = pythonStatementCNF): String =
+    cfg.nonterminals.map {
+      if (it !in cfg.unitNonterminals) ""
+      else cfg.bimap.UNITS[it]!!.map { cfg.tmMap[it]!! + 1 }.joinToString(",")
+    }.mapIndexed { i, it -> "constant uint8_t nt$i[]={$it};" }.joinToString("") +
+      "constant uint8_t* constant nt[]={${(0..<cfg.nonterminals.size).joinToString(",") {"nt$it"}}};"
 
   private val nativeBridge: NativeBridge =
     if (System.getProperty("os.name").startsWith("Mac")) getMetalBridge() else TODO()
