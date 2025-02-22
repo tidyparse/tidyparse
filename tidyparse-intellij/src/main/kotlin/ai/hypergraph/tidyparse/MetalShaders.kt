@@ -44,7 +44,7 @@ fun main() {
     .fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
   val aoLen = allFSAPairsOffsets.size.also { println("aoLen: $it") }
 
-  println("\nLinked GPU in ${measureTimeMillis { GPUBridge }}ms\n")
+  println("\nLinked GPU in ${measureTimeMillis { GPUBridge.setupPython() }}ms\n")
 
   var (resultGPU: List<Boolean>, resultCPU: List<Boolean>) = listOf<Boolean>() to listOf(true)
 
@@ -131,17 +131,12 @@ inline void decodeUpperTriangle(int i, int N, thread int &r, thread int &c) {
 kernel void cfl_mul_upper(
   const device uchar*  dp_in                   [[buffer(0)]],
   device uchar*        dp_out                  [[buffer(1)]],
-  const device int*    grammar                 [[buffer(2)]],
-  const device int*    grammarOffsets          [[buffer(3)]],
-  const device int*    allFSAPairs             [[buffer(4)]],
-  const device int*    allFSAPairsOffsets      [[buffer(5)]],
-  constant int&        numStates               [[buffer(6)]],
-  constant int&        numNonterminals         [[buffer(7)]],
-  constant int&        grammarSize             [[buffer(8)]],
-  constant int&        grammarOffsetsSize      [[buffer(9)]],
-  constant int&        allFSAPairsSize         [[buffer(10)]],
-  constant int&        allFSAPairsOffsetsSize  [[buffer(11)]],
-  device atomic_uint&  numNonzero              [[buffer(12)]],
+  const device int*    allFSAPairs             [[buffer(2)]],
+  const device int*    allFSAPairsOffsets      [[buffer(3)]],
+  constant int&        numStates               [[buffer(4)]],
+  constant int&        allFSAPairsSize         [[buffer(5)]],
+  constant int&        allFSAPairsOffsetsSize  [[buffer(6)]],
+  device atomic_uint&  numNonzero              [[buffer(7)]],
   uint                 tid                     [[thread_position_in_grid]]
 ) {
     // We are only covering the strict upper triangle (c > r)
@@ -160,8 +155,9 @@ kernel void cfl_mul_upper(
     int r, c;
     decodeUpperTriangle(pairIndex, N, r, c);
 
+    int snt = N * numNonterminals;
     // flatten (r,c,A) into index for dp array
-    int dpIndex = r*(N*numNonterminals) + c*numNonterminals + A;
+    int dpIndex = r*snt + c*numNonterminals + A;
 
     if (dp_in[dpIndex]) {
         dp_out[dpIndex] = dp_in[dpIndex];
@@ -170,14 +166,13 @@ kernel void cfl_mul_upper(
     }
 
     // Grammar offsets for A
-    int startGC = grammarOffsets[A];
-    int endGC   = (A+1 < grammarOffsetsSize) ? grammarOffsets[A+1] : grammarSize;
+    int startGC = vidx_offsets[A];
+    int endGC   = (A+1 < volen) ? vidx_offsets[A+1] : vilen;
 
     // midpoints between (r..c)
     int pairOffset = allFSAPairsOffsets[r * N + c];
-    int pairOffsetNext = ((r * N + c) + 1 < allFSAPairsOffsetsSize)
-       ? allFSAPairsOffsets[r * N + c + 1]
-       : allFSAPairsSize;
+    int aoi = (r * N + c) + 1;
+    int pairOffsetNext = (aoi < allFSAPairsOffsetsSize) ? allFSAPairsOffsets[aoi] : allFSAPairsSize;
 
     // loop over midpoints
     for (int idx = pairOffset; idx < pairOffsetNext; idx++) {
@@ -186,11 +181,11 @@ kernel void cfl_mul_upper(
         // For each A -> (B, C):
         //     dp_in[r,m,B] && dp_in[m,c,C] => dp_out[r,c,A].
         for (int g = startGC; g < endGC; g += 2) {
-            int B = grammar[g];
-            int C = grammar[g+1];
+            int B = vidx[g];
+            int C = vidx[g+1];
             
-            int idxBM = r * (N*numNonterminals) + m * numNonterminals + B;
-            int idxMC = m * (N*numNonterminals) + c * numNonterminals + C;
+            int idxBM = r * snt + m * numNonterminals + B;
+            int idxMC = m * snt + c * numNonterminals + C;
             if (dp_in[idxBM] != 0 && dp_in[idxMC] != 0) {
                 dp_out[dpIndex] = 1;
                 atomic_fetch_add_explicit(&numNonzero, 1, memory_order_relaxed);
@@ -202,17 +197,12 @@ kernel void cfl_mul_upper(
 
 kernel void bp_count(
     const device uchar* dp_in                   [[buffer(0)]],
-    const device int*   grammar                 [[buffer(1)]],
-    const device int*   grammarOffsets          [[buffer(2)]],
-    const device int*   allFSAPairs             [[buffer(3)]],
-    const device int*   allFSAPairsOffsets      [[buffer(4)]],
-    constant int&       numStates               [[buffer(5)]],
-    constant int&       numNonterminals         [[buffer(6)]],
-    constant int&       grammarSize             [[buffer(7)]],
-    constant int&       grammarOffsetsSize      [[buffer(8)]],
-    constant int&       allFSAPairsSize         [[buffer(9)]],
-    constant int&       allFSAPairsOffsetsSize  [[buffer(10)]],
-    device int*         bpCount                 [[buffer(11)]],
+    const device int*   allFSAPairs             [[buffer(1)]],
+    const device int*   allFSAPairsOffsets      [[buffer(2)]],
+    constant int&       numStates               [[buffer(3)]],
+    constant int&       allFSAPairsSize         [[buffer(4)]],
+    constant int&       allFSAPairsOffsetsSize  [[buffer(5)]],
+    device int*         bpCount                 [[buffer(6)]],
     uint tid [[thread_position_in_grid]]
 ) {
     int N = numStates;
@@ -227,19 +217,20 @@ kernel void bp_count(
     // decodeUpperTriangle or your usual method:
     int r, c;
     decodeUpperTriangle(pairIndex, N, r, c);
+    int snt = N * numNonterminals;
 
     // If dp_in[r,c,A] == 0, then no expansions. 
     // But be careful: dp_in might only store presence/absence for A. 
     // Even if dp_in[r,c,A] is 1, we want to see how many expansions it *can* have.
     // If dp_in[r,c,A] == 0, skip quickly:
-    if (dp_in[r*(N*numNonterminals) + c*numNonterminals + A] == 0) {
-        bpCount[r*(N*numNonterminals) + c*numNonterminals + A] = 0;
+    if (dp_in[r*snt + c*numNonterminals + A] == 0) {
+        bpCount[r*snt + c*numNonterminals + A] = 0;
         return;
     }
 
     // Grammar offsets for A
-    int startGC = grammarOffsets[A];
-    int endGC   = (A+1 < grammarOffsetsSize) ? grammarOffsets[A+1] : grammarSize;
+    int startGC = vidx_offsets[A];
+    int endGC   = (A+1 < volen) ? vidx_offsets[A+1] : vilen;
 
     // All possible midpoints
     int pairOffset = allFSAPairsOffsets[r * N + c];
@@ -254,11 +245,11 @@ kernel void bp_count(
 
         // for each A -> B, C
         for (int g = startGC; g < endGC; g += 2) {
-            int B = grammar[g];
-            int C = grammar[g+1];
+            int B = vidx[g];
+            int C = vidx[g+1];
 
-            int idxBM = r*(N*numNonterminals) + m*numNonterminals + B;
-            int idxMC = m*(N*numNonterminals) + c*numNonterminals + C;
+            int idxBM = r*snt + m*numNonterminals + B;
+            int idxMC = m*snt + c*numNonterminals + C;
             // If (r,m,B) and (m,c,C) are both present:
             if (dp_in[idxBM] != 0 && dp_in[idxMC] != 0) {
                 count++;
@@ -267,26 +258,21 @@ kernel void bp_count(
     }
 
     // Write out the total count for this cell
-    bpCount[r*(N*numNonterminals) + c*numNonterminals + A] = count;
+    bpCount[r*snt + c*numNonterminals + A] = count;
 }
 
 kernel void bp_write(
     const device uchar* dp_in                  [[buffer(0)]],
-    const device int*   grammar                [[buffer(1)]],
-    const device int*   grammarOffsets         [[buffer(2)]],
-    const device int*   allFSAPairs            [[buffer(3)]],
-    const device int*   allFSAPairsOffsets     [[buffer(4)]],
-    constant int&       numStates              [[buffer(5)]],
-    constant int&       numNonterminals        [[buffer(6)]],
-    constant int&       grammarSize            [[buffer(7)]],
-    constant int&       grammarOffsetsSize     [[buffer(8)]],
-    constant int&       allFSAPairsSize        [[buffer(9)]],
-    constant int&       allFSAPairsOffsetsSize [[buffer(10)]],
-    const device int*   bpCount                [[buffer(11)]],
-    const device int*   bpOffset               [[buffer(12)]],
+    const device int*   allFSAPairs            [[buffer(1)]],
+    const device int*   allFSAPairsOffsets     [[buffer(2)]],
+    constant int&       numStates              [[buffer(3)]],
+    constant int&       allFSAPairsSize        [[buffer(4)]],
+    constant int&       allFSAPairsOffsetsSize [[buffer(5)]],
+    const device int*   bpCount                [[buffer(6)]],
+    const device int*   bpOffset               [[buffer(7)]],
     // Suppose each entry in bpStorage is 3 x int. 
     // Or you might define a struct for them. We'll assume int for B, M, C in a flat array
-    device int*         bpStorage              [[buffer(13)]],
+    device int*         bpStorage              [[buffer(8)]],
     uint tid [[thread_position_in_grid]]
 ) {
     int N = numStates;
@@ -299,8 +285,10 @@ kernel void bp_write(
 
     int r, c;
     decodeUpperTriangle(pairIndex, N, r, c);
+    int snt = N * numNonterminals;
 
-    int dpIndex = r*(N*numNonterminals) + c*numNonterminals + A;
+
+    int dpIndex = r*snt + c*numNonterminals + A;
 
     // If dp_in == 0 or bpCount == 0 => skip quickly
     int count = bpCount[dpIndex];
@@ -311,24 +299,23 @@ kernel void bp_write(
     int outPos = offsetStart;
 
     // Grammar offsets
-    int startGC = grammarOffsets[A];
-    int endGC   = (A+1 < grammarOffsetsSize) ? grammarOffsets[A+1] : grammarSize;
+    int startGC = vidx_offsets[A];
+    int endGC   = (A+1 < volen) ? vidx_offsets[A+1] : vilen;
 
     int pairOffset = allFSAPairsOffsets[r*N + c];
-    int pairOffsetNext = ( (r*N + c)+1 < allFSAPairsOffsetsSize )
-                       ? allFSAPairsOffsets[r*N + c + 1]
-                       : allFSAPairsSize;
+    int aoi = (r*N + c) + 1;
+    int pairOffsetNext = ( aoi < allFSAPairsOffsetsSize ) ? allFSAPairsOffsets[aoi] : allFSAPairsSize;
 
     // Exactly like bp_count, but now we store expansions
     for (int idx = pairOffset; idx < pairOffsetNext; idx++) {
         int m = allFSAPairs[idx];
 
         for (int g = startGC; g < endGC; g += 2) {
-            int B = grammar[g];
-            int C = grammar[g+1];
+            int B = vidx[g];
+            int C = vidx[g+1];
 
-            int idxBM = r*(N*numNonterminals) + m*numNonterminals + B;
-            int idxMC = m*(N*numNonterminals) + c*numNonterminals + C;
+            int idxBM = r*snt + m*numNonterminals + B;
+            int idxMC = m*snt + c*numNonterminals + C;
             if (dp_in[idxBM] != 0 && dp_in[idxMC] != 0) {
                 // store (B, m, C) in bpStorage
                 // Suppose each triple is 3 consecutive int in bpStorage:
@@ -399,6 +386,8 @@ inline void sampleCell(
                wordLen, maxWordLen);
 }
 
+constant int maxSamples = 10000;
+
 kernel void sample_words(
     const device uchar*   dp_in           [[buffer(0)]],
     const device int*     bpCount         [[buffer(1)]],
@@ -409,9 +398,7 @@ kernel void sample_words(
     device  char*         sampledWords    [[buffer(6)]],   // output words
     constant int&         numStartIndices [[buffer(7)]],
     constant int&         N               [[buffer(8)]],
-    constant int&         numNonterminals [[buffer(9)]],
-    constant int&         maxWordLen      [[buffer(10)]],
-    constant int&         maxSamples      [[buffer(11)]],
+    constant int&         maxWordLen      [[buffer(9)]],
     uint tid [[thread_position_in_grid]]
 ) {
     // If tid >= maxSamples, do nothing
@@ -454,27 +441,6 @@ kernel void sample_words(
     int baseIdx = int(tid) * maxWordLen;
     for (int i = 0; i < maxWordLen; i++) { sampledWords[baseIdx + i] = localWord[i]; }
 }
-
-kernel void serialize_dpm(
-  device const uint8_t* bufA [[buffer(0)]],
-  device uint16_t* dp_out [[buffer(1)]],
-  device atomic_uint& tripleCount [[buffer(2)]],
-  constant uint& numStates [[buffer(3)]],
-  constant uint& numNonterminals [[buffer(4)]],
-  uint gid [[thread_position_in_grid]]
-) {
-  if (gid >= numStates * numStates * numNonterminals) return;
-  if (bufA[gid] == 1) {
-      uint r = gid / (numStates * numNonterminals);
-      uint c = (gid / numNonterminals) % numStates;
-      uint A = gid % numNonterminals;
-      uint writePos = atomic_fetch_add_explicit(&tripleCount, 1, memory_order_relaxed);
-      uint tripleIndex = writePos * 3;
-      dp_out[tripleIndex]     = uint16_t(r);
-      dp_out[tripleIndex + 1] = uint16_t(c);
-      dp_out[tripleIndex + 2] = uint16_t(A);
-  }
-}
 """
 
   val swiftImports = "import Foundation\nimport Metal\nimport Dispatch"
@@ -498,12 +464,14 @@ kernel void serialize_dpm(
         grammarOffsets = Memory(4L * grammarOffsets.size).apply { write(0, grammarOffsets, 0, grammarOffsets.size) },
         allFSAPairs = Memory(4L * allFSAPairs.size).apply { write(0, allFSAPairs, 0, allFSAPairs.size) },
         allFSAPairsOffsets = Memory(4L * allFSAPairsOffsets.size).apply { write(0, allFSAPairsOffsets, 0, allFSAPairsOffsets.size) },
-        dpSize = dpIn.size, numStates, numNonterminals, grLen, goLen, apLen, aoLen
+        dpSize = dpIn.size, numStates, grLen, goLen, apLen, aoLen
       )
     }.getByteArray(0, numStates * numStates * numNonterminals)
 
   interface NativeBridge : Library {
-    fun setup() fun cflMultiply(
+    fun setup(i: Int, s: String)
+
+               fun cflMultiply(
     /** [GPUBridge.swiftSrc] */
       // Expects a flattened array of triples containing the indices (r, c, A) that are initially set
       dp_in: Pointer,              // buffer(0)
@@ -514,7 +482,6 @@ kernel void serialize_dpm(
       allFSAPairsOffsets: Pointer, // buffer(5)
       dpSize: Int,
       numStates: Int,
-      numNonterminals: Int,
       grammarSize: Int,
       grammarOffsetsSize: Int,
       allFSAPairsSize: Int,
@@ -532,13 +499,12 @@ kernel void serialize_dpm(
     _ allFSAPairsOffsets: UnsafePointer<CInt>?,
     _ dpSize: CInt,
     _ numStates: CInt,
-    _ numNonterminals: CInt,
     _ grammarSize: CInt,
     _ grammarOffsetsSize: CInt,
     _ allFSAPairsSize: CInt,
     _ allFSAPairsOffsetsSize: CInt
 ) {
-    guard let dp_out, let grammar, let grammarOffsets, let allFSAPairs, let allFSAPairsOffsets else { return }
+    guard let dp_out, let allFSAPairs, let allFSAPairsOffsets else { return }
     
     let N = Int(numStates)
     let totalCount = N*N*Int(numNonterminals)
@@ -556,9 +522,6 @@ kernel void serialize_dpm(
     let stride = MemoryLayout<Int32>.stride
 
     var ns = numStates
-    var nt = numNonterminals
-    var gr = grammarSize
-    var go = grammarOffsetsSize
     var ap = allFSAPairsSize
     var ao = allFSAPairsOffsetsSize
 
@@ -566,13 +529,11 @@ kernel void serialize_dpm(
     let totalThreads = totalPairs * Int(numNonterminals)
     let tiling = MTLSizeMake(totalThreads,1,1)
 
-    let grammarBuf = device.makeBuffer(bytes: grammar, length: Int(gr)*stride, options: [])!
-    let grammarOffBuf = device.makeBuffer(bytes: grammarOffsets, length: Int(go)*stride, options: [])!
     let pairsBuf = device.makeBuffer(bytes: allFSAPairs, length: Int(ap)*stride, options: [])!
     let pairsOffBuf = device.makeBuffer(bytes: allFSAPairsOffsets, length: Int(ao)*stride, options: [])!
 
     let numNonzero = device.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared)!
-    var prevValue = numNonzero.contents().bindMemory(to: UInt32.self, capacity: 1).pointee
+    var prevValue: UInt32 = 0
 
     for r in 0..<numStates {
         var zero: UInt32 = 0
@@ -581,19 +542,14 @@ kernel void serialize_dpm(
         let cmb = queue.makeCommandBuffer()!
         let enc = cmb.makeComputeCommandEncoder()!
         enc.setComputePipelineState(psoCflMul)
-        enc.setBuffer(bufA, offset: 0, index: 0)
-        enc.setBuffer(bufA, offset: 0, index: 1)
-        enc.setBuffer(grammarBuf, offset: 0, index: 2)
-        enc.setBuffer(grammarOffBuf, offset: 0, index: 3)
-        enc.setBuffer(pairsBuf, offset: 0, index: 4)
-        enc.setBuffer(pairsOffBuf, offset: 0, index: 5)
-        enc.setBytes(&ns, length: stride, index: 6)
-        enc.setBytes(&nt, length: stride, index: 7)
-        enc.setBytes(&gr, length: stride, index: 8)
-        enc.setBytes(&go, length: stride, index: 9)
-        enc.setBytes(&ap, length: stride, index: 10)
-        enc.setBytes(&ao, length: stride, index: 11)
-        enc.setBuffer(numNonzero, offset: 0, index: 12)
+        enc.setBuffer(bufA,        offset: 0,      index: 0)
+        enc.setBuffer(bufA,        offset: 0,      index: 1)
+        enc.setBuffer(pairsBuf,    offset: 0,      index: 2)
+        enc.setBuffer(pairsOffBuf, offset: 0,      index: 3)
+        enc.setBytes(&ns,          length: stride, index: 4)
+        enc.setBytes(&ap,          length: stride, index: 5)
+        enc.setBytes(&ao,          length: stride, index: 6)
+        enc.setBuffer(numNonzero,  offset: 0,      index: 7)
 
         enc.dispatchThreads(tiling, threadsPerThreadgroup: MTLSizeMake(1,1,1))
         enc.endEncoding()
@@ -601,6 +557,7 @@ kernel void serialize_dpm(
         cmb.waitUntilCompleted()
 
         let currentValue = numNonzero.contents().bindMemory(to: UInt32.self, capacity: 1).pointee
+//        print("prev: \(prevValue), curr: \(currentValue)")
         if currentValue == prevValue {
             print("Fixpoint escape at round: \(r)/\(numStates), total=\(currentValue), size: \(dpSizeBytes)"); fflush(stdout)
             break
@@ -608,35 +565,23 @@ kernel void serialize_dpm(
         prevValue = currentValue
     }
 
-//    buildBackpointers(
-//      dp_in: bufA,
-//      grammar: grammarBuf,
-//      grammarOffsets: grammarOffBuf,
-//      allFSAPairs: pairsBuf,
-//      allFSAPairsOffsets: pairsOffBuf,
-//      numNonterminals: Int(numNonterminals),
-//      N: Int(ns),
-//      nt: Int(nt),
-//      gr: Int(gr),
-//      go: Int(go),
-//      ap: Int(ap),
-//      ao: Int(ao)
-//    )
+    buildBackpointers(
+      dp_in: bufA,
+      allFSAPairs: pairsBuf,
+      allFSAPairsOffsets: pairsOffBuf,
+      N: Int(ns),
+      ap: Int(ap),
+      ao: Int(ao)
+    )
 
     memcpy(dp_out, bufA.contents(), dpSizeBytes)
 }
 
 func buildBackpointers(
   dp_in: MTLBuffer, // size = N*N*numNonterminals (bytes)
-  grammar: MTLBuffer,
-  grammarOffsets: MTLBuffer,
   allFSAPairs: MTLBuffer,
   allFSAPairsOffsets: MTLBuffer,
-  numNonterminals: Int,
   N: Int,
-  nt: Int,
-  gr: Int,
-  go: Int,
   ap: Int,
   ao: Int
 ) -> (MTLBuffer, MTLBuffer, MTLBuffer) {
@@ -644,7 +589,7 @@ func buildBackpointers(
     // 1) Allocate bpCount
     let countSize = Int(N)*Int(N)*Int(numNonterminals) * MemoryLayout<Int32>.stride
     let bpCountBuf = device.makeBuffer(length: countSize, options: [])!
-    
+
     // 2) Launch bp_count kernel
     let totalPairs = (Int(N)*(Int(N)-1))/2
     let totalCells = totalPairs * Int(numNonterminals)
@@ -655,24 +600,16 @@ func buildBackpointers(
     let encoder1 = commandBuffer1.makeComputeCommandEncoder()!
     let stride = MemoryLayout<Int32>.stride
     var ns = N
-    var nt = nt
-    var gr = gr
-    var go = go
     var ap = ap
     var ao = ao
     encoder1.setComputePipelineState(psoBpCount)  // create psoBpCount from "bp_count" function
-    encoder1.setBuffer(dp_in,               offset: 0, index: 0)
-    encoder1.setBuffer(grammar,             offset: 0, index: 1)
-    encoder1.setBuffer(grammarOffsets,      offset: 0, index: 2)
-    encoder1.setBuffer(allFSAPairs,         offset: 0, index: 3)
-    encoder1.setBuffer(allFSAPairsOffsets,  offset: 0, index: 4)
-    encoder1.setBytes(&ns,                  length: stride, index: 5)
-    encoder1.setBytes(&nt,                  length: stride, index: 6)
-    encoder1.setBytes(&gr,                  length: stride, index: 7)
-    encoder1.setBytes(&go,                  length: stride, index: 8)
-    encoder1.setBytes(&ap,                  length: stride, index: 9)
-    encoder1.setBytes(&ao,                  length: stride, index: 10)
-    encoder1.setBuffer(bpCountBuf,          offset: 0, index: 11)
+    encoder1.setBuffer(dp_in,               offset: 0,      index: 0)
+    encoder1.setBuffer(allFSAPairs,         offset: 0,      index: 1)
+    encoder1.setBuffer(allFSAPairsOffsets,  offset: 0,      index: 2)
+    encoder1.setBytes(&ns,                  length: stride, index: 3)
+    encoder1.setBytes(&ap,                  length: stride, index: 4)
+    encoder1.setBytes(&ao,                  length: stride, index: 5)
+    encoder1.setBuffer(bpCountBuf,          offset: 0,      index: 6)
 
     encoder1.dispatchThreads(threadsCount, threadsPerThreadgroup: MTLSizeMake(1,1,1))
     encoder1.endEncoding()
@@ -705,20 +642,15 @@ func buildBackpointers(
     let commandBuffer2 = queue.makeCommandBuffer()!
     let encoder2 = commandBuffer2.makeComputeCommandEncoder()!
     encoder2.setComputePipelineState(psoBpWrite)
-    encoder2.setBuffer(dp_in,              offset: 0, index: 0)
-    encoder2.setBuffer(grammar,            offset: 0, index: 1)
-    encoder2.setBuffer(grammarOffsets,     offset: 0, index: 2)
-    encoder2.setBuffer(allFSAPairs,        offset: 0, index: 3)
-    encoder2.setBuffer(allFSAPairsOffsets, offset: 0, index: 4)
-    encoder2.setBytes(&ns,                 length: stride, index: 5)
-    encoder2.setBytes(&nt,                 length: stride, index: 6)
-    encoder2.setBytes(&gr,                 length: stride, index: 7)
-    encoder2.setBytes(&go,                 length: stride, index: 8)
-    encoder2.setBytes(&ap,                 length: stride, index: 9)
-    encoder2.setBytes(&ao,                 length: stride, index: 10)
-    encoder2.setBuffer(bpCountBuf,         offset: 0, index: 11)
-    encoder2.setBuffer(bpOffsetBuf,        offset: 0, index: 12)
-    encoder2.setBuffer(bpStorageBuf,       offset: 0, index: 13)
+    encoder2.setBuffer(dp_in,              offset: 0,      index: 0)
+    encoder2.setBuffer(allFSAPairs,        offset: 0,      index: 1)
+    encoder2.setBuffer(allFSAPairsOffsets, offset: 0,      index: 2)
+    encoder2.setBytes(&ns,                 length: stride, index: 3)
+    encoder2.setBytes(&ap,                 length: stride, index: 4)
+    encoder2.setBytes(&ao,                 length: stride, index: 5)
+    encoder2.setBuffer(bpCountBuf,         offset: 0,      index: 6)
+    encoder2.setBuffer(bpOffsetBuf,        offset: 0,      index: 7)
+    encoder2.setBuffer(bpStorageBuf,       offset: 0,      index: 8)
 
     encoder2.dispatchThreads(threadsCount, threadsPerThreadgroup: MTLSizeMake(1,1,1))
     encoder2.endEncoding()
@@ -815,7 +747,7 @@ private func reconstructDPBuffer(
         let triples = UnsafeBufferPointer(start: dp_in, count: Int(dpSize))
         let stride = 4
         let numTriples = Int(dpSize) / stride // Number of triples; assumes dpSize % 4 == 0
-        
+
         // Process triples in batches to improve cache locality
         let batchSize = 10  // Adjust this value based on performance testing
         DispatchQueue.concurrentPerform(iterations: (numTriples + batchSize - 1) / batchSize) { batchIdx in
@@ -835,38 +767,57 @@ private func reconstructDPBuffer(
     return bufA
 }
 
-private var device: MTLDevice!, queue: MTLCommandQueue!, 
+private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 0,
             psoCflMul: MTLComputePipelineState!, serialize: MTLComputePipelineState!,
             psoBpCount: MTLComputePipelineState!, psoBpWrite: MTLComputePipelineState!
 
-@_cdecl("setup") public func setup() {
+@_cdecl("setup") public func setup(_ nnt: CInt, _ str: UnsafePointer<CChar>?) {
     device = MTLCreateSystemDefaultDevice()!
     queue = device.makeCommandQueue()!
 
-    let library = try! device.makeLibrary(source: #""${'"'}$metalSrc${'"'}""#, options: nil)
+    let metalSrc = str != nil ? String(cString: str!) : ""
+    numNonterminals = Int(nnt)
+    let library = try! device.makeLibrary(source: metalSrc, options: nil)
     psoCflMul   = try! device.makeComputePipelineState(function: library.makeFunction(name: "cfl_mul_upper")!)
-    serialize   = try! device.makeComputePipelineState(function: library.makeFunction(name: "serialize_dpm")!)
     psoBpCount  = try! device.makeComputePipelineState(function: library.makeFunction(name: "bp_count")!)
     psoBpWrite  = try! device.makeComputePipelineState(function: library.makeFunction(name: "bp_write")!)
 }"""
 
-  // Assumes: |Σ| <= 126
   fun encodeGrammarHeader(cfg: CFG = pythonStatementCNF): String =
     cfg.nonterminals.map {
-      if (it !in cfg.unitNonterminals) ""
-      else cfg.bimap.UNITS[it]!!.map { cfg.tmMap[it]!! + 1 }.joinToString(",")
-    }.mapIndexed { i, it -> "constant uint8_t nt$i[]={$it};" }.joinToString("") +
-      "constant uint8_t* constant nt[]={${(0..<cfg.nonterminals.size).joinToString(",") {"nt$it"}}};"
+      if (it !in cfg.unitNonterminals) emptyList<Int>()
+      else cfg.bimap.UNITS[it]!!.map { cfg.tmMap[it]!! + 1 }
+    }.let {
+      // Maps unit nonterminals to possible terminals
+      it.mapIndexed { i, it -> "constant uint8_t nt${i}_tm[]={${it.joinToString(",")}};" }.joinToString("") +
+      cfg.nonterminals.indices.joinToString(",", "constant uint8_t* constant nt_tm[]={", "};") { "nt${it}_tm" } +
+      it.map { it.size }.joinToString(",", "constant uint nt_tm_lens[]={", "};") +
+      "constant int numNonterminals=${cfg.nonterminals.size};"
+    } + genFlattenedBinaryProds(cfg)
+
+  fun genFlattenedBinaryProds(cfg: CFG): String {
+    val grammarFlattened = cfg.vindex.map { it.toList() }.flatten().toIntArray()
+    val grLen = grammarFlattened.size.also { println("grLen: $it") }
+    val grammarOffsets = cfg.vindex.map { it.size }
+      .fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
+    val goLen = grammarOffsets.size.also { println("goLen: $it") }
+    return "constant int vilen=$grLen;" +
+        "constant int volen=$goLen;" +
+        grammarFlattened.joinToString(",", "constant int constant vidx[]={", "};") +
+        grammarOffsets.joinToString(",", "constant int vidx_offsets[]={", "};")
+  }
 
   private val nativeBridge: NativeBridge =
     if (System.getProperty("os.name").startsWith("Mac")) getMetalBridge() else TODO()
+
+  fun setupPython() = nativeBridge.setup(pythonStatementCNF.nonterminals.size, metalSrc)
 
   private fun getMetalBridge(): NativeBridge {
     val directory = "src/main/resources/dlls".also { File(it).mkdirs() }
     val dylib = File("$directory/libMetalBridge.dylib")
 
     if (needsRebuild(dylib, swiftSrc, directory)) buildNative(directory, dylib, swiftSrc)
-    return (Native.load(dylib.absolutePath, NativeBridge::class.java) as NativeBridge).also { it.setup() }
+    return (Native.load(dylib.absolutePath, NativeBridge::class.java) as NativeBridge)
   }
 
   private fun needsRebuild(dylib: File, swiftSrc: String, dir: String) =
