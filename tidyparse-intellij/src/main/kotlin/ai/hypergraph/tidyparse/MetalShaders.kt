@@ -33,16 +33,12 @@ fun main() {
   val numNonterminals = cfg.nonterminals.size
 
   val grammarFlattened = cfg.vindex.map { it.toList() }.flatten().toIntArray()
-  val grLen = grammarFlattened.size.also { println("grLen: $it") }
   val grammarOffsets = cfg.vindex.map { it.size }
     .fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
-  val goLen = grammarOffsets.size.also { println("goLen: $it") }
 
   val allFSAPairsFlattened = levFSA.allPairs2.flatten().flatten().toIntArray()
-  val apLen = allFSAPairsFlattened.size.also { println("apLen: $it") }
   val allFSAPairsOffsets = levFSA.allPairs2.flatten().map { it.size }
     .fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
-  val aoLen = allFSAPairsOffsets.size.also { println("aoLen: $it") }
 
   println("\nLinked GPU in ${measureTimeMillis { GPUBridge.setupPython() }}ms\n")
 
@@ -70,8 +66,9 @@ fun main() {
       grammarOffsets,
       allFSAPairsFlattened,
       allFSAPairsOffsets,
-      numStates, numNonterminals,
-      grLen, goLen, apLen, aoLen
+      levFSA.finalIdxs.toIntArray(),
+      levFSA.finalIdxs.size,
+      numStates, numNonterminals
     ).also { resultGPU = it.map { it > 0.toByte() } }
 
     println("GPU size: " + outGPU.size)
@@ -170,8 +167,8 @@ kernel void cfl_mul_upper(
     int endGC   = (A+1 < volen) ? vidx_offsets[A+1] : vilen;
 
     // midpoints between (r..c)
-    int pairOffset = allFSAPairsOffsets[r * N + c];
-    int aoi = (r * N + c) + 1;
+    int aoi = r * N + c + 1;
+    int pairOffset = allFSAPairsOffsets[aoi - 1];
     int pairOffsetNext = (aoi < allFSAPairsOffsetsSize) ? allFSAPairsOffsets[aoi] : allFSAPairsSize;
 
     // loop over midpoints
@@ -233,10 +230,9 @@ kernel void bp_count(
     int endGC   = (A+1 < volen) ? vidx_offsets[A+1] : vilen;
 
     // All possible midpoints
-    int pairOffset = allFSAPairsOffsets[r * N + c];
-    int pairOffsetNext = ( (r * N + c) + 1 < allFSAPairsOffsetsSize )
-                       ? allFSAPairsOffsets[r * N + c + 1]
-                       : allFSAPairsSize;
+    int aoi = r*N + c + 1;
+    int pairOffset = allFSAPairsOffsets[aoi - 1];
+    int pairOffsetNext = (aoi < allFSAPairsOffsetsSize ) ? allFSAPairsOffsets[aoi] : allFSAPairsSize;
 
     int count = 0;
     // loop over midpoints
@@ -287,7 +283,6 @@ kernel void bp_write(
     decodeUpperTriangle(pairIndex, N, r, c);
     int snt = N * numNonterminals;
 
-
     int dpIndex = r*snt + c*numNonterminals + A;
 
     // If dp_in == 0 or bpCount == 0 => skip quickly
@@ -302,9 +297,9 @@ kernel void bp_write(
     int startGC = vidx_offsets[A];
     int endGC   = (A+1 < volen) ? vidx_offsets[A+1] : vilen;
 
-    int pairOffset = allFSAPairsOffsets[r*N + c];
-    int aoi = (r*N + c) + 1;
-    int pairOffsetNext = ( aoi < allFSAPairsOffsetsSize ) ? allFSAPairsOffsets[aoi] : allFSAPairsSize;
+    int aoi = r*N + c + 1;
+    int pairOffset = allFSAPairsOffsets[aoi - 1];
+    int pairOffsetNext = (aoi < allFSAPairsOffsetsSize) ? allFSAPairsOffsets[aoi] : allFSAPairsSize;
 
     // Exactly like bp_count, but now we store expansions
     for (int idx = pairOffset; idx < pairOffsetNext; idx++) {
@@ -337,12 +332,11 @@ inline void sampleCell(
    const device int*      bpOffset,
    const device int*      bpStorage,
    int N,
-   int numNonterminals,
    int r,
    int c,
    int A,
    thread uint& rngState,
-//   thread device char* localWord, // output buffer
+   thread uchar* localWord, // output buffer
    thread int& wordLen,
    const int maxWordLen
 ) {
@@ -350,11 +344,11 @@ inline void sampleCell(
     if (wordLen >= maxWordLen) { return; }
 
     // If A is a terminal (leaf), append its "symbol" to localWord
-//    if (isTerminal[A] != 0) {
-//        localWord[wordLen] = char(A); // Example: store A as the character
-//        wordLen++;
-//        return;
-//    }
+    if (nt_tm_lens[A] != 0) {
+        uint8_t symbol = 'X';//nt_tm[int(lcg_randomRange(rngState, uint(nt_tm_lens[A])))];
+        localWord[wordLen++] = symbol; // store as a single byte
+        return;
+    }
 
     // Otherwise, A is internal. Let's see how many expansions it has:
     int dpIndex = r*(N*numNonterminals) + c*numNonterminals + A;
@@ -373,29 +367,30 @@ inline void sampleCell(
 
     // Recurse on (r, M, B) and (M, c, C)
     sampleCell(dp_in, bpCount, bpOffset, bpStorage,
-               N, numNonterminals, r, M, B,
+               N, r, M, B,
                rngState, 
-//               localWord, 
+               localWord, 
                wordLen, maxWordLen);
 
     // If that appended some terminals, continue with the second child
     sampleCell(dp_in, bpCount, bpOffset, bpStorage,
-               N, numNonterminals, M, c, C_,
+               N, M, c, C_,
                rngState, 
-//               localWord, 
+               localWord, 
                wordLen, maxWordLen);
 }
 
 constant int maxSamples = 10000;
 
 kernel void sample_words(
+    // buffers
     const device uchar*   dp_in           [[buffer(0)]],
     const device int*     bpCount         [[buffer(1)]],
     const device int*     bpOffset        [[buffer(2)]],
     const device int*     bpStorage       [[buffer(3)]],
-    const device int*     startIndices    [[buffer(4)]],   // possible start cells
-    const device uint*    seeds           [[buffer(5)]],   // random seeds for each thread
-    device  char*         sampledWords    [[buffer(6)]],   // output words
+    const device int*     startIndices    [[buffer(4)]], // each entry is a dpIndex
+    const device uint*    seeds           [[buffer(5)]],
+    device char*          sampledWords    [[buffer(6)]],
     constant int&         numStartIndices [[buffer(7)]],
     constant int&         N               [[buffer(8)]],
     constant int&         maxWordLen      [[buffer(9)]],
@@ -404,42 +399,32 @@ kernel void sample_words(
     // If tid >= maxSamples, do nothing
     if (tid >= (uint)maxSamples) { return; }
 
-    // We'll create a local array for the word in "thread" memory.
-    // Metal does not allow dynamic arrays in thread memory, so we fix size at compile time or "const int& maxWordLen".
-    // But we can do this with 'threadgroup' memory or a fixed-size array if maxWordLen is known at compile time.
-    // For demonstration, let's do a static approach for a maximum length:
-    thread uchar localWord[1024]; // or some maximum you can manage
+    // local word in thread memory
+    thread uchar localWord[1024];
+    for (int i=0; i<maxWordLen; i++) { localWord[i] = 0; }
 
-    // initialize localWord to 0
-    for (int i = 0; i < maxWordLen; i++) { localWord[i] = 0; }
-
-    // Each thread has a seed
+    // each thread has a seed
     uint rngState = seeds[tid];
 
-    // 1) Pick a random start index in [0..numStartIndices-1]
+    // pick a random dpIndex from [0..numStartIndices-1]
     uint randIdx = lcg_randomRange(rngState, (uint)numStartIndices);
-    int startCell = startIndices[randIdx];
+    int dpIndex = startIndices[randIdx];
 
-    // Suppose startCell encodes (r, c, A). 
-    // You might store it in 32 bits as: (r << 16) | (c << 8) | A, etc.
-    // We'll decode that:
-    int A = (startCell & 0xFF);
-    int c = (startCell >> 8) & 0xFF;
-    int r = (startCell >> 16) & 0xFF;
-    // This depends on how you actually packed the triple. Adjust as needed.
+    // decode
+    int A = dpIndex % numNonterminals;
+    int rowCol = dpIndex / numNonterminals;
+    int c = rowCol % N;
+    int r = rowCol / N;
 
-    // 2) Build the word
+    // sample the cell
     int wordLen = 0;
     sampleCell(dp_in, bpCount, bpOffset, bpStorage,
-               N, numNonterminals, r, c, A,
-               rngState, 
-//               localWord, 
-               wordLen, maxWordLen);
+               N, r, c, A,
+               rngState, localWord, wordLen, maxWordLen);
 
-    // 3) Write the word to global output
-    // Each thread writes to sampledWords[tid * maxWordLen .. (tid * maxWordLen + maxWordLen-1)]
-    int baseIdx = int(tid) * maxWordLen;
-    for (int i = 0; i < maxWordLen; i++) { sampledWords[baseIdx + i] = localWord[i]; }
+    // write localWord to global
+    int baseIdx = int(tid)*maxWordLen;
+    for (int i=0; i<maxWordLen; i++) { sampledWords[baseIdx + i] = localWord[i]; }
 }
 """
 
@@ -452,7 +437,9 @@ kernel void sample_words(
     grammarOffsets: IntArray,
     allFSAPairs: IntArray,
     allFSAPairsOffsets: IntArray,
-    numStates: Int, numNonterminals: Int, grLen: Int, goLen: Int, apLen: Int, aoLen: Int
+    acceptStates: IntArray,
+    acceptStatesSize: Int,
+    numStates: Int, numNonterminals: Int
   ): ByteArray =
     Memory(numStates.toLong() * numStates * numNonterminals).also { outMem ->
       nativeBridge.cflMultiply(
@@ -464,12 +451,19 @@ kernel void sample_words(
         grammarOffsets = Memory(4L * grammarOffsets.size).apply { write(0, grammarOffsets, 0, grammarOffsets.size) },
         allFSAPairs = Memory(4L * allFSAPairs.size).apply { write(0, allFSAPairs, 0, allFSAPairs.size) },
         allFSAPairsOffsets = Memory(4L * allFSAPairsOffsets.size).apply { write(0, allFSAPairsOffsets, 0, allFSAPairsOffsets.size) },
-        dpSize = dpIn.size, numStates, grLen, goLen, apLen, aoLen
+        acceptStates =  Memory(4L * acceptStatesSize).apply { write(0, acceptStates, 0, acceptStates.size) },
+        acceptStatesSize = acceptStatesSize,
+        dpSize = dpIn.size,
+        numStates = numStates,
+        grammarSize = grammar.size,
+        grammarOffsetsSize = grammarOffsets.size,
+        allFSAPairsSize = allFSAPairs.size,
+        allFSAPairsOffsetsSize = allFSAPairsOffsets.size
       )
     }.getByteArray(0, numStates * numStates * numNonterminals)
 
   interface NativeBridge : Library {
-    fun setup(i: Int, s: String)
+    fun setup(numNts: Int, startIdx: Int, s: String)
 
                fun cflMultiply(
     /** [GPUBridge.swiftSrc] */
@@ -480,6 +474,8 @@ kernel void sample_words(
       grammarOffsets: Pointer,     // buffer(3)
       allFSAPairs: Pointer,        // buffer(4)
       allFSAPairsOffsets: Pointer, // buffer(5)
+      acceptStates: Pointer,       // buffer(6)
+      acceptStatesSize: Int,
       dpSize: Int,
       numStates: Int,
       grammarSize: Int,
@@ -497,6 +493,8 @@ kernel void sample_words(
     _ grammarOffsets: UnsafePointer<CInt>?,
     _ allFSAPairs: UnsafePointer<CInt>?,
     _ allFSAPairsOffsets: UnsafePointer<CInt>?,
+    _ acceptStates: UnsafePointer<CInt>?,
+    _ acceptStatesSize: CInt,
     _ dpSize: CInt,
     _ numStates: CInt,
     _ grammarSize: CInt,
@@ -565,16 +563,138 @@ kernel void sample_words(
         prevValue = currentValue
     }
 
-    buildBackpointers(
-      dp_in: bufA,
-      allFSAPairs: pairsBuf,
-      allFSAPairsOffsets: pairsOffBuf,
-      N: Int(ns),
-      ap: Int(ap),
-      ao: Int(ao)
+    let (bpCountBuf, bpOffsetBuf, bpStorageBuf) =
+        buildBackpointers(
+          dp_in: bufA,
+          allFSAPairs: pairsBuf,
+          allFSAPairsOffsets: pairsOffBuf,
+          N: Int(numStates),
+          ap: Int(ap),
+          ao: Int(ao)
+        )
+    // Now sample words:
+    // 1) create startIndices, isTerminal, seeds
+    let maxSamples = 1000
+    let maxWordLen = 128
+
+    let acceptStatesSwift = UnsafeBufferPointer(
+        start: acceptStates, // from your function parameter
+        count: Int(acceptStatesSize)
+    ).map { Int(${'$'}0) }  // convert from CInt to Int
+
+    let startIndicesArray = buildStartIndices(
+        acceptStates: acceptStatesSwift,  // [q1, q2, ...]
+        startSymbol: startIdx,            // e.g. S
+        N: N,
+        numNonterminals: numNonterminals
     )
 
+    // Now create a Metal buffer from that array:
+    let startIndicesBuf = device.makeBuffer(
+        bytes: startIndicesArray,
+        length: startIndicesArray.count * MemoryLayout<Int32>.stride,
+        options: []
+    )!
+
+    var seeds = [UInt32](repeating: 0, count: maxSamples)
+    for i in 0..<maxSamples { seeds[i] = UInt32.random(in: 0..<UInt32.max) }
+    let seedsBuf = device.makeBuffer(bytes: seeds, length: maxSamples*MemoryLayout<UInt32>.stride, options: [])!
+
+    let sampledWordsBuf = sampleWords(
+        dp_in: bufA,
+        bpCount: bpCountBuf,
+        bpOffset: bpOffsetBuf,
+        bpStorage: bpStorageBuf,
+        startIndices: startIndicesBuf, 
+        seeds: seedsBuf,
+        maxWordLen: 128,
+        maxSamples: 1000,
+        numStartIndices: startIndicesArray.count,
+        N: Int(numStates)
+    )
+
+    // Print out first 10 results:
+    let ptr = sampledWordsBuf.contents().bindMemory(to: CChar.self, capacity: maxSamples * maxWordLen)
+    for sIdx in 0..<min(10, maxSamples) {
+        let start = sIdx * maxWordLen
+        var wordChars: [CChar] = []
+        for j in 0..<maxWordLen {
+            let ch = ptr[start + j]
+            if ch == 0 { // treat 0 as a null terminator
+                break
+            }
+            wordChars.append(ch)
+        }
+        let wordString = String(bytes: wordChars.map{ UInt8(${'$'}0) }, encoding: .ascii) ?? ""
+        print("Sample \(sIdx): \(wordString)")
+    }
+
     memcpy(dp_out, bufA.contents(), dpSizeBytes)
+}
+
+func buildStartIndices(
+    acceptStates: [Int],
+    startSymbol: Int,
+    N: Int,
+    numNonterminals: Int
+) -> [Int32] {
+    var result = [Int32]()
+    for q in acceptStates {
+        let dpIndex = 0*(N*numNonterminals) + q*numNonterminals + startSymbol
+        // Possibly check dp_in[dpIndex] != 0 if you only want actually-filled cells
+
+        result.append(Int32(dpIndex))
+    }
+    return result
+}
+
+func sampleWords(
+    dp_in: MTLBuffer,
+    bpCount: MTLBuffer,
+    bpOffset: MTLBuffer,
+    bpStorage: MTLBuffer,
+    startIndices: MTLBuffer,
+    seeds: MTLBuffer,
+    maxWordLen: Int,
+    maxSamples: Int,
+    numStartIndices: Int,
+    N: Int
+) -> MTLBuffer {
+    let start = DispatchTime.now()
+    // We'll store each sampled word in a row of length `maxWordLen`.
+    let sampledWordsSize = maxSamples * maxWordLen
+    let sampledWordsBuf = device.makeBuffer(length: sampledWordsSize, options: [])!
+
+    let commandBuffer = queue.makeCommandBuffer()!
+    let encoder = commandBuffer.makeComputeCommandEncoder()!
+    encoder.setComputePipelineState(psoSmpWord)
+
+    encoder.setBuffer(dp_in,          offset: 0, index: 0)
+    encoder.setBuffer(bpCount,        offset: 0, index: 1)
+    encoder.setBuffer(bpOffset,       offset: 0, index: 2)
+    encoder.setBuffer(bpStorage,      offset: 0, index: 3)
+    encoder.setBuffer(startIndices,   offset: 0, index: 4)
+    encoder.setBuffer(seeds,          offset: 0, index: 5)
+    encoder.setBuffer(sampledWordsBuf,offset: 0, index: 6)
+    var nsStart = Int32(numStartIndices)
+    encoder.setBytes(&nsStart, length: MemoryLayout<Int32>.size, index: 7)
+    var nStates = Int32(N)
+    encoder.setBytes(&nStates, length: MemoryLayout<Int32>.size, index: 8)
+    var mwl = Int32(maxWordLen)
+    encoder.setBytes(&mwl, length: MemoryLayout<Int32>.size, index: 9)
+
+    // We'll launch one thread per sample
+    let threads = MTLSizeMake(maxSamples, 1, 1)
+    encoder.dispatchThreads(threads, threadsPerThreadgroup: MTLSizeMake(1,1,1))
+
+    encoder.endEncoding()
+    commandBuffer.commit()
+    commandBuffer.waitUntilCompleted()
+
+    let psEnd = DispatchTime.now()
+    let psTimeMs = Double(psEnd.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
+    print("Sampled words in \(psTimeMs) ms"); fflush(stdout)
+    return sampledWordsBuf
 }
 
 func buildBackpointers(
@@ -767,20 +887,23 @@ private func reconstructDPBuffer(
     return bufA
 }
 
-private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 0,
+private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 0, startIdx: Int = 0,
             psoCflMul: MTLComputePipelineState!, serialize: MTLComputePipelineState!,
-            psoBpCount: MTLComputePipelineState!, psoBpWrite: MTLComputePipelineState!
+            psoBpCount: MTLComputePipelineState!, psoBpWrite: MTLComputePipelineState!,
+            psoSmpWord: MTLComputePipelineState!
 
-@_cdecl("setup") public func setup(_ nnt: CInt, _ str: UnsafePointer<CChar>?) {
+@_cdecl("setup") public func setup(_ nnt: CInt, startIndex: CInt, _ str: UnsafePointer<CChar>?) {
     device = MTLCreateSystemDefaultDevice()!
     queue = device.makeCommandQueue()!
 
     let metalSrc = str != nil ? String(cString: str!) : ""
     numNonterminals = Int(nnt)
+    startIdx = Int(startIndex)
     let library = try! device.makeLibrary(source: metalSrc, options: nil)
     psoCflMul   = try! device.makeComputePipelineState(function: library.makeFunction(name: "cfl_mul_upper")!)
     psoBpCount  = try! device.makeComputePipelineState(function: library.makeFunction(name: "bp_count")!)
     psoBpWrite  = try! device.makeComputePipelineState(function: library.makeFunction(name: "bp_write")!)
+    psoSmpWord  = try! device.makeComputePipelineState(function: library.makeFunction(name: "sample_words")!)
 }"""
 
   fun encodeGrammarHeader(cfg: CFG = pythonStatementCNF): String =
@@ -810,7 +933,7 @@ private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 
   private val nativeBridge: NativeBridge =
     if (System.getProperty("os.name").startsWith("Mac")) getMetalBridge() else TODO()
 
-  fun setupPython() = nativeBridge.setup(pythonStatementCNF.nonterminals.size, metalSrc)
+  fun setupPython() = nativeBridge.setup(pythonStatementCNF.nonterminals.size, pythonStatementCNF.bindex[START_SYMBOL], metalSrc)
 
   private fun getMetalBridge(): NativeBridge {
     val directory = "src/main/resources/dlls".also { File(it).mkdirs() }
