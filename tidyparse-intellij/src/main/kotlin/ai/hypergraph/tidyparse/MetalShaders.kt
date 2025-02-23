@@ -178,8 +178,7 @@ kernel void cfl_mul_upper(
         // For each A -> (B, C):
         //     dp_in[r,m,B] && dp_in[m,c,C] => dp_out[r,c,A].
         for (int g = startGC; g < endGC; g += 2) {
-            int B = vidx[g];
-            int C = vidx[g+1];
+            int B = vidx[g]; int C = vidx[g+1];
             
             int idxBM = r * snt + m * numNonterminals + B;
             int idxMC = m * snt + c * numNonterminals + C;
@@ -209,21 +208,13 @@ kernel void bp_count(
 
     // Decode A and (r,c)
     int A = tid % numNonterminals;
-    int pairIndex = tid / numNonterminals;
 
-    // decodeUpperTriangle or your usual method:
     int r, c;
-    decodeUpperTriangle(pairIndex, N, r, c);
+    decodeUpperTriangle(tid / numNonterminals, N, r, c);
     int snt = N * numNonterminals;
 
-    // If dp_in[r,c,A] == 0, then no expansions. 
-    // But be careful: dp_in might only store presence/absence for A. 
-    // Even if dp_in[r,c,A] is 1, we want to see how many expansions it *can* have.
-    // If dp_in[r,c,A] == 0, skip quickly:
-    if (dp_in[r*snt + c*numNonterminals + A] == 0) {
-        bpCount[r*snt + c*numNonterminals + A] = 0;
-        return;
-    }
+    int dpIdx = r*snt + c*numNonterminals + A;
+    if (dp_in[dpIdx] == 0) { bpCount[dpIdx] = 0; return; }
 
     // Grammar offsets for A
     int startGC = vidx_offsets[A];
@@ -241,15 +232,12 @@ kernel void bp_count(
 
         // for each A -> B, C
         for (int g = startGC; g < endGC; g += 2) {
-            int B = vidx[g];
-            int C = vidx[g+1];
+            int B = vidx[g]; int C = vidx[g+1];
 
             int idxBM = r*snt + m*numNonterminals + B;
             int idxMC = m*snt + c*numNonterminals + C;
             // If (r,m,B) and (m,c,C) are both present:
-            if (dp_in[idxBM] != 0 && dp_in[idxMC] != 0) {
-                count++;
-            }
+            if (dp_in[idxBM] != 0 && dp_in[idxMC] != 0) { count++; }
         }
     }
 
@@ -277,21 +265,17 @@ kernel void bp_write(
     if (tid >= totalCells) return;
 
     int A = tid % numNonterminals;
-    int pairIndex = tid / numNonterminals;
 
     int r, c;
-    decodeUpperTriangle(pairIndex, N, r, c);
+    decodeUpperTriangle(tid / numNonterminals, N, r, c);
     int snt = N * numNonterminals;
-
     int dpIndex = r*snt + c*numNonterminals + A;
 
-    // If dp_in == 0 or bpCount == 0 => skip quickly
-    int count = bpCount[dpIndex];
-    if (count == 0) { return; }
+    // If bpCount == 0 => skip quickly
+    if (bpCount[dpIndex] == 0) { return; }
 
     // We'll fill from offset start
-    int offsetStart = bpOffset[dpIndex];
-    int outPos = offsetStart;
+    int outPos = bpOffset[dpIndex];
 
     // Grammar offsets
     int startGC = vidx_offsets[A];
@@ -306,8 +290,7 @@ kernel void bp_write(
         int m = allFSAPairs[idx];
 
         for (int g = startGC; g < endGC; g += 2) {
-            int B = vidx[g];
-            int C = vidx[g+1];
+            int B = vidx[g]; int C = vidx[g+1];
 
             int idxBM = r*snt + m*numNonterminals + B;
             int idxMC = m*snt + c*numNonterminals + C;
@@ -580,7 +563,7 @@ kernel void sample_words(
     let acceptStatesSwift = UnsafeBufferPointer(
         start: acceptStates, // from your function parameter
         count: Int(acceptStatesSize)
-    ).map { Int(${'$'}0) }  // convert from CInt to Int
+    ).map { Int($0) }  // convert from CInt to Int
 
     let startIndicesArray = buildStartIndices(
         acceptStates: acceptStatesSwift,  // [q1, q2, ...]
@@ -588,6 +571,31 @@ kernel void sample_words(
         N: N,
         numNonterminals: numNonterminals
     )
+
+//// dpInPtr: presence bits, size = N*N*numNonterminals
+//let dpInSize = N * N * numNonterminals
+//let dpInPtr = bufA.contents().bindMemory(to: UInt8.self, capacity: dpInSize)
+//
+//// bpCountPtr: expansion counts, also size = N*N*numNonterminals
+//let bpCountPtr = bpCountBuf.contents().bindMemory(to: Int32.self, capacity: dpInSize)
+//
+//// 2) Loop over each accept state q, then each nonterminal A
+//for q in acceptStatesSwift {
+//    let r = 0  // (or whichever row you want to inspect)
+//
+//    print("=== Accept state c=\(q) ===")
+//
+//    // We’ll collect pairs for A in [0 ..< numNonterminals]
+//    for A in 0..<numNonterminals {
+//        // dpIndex = row-major index into dp arrays
+//        let dpIndex = r*(N*numNonterminals) + q*numNonterminals + A
+//        // Print side by side
+//        print("  A=\(A): presence=\(dpInPtr[dpIndex]), expansions=\(bpCountPtr[dpIndex])")
+//    }
+//
+//    print() // blank line after each accept state
+//}
+//fflush(stdout)
 
     // Now create a Metal buffer from that array:
     let startIndicesBuf = device.makeBuffer(
@@ -620,13 +628,11 @@ kernel void sample_words(
         var wordChars: [CChar] = []
         for j in 0..<maxWordLen {
             let ch = ptr[start + j]
-            if ch == 0 { // treat 0 as a null terminator
-                break
-            }
+            if ch == 0 { break }
             wordChars.append(ch)
         }
-        let wordString = String(bytes: wordChars.map{ UInt8(${'$'}0) }, encoding: .ascii) ?? ""
-        print("Sample \(sIdx): \(wordString)")
+        let wordString = String(bytes: wordChars.map{ UInt8($0) }, encoding: .ascii) ?? ""
+        print("Sample \(sIdx): \(wordString)"); fflush(stdout)
     }
 
     memcpy(dp_out, bufA.contents(), dpSizeBytes)
@@ -924,8 +930,7 @@ private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 
     val grammarOffsets = cfg.vindex.map { it.size }
       .fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
     val goLen = grammarOffsets.size.also { println("goLen: $it") }
-    return "constant int vilen=$grLen;" +
-        "constant int volen=$goLen;" +
+    return "constant int vilen=$grLen; constant int volen=$goLen;" +
         grammarFlattened.joinToString(",", "constant int constant vidx[]={", "};") +
         grammarOffsets.joinToString(",", "constant int vidx_offsets[]={", "};")
   }
@@ -933,7 +938,7 @@ private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 
   private val nativeBridge: NativeBridge =
     if (System.getProperty("os.name").startsWith("Mac")) getMetalBridge() else TODO()
 
-  fun setupPython() = nativeBridge.setup(pythonStatementCNF.nonterminals.size, pythonStatementCNF.bindex[START_SYMBOL], metalSrc)
+  fun setupPython() = pythonStatementCNF.run { nativeBridge.setup(nonterminals.size, bindex[START_SYMBOL], metalSrc) }
 
   private fun getMetalBridge(): NativeBridge {
     val directory = "src/main/resources/dlls".also { File(it).mkdirs() }
