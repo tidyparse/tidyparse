@@ -223,7 +223,7 @@ kernel void bp_count(
     // All possible midpoints
     int aoi = r*N + c + 1;
     int pairOffset = allFSAPairsOffsets[aoi - 1];
-    int pairOffsetNext = (aoi < allFSAPairsOffsetsSize ) ? allFSAPairsOffsets[aoi] : allFSAPairsSize;
+    int pairOffsetNext = (aoi < allFSAPairsOffsetsSize) ? allFSAPairsOffsets[aoi] : allFSAPairsSize;
 
     int count = 0;
     // loop over midpoints
@@ -324,12 +324,11 @@ inline void sampleCell(
    const int maxWordLen
 ) {
     // If we've reached maximum length, just stop to avoid overflow
-    if (wordLen >= maxWordLen) { return; }
+//    if (wordLen >= maxWordLen) { return; }
 
     // If A is a terminal (leaf), append its "symbol" to localWord
     if (nt_tm_lens[A] != 0) {
-        uint8_t symbol = 'X';//nt_tm[int(lcg_randomRange(rngState, uint(nt_tm_lens[A])))];
-        localWord[wordLen++] = symbol; // store as a single byte
+        localWord[wordLen++] = 1 + all_tm[offsets[A] + lcg_randomRange(rngState, nt_tm_lens[A])];
         return;
     }
 
@@ -380,7 +379,7 @@ kernel void sample_words(
     uint tid [[thread_position_in_grid]]
 ) {
     // If tid >= maxSamples, do nothing
-    if (tid >= (uint)maxSamples) { return; }
+//    if (tid >= (uint)maxSamples) { return; }
 
     // local word in thread memory
     thread uchar localWord[1024];
@@ -560,10 +559,33 @@ kernel void sample_words(
     let maxSamples = 1000
     let maxWordLen = 128
 
-    let acceptStatesSwift = UnsafeBufferPointer(
-        start: acceptStates, // from your function parameter
-        count: Int(acceptStatesSize)
-    ).map { Int($0) }  // convert from CInt to Int
+      let dpInSize = N * N * numNonterminals
+      let dpInPtr = bufA.contents().bindMemory(to: UInt8.self, capacity: dpInSize)
+
+      let acceptStatesSwift: [Int]
+      if let acceptStatesPtr = acceptStates {
+          acceptStatesSwift = UnsafeBufferPointer(start: acceptStatesPtr, count: Int(acceptStatesSize)).map { Int($0) }
+      } else {
+          acceptStatesSwift = []
+      }
+
+      var validStartIndices: [Int32] = []
+      for q in acceptStatesSwift {
+          let dpIndex = 0 * (N * numNonterminals) + q * numNonterminals + startIdx
+          if dpIndex < dpInSize && dpInPtr[dpIndex] != 0 {
+              validStartIndices.append(Int32(dpIndex))
+          }
+      }
+      print("Number of valid startIndices: \(validStartIndices.count)/\(acceptStatesSwift.count)")
+
+      let startIndicesBuf = device.makeBuffer(bytes: validStartIndices, length: validStartIndices.count * MemoryLayout<Int32>.stride, options: [])!
+
+      let bpCountPtr = bpCountBuf.contents().bindMemory(to: Int32.self, capacity: dpInSize)
+      for idx in validStartIndices {
+          let dpVal = dpInPtr[Int(idx)]
+          let count = bpCountPtr[Int(idx)]
+          print("dpIndex=\(idx), dp_in=\(dpVal), bpCount=\(count)")
+      }
 
     let startIndicesArray = buildStartIndices(
         acceptStates: acceptStatesSwift,  // [q1, q2, ...]
@@ -571,38 +593,6 @@ kernel void sample_words(
         N: N,
         numNonterminals: numNonterminals
     )
-
-//// dpInPtr: presence bits, size = N*N*numNonterminals
-//let dpInSize = N * N * numNonterminals
-//let dpInPtr = bufA.contents().bindMemory(to: UInt8.self, capacity: dpInSize)
-//
-//// bpCountPtr: expansion counts, also size = N*N*numNonterminals
-//let bpCountPtr = bpCountBuf.contents().bindMemory(to: Int32.self, capacity: dpInSize)
-//
-//// 2) Loop over each accept state q, then each nonterminal A
-//for q in acceptStatesSwift {
-//    let r = 0  // (or whichever row you want to inspect)
-//
-//    print("=== Accept state c=\(q) ===")
-//
-//    // We’ll collect pairs for A in [0 ..< numNonterminals]
-//    for A in 0..<numNonterminals {
-//        // dpIndex = row-major index into dp arrays
-//        let dpIndex = r*(N*numNonterminals) + q*numNonterminals + A
-//        // Print side by side
-//        print("  A=\(A): presence=\(dpInPtr[dpIndex]), expansions=\(bpCountPtr[dpIndex])")
-//    }
-//
-//    print() // blank line after each accept state
-//}
-//fflush(stdout)
-
-    // Now create a Metal buffer from that array:
-    let startIndicesBuf = device.makeBuffer(
-        bytes: startIndicesArray,
-        length: startIndicesArray.count * MemoryLayout<Int32>.stride,
-        options: []
-    )!
 
     var seeds = [UInt32](repeating: 0, count: maxSamples)
     for i in 0..<maxSamples { seeds[i] = UInt32.random(in: 0..<UInt32.max) }
@@ -621,19 +611,16 @@ kernel void sample_words(
         N: Int(numStates)
     )
 
-    // Print out first 10 results:
-    let ptr = sampledWordsBuf.contents().bindMemory(to: CChar.self, capacity: maxSamples * maxWordLen)
-    for sIdx in 0..<min(10, maxSamples) {
-        let start = sIdx * maxWordLen
-        var wordChars: [CChar] = []
-        for j in 0..<maxWordLen {
-            let ch = ptr[start + j]
-            if ch == 0 { break }
-            wordChars.append(ch)
-        }
-        let wordString = String(bytes: wordChars.map{ UInt8($0) }, encoding: .ascii) ?? ""
-        print("Sample \(sIdx): \(wordString)"); fflush(stdout)
-    }
+      // Bind the buffer to UInt8 instead of CChar
+      let ptr = sampledWordsBuf.contents().bindMemory(to: UInt8.self, capacity: maxSamples * maxWordLen)
+      let buffer = UnsafeBufferPointer(start: ptr, count: maxSamples * maxWordLen)
+
+      for sIdx in 0..<min(20, maxSamples) {
+          let start = sIdx * maxWordLen
+          let wordSlice = buffer[start..<(start + 10)]
+      //    let byteValues = wordSlice.prefix(while: { $0 != 0 })
+          print("Sample \(sIdx): \(Array(wordSlice))"); fflush(stdout)
+      }
 
     memcpy(dp_out, bufA.contents(), dpSizeBytes)
 }
@@ -675,13 +662,13 @@ func sampleWords(
     let encoder = commandBuffer.makeComputeCommandEncoder()!
     encoder.setComputePipelineState(psoSmpWord)
 
-    encoder.setBuffer(dp_in,          offset: 0, index: 0)
-    encoder.setBuffer(bpCount,        offset: 0, index: 1)
-    encoder.setBuffer(bpOffset,       offset: 0, index: 2)
-    encoder.setBuffer(bpStorage,      offset: 0, index: 3)
-    encoder.setBuffer(startIndices,   offset: 0, index: 4)
-    encoder.setBuffer(seeds,          offset: 0, index: 5)
-    encoder.setBuffer(sampledWordsBuf,offset: 0, index: 6)
+    encoder.setBuffer(dp_in,           offset: 0, index: 0)
+    encoder.setBuffer(bpCount,         offset: 0, index: 1)
+    encoder.setBuffer(bpOffset,        offset: 0, index: 2)
+    encoder.setBuffer(bpStorage,       offset: 0, index: 3)
+    encoder.setBuffer(startIndices,    offset: 0, index: 4)
+    encoder.setBuffer(seeds,           offset: 0, index: 5)
+    encoder.setBuffer(sampledWordsBuf, offset: 0, index: 6)
     var nsStart = Int32(numStartIndices)
     encoder.setBytes(&nsStart, length: MemoryLayout<Int32>.size, index: 7)
     var nStates = Int32(N)
@@ -689,9 +676,7 @@ func sampleWords(
     var mwl = Int32(maxWordLen)
     encoder.setBytes(&mwl, length: MemoryLayout<Int32>.size, index: 9)
 
-    // We'll launch one thread per sample
-    let threads = MTLSizeMake(maxSamples, 1, 1)
-    encoder.dispatchThreads(threads, threadsPerThreadgroup: MTLSizeMake(1,1,1))
+    encoder.dispatchThreads(MTLSizeMake(maxSamples, 1, 1), threadsPerThreadgroup: MTLSizeMake(1,1,1))
 
     encoder.endEncoding()
     commandBuffer.commit()
@@ -746,7 +731,6 @@ func buildBackpointers(
     //    This can be done in GPU or CPU. We'll assume CPU. 
     let bpOffsetBuf = device.makeBuffer(length: countSize, options: [])!
     parallelPrefixSumCPU(countBuf: bpCountBuf, offsetBuf: bpOffsetBuf, totalCells: totalCells)
-
 
     // 4) Figure out total expansions = last element's offset + last element's count
     //    (We must read back the prefix sum array, or at least the last element.)
@@ -913,16 +897,23 @@ private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 
 }"""
 
   fun encodeGrammarHeader(cfg: CFG = pythonStatementCNF): String =
-    cfg.nonterminals.map {
+    genNTTerminalMapping(cfg) + genFlattenedBinaryProds(cfg)
+
+  fun genNTTerminalMapping(cfg: CFG): String {
+    val terminalLists = cfg.nonterminals.map {
       if (it !in cfg.unitNonterminals) emptyList<Int>()
       else cfg.bimap.UNITS[it]!!.map { cfg.tmMap[it]!! + 1 }
-    }.let {
-      // Maps unit nonterminals to possible terminals
-      it.mapIndexed { i, it -> "constant uint8_t nt${i}_tm[]={${it.joinToString(",")}};" }.joinToString("") +
-      cfg.nonterminals.indices.joinToString(",", "constant uint8_t* constant nt_tm[]={", "};") { "nt${it}_tm" } +
-      it.map { it.size }.joinToString(",", "constant uint nt_tm_lens[]={", "};") +
-      "constant int numNonterminals=${cfg.nonterminals.size};"
-    } + genFlattenedBinaryProds(cfg)
+    }
+    val allTerminals = terminalLists.flatMap { it }
+    val offsets = terminalLists.scan(0) { acc, list -> acc + list.size }.dropLast(1)
+
+    return """
+        constant uint8_t all_tm[] = {${allTerminals.joinToString(",")}};
+        constant uint offsets[] = {${offsets.joinToString(",")}};
+        constant uint nt_tm_lens[] = {${terminalLists.map { it.size }.joinToString(",")}};
+        constant int numNonterminals = ${cfg.nonterminals.size};
+    """.trimIndent()
+  }
 
   fun genFlattenedBinaryProds(cfg: CFG): String {
     val grammarFlattened = cfg.vindex.map { it.toList() }.flatten().toIntArray()
