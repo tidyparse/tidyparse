@@ -7,8 +7,6 @@ import ai.hypergraph.kaliningraph.automata.StrPred
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.pythonStatementCNF
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
-import ai.hypergraph.kaliningraph.types.filter
-import ai.hypergraph.kaliningraph.types.π2
 import com.sun.jna.*
 import org.intellij.lang.annotations.Language
 import java.io.File
@@ -23,7 +21,9 @@ fun main() {
   val cfg = pythonStatementCNF
   val pythonCode = "NAME = [ ( STRING , NAME ) , , ( NAME , NAME ) , ( NAME , NAME ) , ( NAME , NAME ) , , ( NAME , NAME ) ] NEWLINE"
     .tokenizeByWhitespace()
-  val levFSA = makeLevFSA(pythonCode, 5)
+  val radius = 5
+  val levFSA = makeLevFSA(pythonCode, radius)
+  val maxWordLen = pythonCode.size + radius
 
   val bindex = cfg.bindex
   val width = cfg.nonterminals.size
@@ -53,14 +53,14 @@ fun main() {
         else tmMap[arg]!! + 1).toUShort() // Otherwise positive sign bit
 
       return cfg.unitProductions.flatMap { (A, σ) ->
-        nominalForm.flattenedTriples.filter { arc -> arc.π2(σ) }.map { (q0, sp, q1) ->
+        nominalForm.flattenedTriples.filter { arc -> arc.second(σ) }.map { (q0, sp, q1) ->
           listOf(stateMap[q0]!!, stateMap[q1]!!, cfg.bindex[A], 127).map { it.toUShort() } //+ 127.toUShort()//sp.predByte()
         }.flatten()
       }.toUShortArray()
        .also { println("Encoded instance in ${it.size * 2} bytes / ${numStates*numStates*numNonterminals}") }
     }
 
-    val outGPU = GPUBridge.cflClosure(
+    val samples = GPUBridge.cflClosure(
       levFSA.byteFormat(cfg),
       grammarFlattened,
       grammarOffsets,
@@ -68,11 +68,19 @@ fun main() {
       allFSAPairsOffsets,
       levFSA.finalIdxs.toIntArray(),
       levFSA.finalIdxs.size,
-      numStates, numNonterminals
-    ).also { resultGPU = it.map { it > 0.toByte() } }
+      numStates,
+      maxWordLen
+    )
 
-    println("GPU size: " + outGPU.size)
-    println("GPU sum: " + resultGPU.sumBy { if(it) 1 else 0 })
+    samples.joinToString(" ") {
+      if (it == 0.toByte()) "0"
+      else if (it.toInt() - 1 >= cfg.tmLst.size) "?"
+      else cfg.tmLst[it.toInt() - 1]
+    }.split(Regex("( 0)+")).filter { it.isNotBlank() }
+      .forEachIndexed { i, it -> println("$i.) $it") }
+
+//    println("GPU size: " + outGPU.size)
+//    println("GPU sum: " + resultGPU.sumBy { if(it) 1 else 0 })
   }.also { println("GPU time: ${it}ms\n") }
 
   measureTimeMillis {
@@ -84,7 +92,7 @@ fun main() {
     println("CPU sum: " + resultCPU.sumBy { if(it) 1 else 0 })
   }.also { println("CPU time: ${it}ms\n") }
 
-  println("GPU ${if (resultGPU != resultCPU) "!=" else "=="} CPU")
+//  println("GPU ${if (resultGPU != resultCPU) "!=" else "=="} CPU")
 }
 
 fun nonemptyLevInt(dp: Array<Array<BooleanArray>>, ap: List<List<List<Int>?>>, vindex: Array<IntArray>): Array<Array<BooleanArray>> {
@@ -488,9 +496,11 @@ kernel void sample_words(
     allFSAPairsOffsets: IntArray,
     acceptStates: IntArray,
     acceptStatesSize: Int,
-    numStates: Int, numNonterminals: Int
+    numStates: Int,
+    maxWordLen: Int,
+    maxSamples: Int = 1000
   ): ByteArray =
-    Memory(numStates.toLong() * numStates * numNonterminals).also { outMem ->
+    Memory(maxWordLen * maxSamples.toLong()).also { outMem ->
       nativeBridge.cflMultiply(
         dp_in = Memory(2L * dpIn.size.toLong()).apply { write(0, dpIn.toShortArray(), 0, dpIn.size) },
         dp_out = outMem,
@@ -507,9 +517,11 @@ kernel void sample_words(
         grammarSize = grammar.size,
         grammarOffsetsSize = grammarOffsets.size,
         allFSAPairsSize = allFSAPairs.size,
-        allFSAPairsOffsetsSize = allFSAPairsOffsets.size
+        allFSAPairsOffsetsSize = allFSAPairsOffsets.size,
+        maxWordLen = maxWordLen,
+        maxSamples = maxSamples
       )
-    }.getByteArray(0, numStates * numStates * numNonterminals)
+    }.getByteArray(0, maxWordLen * maxSamples)
 
   interface NativeBridge : Library {
     fun setup(numNts: Int, startIdx: Int, s: String)
@@ -530,14 +542,16 @@ kernel void sample_words(
       grammarSize: Int,
       grammarOffsetsSize: Int,
       allFSAPairsSize: Int,
-      allFSAPairsOffsetsSize: Int
+      allFSAPairsOffsetsSize: Int,
+      maxWordLen: Int,
+      maxSamples: Int,
     )
   }
   /** Caller: [GPUBridge.cflClosure] */
   @Language("swift") val swiftSrc = """$swiftImports
 @_cdecl("cflMultiply") public func cflMultiply(
     _ dp_in: UnsafePointer<UInt16>?,
-    _ dp_out: UnsafeMutablePointer<UInt16>?,
+    _ dp_out: UnsafeMutablePointer<UInt8>?,
     _ grammar: UnsafePointer<CInt>?,
     _ grammarOffsets: UnsafePointer<CInt>?,
     _ allFSAPairs: UnsafePointer<CInt>?,
@@ -549,7 +563,9 @@ kernel void sample_words(
     _ grammarSize: CInt,
     _ grammarOffsetsSize: CInt,
     _ allFSAPairsSize: CInt,
-    _ allFSAPairsOffsetsSize: CInt
+    _ allFSAPairsOffsetsSize: CInt,
+    _ maxWordLen: CInt,
+    _ maxSamples: CInt
 ) {
     guard let dp_out, let allFSAPairs, let allFSAPairsOffsets else { return }
     
@@ -625,9 +641,6 @@ kernel void sample_words(
     let start = DispatchTime.now()
     // Now sample words:
     // 1) create startIndices, isTerminal, seeds
-    let maxSamples = 1000
-    let maxWordLen = 128
-
       let dpInSize = N * N * numNonterminals
       let dpInPtr = bufA.contents().bindMemory(to: UInt8.self, capacity: dpInSize)
 
@@ -657,9 +670,9 @@ kernel void sample_words(
 //          print("dpIndex=\(idx), dp_in=\(dpVal), bpCount=\(count)")
 //      }
 
-    var seeds = [UInt32](repeating: 0, count: maxSamples)
-    for i in 0..<maxSamples { seeds[i] = UInt32.random(in: 0..<UInt32.max) }
-    let seedsBuf = device.makeBuffer(bytes: seeds, length: maxSamples*MemoryLayout<UInt32>.stride, options: [])!
+    var seeds = [UInt32](repeating: 0, count: Int(maxSamples))
+    for i in 0..<Int(maxSamples) { seeds[i] = UInt32.random(in: 0..<UInt32.max) }
+    let seedsBuf = device.makeBuffer(bytes: seeds, length: Int(maxSamples)*MemoryLayout<UInt32>.stride, options: [])!
 
     let sampledWordsBuf = sampleWords(
         dp_in: bufA,
@@ -668,28 +681,30 @@ kernel void sample_words(
         bpStorage: bpStorageBuf,
         startIndices: startIndicesBuf, 
         seeds: seedsBuf,
-        maxWordLen: 128,
-        maxSamples: 1000,
+        maxWordLen: Int(maxWordLen),
+        maxSamples: Int(maxSamples),
         numStartIndices: validStartIndices.count,
         numStates: Int(numStates)
     )
 
-      // Bind the buffer to UInt8 instead of CChar
-      let ptr = sampledWordsBuf.contents().bindMemory(to: UInt8.self, capacity: maxSamples * maxWordLen)
-      let buffer = UnsafeBufferPointer(start: ptr, count: maxSamples * maxWordLen)
+      let sampSize = Int(maxSamples) * Int(maxWordLen)
 
-      for sIdx in 0..<min(10, maxSamples) {
-          let start = sIdx * maxWordLen
-          let wordSlice = buffer[start..<(start + 20)]
-      //    let byteValues = wordSlice.prefix(while: { $0 != 0 })
-          print("Sample \(sIdx): \(Array(wordSlice))"); fflush(stdout)
-      }
+      // Bind the buffer to UInt8 instead of CChar
+      let ptr = sampledWordsBuf.contents().bindMemory(to: UInt8.self, capacity: sampSize)
+//      let buffer = UnsafeBufferPointer(start: ptr, count: sampSize)
+
+//      for sIdx in 0..<min(30, Int(maxSamples)) {
+//          let start = sIdx * Int(maxWordLen)
+//          let wordSlice = buffer[start..<(start + 80)]
+//      //    let byteValues = wordSlice.prefix(while: { $0 != 0 })
+//          print("Sample \(sIdx): \(Array(wordSlice))"); fflush(stdout)
+//      }
 
     let psEnd = DispatchTime.now()
     let psTimeMs = Double(psEnd.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
     print("Sampled words in \(psTimeMs) ms"); fflush(stdout)
 
-    memcpy(dp_out, bufA.contents(), dpSizeBytes)
+    memcpy(dp_out, sampledWordsBuf.contents(), sampSize)
 }
 
 func sampleWords(
@@ -960,12 +975,12 @@ private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 
         constant uint nt_tm_lens[] = {${terminalLists.map { it.size }.joinToString(",")}};
         constant int numNonterminals = ${cfg.nonterminals.size};
     """.trimIndent()
-//      .also {
-//        println(cfg.nonterminals.mapIndexed { i, it ->
-//          "$it:$i" to (if (it !in cfg.unitNonterminals) emptyList<Int>()
-//          else cfg.bimap.UNITS[it]!!.map { cfg.tmMap[it]!! + 1 }).size
-//        })
-//      }
+      .also {
+        println(cfg.nonterminals.mapIndexed { i, it ->
+          "$it:$i" to (if (it !in cfg.unitNonterminals) emptyList<Int>()
+          else cfg.bimap.UNITS[it]!!.map { cfg.tmMap[it]!! + 1 }).size
+        })
+      }
   }
 
   fun genFlattenedBinaryProds(cfg: CFG): String {
