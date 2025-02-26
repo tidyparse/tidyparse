@@ -23,7 +23,7 @@ fun main() {
     .tokenizeByWhitespace()
   val radius = 5
   val levFSA = makeLevFSA(pythonCode, radius)
-  val maxWordLen = pythonCode.size + radius
+  val maxWordLen = pythonCode.size + radius + 10
 
   val bindex = cfg.bindex
   val width = cfg.nonterminals.size
@@ -32,17 +32,11 @@ fun main() {
   val numStates = levFSA.numStates
   val numNonterminals = cfg.nonterminals.size
 
-  val grammarFlattened = cfg.vindex.map { it.toList() }.flatten().toIntArray()
-  val grammarOffsets = cfg.vindex.map { it.size }
-    .fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
-
   val allFSAPairsFlattened = levFSA.allPairs2.flatten().flatten().toIntArray()
   val allFSAPairsOffsets = levFSA.allPairs2.flatten().map { it.size }
     .fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
 
   println("\nLinked GPU in ${measureTimeMillis { GPUBridge.setupPython() }}ms\n")
-
-  var (resultGPU: List<Boolean>, resultCPU: List<Boolean>) = listOf<Boolean>() to listOf(true)
 
   measureTimeMillis {
     fun FSA.byteFormat(cfg: CFG): UShortArray {
@@ -62,8 +56,6 @@ fun main() {
 
     val samples = GPUBridge.cflClosure(
       levFSA.byteFormat(cfg),
-      grammarFlattened,
-      grammarOffsets,
       allFSAPairsFlattened,
       allFSAPairsOffsets,
       levFSA.finalIdxs.toIntArray(),
@@ -78,23 +70,13 @@ fun main() {
       else cfg.tmLst[it.toInt() - 1]
     }.split(Regex("( 0)+"))
       .filter { it.isNotBlank() }
+      .map { it.replace(" NEWLINE", "") }
       .distinct()
       .forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
 
 //    println("GPU size: " + outGPU.size)
 //    println("GPU sum: " + resultGPU.sumBy { if(it) 1 else 0 })
   }.also { println("GPU time: ${it}ms\n") }
-
-  measureTimeMillis {
-    val dp0 = Array(levFSA.numStates) { Array(levFSA.numStates) { BooleanArray(width) { false } } }
-    levFSA.allIndexedTxs0(ups, bindex).forEach { (q0, nt, q1) -> dp0[q0][q1][nt] = true }
-
-    resultCPU = nonemptyLevInt(dp0, levFSA.allPairs, vindex).flatten().map { it.toList() }.flatten()
-    println("CPU size: " + resultCPU.size)
-    println("CPU sum: " + resultCPU.sumBy { if(it) 1 else 0 })
-  }.also { println("CPU time: ${it}ms\n") }
-
-//  println("GPU ${if (resultGPU != resultCPU) "!=" else "=="} CPU")
 }
 
 fun nonemptyLevInt(dp: Array<Array<BooleanArray>>, ap: List<List<List<Int>?>>, vindex: Array<IntArray>): Array<Array<BooleanArray>> {
@@ -122,6 +104,7 @@ object GPUBridge {
 #include <metal_stdlib>
 using namespace metal;
 
+// The following header should be regenerated for each CFG
 ${encodeGrammarHeader()}
 
 // Helper to decode (row,col) in the upper-triangle from tid
@@ -146,25 +129,9 @@ kernel void cfl_mul_upper(
   device atomic_uint&  numNonzero              [[buffer(7)]],
   uint                 tid                     [[thread_position_in_grid]]
 ) {
-    // We are only covering the strict upper triangle (c > r)
-    // total # of (r, c) pairs = N*(N-1)/2
-    // for each pair, we have numNonterminals possible As
-    int N = numStates;
-    int totalPairs = (N*(N-1))/2;
-    int totalThreads = totalPairs * numNonterminals;
-
-    // Decode A
-    int A = int(tid) % numNonterminals;
-    // Which upper-triangle pair?
-    int pairIndex = int(tid) / numNonterminals;
-
-    // Decode (r, c) from pairIndex
     int r, c;
-    decodeUpperTriangle(pairIndex, N, r, c);
-
-    int snt = N * numNonterminals;
-    // flatten (r,c,A) into index for dp array
-    int dpIndex = r*snt + c*numNonterminals + A;
+    decodeUpperTriangle(int(tid) / numNonterminals, numStates, r, c);
+    int A = tid % numNonterminals, snt = numStates * numNonterminals, dpIndex = r*snt + c*numNonterminals + A;
 
     if (dp_in[dpIndex]) {
         dp_out[dpIndex] = dp_in[dpIndex];
@@ -177,7 +144,7 @@ kernel void cfl_mul_upper(
     int endGC   = (A+1 < volen) ? vidx_offsets[A+1] : vilen;
 
     // midpoints between (r..c)
-    int aoi = r * N + c + 1;
+    int aoi = r * numStates + c + 1;
     int pairOffset = allFSAPairsOffsets[aoi - 1];
     int pairOffsetNext = (aoi < allFSAPairsOffsetsSize) ? allFSAPairsOffsets[aoi] : allFSAPairsSize;
 
@@ -212,19 +179,14 @@ kernel void bp_count(
     uint tid [[thread_position_in_grid]]
 ) {
     int N = numStates;
-    int totalPairs = (N*(N-1))/2;
-    int totalCells = totalPairs * numNonterminals;
+    int totalCells = (N*(N-1))/2 * numNonterminals;
     if (tid >= totalCells) return;
-
-    // Decode A and (r,c)
-    int A = tid % numNonterminals;
 
     int r, c;
     decodeUpperTriangle(tid / numNonterminals, N, r, c);
-    int snt = N * numNonterminals;
+    int A = tid % numNonterminals, snt = N * numNonterminals, dpIndex = r*snt + c*numNonterminals + A;
 
-    int dpIdx = r*snt + c*numNonterminals + A;
-    if (dp_in[dpIdx] == 0) { bpCount[dpIdx] = 0; return; }
+    if (dp_in[dpIndex] == 0) { bpCount[dpIndex] = 0; return; }
 
     // Grammar offsets for A
     int startGC = vidx_offsets[A];
@@ -251,7 +213,6 @@ kernel void bp_count(
         }
     }
 
-    // Write out the total count for this cell
     bpCount[r*snt + c*numNonterminals + A] = count;
 }
 
@@ -269,19 +230,15 @@ kernel void bp_write(
     uint tid [[thread_position_in_grid]]
 ) {
     int N = numStates;
-    int totalPairs = (N*(N-1))/2;
-    int totalCells = totalPairs * numNonterminals;
+    int totalCells = (N*(N-1))/2 * numNonterminals;
     if (tid >= totalCells) return;
-
-    int A = tid % numNonterminals;
 
     int r, c;
     decodeUpperTriangle(tid / numNonterminals, N, r, c);
-    int snt = N * numNonterminals;
-    int dpIndex = r*snt + c*numNonterminals + A;
+    int A = tid % numNonterminals, snt = N * numNonterminals, dpIndex = r*snt + c*numNonterminals + A;
 
     // If bpCount == 0 => skip quickly
-    if (bpCount[dpIndex] == 0) { return; }
+    if (bpCount[dpIndex] == 0) return;
 
     // We'll fill from offset start
     int outPos = bpOffset[dpIndex];
@@ -314,10 +271,10 @@ kernel void bp_write(
     }
 }
 
-inline uint lcg_random(thread uint& state) { return 1664525u * state + 1013904223u; }
+//inline uint lcg_random(thread uint& state) { return 1664525u * state + 1013904223u; }
+inline uint lcg_random(thread uint& state) { return 2u; }
 inline uint lcg_randomRange(thread uint& state, uint range) { return lcg_random(state) % range; }
 
-struct StackFrame { int dpIdx; int stage; int idxBM; int idxMC; };
 inline void sampleCellIterative(
    const device uchar*    dp_in,
    const device int*      bpCount,
@@ -331,50 +288,49 @@ inline void sampleCellIterative(
    const int              maxWordLen
 ) {
     constexpr int MAX_STACK = 512;
-    StackFrame stack[MAX_STACK];
+    int stack[MAX_STACK];
     int top = 0;
 
     // Initialize the stack with "root call"
-    stack[top++] = { startDPIdx, 0, -1, -1 };
+    stack[top++] = startDPIdx;
 
     // While we have frames to process, and haven't overflowed localWord
-    while (top > 0 && wordLen < maxWordLen) {
-        StackFrame frame = stack[--top];
-
-        int A        = frame.dpIdx % numNonterminals;
-        int expCount = bpCount[frame.dpIdx];
-        int dpIdx    = frame.dpIdx;
+    while (top > 0 && wordLen < maxWordLen - 5) {
+        int dpIdx = stack[--top];
+        int expCount = bpCount[dpIdx];
         
         if (expCount == 0) { // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
+            int nonterminal = dpIdx % numNonterminals;
             int predicate = dp_in[dpIdx];
             bool isNegativeLiteral = predicate & 0x80;
             uchar literal = predicate & 0x7F;
-            int numTms = nt_tm_lens[A];
+            int numTms = nt_tm_lens[nonterminal];
             if (isNegativeLiteral) {
               uchar possibleTms[100];
-              uint tmCount = 0; uint offset = offsets[A];
+              uint tmCount = 0; uint offset = offsets[nonterminal];
               for (int i = 0; i < 100 && i < numTms; i++) {
                 uchar this_tm = all_tm[offset + i];
-                if (this_tm != literal) possibleTms[tmCount++] = all_tm[offset + i];
+                if (this_tm != literal) possibleTms[tmCount++] = this_tm;
               }
               uchar tmChoice = possibleTms[int(lcg_randomRange(rngState, uint(tmCount)))];
-              localWord[wordLen++] = tmChoice;
+              localWord[wordLen++] = tmChoice + 1;
             } else { localWord[wordLen++] = (numTms != 0) ? literal : 99; }
-        } else if (frame.stage == 0) {
-            int randIdx = bpOffset[frame.dpIdx] + int(lcg_randomRange(rngState, uint(expCount)));
+        } else if (top + 2 < MAX_STACK) {
+           int randIdx = bpOffset[dpIdx] + int(lcg_randomRange(rngState, uint(expCount)));
 
-            int idxBM = bpStorage[randIdx * 2 + 0];
-            int idxMC = bpStorage[randIdx * 2 + 1];
+           int idxBM = bpStorage[randIdx * 2 + 0];
+           int idxMC = bpStorage[randIdx * 2 + 1];
+//            if (wordLen > 30) localWord[wordLen++] = dpIdx & 0x7F;
 
-            if (top < MAX_STACK) { stack[top++] = { frame.dpIdx, 1, idxBM, idxMC }; }
-            if (idxBM != frame.dpIdx && top < MAX_STACK) { stack[top++] = { idxBM, 0, -1, -1 }; }
-        } else {
-            if (frame.idxMC != frame.dpIdx && top < MAX_STACK) { stack[top++] = { frame.idxMC, 0, -1, -1 }; }
+            if (idxMC != dpIdx && idxBM != dpIdx) {
+           stack[top++] = idxMC; stack[top++] = idxBM; }
+//           if (idxBM != idxMC) { stack[top++] = idxMC; stack[top++] = idxBM; }
+//           else { stack[top++] = idxBM; }
         }
     }
+    
+    for (int i = wordLen; i < maxWordLen; i++) { localWord[wordLen++] = 0; }
 }
-
-constant int maxSamples = 10000;
 
 kernel void sample_words(
     const device uchar*   dp_in           [[buffer(0)]], // parse chart
@@ -412,9 +368,7 @@ kernel void sample_words(
                numStates, startIdx,
                rngState, localWord, wordLen, maxWordLen);
 
-    // write localWord to global
-    int baseIdx = int(tid)*maxWordLen;
-    for (int i=0; i<maxWordLen; i++) { sampledWords[baseIdx + i] = localWord[i]; }
+    for (int i=0; i<maxWordLen; i++) sampledWords[int(tid)*maxWordLen + i] = localWord[i];
 }
 """
 
@@ -423,8 +377,6 @@ kernel void sample_words(
   @JvmStatic fun cflClosure(
 /**[NativeBridge.cflMultiply] */
     dpIn: UShortArray,
-    grammar: IntArray,
-    grammarOffsets: IntArray,
     allFSAPairs: IntArray,
     allFSAPairsOffsets: IntArray,
     acceptStates: IntArray,
@@ -439,16 +391,12 @@ kernel void sample_words(
         dp_out = outMem,
 //        dp_in = Memory(dpIn.size).apply { write(0, dpIn, 0, dpIn.size) },
 //        dp_out = outMem,
-        grammar = Memory(4L * grammar.size).apply { write(0, grammar, 0, grammar.size) },
-        grammarOffsets = Memory(4L * grammarOffsets.size).apply { write(0, grammarOffsets, 0, grammarOffsets.size) },
         allFSAPairs = Memory(4L * allFSAPairs.size).apply { write(0, allFSAPairs, 0, allFSAPairs.size) },
         allFSAPairsOffsets = Memory(4L * allFSAPairsOffsets.size).apply { write(0, allFSAPairsOffsets, 0, allFSAPairsOffsets.size) },
         acceptStates =  Memory(4L * acceptStatesSize).apply { write(0, acceptStates, 0, acceptStates.size) },
         acceptStatesSize = acceptStatesSize,
         dpSize = dpIn.size,
         numStates = numStates,
-        grammarSize = grammar.size,
-        grammarOffsetsSize = grammarOffsets.size,
         allFSAPairsSize = allFSAPairs.size,
         allFSAPairsOffsetsSize = allFSAPairsOffsets.size,
         maxWordLen = maxWordLen,
@@ -464,16 +412,12 @@ kernel void sample_words(
       // Expects a flattened array of triples containing the indices (r, c, A) that are initially set
       dp_in: Pointer,              // buffer(0)
       dp_out: Pointer,             // buffer(1)
-      grammar: Pointer,            // buffer(2)
-      grammarOffsets: Pointer,     // buffer(3)
-      allFSAPairs: Pointer,        // buffer(4)
-      allFSAPairsOffsets: Pointer, // buffer(5)
-      acceptStates: Pointer,       // buffer(6)
+      allFSAPairs: Pointer,        // buffer(2)
+      allFSAPairsOffsets: Pointer, // buffer(3)
+      acceptStates: Pointer,       // buffer(4)
       acceptStatesSize: Int,
       dpSize: Int,
       numStates: Int,
-      grammarSize: Int,
-      grammarOffsetsSize: Int,
       allFSAPairsSize: Int,
       allFSAPairsOffsetsSize: Int,
       maxWordLen: Int,
@@ -485,16 +429,12 @@ kernel void sample_words(
 @_cdecl("cflMultiply") public func cflMultiply(
     _ dp_in_sparse: UnsafePointer<UInt16>?,
     _ dp_out: UnsafeMutablePointer<UInt8>?,
-    _ grammar: UnsafePointer<CInt>?,
-    _ grammarOffsets: UnsafePointer<CInt>?,
     _ allFSAPairs: UnsafePointer<CInt>?,
     _ allFSAPairsOffsets: UnsafePointer<CInt>?,
     _ acceptStates: UnsafePointer<CInt>?,
     _ acceptStatesSize: CInt,
     _ dpSize: CInt,
     _ numStates: CInt,
-    _ grammarSize: CInt,
-    _ grammarOffsetsSize: CInt,
     _ allFSAPairsSize: CInt,
     _ allFSAPairsOffsetsSize: CInt,
     _ maxWordLen: CInt,
@@ -506,7 +446,6 @@ kernel void sample_words(
     let totalCount = N*N*Int(numNonterminals)
     let dpSizeBytes = totalCount * MemoryLayout<UInt8>.stride
 
-    print("hello!"); fflush(stdout);
     let bufA = reconstructDPBuffer(
         dp_in: dp_in_sparse,
         dpSize: Int(dpSize),
@@ -596,14 +535,6 @@ kernel void sample_words(
 
       let startIndicesBuf = device.makeBuffer(bytes: validStartIndices, length: validStartIndices.count * MemoryLayout<Int32>.stride, options: [])!
 
-//      let bpCountPtr = bpCountBuf.contents().bindMemory(to: Int32.self, capacity: dpInSize)
-//      print("VALID START INDICES")
-//      for idx in validStartIndices {
-//          let dpVal = dpInPtr[Int(idx)]
-//          let count = bpCountPtr[Int(idx)]
-//          print("dpIndex=\(idx), dp_in=\(dpVal), bpCount=\(count)")
-//      }
-
     var seeds = [UInt32](repeating: 0, count: Int(maxSamples))
     for i in 0..<Int(maxSamples) { seeds[i] = UInt32.random(in: 0..<UInt32.max) }
     let seedsBuf = device.makeBuffer(bytes: seeds, length: Int(maxSamples)*MemoryLayout<UInt32>.stride, options: [])!
@@ -627,9 +558,9 @@ kernel void sample_words(
       let ptr = sampledWordsBuf.contents().bindMemory(to: UInt8.self, capacity: sampSize)
       let buffer = UnsafeBufferPointer(start: ptr, count: sampSize)
 
-      for sIdx in 0..<min(30, Int(maxSamples)) {
+      for sIdx in 0..<min(2, Int(maxSamples)) {
           let start = sIdx * Int(maxWordLen)
-          let wordSlice = buffer[start..<(start + 80)]
+          let wordSlice = buffer[start..<(start + Int(maxWordLen))]
       //    let byteValues = wordSlice.prefix(while: { $0 != 0 })
           print("Sample \(sIdx): \(Array(wordSlice))"); fflush(stdout)
       }
@@ -656,6 +587,7 @@ func sampleWords(
     // We'll store each sampled word in a row of length `maxWordLen`.
     let sampledWordsSize = maxSamples * maxWordLen
     let sampledWordsBuf = device.makeBuffer(length: sampledWordsSize, options: [])!
+    memset(sampledWordsBuf.contents(), 0, sampledWordsSize)
 
     let commandBuffer = queue.makeCommandBuffer()!
     let encoder = commandBuffer.makeComputeCommandEncoder()!
@@ -796,17 +728,10 @@ func parallelPrefixSumCPU(countBuf: MTLBuffer, offsetBuf: MTLBuffer, totalCells:
     DispatchQueue.concurrentPerform(iterations: numChunks) { chunkIndex in
         let start = chunkIndex * chunkSize
         let end   = min(start + chunkSize, totalCells)
-        if start >= end {
-            // No work for this chunk
-            partialSum[chunkIndex] = 0
-            return
-        }
+        if start >= end { partialSum[chunkIndex] = 0; return }
 
         var sum: Int32 = 0
-        for i in start..<end {
-            ptrOffset[i] = sum
-            sum += ptrCount[i]
-        }
+        for i in start..<end { ptrOffset[i] = sum; sum += ptrCount[i] }
         partialSum[chunkIndex] = sum
     }
 
@@ -899,7 +824,7 @@ private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 
   fun genNTTerminalMapping(cfg: CFG): String {
     val terminalLists = cfg.nonterminals.map {
       if (it !in cfg.unitNonterminals) emptyList<Int>()
-      else cfg.bimap.UNITS[it]!!.map { cfg.tmMap[it]!! + 1 }
+      else cfg.bimap.UNITS[it]!!.map { cfg.tmMap[it]!! }
     }
     val allTerminals = terminalLists.flatMap { it }
     val offsets = terminalLists.scan(0) { acc, list -> acc + list.size }.dropLast(1)
@@ -913,7 +838,7 @@ private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 
       .also {
         println(cfg.nonterminals.mapIndexed { i, it ->
           "$it:$i" to (if (it !in cfg.unitNonterminals) emptyList<Int>()
-          else cfg.bimap.UNITS[it]!!.map { cfg.tmMap[it]!! + 1 }).size
+          else cfg.bimap.UNITS[it]!!.map { cfg.tmMap[it]!! }).size
         })
       }
   }
