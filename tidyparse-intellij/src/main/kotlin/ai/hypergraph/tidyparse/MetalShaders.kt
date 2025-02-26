@@ -49,12 +49,12 @@ fun main() {
       val tmMap = cfg.tmMap
       fun StrPred.predByte(): UShort =
         (if (arg == "[.*]") 127 // Maximum value means all possible terminals
-        else if (arg.startsWith("[!=]")) -(tmMap[arg.drop(4)] ?: 126) - 1 // Represent negation using negative sign bit
+        else if (arg.startsWith("[!=]")) /*-*/(tmMap[arg.drop(4)] ?: 126) + 1 // Represent negation using negative sign bit
         else tmMap[arg]!! + 1).toUShort() // Otherwise positive sign bit
 
       return cfg.unitProductions.flatMap { (A, σ) ->
         nominalForm.flattenedTriples.filter { arc -> arc.second(σ) }.map { (q0, sp, q1) ->
-          listOf(stateMap[q0]!!, stateMap[q1]!!, cfg.bindex[A], 127).map { it.toUShort() } //+ 127.toUShort()//sp.predByte()
+          listOf(stateMap[q0]!!, stateMap[q1]!!, cfg.bindex[A]).map { it.toUShort() } + sp.predByte()
         }.flatten()
       }.toUShortArray()
        .also { println("Encoded instance in ${it.size * 2} bytes / ${numStates*numStates*numNonterminals}") }
@@ -74,10 +74,12 @@ fun main() {
 
     samples.joinToString(" ") {
       if (it == 0.toByte()) "0"
-      else if (it.toInt() - 1 >= cfg.tmLst.size) "?"
+      else if (it.toInt() - 1 !in cfg.tmLst.indices) "?"
       else cfg.tmLst[it.toInt() - 1]
-    }.split(Regex("( 0)+")).filter { it.isNotBlank() }
-      .forEachIndexed { i, it -> println("$i.) $it") }
+    }.split(Regex("( 0)+"))
+      .filter { it.isNotBlank() }
+      .distinct()
+      .forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
 
 //    println("GPU size: " + outGPU.size)
 //    println("GPU sum: " + resultGPU.sumBy { if(it) 1 else 0 })
@@ -315,70 +317,7 @@ kernel void bp_write(
 inline uint lcg_random(thread uint& state) { return 1664525u * state + 1013904223u; }
 inline uint lcg_randomRange(thread uint& state, uint range) { return lcg_random(state) % range; }
 
-inline void sampleCell(
-   const device uchar*    dp_in,
-   const device int*      bpCount,
-   const device int*      bpOffset,
-   const device int*      bpStorage,
-   int numStates,
-   int dpIdx,
-   thread uint& rngState,
-   thread uchar* localWord, // output buffer
-   thread int& wordLen,
-   const int maxWordLen
-) {
-    // If we've reached maximum length, just stop to avoid overflow
-    if (wordLen >= maxWordLen) { return; }
-    int A = dpIdx % numNonterminals;
-
-    // If A is a terminal (leaf), append its "symbol" to localWord
-    int expCount   = bpCount[dpIdx];
-    if (nt_tm_lens[A] != 0 && expCount == 0) {
-        localWord[wordLen++] = 1 + all_tm[offsets[A] + lcg_randomRange(rngState, nt_tm_lens[A])];
-        return;
-    }
-
-    // Otherwise, A is internal. Let's see how many expansions it has:
-    if (expCount == 0) { // This should never happen if bpCount was build correctly
-        localWord[wordLen++] = 99;
-        return; 
-    }
-
-    // Choose a random expansion among [0..expCount-1]
-    int offsetStart = bpOffset[dpIdx];
-    int randIdx   = offsetStart + int(lcg_randomRange(rngState, uint(expCount)));
-
-    // Read that expansion (B, C)
-    
-    int idxBM = bpStorage[randIdx*2 + 0];
-    int idxMC = bpStorage[randIdx*2 + 1];
-
-    if (idxBM != dpIdx) { 
-      // Recurse on (r, M, B) and (M, c, C)
-      sampleCell(dp_in, bpCount, bpOffset, bpStorage,
-                 numStates, idxBM,
-                 rngState,
-                 localWord,
-                 wordLen, maxWordLen);
-    }
-
-    if (idxMC != dpIdx) { 
-      // If that appended some terminals, continue with the second child
-      sampleCell(dp_in, bpCount, bpOffset, bpStorage,
-                 numStates, idxMC,
-                 rngState,
-                 localWord,
-                 wordLen, maxWordLen);
-    }
-}
-
-struct StackFrame {
-    int dpIdx;   // Which cell/grammar state we are processing
-    int stage;   // Which part of the function logic we are in (0 or 1)
-    int idxBM;   // We'll store the left child once chosen
-    int idxMC;   // We'll store the right child once chosen
-};
-
+struct StackFrame { int dpIdx; int stage; int idxBM; int idxMC; };
 inline void sampleCellIterative(
    const device uchar*    dp_in,
    const device int*      bpCount,
@@ -402,33 +341,36 @@ inline void sampleCellIterative(
     while (top > 0 && wordLen < maxWordLen) {
         StackFrame frame = stack[--top];
 
-        int A         = frame.dpIdx % numNonterminals;
-        int expCount  = bpCount[frame.dpIdx];
-
-        // If we are dealing with a terminal
-        if (nt_tm_lens[A] != 0 && expCount == 0) {
-            if (wordLen < maxWordLen) {
-                localWord[wordLen++] = 1 + all_tm[offsets[A] + lcg_randomRange(rngState, nt_tm_lens[A])];
+        int A        = frame.dpIdx % numNonterminals;
+        int expCount = bpCount[frame.dpIdx];
+        int dpIdx    = frame.dpIdx;
+        
+        if (expCount == 0) { // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
+            int predicate = dp_in[dpIdx];
+            bool isPositiveLiteral = predicate & 0x80;
+            uchar literal = predicate & 0x7F;
+            int numTms = nt_tm_lens[A];
+            if (isPositiveLiteral) { 
+                localWord[wordLen++] = (numTms != 0) ? literal : 99;
+            } else {
+              uchar possibleTms[100];
+              uint tmCount = 0; uint offset = offsets[A];
+              for (int i = 0; i < 100 && i < numTms; i++) {
+                uchar this_tm = all_tm[offset + i];
+                if (this_tm != literal) possibleTms[tmCount++] = all_tm[offset + i];
+              }
+              uchar tmChoice = possibleTms[int(lcg_randomRange(rngState, uint(tmCount)))];
+              localWord[wordLen++] = tmChoice;
             }
-            continue; 
-        }
+        } else if (frame.stage == 0) {
+            int randIdx = bpOffset[frame.dpIdx] + int(lcg_randomRange(rngState, uint(expCount)));
 
-        // If no expansions exist (should never happen)
-        if (expCount == 0) { if (wordLen < maxWordLen) { localWord[wordLen++] = 99; } continue; }
-
-        if (frame.stage == 0) {
-            // Choose expansion
-            int offsetStart  = bpOffset[frame.dpIdx];
-            int randIdx      = offsetStart + int(lcg_randomRange(rngState, uint(expCount)));
-
-            // For debugging, we store some indicators as in your code:
             int idxBM = bpStorage[randIdx * 2 + 0];
             int idxMC = bpStorage[randIdx * 2 + 1];
 
             if (top < MAX_STACK) { stack[top++] = { frame.dpIdx, 1, idxBM, idxMC }; }
             if (idxBM != frame.dpIdx && top < MAX_STACK) { stack[top++] = { idxBM, 0, -1, -1 }; }
-        }
-        else {
+        } else {
             if (frame.idxMC != frame.dpIdx && top < MAX_STACK) { stack[top++] = { frame.idxMC, 0, -1, -1 }; }
         }
     }
@@ -437,11 +379,10 @@ inline void sampleCellIterative(
 constant int maxSamples = 10000;
 
 kernel void sample_words(
-    // buffers
-    const device uchar*   dp_in           [[buffer(0)]],
-    const device int*     bpCount         [[buffer(1)]],
-    const device int*     bpOffset        [[buffer(2)]],
-    const device int*     bpStorage       [[buffer(3)]],
+    const device uchar*   dp_in           [[buffer(0)]], // parse chart
+    const device int*     bpCount         [[buffer(1)]], // parse chart with counts
+    const device int*     bpOffset        [[buffer(2)]], // parse chart with offsets into bpStorage
+    const device int*     bpStorage       [[buffer(3)]], // flat array without zeros
     const device int*     startIndices    [[buffer(4)]], // each entry is a dpIndex
     const device uint*    seeds           [[buffer(5)]],
     device char*          sampledWords    [[buffer(6)]],
@@ -450,19 +391,13 @@ kernel void sample_words(
     constant int&         maxWordLen      [[buffer(9)]],
     uint tid [[thread_position_in_grid]]
 ) {
-    // If tid >= maxSamples, do nothing
-//    if (tid >= (uint)maxSamples) { return; }
-
     // local word in thread memory
     thread uchar localWord[1024];
     for (int i=0; i<maxWordLen; i++) { localWord[i] = 0; }
 
-    // each thread has a seed
-    uint rngState = seeds[tid];
-
     // pick a random dpIndex from [0..numStartIndices-1]
-    uint randIdx = lcg_randomRange(rngState, (uint)numStartIndices);
-    int dpIndex = startIndices[randIdx];
+    uint rngState = seeds[tid];
+    int dpIndex = startIndices[lcg_randomRange(rngState, (uint)numStartIndices)];
 
     // decode
     int A = dpIndex % numNonterminals; // This should always be 74
@@ -550,7 +485,7 @@ kernel void sample_words(
   /** Caller: [GPUBridge.cflClosure] */
   @Language("swift") val swiftSrc = """$swiftImports
 @_cdecl("cflMultiply") public func cflMultiply(
-    _ dp_in: UnsafePointer<UInt16>?,
+    _ dp_in_sparse: UnsafePointer<UInt16>?,
     _ dp_out: UnsafeMutablePointer<UInt8>?,
     _ grammar: UnsafePointer<CInt>?,
     _ grammarOffsets: UnsafePointer<CInt>?,
@@ -574,7 +509,7 @@ kernel void sample_words(
     let dpSizeBytes = totalCount * MemoryLayout<UInt8>.stride
 
     let bufA = reconstructDPBuffer(
-        dp_in: dp_in,
+        dp_in: dp_in_sparse,
         dpSize: Int(dpSize),
         numStates: Int(numStates),
         numNonterminals: Int(numNonterminals),
@@ -691,14 +626,14 @@ kernel void sample_words(
 
       // Bind the buffer to UInt8 instead of CChar
       let ptr = sampledWordsBuf.contents().bindMemory(to: UInt8.self, capacity: sampSize)
-//      let buffer = UnsafeBufferPointer(start: ptr, count: sampSize)
+      let buffer = UnsafeBufferPointer(start: ptr, count: sampSize)
 
-//      for sIdx in 0..<min(30, Int(maxSamples)) {
-//          let start = sIdx * Int(maxWordLen)
-//          let wordSlice = buffer[start..<(start + 80)]
-//      //    let byteValues = wordSlice.prefix(while: { $0 != 0 })
-//          print("Sample \(sIdx): \(Array(wordSlice))"); fflush(stdout)
-//      }
+      for sIdx in 0..<min(30, Int(maxSamples)) {
+          let start = sIdx * Int(maxWordLen)
+          let wordSlice = buffer[start..<(start + 80)]
+      //    let byteValues = wordSlice.prefix(while: { $0 != 0 })
+          print("Sample \(sIdx): \(Array(wordSlice))"); fflush(stdout)
+      }
 
     let psEnd = DispatchTime.now()
     let psTimeMs = Double(psEnd.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
@@ -898,6 +833,7 @@ func parallelPrefixSumCPU(countBuf: MTLBuffer, offsetBuf: MTLBuffer, totalCells:
     print("Computed prefix sum in \(psTimeMs) ms"); fflush(stdout)
 }
 
+// takes a flattened array of sparse quadruples and reconstructs a dense matrix
 private func reconstructDPBuffer(
     dp_in: UnsafePointer<UInt16>?,
     dpSize: Int,
