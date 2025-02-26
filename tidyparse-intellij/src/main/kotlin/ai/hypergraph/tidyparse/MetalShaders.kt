@@ -48,8 +48,8 @@ fun main() {
     fun FSA.byteFormat(cfg: CFG): UShortArray {
       val tmMap = cfg.tmMap
       fun StrPred.predByte(): UShort =
-        (if (arg == "[.*]") 127 // Maximum value means all possible terminals
-        else if (arg.startsWith("[!=]")) /*-*/(tmMap[arg.drop(4)] ?: 126) + 1 // Represent negation using negative sign bit
+        (if (arg == "[.*]") 255 // Maximum value means all possible terminals
+        else if (arg.startsWith("[!=]")) -(tmMap[arg.drop(4)] ?: 126) - 1 // Represent negation using negative sign bit
         else tmMap[arg]!! + 1).toUShort() // Otherwise positive sign bit
 
       return cfg.unitProductions.flatMap { (A, σ) ->
@@ -74,7 +74,7 @@ fun main() {
 
     samples.joinToString(" ") {
       if (it == 0.toByte()) "0"
-      else if (it.toInt() - 1 !in cfg.tmLst.indices) "?"
+      else if (it.toInt() - 1 !in cfg.tmLst.indices) "${it.toChar()}"
       else cfg.tmLst[it.toInt() - 1]
     }.split(Regex("( 0)+"))
       .filter { it.isNotBlank() }
@@ -347,12 +347,10 @@ inline void sampleCellIterative(
         
         if (expCount == 0) { // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
             int predicate = dp_in[dpIdx];
-            bool isPositiveLiteral = predicate & 0x80;
+            bool isNegativeLiteral = predicate & 0x80;
             uchar literal = predicate & 0x7F;
             int numTms = nt_tm_lens[A];
-            if (isPositiveLiteral) { 
-                localWord[wordLen++] = (numTms != 0) ? literal : 99;
-            } else {
+            if (isNegativeLiteral) {
               uchar possibleTms[100];
               uint tmCount = 0; uint offset = offsets[A];
               for (int i = 0; i < 100 && i < numTms; i++) {
@@ -361,7 +359,7 @@ inline void sampleCellIterative(
               }
               uchar tmChoice = possibleTms[int(lcg_randomRange(rngState, uint(tmCount)))];
               localWord[wordLen++] = tmChoice;
-            }
+            } else { localWord[wordLen++] = (numTms != 0) ? literal : 99; }
         } else if (frame.stage == 0) {
             int randIdx = bpOffset[frame.dpIdx] + int(lcg_randomRange(rngState, uint(expCount)));
 
@@ -508,6 +506,7 @@ kernel void sample_words(
     let totalCount = N*N*Int(numNonterminals)
     let dpSizeBytes = totalCount * MemoryLayout<UInt8>.stride
 
+    print("hello!"); fflush(stdout);
     let bufA = reconstructDPBuffer(
         dp_in: dp_in_sparse,
         dpSize: Int(dpSize),
@@ -849,7 +848,7 @@ private func reconstructDPBuffer(
     let bufA = device.makeBuffer(length: dpSizeBytes, options: [])!
     let ptr = bufA.contents().bindMemory(to: UInt8.self, capacity: totalCount)
     memset(ptr, 0, dpSizeBytes)
-
+    
     // Reconstruct DP array from triples
     if let dp_in = dp_in {
         let triples = UnsafeBufferPointer(start: dp_in, count: Int(dpSize))
@@ -865,7 +864,7 @@ private func reconstructDPBuffer(
                 let r = Int(triples[stride * i])
                 let c = Int(triples[stride * i + 1])
                 let A = Int(triples[stride * i + 2])
-                let s = UInt8(triples[stride * i + 3])
+                let s = UInt8(truncatingIfNeeded: triples[stride * i + 3])
                 let index = r * rowMultiplier + c * colMultiplier + A
                 ptr[index] = s
             }
