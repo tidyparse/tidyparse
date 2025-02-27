@@ -50,6 +50,7 @@ fun main() {
        .also { println("Encoded instance in ${it.size * 2} bytes / ${numStates*numStates*numNonterminals}") }
     }
 
+    val maxSamples = 1_000
     val samples = GPUBridge.cflClosure(
       levFSA.byteFormat(cfg),
       allFSAPairsFlattened,
@@ -57,7 +58,8 @@ fun main() {
       levFSA.finalIdxs.toIntArray(),
       levFSA.finalIdxs.size,
       numStates,
-      maxWordLen
+      maxWordLen,
+      maxSamples
     )
 
     samples.joinToString(" ") {
@@ -68,7 +70,8 @@ fun main() {
       .filter { it.isNotBlank() }
       .map { it.replace(" NEWLINE", " \\n") }
       .distinct()
-      .forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
+      .onEachIndexed { i, it -> println("$i.) ${it.trim()}") }
+      .toList().also { println("Total unique samples: ${it.size}/$maxSamples") }
   }.also { println("GPU time: ${it}ms\n") }
 }
 
@@ -345,7 +348,7 @@ kernel void sample_words(
     acceptStatesSize: Int,
     numStates: Int,
     maxWordLen: Int,
-    maxSamples: Int = 1000
+    maxSamples: Int
   ): ByteArray =
     Memory(maxWordLen * maxSamples.toLong()).also { outMem ->
       nativeBridge.cflMultiply(
