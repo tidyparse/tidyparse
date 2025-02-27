@@ -28,8 +28,11 @@ fun main() {
   val numStates = levFSA.numStates
   val numNonterminals = cfg.nonterminals.size
 
-  val allFSAPairsFlattened = levFSA.allPairs2.flatten().flatten().toIntArray()
-  val allFSAPairsOffsets = levFSA.allPairs2.flatten().map { it.size }
+  val allPairs = levFSA.allPairs2
+//    .mapIndexed { p, l1 -> l1.mapIndexed { q, l2 -> l2.filter { it != p && it != q } } }
+    .flatten()
+  val allFSAPairsFlattened = allPairs.flatten().toIntArray()
+  val allFSAPairsOffsets = allPairs.map { it.size }
     .fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
 
   println("\nLinked GPU in ${measureTimeMillis { GPUBridge.setupPython() }}ms\n")
@@ -38,9 +41,9 @@ fun main() {
     fun FSA.byteFormat(cfg: CFG): UShortArray {
       val tmMap = cfg.tmMap
       fun StrPred.predByte(): UShort =
-        (if (arg == "[.*]") 255 // Maximum value means all possible terminals
-        else if (arg.startsWith("[!=]")) -(tmMap[arg.drop(4)] ?: 126) - 1 // Represent negation using negative sign bit
-        else tmMap[arg]!! + 1).toUShort() // Otherwise positive sign bit
+        (if (arg == "[.*]") -127 // Maximum value means all possible terminals
+        else if (arg.startsWith("[!=]")) -(1 + (tmMap[arg.drop(4)] ?: 126)) // Represent negation using negative sign bit
+        else 1 + tmMap[arg]!!).toUShort() // Otherwise positive sign bit
 
       return cfg.unitProductions.flatMap { (A, σ) ->
         nominalForm.flattenedTriples.filter { arc -> arc.second(σ) }.map { (q0, sp, q1) ->
@@ -62,16 +65,18 @@ fun main() {
       maxSamples
     )
 
+    var admissible = 0
     samples.joinToString(" ") {
       if (it == 0.toByte()) "0"
-      else if (it.toInt() - 1 !in cfg.tmLst.indices) "??${it.toChar()}??"
+      else if (it.toInt() - 1 !in cfg.tmLst.indices) "??${it.toInt()}??"
       else cfg.tmLst[it.toInt() - 1]
     }.split(Regex("( 0)+"))
       .filter { it.isNotBlank() }
-      .map { it.replace(" NEWLINE", " \\n") }
+      .map { it.replace(" NEWLINE", "") }
       .distinct()
-      .onEachIndexed { i, it -> println("$i.) ${it.trim()}") }
-      .toList().also { println("Total unique samples: ${it.size}/$maxSamples") }
+      .onEach { if("$it NEWLINE" in pythonStatementCNF.language) admissible++ }
+      .onEachIndexed { i, it -> if (i < 5) println("$i.) ${it.trim()}") }
+      .toList().also { println("...\nGPU repairs: $admissible valid / ${it.size} unique / $maxSamples total") }
   }.also { println("GPU time: ${it}ms\n") }
 }
 
@@ -177,7 +182,7 @@ kernel void bp_count(
         int idxBM = r*snt + m*numNonterminals + B;
         int idxMC = m*snt + c*numNonterminals + C;
         // If (r,m,B) and (m,c,C) are both present:
-        if (dp_in[idxBM] != 0 && dp_in[idxMC] != 0) { count++; }
+        if (dp_in[idxBM] != 0 && dp_in[idxMC] != 0) count++;
       }
 
     bpCount[r*snt + c*numNonterminals + A] = max(count, 1);
@@ -198,7 +203,6 @@ kernel void bp_write(
 ) {
     int N = numStates;
     int totalCells = (N*(N-1))/2 * numNonterminals;
-    if (tid >= totalCells) return;
 
     int r, c;
     decodeUpperTriangle(tid / numNonterminals, N, r, c);
@@ -218,7 +222,7 @@ kernel void bp_write(
     // Exactly like bp_count, but now we store expansions
     for (int idx = pairOffset; idx < pairOffsetNext; idx++)
       for (int g = startGC, m = allFSAPairs[idx]; g < endGC; g += 2) {
-        int B = vidx[g]; int C = vidx[g+1];
+        int B = vidx[g], C = vidx[g+1];
 
         int idxBM = r*snt + m*numNonterminals + B;
         int idxMC = m*snt + c*numNonterminals + C;
@@ -259,7 +263,7 @@ inline void sampleCellIterative(
       int dpIdx = stack[--top];
       int expCount = bpCount[dpIdx];
       
-      if (((dp_in[dpIdx] != 1) && (dp_in[dpIdx] != 0))) { // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
+      if (((dp_in[dpIdx] != 0) && (dp_in[dpIdx] != 1))) { // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
         int nonterminal = dpIdx % numNonterminals;
         int predicate = dp_in[dpIdx];
         bool isNegativeLiteral = predicate & 0x80;
@@ -268,28 +272,32 @@ inline void sampleCellIterative(
         if (isNegativeLiteral) {
           uchar possibleTms[100];
           uint tmCount = 0; uint offset = offsets[nonterminal];
-          for (int i = 0; i < 100 && i < numTms; i++) {
+          for (int i = 0; i < min(100, numTms); i++) {
             uchar this_tm = all_tm[offset + i];
-            if (this_tm != literal) possibleTms[tmCount++] = this_tm;
+            if (this_tm + 1 != literal) possibleTms[tmCount++] = this_tm + 1;
           }
           uchar tmChoice = possibleTms[int(lcg_randomRange(rngState, uint(tmCount)))];
-          localWord[wordLen++] = tmChoice + 1;
+          localWord[wordLen++] = tmChoice;
         } else { localWord[wordLen++] = (numTms != 0) ? literal : 99; }
-      } else if (expCount == 0) {continue;}
+      } else if (expCount == 0) { localWord[wordLen++] = 111; continue; }
       else if (top + 2 < MAX_STACK) {
-        
         int randIdx = bpOffset[dpIdx] + int(lcg_randomRange(rngState, uint(expCount)));
 
         int idxBM = bpStorage[randIdx * 2 + 0];
         int idxMC = bpStorage[randIdx * 2 + 1];
 //         if (wordLen > 30) localWord[wordLen++] = dpIdx & 0x7F;
         int visitedBM = false, visitedMC = false;
-        for (int i = 0; i < 1024; i++) {
+
+        int i; for (i = 0; i < 1024; i++) {
             if (idxBM == stack[i]) visitedBM = true;
             if (idxMC == stack[i]) visitedMC = true;
+            if (visitedBM || visitedMC) break;
         }
 //        // Why is this necessary? Should never have been a loop to begin with...
-        if (!visitedMC && !visitedBM) { stack[top++] = idxMC; stack[top++] = idxBM;}
+        if (!visitedMC && !visitedBM) { stack[top++] = idxMC; stack[top++] = idxBM; }
+//        else if (!visitedMC) {stack[top++] = idxMC;}
+//        else if (!visitedBM) {stack[top++] = idxBM;}
+//        else { localWord[wordLen++] = 99; }
 //        if (!visitedBM) {  }
 //          if (idxMC != dpIdx && idxBM != dpIdx) { stack[top++] = idxMC; stack[top++] = idxBM; }
         
@@ -589,8 +597,7 @@ func buildBackpointers(
     let bpCountBuf = device.makeBuffer(length: countSize, options: [])!
 
     // 2) Launch bp_count kernel
-    let totalPairs = (N*(N-1))/2
-    let totalCells = totalPairs * Int(numNonterminals)
+    let totalCells = (N*(N-1))/2 * numNonterminals
     let threadsCount = MTLSizeMake(totalCells,1,1)
 
     // Command buffer
@@ -622,11 +629,11 @@ func buildBackpointers(
     //    (We must read back the prefix sum array, or at least the last element.)
     var totalExpansions: Int32 = 0
     do {
-        let ptrOffset = bpOffsetBuf.contents().bindMemory(to: Int32.self, capacity: totalCells)
-        let ptrCount  = bpCountBuf.contents().bindMemory(to: Int32.self,  capacity: totalCells)
-        let lastOffset = ptrOffset[totalCells - 1]
-        let lastCount  = ptrCount[totalCells - 1]
-        totalExpansions = lastOffset + lastCount
+      let ptrOffset = bpOffsetBuf.contents().bindMemory(to: Int32.self, capacity: totalCells)
+      let ptrCount  = bpCountBuf.contents().bindMemory(to: Int32.self,  capacity: totalCells)
+      let lastOffset = ptrOffset[totalCells - 1]
+      let lastCount  = ptrCount[totalCells - 1]
+      totalExpansions = lastOffset + lastCount
     }
 
     // 5) Allocate bpStorage
