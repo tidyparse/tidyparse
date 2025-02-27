@@ -42,8 +42,8 @@ fun main() {
       val tmMap = cfg.tmMap
       fun StrPred.predByte(): UShort =
         (if (arg == "[.*]") -127 // Maximum value means all possible terminals
-        else if (arg.startsWith("[!=]")) -(1 + (tmMap[arg.drop(4)] ?: 126)) // Represent negation using negative sign bit
-        else 1 + tmMap[arg]!!).toUShort() // Otherwise positive sign bit
+        else if (arg.startsWith("[!=]")) -(2 + (tmMap[arg.drop(4)] ?: 125)) // Represent negation using negative sign bit
+        else 2 + tmMap[arg]!!).toUShort() // Otherwise positive sign bit
 
       return cfg.unitProductions.flatMap { (A, σ) ->
         nominalForm.flattenedTriples.filter { arc -> arc.second(σ) }.map { (q0, sp, q1) ->
@@ -53,7 +53,7 @@ fun main() {
        .also { println("Encoded instance in ${it.size * 2} bytes / ${numStates*numStates*numNonterminals}") }
     }
 
-    val maxSamples = 1_000
+    val maxSamples = 10_000
     val samples = GPUBridge.cflClosure(
       levFSA.byteFormat(cfg),
       allFSAPairsFlattened,
@@ -68,14 +68,14 @@ fun main() {
     var admissible = 0
     samples.joinToString(" ") {
       if (it == 0.toByte()) "0"
-      else if (it.toInt() - 1 !in cfg.tmLst.indices) "??${it.toInt()}??"
-      else cfg.tmLst[it.toInt() - 1]
+      else if (it.toInt() - 2 !in cfg.tmLst.indices) "??${it.toInt()}??" // Should never happen
+      else if (it - 2 == 0) "" // TODO: why do we need to block NEWLINE?
+      else cfg.tmLst[it.toInt() - 2]
     }.split(Regex("( 0)+"))
       .filter { it.isNotBlank() }
-      .map { it.replace(" NEWLINE", "") }
       .distinct()
       .onEach { if("$it NEWLINE" in pythonStatementCNF.language) admissible++ }
-      .onEachIndexed { i, it -> if (i < 5) println("$i.) ${it.trim()}") }
+      .onEachIndexed { i, it -> if (i < 9) println("$i.) ${it.trim()}") }
       .toList().also { println("...\nGPU repairs: $admissible valid / ${it.size} unique / $maxSamples total") }
   }.also { println("GPU time: ${it}ms\n") }
 }
@@ -274,7 +274,7 @@ inline void sampleCellIterative(
           uint tmCount = 0; uint offset = offsets[nonterminal];
           for (int i = 0; i < min(100, numTms); i++) {
             uchar this_tm = all_tm[offset + i];
-            if (this_tm + 1 != literal) possibleTms[tmCount++] = this_tm + 1;
+            if (this_tm + 2 != literal) possibleTms[tmCount++] = this_tm + 2;
           }
           uchar tmChoice = possibleTms[int(lcg_randomRange(rngState, uint(tmCount)))];
           localWord[wordLen++] = tmChoice;
@@ -306,7 +306,7 @@ inline void sampleCellIterative(
       }
     }
     
-    for (int i = wordLen; i < maxWordLen; i++) { localWord[wordLen++] = 0; }
+//    for (int i = wordLen; i < maxWordLen; i++) { localWord[wordLen++] = 0; }
 }
 
 kernel void sample_words(
