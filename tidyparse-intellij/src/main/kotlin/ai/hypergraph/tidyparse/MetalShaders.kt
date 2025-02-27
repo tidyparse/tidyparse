@@ -25,10 +25,6 @@ fun main() {
   val levFSA = makeLevFSA(pythonCode, radius)
   val maxWordLen = pythonCode.size + radius + 10
 
-  val bindex = cfg.bindex
-  val width = cfg.nonterminals.size
-  val vindex = cfg.vindex
-  val ups = cfg.unitProductions
   val numStates = levFSA.numStates
   val numNonterminals = cfg.nonterminals.size
 
@@ -66,37 +62,14 @@ fun main() {
 
     samples.joinToString(" ") {
       if (it == 0.toByte()) "0"
-      else if (it.toInt() - 1 !in cfg.tmLst.indices) "${it.toChar()}"
+      else if (it.toInt() - 1 !in cfg.tmLst.indices) "??${it.toChar()}??"
       else cfg.tmLst[it.toInt() - 1]
     }.split(Regex("( 0)+"))
       .filter { it.isNotBlank() }
-      .map { it.replace(" NEWLINE", "") }
+      .map { it.replace(" NEWLINE", " \\n") }
       .distinct()
       .forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
-
-//    println("GPU size: " + outGPU.size)
-//    println("GPU sum: " + resultGPU.sumBy { if(it) 1 else 0 })
   }.also { println("GPU time: ${it}ms\n") }
-}
-
-fun nonemptyLevInt(dp: Array<Array<BooleanArray>>, ap: List<List<List<Int>?>>, vindex: Array<IntArray>): Array<Array<BooleanArray>> {
-  for (dist: Int in 1 until dp.size) {
-    for (iP: Int in 0 until dp.size - dist) {
-      val p = iP
-      val q = iP + dist
-      if (ap[p][q] == null) continue
-      val appq = ap[p][q]!!
-      for ((A: Int, indexArray: IntArray) in vindex.withIndex()) {
-        outerloop@for(j: Int in 0..<indexArray.size step 2) {
-          val B = indexArray[j]
-          val C = indexArray[j + 1]
-          for (r in appq) if (dp[p][r][B] && dp[r][q][C]) dp[p][q][A] = true
-        }
-      }
-    }
-  }
-
-  return dp
 }
 
 object GPUBridge {
@@ -134,9 +107,9 @@ kernel void cfl_mul_upper(
     int A = tid % numNonterminals, snt = numStates * numNonterminals, dpIndex = r*snt + c*numNonterminals + A;
 
     if (dp_in[dpIndex]) {
-        dp_out[dpIndex] = dp_in[dpIndex];
-        atomic_fetch_add_explicit(&numNonzero, 1, memory_order_relaxed);
-        return;
+      dp_out[dpIndex] = dp_in[dpIndex];
+      atomic_fetch_add_explicit(&numNonzero, 1, memory_order_relaxed);
+      return;
     }
 
     // Grammar offsets for A
@@ -149,23 +122,18 @@ kernel void cfl_mul_upper(
     int pairOffsetNext = (aoi < allFSAPairsOffsetsSize) ? allFSAPairsOffsets[aoi] : allFSAPairsSize;
 
     // loop over midpoints
-    for (int idx = pairOffset; idx < pairOffsetNext; idx++) {
-        int m = allFSAPairs[idx];
-        
-        // For each A -> (B, C):
-        //     dp_in[r,m,B] && dp_in[m,c,C] => dp_out[r,c,A].
-        for (int g = startGC; g < endGC; g += 2) {
-            int B = vidx[g]; int C = vidx[g+1];
-            
-            int idxBM = r * snt + m * numNonterminals + B;
-            int idxMC = m * snt + c * numNonterminals + C;
-            if (dp_in[idxBM] != 0 && dp_in[idxMC] != 0) {
-                dp_out[dpIndex] = 1;
-                atomic_fetch_add_explicit(&numNonzero, 1, memory_order_relaxed);
-                return;
-            }
-        }
-    }
+    for (int idx = pairOffset; idx < pairOffsetNext; idx++)
+      for (int g = startGC, m = allFSAPairs[idx]; g < endGC; g += 2) {
+         int B = vidx[g]; int C = vidx[g+1];
+         
+         int idxBM = r * snt + m * numNonterminals + B;
+         int idxMC = m * snt + c * numNonterminals + C;
+         if (dp_in[idxBM] != 0 && dp_in[idxMC] != 0) {
+             dp_out[dpIndex] = 1;
+             atomic_fetch_add_explicit(&numNonzero, 1, memory_order_relaxed);
+             return;
+         }
+      }
 }
 
 kernel void bp_count(
@@ -199,21 +167,17 @@ kernel void bp_count(
 
     int count = 0;
     // loop over midpoints
-    for (int idx = pairOffset; idx < pairOffsetNext; idx++) {
-        int m = allFSAPairs[idx];
+    for (int idx = pairOffset; idx < pairOffsetNext; idx++)
+      for (int g = startGC, m = allFSAPairs[idx]; g < endGC; g += 2) {
+        int B = vidx[g], C = vidx[g+1];
 
-        // for each A -> B, C
-        for (int g = startGC; g < endGC; g += 2) {
-            int B = vidx[g]; int C = vidx[g+1];
+        int idxBM = r*snt + m*numNonterminals + B;
+        int idxMC = m*snt + c*numNonterminals + C;
+        // If (r,m,B) and (m,c,C) are both present:
+        if (dp_in[idxBM] != 0 && dp_in[idxMC] != 0) { count++; }
+      }
 
-            int idxBM = r*snt + m*numNonterminals + B;
-            int idxMC = m*snt + c*numNonterminals + C;
-            // If (r,m,B) and (m,c,C) are both present:
-            if (dp_in[idxBM] != 0 && dp_in[idxMC] != 0) { count++; }
-        }
-    }
-
-    bpCount[r*snt + c*numNonterminals + A] = count;
+    bpCount[r*snt + c*numNonterminals + A] = max(count, 1);
 }
 
 kernel void bp_write(
@@ -237,11 +201,7 @@ kernel void bp_write(
     decodeUpperTriangle(tid / numNonterminals, N, r, c);
     int A = tid % numNonterminals, snt = N * numNonterminals, dpIndex = r*snt + c*numNonterminals + A;
 
-    // If bpCount == 0 => skip quickly
     if (bpCount[dpIndex] == 0) return;
-
-    // We'll fill from offset start
-    int outPos = bpOffset[dpIndex];
 
     // Grammar offsets
     int startGC = vidx_offsets[A];
@@ -250,29 +210,27 @@ kernel void bp_write(
     int aoi = r*N + c + 1;
     int pairOffset = allFSAPairsOffsets[aoi - 1];
     int pairOffsetNext = (aoi < allFSAPairsOffsetsSize) ? allFSAPairsOffsets[aoi] : allFSAPairsSize;
+    int outPos = bpOffset[dpIndex];
 
     // Exactly like bp_count, but now we store expansions
-    for (int idx = pairOffset; idx < pairOffsetNext; idx++) {
-        int m = allFSAPairs[idx];
+    for (int idx = pairOffset; idx < pairOffsetNext; idx++)
+      for (int g = startGC, m = allFSAPairs[idx]; g < endGC; g += 2) {
+        int B = vidx[g]; int C = vidx[g+1];
 
-        for (int g = startGC; g < endGC; g += 2) {
-            int B = vidx[g]; int C = vidx[g+1];
-
-            int idxBM = r*snt + m*numNonterminals + B;
-            int idxMC = m*snt + c*numNonterminals + C;
-            if (dp_in[idxBM] != 0 && dp_in[idxMC] != 0) {
-                // store (B, m, C) in bpStorage
-                // Suppose each triple is 2 consecutive int in bpStorage:
-                bpStorage[outPos*2 + 0] = idxBM;
-                bpStorage[outPos*2 + 1] = idxMC;
-                outPos++;
-            }
+        int idxBM = r*snt + m*numNonterminals + B;
+        int idxMC = m*snt + c*numNonterminals + C;
+        if (dp_in[idxBM] != 0 && dp_in[idxMC] != 0) {
+          // store (B, m, C) in bpStorage
+          // Suppose each triple is 2 consecutive int in bpStorage:
+          bpStorage[outPos*2 + 0] = idxBM;
+          bpStorage[outPos*2 + 1] = idxMC;
+          outPos++;
         }
-    }
+      }
 }
 
-//inline uint lcg_random(thread uint& state) { return 1664525u * state + 1013904223u; }
-inline uint lcg_random(thread uint& state) { return 2u; }
+inline uint lcg_random(thread uint& state) { return 1664525u * state + 1013904223u; }
+//inline uint lcg_random(thread uint& state) { return state % 10; }
 inline uint lcg_randomRange(thread uint& state, uint range) { return lcg_random(state) % range; }
 
 inline void sampleCellIterative(
@@ -280,14 +238,13 @@ inline void sampleCellIterative(
    const device int*      bpCount,
    const device int*      bpOffset,
    const device int*      bpStorage,
-   int                    numStates,
-   int                    startDPIdx,   // <-- this replaces dpIdx param
+   int                    startDPIdx,
    thread uint&           rngState,
    thread uchar*          localWord,    // output buffer
    thread int&            wordLen,
    const int              maxWordLen
 ) {
-    constexpr int MAX_STACK = 512;
+    constexpr int MAX_STACK = 1024;
     int stack[MAX_STACK];
     int top = 0;
 
@@ -296,37 +253,46 @@ inline void sampleCellIterative(
 
     // While we have frames to process, and haven't overflowed localWord
     while (top > 0 && wordLen < maxWordLen - 5) {
-        int dpIdx = stack[--top];
-        int expCount = bpCount[dpIdx];
+      int dpIdx = stack[--top];
+      int expCount = bpCount[dpIdx];
+      
+      if (((dp_in[dpIdx] != 1) && (dp_in[dpIdx] != 0))) { // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
+        int nonterminal = dpIdx % numNonterminals;
+        int predicate = dp_in[dpIdx];
+        bool isNegativeLiteral = predicate & 0x80;
+        uchar literal = predicate & 0x7F;
+        int numTms = nt_tm_lens[nonterminal];
+        if (isNegativeLiteral) {
+          uchar possibleTms[100];
+          uint tmCount = 0; uint offset = offsets[nonterminal];
+          for (int i = 0; i < 100 && i < numTms; i++) {
+            uchar this_tm = all_tm[offset + i];
+            if (this_tm != literal) possibleTms[tmCount++] = this_tm;
+          }
+          uchar tmChoice = possibleTms[int(lcg_randomRange(rngState, uint(tmCount)))];
+          localWord[wordLen++] = tmChoice + 1;
+        } else { localWord[wordLen++] = (numTms != 0) ? literal : 99; }
+      } else if (expCount == 0) {continue;}
+      else if (top + 2 < MAX_STACK) {
         
-        if (expCount == 0) { // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
-            int nonterminal = dpIdx % numNonterminals;
-            int predicate = dp_in[dpIdx];
-            bool isNegativeLiteral = predicate & 0x80;
-            uchar literal = predicate & 0x7F;
-            int numTms = nt_tm_lens[nonterminal];
-            if (isNegativeLiteral) {
-              uchar possibleTms[100];
-              uint tmCount = 0; uint offset = offsets[nonterminal];
-              for (int i = 0; i < 100 && i < numTms; i++) {
-                uchar this_tm = all_tm[offset + i];
-                if (this_tm != literal) possibleTms[tmCount++] = this_tm;
-              }
-              uchar tmChoice = possibleTms[int(lcg_randomRange(rngState, uint(tmCount)))];
-              localWord[wordLen++] = tmChoice + 1;
-            } else { localWord[wordLen++] = (numTms != 0) ? literal : 99; }
-        } else if (top + 2 < MAX_STACK) {
-           int randIdx = bpOffset[dpIdx] + int(lcg_randomRange(rngState, uint(expCount)));
+        int randIdx = bpOffset[dpIdx] + int(lcg_randomRange(rngState, uint(expCount)));
 
-           int idxBM = bpStorage[randIdx * 2 + 0];
-           int idxMC = bpStorage[randIdx * 2 + 1];
-//            if (wordLen > 30) localWord[wordLen++] = dpIdx & 0x7F;
-
-            if (idxMC != dpIdx && idxBM != dpIdx) {
-           stack[top++] = idxMC; stack[top++] = idxBM; }
-//           if (idxBM != idxMC) { stack[top++] = idxMC; stack[top++] = idxBM; }
-//           else { stack[top++] = idxBM; }
+        int idxBM = bpStorage[randIdx * 2 + 0];
+        int idxMC = bpStorage[randIdx * 2 + 1];
+//         if (wordLen > 30) localWord[wordLen++] = dpIdx & 0x7F;
+        int visitedBM = false, visitedMC = false;
+        for (int i = 0; i < 1024; i++) {
+            if (idxBM == stack[i]) visitedBM = true;
+            if (idxMC == stack[i]) visitedMC = true;
         }
+//        // Why is this necessary? Should never have been a loop to begin with...
+        if (!visitedMC && !visitedBM) { stack[top++] = idxMC; stack[top++] = idxBM;}
+//        if (!visitedBM) {  }
+//          if (idxMC != dpIdx && idxBM != dpIdx) { stack[top++] = idxMC; stack[top++] = idxBM; }
+        
+//        if (idxBM != idxMC) { stack[top++] = idxMC; stack[top++] = idxBM; }
+//        else { stack[top++] = idxBM; }
+      }
     }
     
     for (int i = wordLen; i < maxWordLen; i++) { localWord[wordLen++] = 0; }
@@ -353,8 +319,7 @@ kernel void sample_words(
     uint rngState = seeds[tid];
     int dpIndex = startIndices[lcg_randomRange(rngState, (uint)numStartIndices)];
 
-    // decode
-    int A = dpIndex % numNonterminals; // This should always be 74
+    int A = dpIndex % numNonterminals; // This should always be 74=START
     int rowCol = dpIndex / numNonterminals;
     int c = rowCol % numStates;
     int r = rowCol / numStates;
@@ -362,11 +327,8 @@ kernel void sample_words(
     int snt = numStates * numNonterminals;
     int startIdx = r*snt + c*numNonterminals + A;
 
-    // sample the cell
     int wordLen = 0;
-    sampleCellIterative(dp_in, bpCount, bpOffset, bpStorage,
-               numStates, startIdx,
-               rngState, localWord, wordLen, maxWordLen);
+    sampleCellIterative(dp_in, bpCount, bpOffset, bpStorage, startIdx, rngState, localWord, wordLen, maxWordLen);
 
     for (int i=0; i<maxWordLen; i++) sampledWords[int(tid)*maxWordLen + i] = localWord[i];
 }
@@ -472,33 +434,33 @@ kernel void sample_words(
     var prevValue: UInt32 = 0
 
     for r in 0..<numStates {
-        var zero: UInt32 = 0
-        memcpy(numNonzero.contents(), &zero, MemoryLayout<UInt32>.size)
+       var zero: UInt32 = 0
+       memcpy(numNonzero.contents(), &zero, MemoryLayout<UInt32>.size)
 
-        let cmb = queue.makeCommandBuffer()!
-        let enc = cmb.makeComputeCommandEncoder()!
-        enc.setComputePipelineState(psoCflMul)
-        enc.setBuffer(bufA,        offset: 0,      index: 0)
-        enc.setBuffer(bufA,        offset: 0,      index: 1)
-        enc.setBuffer(pairsBuf,    offset: 0,      index: 2)
-        enc.setBuffer(pairsOffBuf, offset: 0,      index: 3)
-        enc.setBytes(&ns,          length: stride, index: 4)
-        enc.setBytes(&ap,          length: stride, index: 5)
-        enc.setBytes(&ao,          length: stride, index: 6)
-        enc.setBuffer(numNonzero,  offset: 0,      index: 7)
+       let cmb = queue.makeCommandBuffer()!
+       let enc = cmb.makeComputeCommandEncoder()!
+       enc.setComputePipelineState(psoCflMul)
+       enc.setBuffer(bufA,        offset: 0,      index: 0)
+       enc.setBuffer(bufA,        offset: 0,      index: 1)
+       enc.setBuffer(pairsBuf,    offset: 0,      index: 2)
+       enc.setBuffer(pairsOffBuf, offset: 0,      index: 3)
+       enc.setBytes(&ns,          length: stride, index: 4)
+       enc.setBytes(&ap,          length: stride, index: 5)
+       enc.setBytes(&ao,          length: stride, index: 6)
+       enc.setBuffer(numNonzero,  offset: 0,      index: 7)
 
-        enc.dispatchThreads(tiling, threadsPerThreadgroup: MTLSizeMake(1,1,1))
-        enc.endEncoding()
-        cmb.commit()
-        cmb.waitUntilCompleted()
+       enc.dispatchThreads(tiling, threadsPerThreadgroup: MTLSizeMake(1,1,1))
+       enc.endEncoding()
+       cmb.commit()
+       cmb.waitUntilCompleted()
 
-        let currentValue = numNonzero.contents().bindMemory(to: UInt32.self, capacity: 1).pointee
-//        print("prev: \(prevValue), curr: \(currentValue)")
-        if currentValue == prevValue {
-            print("Fixpoint escape at round: \(r)/\(numStates), total=\(currentValue), size: \(dpSizeBytes)"); fflush(stdout)
-            break
-        }
-        prevValue = currentValue
+       let currentValue = numNonzero.contents().bindMemory(to: UInt32.self, capacity: 1).pointee
+//       print("prev: \(prevValue), curr: \(currentValue)")
+       if currentValue == prevValue {
+          print("Fixpoint escape at round: \(r)/\(numStates), total=\(currentValue), size: \(dpSizeBytes)"); fflush(stdout)
+          break
+       }
+       prevValue = currentValue
     }
 
     let (bpCountBuf, bpOffsetBuf, bpStorageBuf) =
@@ -512,58 +474,52 @@ kernel void sample_words(
         )
 
     let start = DispatchTime.now()
-    // Now sample words:
-    // 1) create startIndices, isTerminal, seeds
-      let dpInSize = N * N * numNonterminals
-      let dpInPtr = bufA.contents().bindMemory(to: UInt8.self, capacity: dpInSize)
+    let dpInSize = N * N * numNonterminals
+    let dpInPtr = bufA.contents().bindMemory(to: UInt8.self, capacity: dpInSize)
 
-      let acceptStatesSwift: [Int]
-      if let acceptStatesPtr = acceptStates {
-          acceptStatesSwift = UnsafeBufferPointer(start: acceptStatesPtr, count: Int(acceptStatesSize)).map { Int($0) }
-      } else {
-          acceptStatesSwift = []
-      }
+    let acceptStatesSwift: [Int]
+    if let acceptStatesPtr = acceptStates {
+        acceptStatesSwift = UnsafeBufferPointer(start: acceptStatesPtr, count: Int(acceptStatesSize)).map { Int($0) }
+    } else { acceptStatesSwift = [] }
 
-      var validStartIndices: [Int32] = []
-      for q in acceptStatesSwift {
-          let dpIndex = 0 * (N * numNonterminals) + q * numNonterminals + startIdx
-          if dpIndex < dpInSize && dpInPtr[dpIndex] != 0 {
-              validStartIndices.append(Int32(dpIndex))
-          }
-      }
-      print("Number of valid startIndices: \(validStartIndices.count)/\(acceptStatesSwift.count)")
+    var startIdxs: [Int32] = []
+    for q in acceptStatesSwift {
+        let dpIndex = 0 * (N * numNonterminals) + q * numNonterminals + startIdx
+        if dpIndex < dpInSize && dpInPtr[dpIndex] != 0 { startIdxs.append(Int32(dpIndex)) }
+    }
+    print("Number of valid startIndices: \(startIdxs.count)/\(acceptStatesSwift.count)")
 
-      let startIndicesBuf = device.makeBuffer(bytes: validStartIndices, length: validStartIndices.count * MemoryLayout<Int32>.stride, options: [])!
+    let startIdxBuf = device.makeBuffer(bytes: startIdxs, length: startIdxs.count * MemoryLayout<Int32>.stride, options: [])!
 
-    var seeds = [UInt32](repeating: 0, count: Int(maxSamples))
-    for i in 0..<Int(maxSamples) { seeds[i] = UInt32.random(in: 0..<UInt32.max) }
-    let seedsBuf = device.makeBuffer(bytes: seeds, length: Int(maxSamples)*MemoryLayout<UInt32>.stride, options: [])!
+    let totSamples = Int(maxSamples), wordLen = Int(maxWordLen)
+    var seeds = [UInt32](repeating: 0, count: totSamples)
+    for i in 0..<totSamples { seeds[i] = UInt32.random(in: 0..<UInt32.max) }
+    let seedsBuf = device.makeBuffer(bytes: seeds, length: totSamples*MemoryLayout<UInt32>.stride, options: [])!
 
     let sampledWordsBuf = sampleWords(
         dp_in: bufA,
         bpCount: bpCountBuf,
         bpOffset: bpOffsetBuf,
         bpStorage: bpStorageBuf,
-        startIndices: startIndicesBuf, 
+        startIndices: startIdxBuf, 
         seeds: seedsBuf,
-        maxWordLen: Int(maxWordLen),
-        maxSamples: Int(maxSamples),
-        numStartIndices: validStartIndices.count,
+        maxWordLen: wordLen,
+        maxSamples: totSamples,
+        numStartIndices: startIdxs.count,
         numStates: Int(numStates)
     )
 
-      let sampSize = Int(maxSamples) * Int(maxWordLen)
+    let sampSize = totSamples * wordLen
 
-      // Bind the buffer to UInt8 instead of CChar
-      let ptr = sampledWordsBuf.contents().bindMemory(to: UInt8.self, capacity: sampSize)
-      let buffer = UnsafeBufferPointer(start: ptr, count: sampSize)
+    // Bind the buffer to UInt8 instead of CChar
+    let ptr = sampledWordsBuf.contents().bindMemory(to: UInt8.self, capacity: sampSize)
+    let buffer = UnsafeBufferPointer(start: ptr, count: sampSize)
 
-      for sIdx in 0..<min(2, Int(maxSamples)) {
-          let start = sIdx * Int(maxWordLen)
-          let wordSlice = buffer[start..<(start + Int(maxWordLen))]
-      //    let byteValues = wordSlice.prefix(while: { $0 != 0 })
-          print("Sample \(sIdx): \(Array(wordSlice))"); fflush(stdout)
-      }
+    for sIdx in 0..<min(2, totSamples) {
+        let start = sIdx * wordLen
+        let wordSlice = buffer[start..<(start + wordLen)]
+        print("Sample \(sIdx): \(Array(wordSlice))"); fflush(stdout)
+    }
 
     let psEnd = DispatchTime.now()
     let psTimeMs = Double(psEnd.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
@@ -587,7 +543,7 @@ func sampleWords(
     // We'll store each sampled word in a row of length `maxWordLen`.
     let sampledWordsSize = maxSamples * maxWordLen
     let sampledWordsBuf = device.makeBuffer(length: sampledWordsSize, options: [])!
-    memset(sampledWordsBuf.contents(), 0, sampledWordsSize)
+//    memset(sampledWordsBuf.contents(), 0, sampledWordsSize) // Something strange happens here
 
     let commandBuffer = queue.makeCommandBuffer()!
     let encoder = commandBuffer.makeComputeCommandEncoder()!
@@ -626,11 +582,11 @@ func buildBackpointers(
 ) -> (MTLBuffer, MTLBuffer, MTLBuffer) {
     let start = DispatchTime.now()
     // 1) Allocate bpCount
-    let countSize = Int(N)*Int(N)*Int(numNonterminals) * MemoryLayout<Int32>.stride
+    let countSize = N * N * numNonterminals * MemoryLayout<Int32>.stride
     let bpCountBuf = device.makeBuffer(length: countSize, options: [])!
 
     // 2) Launch bp_count kernel
-    let totalPairs = (Int(N)*(Int(N)-1))/2
+    let totalPairs = (N*(N-1))/2
     let totalCells = totalPairs * Int(numNonterminals)
     let threadsCount = MTLSizeMake(totalCells,1,1)
 
@@ -656,7 +612,6 @@ func buildBackpointers(
     commandBuffer1.waitUntilCompleted()
 
     // 3) Compute prefix sum of bpCount --> bpOffset 
-    //    This can be done in GPU or CPU. We'll assume CPU. 
     let bpOffsetBuf = device.makeBuffer(length: countSize, options: [])!
     parallelPrefixSumCPU(countBuf: bpCountBuf, offsetBuf: bpOffsetBuf, totalCells: totalCells)
 
@@ -703,6 +658,7 @@ func buildBackpointers(
     return (bpCountBuf, bpOffsetBuf, bpStorageBuf)
 }
 
+// TODO: GPU parallel prefix sum?
 func parallelPrefixSumCPU(countBuf: MTLBuffer, offsetBuf: MTLBuffer, totalCells: Int) {
     let psStart = DispatchTime.now()
     // Bind memory of each buffer to `Int32`.
@@ -829,18 +785,10 @@ private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 
     val allTerminals = terminalLists.flatMap { it }
     val offsets = terminalLists.scan(0) { acc, list -> acc + list.size }.dropLast(1)
 
-    return """
-        constant uint8_t all_tm[] = {${allTerminals.joinToString(",")}};
+    return """constant uint8_t all_tm[] = {${allTerminals.joinToString(",")}};
         constant uint offsets[] = {${offsets.joinToString(",")}};
         constant uint nt_tm_lens[] = {${terminalLists.map { it.size }.joinToString(",")}};
-        constant int numNonterminals = ${cfg.nonterminals.size};
-    """.trimIndent()
-      .also {
-        println(cfg.nonterminals.mapIndexed { i, it ->
-          "$it:$i" to (if (it !in cfg.unitNonterminals) emptyList<Int>()
-          else cfg.bimap.UNITS[it]!!.map { cfg.tmMap[it]!! }).size
-        })
-      }
+        constant int numNonterminals = ${cfg.nonterminals.size};""".trimIndent()
   }
 
   fun genFlattenedBinaryProds(cfg: CFG): String {
