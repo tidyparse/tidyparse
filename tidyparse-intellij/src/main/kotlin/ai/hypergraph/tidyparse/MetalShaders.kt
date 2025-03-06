@@ -25,11 +25,14 @@ fun main() {
   val levFSA = makeLevFSA(pythonCode, radius)
   val maxWordLen = pythonCode.size + radius + 10
 
+//  initiateSerialRepair(pythonCode, cfg).take(100).forEach { println("$it / ${it in cfg.language}") }
+//  System.exit(1)
+
   val numStates = levFSA.numStates
   val numNonterminals = cfg.nonterminals.size
 
   val allPairs = levFSA.allPairs2
-    .mapIndexed { p, l1 -> l1.mapIndexed { q, l2 -> l2.filter { it != p && it != q } } }
+    .mapIndexed { p, l1 -> l1.mapIndexed { q, l2 -> l2.filter { it in (p + 1)..<q } } }
 //    .also { s->
 //      s.forEachIndexed { i, it -> it.forEachIndexed { j, it -> println("$i:$j -> $it") } }
 //    }
@@ -47,7 +50,6 @@ fun main() {
         if (it !in cfg.unitNonterminals) emptyList<Σᐩ>()
         else cfg.bimap.UNITS[it]!!
       }
-      val tmMap = cfg.tmMap
       // 0 and 1 are reserved for (0) no parse exists and (1) parse exists, but an internal nonterminal node
       // Other byte values are used to denote the presence (+) or absence (-) of a leaf terminal
       fun StrPred.predByte(A: Int): UShort = (
@@ -159,9 +161,10 @@ kernel void cfl_mul_upper(
           
           int idxBM = r * snt + m * numNonterminals + B;
           int idxMC = m * snt + c * numNonterminals + C;
+
           if (dp_in[idxBM] && dp_in[idxMC]) {
 //          if ((dp_in[idxBM] & 0x01 && dp_in[idxMC] & 0x01) || ((1<dp_in[idxBM]) && (1<dp_in[idxMC]))) {
-             dp_out[dpIndex] = dp_out[dpIndex] | 0x01;
+             dp_out[dpIndex] |= 0x01;
              atomic_fetch_add_explicit(&numNonzero, 1, memory_order_relaxed);
              return;
           }
@@ -264,6 +267,11 @@ inline uint lcg_random(thread uint& state) { return 1664525u * state + 101390422
 //inline uint lcg_random(thread uint& state) { return state % 10; }
 inline uint lcg_randomRange(thread uint& state, uint range) { return lcg_random(state) % range; }
 
+inline bool alreadyVisited( thread const int* visitedList, int visitedCount, int candidate ) {
+    for (int i = 0; i < visitedCount; i++) { if (visitedList[i] == candidate) return true; }
+    return false;
+}
+
 inline void sampleCellIterative(
   const device ushort*   dp_in,
   const device int*      bpCount,
@@ -275,19 +283,15 @@ inline void sampleCellIterative(
   thread int&            wordLen,
   const int              maxWordLen
 ) {
-    constexpr int MAX_STACK = 1024;
-    int stack[MAX_STACK];
-    int top = 0;
-
-    // Initialize the stack with "root call"
-    stack[top++] = startDPIdx;
+    constexpr int MAX_STACK = 1024; int stack[MAX_STACK]; int top = 0; stack[top++] = startDPIdx;
+    int visitedList[MAX_STACK]; int visitedCount = 0; visitedList[visitedCount++] = startDPIdx;
 
     // While frames left to process, and haven't overflowed localWord
     for (int iter = 0; iter < maxWordLen * 2 && top > 0 && wordLen < maxWordLen - 5; iter++) {
       int dpIdx = stack[--top];
       int expCount = bpCount[dpIdx];
       
-      if (dp_in[dpIdx] && !(dp_in[dpIdx] & 0x01)) { // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
+      if ((dp_in[dpIdx] >> 1) && !(dp_in[dpIdx] & 0x01)) { // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
         int nonterminal = dpIdx % numNonterminals;
         int predicate = dp_in[dpIdx];
         bool isNegativeLiteral = predicate & 0x8000;
@@ -303,22 +307,19 @@ inline void sampleCellIterative(
           ushort tmChoice = possibleTms[int(lcg_randomRange(rngState, uint(tmCount)))];
           localWord[wordLen++] = tmChoice + 1;
         } else { localWord[wordLen++] = (numTms != 0) ? all_tm[ntOffset + literal - 1] + 1 : 99; } // Must have been a positive literal
-      } //else if (expCount == 0) { localWord[wordLen++] = 111; continue; } // Should never occur
-      else if (top + 2 < MAX_STACK) {
-        int randIdx = bpOffset[dpIdx] + int(lcg_randomRange(rngState, uint(expCount)));
-
-        int idxBM = bpStorage[randIdx * 2 + 0];
-        int idxMC = bpStorage[randIdx * 2 + 1];
-//stack[top++] = idxMC; stack[top++] = idxBM;
-        int visitedBM = false, visitedMC = false;
-
-        int i; for (i = top; 0 < i; i--) {
-          if (idxBM == stack[i]) visitedBM = true;
-          if (idxMC == stack[i]) visitedMC = true;
-          if (visitedBM || visitedMC) break;
+      } else if (top + 2 < MAX_STACK) {
+        int randIdx, idxBM, idxMC; bool visited = true;
+        for (int j = 0; j < 10 && visited; j++) {
+          randIdx = bpOffset[dpIdx] + int(lcg_randomRange(rngState, uint(expCount)));
+          idxBM = bpStorage[randIdx * 2 + 0];
+          idxMC = bpStorage[randIdx * 2 + 1];
+          visited = alreadyVisited(visitedList, visitedCount, idxBM) && alreadyVisited(visitedList, visitedCount, idxMC);
         }
-//        // Why is this necessary? Should never have been a loop to begin with...
-        if (!visitedMC && !visitedBM) { stack[top++] = idxMC; stack[top++] = idxBM; }
+
+        if (!visited) { // Restricts overlapping subspans
+          visitedList[visitedCount++] = idxBM; visitedList[visitedCount++] = idxMC;
+          stack[top++] = idxMC; stack[top++] = idxBM;
+        } 
       }
     }
     
@@ -513,7 +514,7 @@ kernel void sample_words(
     var startIdxs: [Int32] = []
     for q in acceptStatesSwift {
         let dpIndex = q * numNonterminals + startIdx
-        if dpIndex < dpInSize && dpInPtr[dpIndex] != 0 { startIdxs.append(Int32(dpIndex)) }
+        if dpInPtr[dpIndex] != 0 { startIdxs.append(Int32(dpIndex)) }
     }
     print("Number of valid startIndices: \(startIdxs.count)/\(acceptStatesSwift.count)"); fflush(stdout)
 
@@ -521,7 +522,7 @@ kernel void sample_words(
 
     let totSamples = Int(maxSamples), wordLen = Int(maxWordLen)
     var seeds = [UInt32](repeating: 0, count: totSamples)
-    for i in 0..<totSamples { seeds[i] = UInt32(i) }//UInt32.random(in: 0..<UInt32.max) }
+    for i in 0..<totSamples { seeds[i] = UInt32.random(in: 0..<UInt32.max) }
     let seedsBuf = device.makeBuffer(bytes: seeds, length: totSamples*MemoryLayout<UInt32>.stride, options: [])!
 
     let sampledWordsBuf = sampleWords(
@@ -543,7 +544,7 @@ kernel void sample_words(
     let ptr = sampledWordsBuf.contents().bindMemory(to: UInt8.self, capacity: sampSize)
     let buffer = UnsafeBufferPointer(start: ptr, count: sampSize)
 
-    for sIdx in 0..<min(3, totSamples) {
+    for sIdx in 0..<min(5, totSamples) {
         let start = sIdx * wordLen
         let wordSlice = buffer[start..<(start + wordLen)]
         print("Sample \(sIdx): \(Array(wordSlice))"); fflush(stdout)
