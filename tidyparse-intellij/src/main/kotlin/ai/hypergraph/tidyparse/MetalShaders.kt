@@ -29,7 +29,10 @@ fun main() {
   val numNonterminals = cfg.nonterminals.size
 
   val allPairs = levFSA.allPairs2
-//    .mapIndexed { p, l1 -> l1.mapIndexed { q, l2 -> l2.filter { it != p && it != q } } }
+    .mapIndexed { p, l1 -> l1.mapIndexed { q, l2 -> l2.filter { it != p && it != q } } }
+//    .also { s->
+//      s.forEachIndexed { i, it -> it.forEachIndexed { j, it -> println("$i:$j -> $it") } }
+//    }
     .flatten()
   val allFSAPairsFlattened = allPairs.flatten().toIntArray()
   val allFSAPairsOffsets = allPairs.map { it.size }
@@ -206,7 +209,7 @@ kernel void bp_count(
 //        if ((dp_in[idxBM] & 0x01 && dp_in[idxMC] & 0x01) || ((1<dp_in[idxBM]) && (1<dp_in[idxMC]))) count++;
       }
 
-    bpCount[r*snt + c*numNonterminals + A] = max(count, 1);
+    bpCount[r*snt + c*numNonterminals + A] = count;//max(count, 1);
 }
 
 kernel void bp_write(
@@ -218,8 +221,8 @@ kernel void bp_write(
   constant int&        allFSAPairsOffsetsSize [[buffer(5)]],
   const device int*    bpCount                [[buffer(6)]],
   const device int*    bpOffset               [[buffer(7)]],
-  // Suppose each entry in bpStorage is 2 x int. 
-  device int*         bpStorage              [[buffer(8)]],
+  // Suppose each entry in bpStorage is 2 x int.
+  device int*          bpStorage              [[buffer(8)]],
   uint tid [[thread_position_in_grid]]
 ) {
     int N = numStates;
@@ -229,7 +232,7 @@ kernel void bp_write(
     decodeUpperTriangle(tid / numNonterminals, N, r, c);
     int A = tid % numNonterminals, snt = N * numNonterminals, dpIndex = r*snt + c*numNonterminals + A;
 
-    if (!(dp_in[dpIndex] & 0x01)) return; 
+    if (!(dp_in[dpIndex] & 0x01)) return;
 
     // Grammar offsets
     int startGC = vidx_offsets[A];
@@ -306,7 +309,7 @@ inline void sampleCellIterative(
 
         int idxBM = bpStorage[randIdx * 2 + 0];
         int idxMC = bpStorage[randIdx * 2 + 1];
-//         if (wordLen > 30) localWord[wordLen++] = dpIdx & 0x7F;
+//stack[top++] = idxMC; stack[top++] = idxBM;
         int visitedBM = false, visitedMC = false;
 
         int i; for (i = top; 0 < i; i--) {
@@ -585,7 +588,7 @@ private func reconstructDPBuffer(
                 let r = Int(triples[stride * i])
                 let c = Int(triples[stride * i + 1])
                 let A = Int(triples[stride * i + 2])
-                let s = UInt16(UInt8(truncatingIfNeeded: triples[stride * i + 3]))
+                let s = triples[stride * i + 3]
                 let index = r * rowMultiplier + c * colMultiplier + A
                 ptr[index] = s
             }
