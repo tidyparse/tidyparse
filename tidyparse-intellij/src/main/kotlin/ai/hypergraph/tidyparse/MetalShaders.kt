@@ -71,13 +71,9 @@ fun main() {
     val maxSamples = 10_000
     val samples = GPUBridge.cflClosure(
       levFSA.byteFormat(cfg),
-      allFSAPairsFlattened,
-      allFSAPairsOffsets,
-      levFSA.finalIdxs.toIntArray(),
-      levFSA.finalIdxs.size,
-      numStates,
-      maxWordLen,
-      maxSamples
+      allFSAPairsFlattened, allFSAPairsOffsets,
+      levFSA.finalIdxs.toIntArray(), levFSA.finalIdxs.size,
+      numStates, maxWordLen, maxSamples
     )
 
     println("Round trip: ${clock.elapsedNow()}")
@@ -107,10 +103,11 @@ fun main() {
 
 object GPUBridge {
   @Language("c++") val metalSrc = """
+// https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf
 #include <metal_stdlib>
 using namespace metal;
 
-// The following header should be regenerated for each CFG
+// The following header must be regenerated on a per-CFG basis
 ${encodeGrammarHeader()}
 
 // Helper to decode (row,col) in the upper-triangle from tid
@@ -367,13 +364,9 @@ kernel void sample_words(
   @JvmStatic fun cflClosure(
 /**[NativeBridge.cflMultiply] */
     dpIn: UShortArray,
-    allFSAPairs: IntArray,
-    allFSAPairsOffsets: IntArray,
-    acceptStates: IntArray,
-    acceptStatesSize: Int,
-    numStates: Int,
-    maxWordLen: Int,
-    maxSamples: Int
+    allFSAPairs: IntArray, allFSAPairsOffsets: IntArray,
+    acceptStates: IntArray, acceptStatesSize: Int,
+    numStates: Int, maxWordLen: Int, maxSamples: Int
   ): ByteArray =
     Memory(maxWordLen * maxSamples.toLong()).also { outMem ->
       nativeBridge.cflMultiply(
@@ -405,13 +398,9 @@ kernel void sample_words(
       allFSAPairs: Pointer,        // buffer(2)
       allFSAPairsOffsets: Pointer, // buffer(3)
       acceptStates: Pointer,       // buffer(4)
-      acceptStatesSize: Int,
-      dpSize: Int,
-      numStates: Int,
-      allFSAPairsSize: Int,
-      allFSAPairsOffsetsSize: Int,
-      maxWordLen: Int,
-      maxSamples: Int,
+      acceptStatesSize: Int, dpSize: Int, numStates: Int,
+      allFSAPairsSize: Int, allFSAPairsOffsetsSize: Int,
+      maxWordLen: Int, maxSamples: Int,
     )
   }
   /** Caller: [GPUBridge.cflClosure] */
@@ -422,41 +411,76 @@ kernel void sample_words(
     _ allFSAPairs: UnsafePointer<CInt>?,
     _ allFSAPairsOffsets: UnsafePointer<CInt>?,
     _ acceptStates: UnsafePointer<CInt>?,
-    _ acceptStatesSize: CInt,
-    _ dpSize: CInt,
-    _ numStates: CInt,
-    _ allFSAPairsSize: CInt,
-    _ allFSAPairsOffsetsSize: CInt,
-    _ maxWordLen: CInt,
-    _ maxSamples: CInt
+    _ acceptStatesSize: CInt, _ dpSize: CInt, _ numStates: CInt,
+    _ allFSAPairsSize: CInt, _ allFSAPairsOffsetsSize: CInt,
+    _ maxWordLen: CInt, _ maxSamples: CInt
 ) {
     guard let dp_out, let allFSAPairs, let allFSAPairsOffsets else { return }
     
-    let N = Int(numStates)
-    let totalCount = N*N*Int(numNonterminals)
-    let dpSizeBytes = totalCount * MemoryLayout<UInt16>.stride
+    var N = Int(numStates), ap = Int(allFSAPairsSize), ao = Int(allFSAPairsOffsetsSize)
 
-    let bufA = reconstructDPBuffer(
+    // Stage 1: Construct the dense parse chart
+    var bufA = reconstructDPBuffer(
         dp_in: dp_in_sparse,
         dpSize: Int(dpSize),
-        numStates: Int(numStates),
-        numNonterminals: Int(numNonterminals),
-        dpSizeBytes: Int(dpSizeBytes),
-        totalCount: totalCount
+        numStates: Int(numStates)
     )
 
     let stride = MemoryLayout<Int32>.stride
+    let pairsBuf = device.makeBuffer(bytes: allFSAPairs, length: ap * stride, options: [])!
+    let pairsOffBuf = device.makeBuffer(bytes: allFSAPairsOffsets, length: ao * stride, options: [])!
+    
+    // Stage 2: Seek the binary CFL closure
+    bufA = iterateFixpoint(
+        bufA: bufA, 
+        pairsBuf: pairsBuf, 
+        pairsOffBuf: pairsOffBuf,
+        numStates: N,
+        allPairsSize: ap,
+        allPairsOffsetsSize: ao
+    )
 
-    var ns = numStates
-    var ap = allFSAPairsSize
-    var ao = allFSAPairsOffsetsSize
+    // Stage 3: Reconstruct parse forest
+    let (bpCountBuf, bpOffsetBuf, bpStorageBuf) = buildBackpointers(
+        dp_in: bufA,
+        allFSAPairs: pairsBuf,
+        allFSAPairsOffsets: pairsOffBuf,
+        numStates: N,
+        allPairsSize: ap,
+        allPairsOffsetsSize: ao
+    )
 
+    // Stage 4: Decode the datastructure
+    let sampledWordsBuf = sampleWords(
+        dp_in: bufA,
+        bpCount: bpCountBuf,
+        bpOffset: bpOffsetBuf,
+        bpStorage: bpStorageBuf,
+        maxWordLen: Int(maxWordLen),
+        maxSamples: Int(maxSamples),
+        numStates: N,
+        acceptStatesPt: acceptStates,
+        acceptStatesSize: Int(acceptStatesSize)
+    )
+
+    memcpy(dp_out, sampledWordsBuf.contents(), Int(maxSamples) * Int(maxWordLen))
+}
+
+private func iterateFixpoint(
+    bufA: MTLBuffer,
+    pairsBuf: MTLBuffer,
+    pairsOffBuf: MTLBuffer,
+    numStates: Int,
+    allPairsSize: Int,
+    allPairsOffsetsSize: Int
+) -> MTLBuffer {
+    var N = numStates, ap = allPairsSize, ao = allPairsOffsetsSize
+    let totalCount = N*N*numNonterminals
+    let dpSizeBytes = totalCount * MemoryLayout<UInt16>.stride
+    let stride = MemoryLayout<Int32>.stride
     let totalPairs = N*(N-1)/2
-    let totalThreads = totalPairs * Int(numNonterminals)
+    let totalThreads = totalPairs * numNonterminals
     let tiling = MTLSizeMake(totalThreads,1,1)
-
-    let pairsBuf = device.makeBuffer(bytes: allFSAPairs, length: Int(ap)*stride, options: [])!
-    let pairsOffBuf = device.makeBuffer(bytes: allFSAPairsOffsets, length: Int(ao)*stride, options: [])!
 
     let numNonzero = device.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared)!
     var prevValue: UInt32 = 0
@@ -472,7 +496,7 @@ kernel void sample_words(
        enc.setBuffer(bufA,        offset: 0,      index: 1)
        enc.setBuffer(pairsBuf,    offset: 0,      index: 2)
        enc.setBuffer(pairsOffBuf, offset: 0,      index: 3)
-       enc.setBytes(&ns,          length: stride, index: 4)
+       enc.setBytes(&N,           length: stride, index: 4)
        enc.setBytes(&ap,          length: stride, index: 5)
        enc.setBytes(&ao,          length: stride, index: 6)
        enc.setBuffer(numNonzero,  offset: 0,      index: 7)
@@ -483,89 +507,18 @@ kernel void sample_words(
        cmb.waitUntilCompleted()
 
        let currentValue = numNonzero.contents().bindMemory(to: UInt32.self, capacity: 1).pointee
-//       print("prev: \(prevValue), curr: \(currentValue)")
-       if currentValue == prevValue {
+       if (currentValue == prevValue) {
           print("Fixpoint escape at round: \(r)/\(numStates), total=\(currentValue), size: \(dpSizeBytes)"); fflush(stdout)
           break
-       }
-       prevValue = currentValue
+       } else { prevValue = currentValue }
     }
-
-    let (bpCountBuf, bpOffsetBuf, bpStorageBuf) =
-        buildBackpointers(
-          dp_in: bufA,
-          allFSAPairs: pairsBuf,
-          allFSAPairsOffsets: pairsOffBuf,
-          N: Int(numStates),
-          ap: Int(ap),
-          ao: Int(ao)
-        )
-
-
-    let start = DispatchTime.now()
-    let dpInSize = N * N * numNonterminals
-    let dpInPtr = bufA.contents().bindMemory(to: UInt16.self, capacity: dpInSize)
-
-    let acceptStatesSwift: [Int]
-    if let acceptStatesPtr = acceptStates {
-        acceptStatesSwift = UnsafeBufferPointer(start: acceptStatesPtr, count: Int(acceptStatesSize)).map { Int($0) }
-    } else { acceptStatesSwift = [] }
-
-    var startIdxs: [Int32] = []
-    for q in acceptStatesSwift {
-        let dpIndex = q * numNonterminals + startIdx
-        if dpInPtr[dpIndex] != 0 { startIdxs.append(Int32(dpIndex)) }
-    }
-    print("Number of valid startIndices: \(startIdxs.count)/\(acceptStatesSwift.count)"); fflush(stdout)
-
-    let startIdxBuf = device.makeBuffer(bytes: startIdxs, length: startIdxs.count * MemoryLayout<Int32>.stride, options: [])!
-
-    let totSamples = Int(maxSamples), wordLen = Int(maxWordLen)
-    var seeds = [UInt32](repeating: 0, count: totSamples)
-    for i in 0..<totSamples { seeds[i] = UInt32.random(in: 0..<UInt32.max) }
-    let seedsBuf = device.makeBuffer(bytes: seeds, length: totSamples*MemoryLayout<UInt32>.stride, options: [])!
-
-    let sampledWordsBuf = sampleWords(
-        dp_in: bufA,
-        bpCount: bpCountBuf,
-        bpOffset: bpOffsetBuf,
-        bpStorage: bpStorageBuf,
-        startIndices: startIdxBuf, 
-        seeds: seedsBuf,
-        maxWordLen: wordLen,
-        maxSamples: totSamples,
-        numStartIndices: startIdxs.count,
-        numStates: Int(numStates)
-    )
-
-    let sampSize = totSamples * wordLen
-
-    // Bind the buffer to UInt8 instead of CChar
-    let ptr = sampledWordsBuf.contents().bindMemory(to: UInt8.self, capacity: sampSize)
-    let buffer = UnsafeBufferPointer(start: ptr, count: sampSize)
-
-    for sIdx in 0..<min(5, totSamples) {
-        let start = sIdx * wordLen
-        let wordSlice = buffer[start..<(start + wordLen)]
-        print("Sample \(sIdx): \(Array(wordSlice))"); fflush(stdout)
-    }
-
-    let psEnd = DispatchTime.now()
-    let psTimeMs = Double(psEnd.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
-    print("...\nSampled words in \(psTimeMs) ms"); fflush(stdout)
-
-    memcpy(dp_out, sampledWordsBuf.contents(), sampSize)
+    return bufA
 }
 
 // takes a flattened array of sparse quadruples and reconstructs a dense matrix
-private func reconstructDPBuffer(
-    dp_in: UnsafePointer<UInt16>?,
-    dpSize: Int,
-    numStates: Int,
-    numNonterminals: Int,
-    dpSizeBytes: Int,
-    totalCount: Int
-) -> MTLBuffer {
+private func reconstructDPBuffer(dp_in: UnsafePointer<UInt16>?, dpSize: Int, numStates: Int) -> MTLBuffer {
+    let totalCount = numStates*numStates*numNonterminals
+    let dpSizeBytes = totalCount * MemoryLayout<UInt16>.stride
     let rowMultiplier = numStates * numNonterminals  // Precomputed for row index
     let colMultiplier = numNonterminals              // Precomputed for column index
 
@@ -599,59 +552,97 @@ private func reconstructDPBuffer(
     return bufA
 }
 
-func sampleWords(
+private func sampleWords(
     dp_in: MTLBuffer,
     bpCount: MTLBuffer,
     bpOffset: MTLBuffer,
     bpStorage: MTLBuffer,
-    startIndices: MTLBuffer,
-    seeds: MTLBuffer,
     maxWordLen: Int,
     maxSamples: Int,
-    numStartIndices: Int,
-    numStates: Int
+    numStates: Int,
+    acceptStatesPt: UnsafePointer<CInt>?,
+    acceptStatesSize: Int
 ) -> MTLBuffer {
     print("Sampling words..."); fflush(stdout)
+
+    let startTime = DispatchTime.now()
+    let totalCount = numStates*numStates*numNonterminals
+    let dpInPtr = dp_in.contents().bindMemory(to: UInt16.self, capacity: totalCount)
+
+    let acceptStatesSwift: [Int]
+    if let acceptStatesPtr = acceptStatesPt {
+        acceptStatesSwift = UnsafeBufferPointer(start: acceptStatesPtr, count: acceptStatesSize).map { Int($0) }
+    } else { acceptStatesSwift = [] }
+
+    var startIdxs: [Int32] = []
+    for q in acceptStatesSwift {
+        let dpIndex = q * numNonterminals + startIdx
+        if dpInPtr[dpIndex] != 0 { startIdxs.append(Int32(dpIndex)) }
+    }
+    print("Number of valid startIndices: \(startIdxs.count)/\(acceptStatesSwift.count)"); fflush(stdout)
+
+    let stride = MemoryLayout<Int32>.stride
+    let startIndices = device.makeBuffer(bytes: startIdxs, length: startIdxs.count * stride, options: [])!
+
+    let totSamples = maxSamples, wordLen = maxWordLen
+    var seeds = [UInt32](repeating: 0, count: totSamples)
+    for i in 0..<totSamples { seeds[i] = UInt32.random(in: 0..<UInt32.max) }
+    let seedsBuf = device.makeBuffer(bytes: seeds, length: totSamples * stride, options: [])!
+
     // We'll store each sampled word in a row of length `maxWordLen`.
     let sampledWordsSize = maxSamples * maxWordLen
     let sampledWordsBuf = device.makeBuffer(length: sampledWordsSize, options: [])!
-//    memset(sampledWordsBuf.contents(), 0, sampledWordsSize) // Something strange happens here
+    memset(sampledWordsBuf.contents(), 0, sampledWordsSize) // Something strange happens here
 
     let commandBuffer = queue.makeCommandBuffer()!
     let encoder = commandBuffer.makeComputeCommandEncoder()!
-    encoder.setComputePipelineState(psoSmpWord)
 
+    encoder.setComputePipelineState(psoSmpWord)
     encoder.setBuffer(dp_in,           offset: 0, index: 0)
     encoder.setBuffer(bpCount,         offset: 0, index: 1)
     encoder.setBuffer(bpOffset,        offset: 0, index: 2)
     encoder.setBuffer(bpStorage,       offset: 0, index: 3)
     encoder.setBuffer(startIndices,    offset: 0, index: 4)
-    encoder.setBuffer(seeds,           offset: 0, index: 5)
+    encoder.setBuffer(seedsBuf,        offset: 0, index: 5)
     encoder.setBuffer(sampledWordsBuf, offset: 0, index: 6)
-    var nsStart = Int32(numStartIndices)
+    var nsStart = startIdxs.count, nStates = numStates, mwl = maxWordLen
     encoder.setBytes(&nsStart, length: MemoryLayout<Int32>.size, index: 7)
-    var nStates = Int32(numStates)
     encoder.setBytes(&nStates, length: MemoryLayout<Int32>.size, index: 8)
-    var mwl = Int32(maxWordLen)
     encoder.setBytes(&mwl, length: MemoryLayout<Int32>.size, index: 9)
-
     encoder.dispatchThreads(MTLSizeMake(maxSamples, 1, 1), threadsPerThreadgroup: MTLSizeMake(1,1,1))
 
     encoder.endEncoding()
     commandBuffer.commit()
     commandBuffer.waitUntilCompleted()
 
+    let sampSize = totSamples * wordLen
+
+    let ptr = sampledWordsBuf.contents().bindMemory(to: UInt8.self, capacity: sampSize)
+    let buffer = UnsafeBufferPointer(start: ptr, count: sampSize)
+
+    for sIdx in 0..<min(5, totSamples) {
+        let start = sIdx * wordLen
+        let wordSlice = buffer[start..<(start + wordLen)]
+        print("Sample \(sIdx): \(Array(wordSlice))"); fflush(stdout)
+    }
+
+    let psEnd = DispatchTime.now()
+    let psTimeMs = Double(psEnd.uptimeNanoseconds - startTime.uptimeNanoseconds) / 1_000_000
+    print("...\nSampled words in \(psTimeMs) ms"); fflush(stdout)
+
     return sampledWordsBuf
 }
 
-func buildBackpointers(
+// Constructs the backpointer references for decoding
+private func buildBackpointers(
   dp_in: MTLBuffer, // size = N*N*numNonterminals (bytes)
   allFSAPairs: MTLBuffer,
   allFSAPairsOffsets: MTLBuffer,
-  N: Int,
-  ap: Int,
-  ao: Int
+  numStates: Int,
+  allPairsSize: Int,
+  allPairsOffsetsSize: Int
 ) -> (MTLBuffer, MTLBuffer, MTLBuffer) {
+    var N = numStates, ap = allPairsSize, ao = allPairsOffsetsSize
     let start = DispatchTime.now()
     // 1) Allocate bpCount
     let countSize = N * N * numNonterminals * MemoryLayout<Int32>.stride
@@ -659,28 +650,24 @@ func buildBackpointers(
 
     // 2) Launch bp_count kernel
     let totalCells = (N*(N-1))/2 * numNonterminals
-    let threadsCount = MTLSizeMake(totalCells,1,1)
+    let tiling = MTLSizeMake(totalCells,1,1)
 
-    // Command buffer
-    let commandBuffer1 = queue.makeCommandBuffer()!
-    let encoder1 = commandBuffer1.makeComputeCommandEncoder()!
+    var commandBuffer = queue.makeCommandBuffer()!
+    var encoder = commandBuffer.makeComputeCommandEncoder()!
     let stride = MemoryLayout<Int32>.stride
-    var ns = N
-    var ap = ap
-    var ao = ao
-    encoder1.setComputePipelineState(psoBpCount)  // create psoBpCount from "bp_count" function
-    encoder1.setBuffer(dp_in,               offset: 0,      index: 0)
-    encoder1.setBuffer(allFSAPairs,         offset: 0,      index: 1)
-    encoder1.setBuffer(allFSAPairsOffsets,  offset: 0,      index: 2)
-    encoder1.setBytes(&ns,                  length: stride, index: 3)
-    encoder1.setBytes(&ap,                  length: stride, index: 4)
-    encoder1.setBytes(&ao,                  length: stride, index: 5)
-    encoder1.setBuffer(bpCountBuf,          offset: 0,      index: 6)
+    encoder.setComputePipelineState(psoBpCount)  // create psoBpCount from "bp_count" function
+    encoder.setBuffer(dp_in,               offset: 0,      index: 0)
+    encoder.setBuffer(allFSAPairs,         offset: 0,      index: 1)
+    encoder.setBuffer(allFSAPairsOffsets,  offset: 0,      index: 2)
+    encoder.setBytes(&N,                   length: stride, index: 3)
+    encoder.setBytes(&ap,                  length: stride, index: 4)
+    encoder.setBytes(&ao,                  length: stride, index: 5)
+    encoder.setBuffer(bpCountBuf,          offset: 0,      index: 6)
 
-    encoder1.dispatchThreads(threadsCount, threadsPerThreadgroup: MTLSizeMake(1,1,1))
-    encoder1.endEncoding()
-    commandBuffer1.commit()
-    commandBuffer1.waitUntilCompleted()
+    encoder.dispatchThreads(tiling, threadsPerThreadgroup: MTLSizeMake(1,1,1))
+    encoder.endEncoding()
+    commandBuffer.commit()
+    commandBuffer.waitUntilCompleted()
 
     // 3) Compute prefix sum of bpCount --> bpOffset 
     let bpOffsetBuf = device.makeBuffer(length: countSize, options: [])!
@@ -697,29 +684,28 @@ func buildBackpointers(
       totalExpansions = lastOffset + lastCount
     }
 
-    // 5) Allocate bpStorage
-    //    Each expansion is 2 ints.
+    // 5) Allocate bpStorage - each expansion is 2 ints.
     let bpStorageSize = Int(totalExpansions) * 2 * MemoryLayout<Int32>.stride
     let bpStorageBuf = device.makeBuffer(length: bpStorageSize, options: [])!
 
     // 6) Launch bp_write kernel
-    let commandBuffer2 = queue.makeCommandBuffer()!
-    let encoder2 = commandBuffer2.makeComputeCommandEncoder()!
-    encoder2.setComputePipelineState(psoBpWrite)
-    encoder2.setBuffer(dp_in,              offset: 0,      index: 0)
-    encoder2.setBuffer(allFSAPairs,        offset: 0,      index: 1)
-    encoder2.setBuffer(allFSAPairsOffsets, offset: 0,      index: 2)
-    encoder2.setBytes(&ns,                 length: stride, index: 3)
-    encoder2.setBytes(&ap,                 length: stride, index: 4)
-    encoder2.setBytes(&ao,                 length: stride, index: 5)
-    encoder2.setBuffer(bpCountBuf,         offset: 0,      index: 6)
-    encoder2.setBuffer(bpOffsetBuf,        offset: 0,      index: 7)
-    encoder2.setBuffer(bpStorageBuf,       offset: 0,      index: 8)
+    commandBuffer = queue.makeCommandBuffer()!
+    encoder = commandBuffer.makeComputeCommandEncoder()!
+    encoder.setComputePipelineState(psoBpWrite)
+    encoder.setBuffer(dp_in,              offset: 0,      index: 0)
+    encoder.setBuffer(allFSAPairs,        offset: 0,      index: 1)
+    encoder.setBuffer(allFSAPairsOffsets, offset: 0,      index: 2)
+    encoder.setBytes(&N,                  length: stride, index: 3)
+    encoder.setBytes(&ap,                 length: stride, index: 4)
+    encoder.setBytes(&ao,                 length: stride, index: 5)
+    encoder.setBuffer(bpCountBuf,         offset: 0,      index: 6)
+    encoder.setBuffer(bpOffsetBuf,        offset: 0,      index: 7)
+    encoder.setBuffer(bpStorageBuf,       offset: 0,      index: 8)
 
-    encoder2.dispatchThreads(threadsCount, threadsPerThreadgroup: MTLSizeMake(1,1,1))
-    encoder2.endEncoding()
-    commandBuffer2.commit()
-    commandBuffer2.waitUntilCompleted()
+    encoder.dispatchThreads(tiling, threadsPerThreadgroup: MTLSizeMake(1,1,1))
+    encoder.endEncoding()
+    commandBuffer.commit()
+    commandBuffer.waitUntilCompleted()
 
     let end = DispatchTime.now()
     let nanoTime = end.uptimeNanoseconds - start.uptimeNanoseconds
@@ -730,7 +716,7 @@ func buildBackpointers(
 }
 
 // TODO: GPU parallel prefix sum?
-func parallelPrefixSumCPU(countBuf: MTLBuffer, offsetBuf: MTLBuffer, totalCells: Int) {
+private func parallelPrefixSumCPU(countBuf: MTLBuffer, offsetBuf: MTLBuffer, totalCells: Int) {
     let psStart = DispatchTime.now()
     // Bind memory of each buffer to `Int32`.
     let ptrCount  = countBuf.contents().bindMemory(to: Int32.self, capacity: totalCells)
@@ -745,7 +731,6 @@ func parallelPrefixSumCPU(countBuf: MTLBuffer, offsetBuf: MTLBuffer, totalCells:
     var partialSum = [Int32](repeating: 0, count: numChunks)
 
     // === Phase 1: Parallel local prefix sums ===
-    //
     // Each chunk i does:
     //   offset[start]   = 0
     //   offset[start+1] = count[start]
@@ -766,7 +751,6 @@ func parallelPrefixSumCPU(countBuf: MTLBuffer, offsetBuf: MTLBuffer, totalCells:
     for i in 1..<numChunks { partialSum[i] += partialSum[i - 1] }
 
     // === Phase 3: Add offsets to each chunk in parallel ===
-    //
     // For chunk i > 0, we add partialSum[i-1] to everything in that chunk's offset array.
     DispatchQueue.concurrentPerform(iterations: numChunks) { chunkIndex in
         // chunk 0 doesn't need adjustment because it starts at 0
