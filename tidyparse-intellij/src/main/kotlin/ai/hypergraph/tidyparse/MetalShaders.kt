@@ -2,16 +2,16 @@
 
 package ai.hypergraph.tidyparse
 
-import ai.hypergraph.kaliningraph.automata.FSA
-import ai.hypergraph.kaliningraph.automata.StrPred
+import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.pythonStatementCNF
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import com.sun.jna.*
 import org.intellij.lang.annotations.Language
 import java.io.File
+import java.util.*
 import kotlin.system.measureTimeMillis
-import kotlin.time.TimeSource
+import kotlin.time.*
 
 /*
 ./gradlew generateDylib
@@ -31,21 +31,26 @@ fun main() {
   val numStates = levFSA.numStates
   val numNonterminals = cfg.nonterminals.size
 
-  val allPairs = levFSA.allPairs2
-    .mapIndexed { p, l1 -> l1.mapIndexed { q, l2 -> l2.filter { it in (p + 1)..<q } } }
-//    .also { s->
-//      s.forEachIndexed { i, it -> it.forEachIndexed { j, it -> println("$i:$j -> $it") } }
-//    }
-    .flatten()
-  val allFSAPairsFlattened = allPairs.flatten().toIntArray()
-  val allFSAPairsOffsets = allPairs.map { it.size }
-    .fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
+  fun IntArray.parallelPrefixSizes(): IntArray =
+    IntArray(size + 1).also { prefix ->
+      System.arraycopy(this, 0, prefix, 1, size)
+      Arrays.parallelPrefix(prefix) { a, b -> a + b }
+    }
+
+  fun List<List<List<Int>>>.parallelPrefixScan(): Pair<IntArray, IntArray> =
+    measureTimedValue {
+      mapIndexed { p, outer -> outer.mapIndexed { q, inner -> inner.filter { it in (p + 1)..<q } } }.flatten()
+        .let { it.flatten().toIntArray() to it.map { it.size }.toIntArray().parallelPrefixSizes() }
+    }.also { println("Completed prefix scan in: $it") }.value
+
+  val (allFSAPairsFlattened, allFSAPairsOffsets) = levFSA.allPairs2.parallelPrefixScan()
 
   println("\nLinked GPU in ${measureTimeMillis { GPUBridge.setupPython() }}ms\n")
   val clock = TimeSource.Monotonic.markNow()
 
   measureTimeMillis {
     fun FSA.byteFormat(cfg: CFG): UShortArray {
+      val clock =  TimeSource.Monotonic.markNow()
       val terminalLists = cfg.nonterminals.map {
         if (it !in cfg.unitNonterminals) emptyList<Σᐩ>()
         else cfg.bimap.UNITS[it]!!
@@ -65,7 +70,7 @@ fun main() {
 //          .also { if(it != 65534.toUShort()) println("${sp.arg}/$A/$it/${terminalLists[Aidx]}/${terminalLists[Aidx].indexOf(sp.arg.drop(4)) + 1}") }
         }.flatten()
       }.toUShortArray()
-       .also { println("Encoded instance in ${it.size * 2} bytes / ${numStates*numStates*numNonterminals}") }
+       .also { println("Encoded instance in ${it.size * 2} bytes / ${numStates*numStates*numNonterminals} / ${clock.elapsedNow()}") }
     }
 
     val maxSamples = 10_000
@@ -160,7 +165,6 @@ kernel void cfl_mul_upper(
           int idxMC = m * snt + c * numNonterminals + C;
 
           if (dp_in[idxBM] && dp_in[idxMC]) {
-//          if ((dp_in[idxBM] & 0x01 && dp_in[idxMC] & 0x01) || ((1<dp_in[idxBM]) && (1<dp_in[idxMC]))) {
              dp_out[dpIndex] |= 0x01;
              atomic_fetch_add_explicit(&numNonzero, 1, memory_order_relaxed);
              return;
@@ -284,7 +288,7 @@ inline void sampleCellIterative(
     int visitedList[MAX_STACK]; int visitedCount = 0; visitedList[visitedCount++] = startDPIdx;
 
     // While frames left to process, and haven't overflowed localWord
-    for (int iter = 0; iter < maxWordLen * 2 && top > 0 && wordLen < maxWordLen - 5; iter++) {
+    for (int iter = 0; iter < maxWordLen * 9 && top > 0 && wordLen < maxWordLen - 5; iter++) {
       int dpIdx = stack[--top];
       int expCount = bpCount[dpIdx];
       
@@ -310,7 +314,7 @@ inline void sampleCellIterative(
           randIdx = bpOffset[dpIdx] + int(lcg_randomRange(rngState, uint(expCount)));
           idxBM = bpStorage[randIdx * 2 + 0];
           idxMC = bpStorage[randIdx * 2 + 1];
-          visited = alreadyVisited(visitedList, visitedCount, idxBM) && alreadyVisited(visitedList, visitedCount, idxMC);
+          visited = alreadyVisited(visitedList, visitedCount, idxBM) || alreadyVisited(visitedList, visitedCount, idxMC);
         }
 
         if (!visited) { // Restricts overlapping subspans
@@ -517,6 +521,7 @@ private func iterateFixpoint(
 
 // takes a flattened array of sparse quadruples and reconstructs a dense matrix
 private func reconstructDPBuffer(dp_in: UnsafePointer<UInt16>?, dpSize: Int, numStates: Int) -> MTLBuffer {
+    let startTime = DispatchTime.now()
     let totalCount = numStates*numStates*numNonterminals
     let dpSizeBytes = totalCount * MemoryLayout<UInt16>.stride
     let rowMultiplier = numStates * numNonterminals  // Precomputed for row index
@@ -549,6 +554,8 @@ private func reconstructDPBuffer(dp_in: UnsafePointer<UInt16>?, dpSize: Int, num
         }
     }
 
+    let psTimeMs = Double(DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds) / 1_000_000
+    print("Constructed \(numStates)x\(numStates)x\(numNonterminals) parse chart in \(psTimeMs) ms"); fflush(stdout)
     return bufA
 }
 
@@ -626,8 +633,7 @@ private func sampleWords(
         print("Sample \(sIdx): \(Array(wordSlice))"); fflush(stdout)
     }
 
-    let psEnd = DispatchTime.now()
-    let psTimeMs = Double(psEnd.uptimeNanoseconds - startTime.uptimeNanoseconds) / 1_000_000
+    let psTimeMs = Double(DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds) / 1_000_000
     print("...\nSampled words in \(psTimeMs) ms"); fflush(stdout)
 
     return sampledWordsBuf
@@ -763,8 +769,7 @@ private func parallelPrefixSumCPU(countBuf: MTLBuffer, offsetBuf: MTLBuffer, tot
         for i in start..<end { ptrOffset[i] += offsetAdjustment }
     }
 
-    let psEnd = DispatchTime.now()
-    let psTimeMs = Double(psEnd.uptimeNanoseconds - psStart.uptimeNanoseconds) / 1_000_000
+    let psTimeMs = Double(DispatchTime.now().uptimeNanoseconds - psStart.uptimeNanoseconds) / 1_000_000
     print("Computed prefix sum in \(psTimeMs) ms"); fflush(stdout)
 }
 
@@ -806,10 +811,10 @@ private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 
 
   fun genFlattenedBinaryProds(cfg: CFG): String {
     val grammarFlattened = cfg.vindex.map { it.toList() }.flatten().toIntArray()
-    val grLen = grammarFlattened.size.also { println("grLen: $it") }
+    val grLen = grammarFlattened.size//.also { println("grLen: $it") }
     val grammarOffsets = cfg.vindex.map { it.size }
       .fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
-    val goLen = grammarOffsets.size.also { println("goLen: $it") }
+    val goLen = grammarOffsets.size//.also { println("goLen: $it") }
     return "constant int vilen=$grLen; constant int volen=$goLen;" +
         grammarFlattened.joinToString(",", "constant int constant vidx[]={", "};") +
         grammarOffsets.joinToString(",", "constant int vidx_offsets[]={", "};")
