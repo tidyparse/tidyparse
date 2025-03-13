@@ -292,8 +292,8 @@ fun initiateSerialRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequence<Σᐩ> {
 //      if ( == null) it.words(tml) { clock.hasTimeLeft() }
 //      else it.wordsOrdered(tml, ngrams) { clock.hasTimeLeft() }
       }
-      ).also { println("Parsing took ${timer.elapsedNow()} with |σ|=${brokenStr.size}, " +
-        "|Q|=$nStates, |G|=${cfg.size}, maxBranch=$maxBranch, |V|=$width, |Σ|=$tms, maxChildren=$maxChildren@$location") }
+  ).also { println("Parsing took ${timer.elapsedNow()} with |σ|=${brokenStr.size}, " +
+     "|Q|=$nStates, |G|=${cfg.size}, maxBranch=$maxBranch, |V|=$width, |Σ|=$tms, maxChildren=$maxChildren@$location") }
 }
 
 // Same as serial repair, but with strategic pauses to prevent stuttering on single-threaded runtimes

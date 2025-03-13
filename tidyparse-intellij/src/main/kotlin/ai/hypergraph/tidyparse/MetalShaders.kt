@@ -374,10 +374,8 @@ kernel void sample_words(
   ): ByteArray =
     Memory(maxWordLen * maxSamples.toLong()).also { outMem ->
       nativeBridge.cflMultiply(
-        dp_in = Memory(2L * dpIn.size.toLong()).apply { write(0, dpIn.toShortArray(), 0, dpIn.size) },
+        dp_in = Memory(2L * dpIn.size).apply { write(0, dpIn.toShortArray(), 0, dpIn.size) },
         dp_out = outMem,
-//        dp_in = Memory(dpIn.size).apply { write(0, dpIn, 0, dpIn.size) },
-//        dp_out = outMem,
         allFSAPairs = Memory(4L * allFSAPairs.size).apply { write(0, allFSAPairs, 0, allFSAPairs.size) },
         allFSAPairsOffsets = Memory(4L * allFSAPairsOffsets.size).apply { write(0, allFSAPairsOffsets, 0, allFSAPairsOffsets.size) },
         acceptStates =  Memory(4L * acceptStatesSize).apply { write(0, acceptStates, 0, acceptStates.size) },
@@ -424,11 +422,7 @@ kernel void sample_words(
     var N = Int(numStates), ap = Int(allFSAPairsSize), ao = Int(allFSAPairsOffsetsSize)
 
     // Stage 1: Construct the dense parse chart
-    var bufA = reconstructDPBuffer(
-        dp_in: dp_in_sparse,
-        dpSize: Int(dpSize),
-        numStates: Int(numStates)
-    )
+    var bufA = reconstructDPBuffer(dp_in: dp_in_sparse, dpSize: Int(dpSize), numStates: N)
 
     let stride = MemoryLayout<Int32>.stride
     let pairsBuf = device.makeBuffer(bytes: allFSAPairs, length: ap * stride, options: [])!
@@ -484,7 +478,6 @@ private func iterateFixpoint(
     let stride = MemoryLayout<Int32>.stride
     let totalPairs = N*(N-1)/2
     let totalThreads = totalPairs * numNonterminals
-    let tiling = MTLSizeMake(totalThreads,1,1)
 
     let numNonzero = device.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared)!
     var prevValue: UInt32 = 0
@@ -493,22 +486,16 @@ private func iterateFixpoint(
        var zero: UInt32 = 0
        memcpy(numNonzero.contents(), &zero, MemoryLayout<UInt32>.size)
 
-       let cmb = queue.makeCommandBuffer()!
-       let enc = cmb.makeComputeCommandEncoder()!
-       enc.setComputePipelineState(psoCflMul)
-       enc.setBuffer(bufA,        offset: 0,      index: 0)
-       enc.setBuffer(bufA,        offset: 0,      index: 1)
-       enc.setBuffer(pairsBuf,    offset: 0,      index: 2)
-       enc.setBuffer(pairsOffBuf, offset: 0,      index: 3)
-       enc.setBytes(&N,           length: stride, index: 4)
-       enc.setBytes(&ap,          length: stride, index: 5)
-       enc.setBytes(&ao,          length: stride, index: 6)
-       enc.setBuffer(numNonzero,  offset: 0,      index: 7)
-
-       enc.dispatchThreads(tiling, threadsPerThreadgroup: MTLSizeMake(1,1,1))
-       enc.endEncoding()
-       cmb.commit()
-       cmb.waitUntilCompleted()
+       runKernel(pipelineState: psoCflMul, numThreads: totalThreads) { enc in
+          enc.setBuffer(bufA,        offset: 0,      index: 0)
+          enc.setBuffer(bufA,        offset: 0,      index: 1)
+          enc.setBuffer(pairsBuf,    offset: 0,      index: 2)
+          enc.setBuffer(pairsOffBuf, offset: 0,      index: 3)
+          enc.setBytes(&N,           length: stride, index: 4)
+          enc.setBytes(&ap,          length: stride, index: 5)
+          enc.setBytes(&ao,          length: stride, index: 6)
+          enc.setBuffer(numNonzero,  offset: 0,      index: 7)
+       }
 
        let currentValue = numNonzero.contents().bindMemory(to: UInt32.self, capacity: 1).pointee
        if (currentValue == prevValue) {
@@ -530,7 +517,6 @@ private func reconstructDPBuffer(dp_in: UnsafePointer<UInt16>?, dpSize: Int, num
     // Create and initialize bufA
     let bufA = device.makeBuffer(length: dpSizeBytes, options: [])!
     let ptr = bufA.contents().bindMemory(to: UInt16.self, capacity: totalCount)
-    memset(ptr, 0, dpSizeBytes)
     
     // Reconstruct DP array from triples
     if let dp_in = dp_in {
@@ -547,9 +533,7 @@ private func reconstructDPBuffer(dp_in: UnsafePointer<UInt16>?, dpSize: Int, num
                 let r = Int(triples[stride * i])
                 let c = Int(triples[stride * i + 1])
                 let A = Int(triples[stride * i + 2])
-                let s = triples[stride * i + 3]
-                let index = r * rowMultiplier + c * colMultiplier + A
-                ptr[index] = s
+                ptr[r * rowMultiplier + c * colMultiplier + A] = triples[stride * i + 3]
             }
         }
     }
@@ -570,207 +554,153 @@ private func sampleWords(
     acceptStatesPt: UnsafePointer<CInt>?,
     acceptStatesSize: Int
 ) -> MTLBuffer {
-    print("Sampling words..."); fflush(stdout)
+    let t0 = DispatchTime.now()
+    let totalCount = numStates * numStates * numNonterminals
+    let dpPtr = dp_in.contents().bindMemory(to: UInt16.self, capacity: totalCount)
 
-    let startTime = DispatchTime.now()
-    let totalCount = numStates*numStates*numNonterminals
-    let dpInPtr = dp_in.contents().bindMemory(to: UInt16.self, capacity: totalCount)
-
-    let acceptStatesSwift: [Int]
-    if let acceptStatesPtr = acceptStatesPt {
-        acceptStatesSwift = UnsafeBufferPointer(start: acceptStatesPtr, count: acceptStatesSize).map { Int($0) }
-    } else { acceptStatesSwift = [] }
-
-    var startIdxs: [Int32] = []
-    for q in acceptStatesSwift {
+    let acceptStates = acceptStatesPt.map {
+        Array(UnsafeBufferPointer(start: $0, count: acceptStatesSize)).map(Int.init)
+    } ?? []
+    var startIdxs = [Int32]()
+    for q in acceptStates {
         let dpIndex = q * numNonterminals + startIdx
-        if dpInPtr[dpIndex] != 0 { startIdxs.append(Int32(dpIndex)) }
+        if dpPtr[dpIndex] != 0 { startIdxs.append(Int32(dpIndex)) }
     }
-    print("Number of valid startIndices: \(startIdxs.count)/\(acceptStatesSwift.count)"); fflush(stdout)
 
-    let stride = MemoryLayout<Int32>.stride
-    let startIndices = device.makeBuffer(bytes: startIdxs, length: startIdxs.count * stride, options: [])!
-
-    let totSamples = maxSamples, wordLen = maxWordLen
-    var seeds = [UInt32](repeating: 0, count: totSamples)
-    for i in 0..<totSamples { seeds[i] = UInt32.random(in: 0..<UInt32.max) }
-    let seedsBuf = device.makeBuffer(bytes: seeds, length: totSamples * stride, options: [])!
+    let i32stride = MemoryLayout<UInt32>.stride
+    let seeds = (0..<maxSamples).map { _ in UInt32.random(in: .min ..< .max) }
+    let seedsBuf = device.makeBuffer(bytes: seeds, length: maxSamples * i32stride, options: [])!
+    let startBuf = device.makeBuffer(bytes: startIdxs, length: startIdxs.count * i32stride, options: [])!
 
     // We'll store each sampled word in a row of length `maxWordLen`.
-    let sampledWordsSize = maxSamples * maxWordLen
-    let sampledWordsBuf = device.makeBuffer(length: sampledWordsSize, options: [])!
-    memset(sampledWordsBuf.contents(), 0, sampledWordsSize) // Something strange happens here
+    let resultSize = maxSamples * maxWordLen
+    let outBuf = device.makeBuffer(length: resultSize, options: [])!
 
-    let commandBuffer = queue.makeCommandBuffer()!
-    let encoder = commandBuffer.makeComputeCommandEncoder()!
-
-    encoder.setComputePipelineState(psoSmpWord)
-    encoder.setBuffer(dp_in,           offset: 0, index: 0)
-    encoder.setBuffer(bpCount,         offset: 0, index: 1)
-    encoder.setBuffer(bpOffset,        offset: 0, index: 2)
-    encoder.setBuffer(bpStorage,       offset: 0, index: 3)
-    encoder.setBuffer(startIndices,    offset: 0, index: 4)
-    encoder.setBuffer(seedsBuf,        offset: 0, index: 5)
-    encoder.setBuffer(sampledWordsBuf, offset: 0, index: 6)
-    var nsStart = startIdxs.count, nStates = numStates, mwl = maxWordLen
-    encoder.setBytes(&nsStart, length: MemoryLayout<Int32>.size, index: 7)
-    encoder.setBytes(&nStates, length: MemoryLayout<Int32>.size, index: 8)
-    encoder.setBytes(&mwl, length: MemoryLayout<Int32>.size, index: 9)
-    encoder.dispatchThreads(MTLSizeMake(maxSamples, 1, 1), threadsPerThreadgroup: MTLSizeMake(1,1,1))
-
-    encoder.endEncoding()
-    commandBuffer.commit()
-    commandBuffer.waitUntilCompleted()
-
-    let sampSize = totSamples * wordLen
-
-    let ptr = sampledWordsBuf.contents().bindMemory(to: UInt8.self, capacity: sampSize)
-    let buffer = UnsafeBufferPointer(start: ptr, count: sampSize)
-
-    for sIdx in 0..<min(5, totSamples) {
-        let start = sIdx * wordLen
-        let wordSlice = buffer[start..<(start + wordLen)]
-        print("Sample \(sIdx): \(Array(wordSlice))"); fflush(stdout)
+    runKernel(pipelineState: psoSmpWord, numThreads: maxSamples) { enc in
+        enc.setBuffer(dp_in,       offset: 0, index: 0)
+        enc.setBuffer(bpCount,     offset: 0, index: 1)
+        enc.setBuffer(bpOffset,    offset: 0, index: 2)
+        enc.setBuffer(bpStorage,   offset: 0, index: 3)
+        enc.setBuffer(startBuf,    offset: 0, index: 4)
+        enc.setBuffer(seedsBuf,    offset: 0, index: 5)
+        enc.setBuffer(outBuf,      offset: 0, index: 6)
+        var si = Int32(startIdxs.count), n = Int32(numStates), wl = Int32(maxWordLen)
+        enc.setBytes(&si,          length: 4, index: 7)
+        enc.setBytes(&n,           length: 4, index: 8)
+        enc.setBytes(&wl,          length: 4, index: 9)
     }
 
-    let psTimeMs = Double(DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds) / 1_000_000
-    print("...\nSampled words in \(psTimeMs) ms"); fflush(stdout)
+    // Show a few samples.
+    let ptr = outBuf.contents().bindMemory(to: UInt8.self, capacity: resultSize)
+    for i in 0..<min(5, maxSamples) {
+        let slice = Array(UnsafeBufferPointer(start: ptr + i*maxWordLen, count: maxWordLen))
+        print("Sample \(i): \(slice)"); fflush(stdout)
+    }
 
-    return sampledWordsBuf
+    let ms = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000
+    print("Sampled words in \(ms) ms"); fflush(stdout)
+    return outBuf
 }
 
-// Constructs the backpointer references for decoding
 private func buildBackpointers(
-  dp_in: MTLBuffer, // size = N*N*numNonterminals (bytes)
+  dp_in: MTLBuffer,
   allFSAPairs: MTLBuffer,
   allFSAPairsOffsets: MTLBuffer,
   numStates: Int,
   allPairsSize: Int,
   allPairsOffsetsSize: Int
 ) -> (MTLBuffer, MTLBuffer, MTLBuffer) {
+    let t0 = DispatchTime.now()
+
     var N = numStates, ap = allPairsSize, ao = allPairsOffsetsSize
-    let start = DispatchTime.now()
-    // 1) Allocate bpCount
-    let countSize = N * N * numNonterminals * MemoryLayout<Int32>.stride
+    let stride     = MemoryLayout<Int32>.stride
+    let totalCells = (N * (N - 1) / 2) * numNonterminals
+    let countSize  = N * N * numNonterminals * stride
+    let ones       = MTLSize(width: 1, height: 1, depth: 1)
+    let msize      = MTLSize(width: totalCells, height: 1, depth: 1)
+
+    // 1) Allocate bpCount and run "bp_count" kernel
     let bpCountBuf = device.makeBuffer(length: countSize, options: [])!
 
-    // 2) Launch bp_count kernel
-    let totalCells = (N*(N-1))/2 * numNonterminals
-    let tiling = MTLSizeMake(totalCells,1,1)
+    runKernel(pipelineState: psoBpCount, numThreads: totalCells) { enc in
+      enc.setComputePipelineState(psoBpCount)
+      enc.setBuffer(dp_in,               offset: 0,      index: 0)
+      enc.setBuffer(allFSAPairs,         offset: 0,      index: 1)
+      enc.setBuffer(allFSAPairsOffsets,  offset: 0,      index: 2)
+      enc.setBytes(&N,                   length: stride, index: 3)
+      enc.setBytes(&ap,                  length: stride, index: 4)
+      enc.setBytes(&ao,                  length: stride, index: 5)
+      enc.setBuffer(bpCountBuf,          offset: 0,      index: 6)
+    }
 
-    var commandBuffer = queue.makeCommandBuffer()!
-    var encoder = commandBuffer.makeComputeCommandEncoder()!
-    let stride = MemoryLayout<Int32>.stride
-    encoder.setComputePipelineState(psoBpCount)  // create psoBpCount from "bp_count" function
-    encoder.setBuffer(dp_in,               offset: 0,      index: 0)
-    encoder.setBuffer(allFSAPairs,         offset: 0,      index: 1)
-    encoder.setBuffer(allFSAPairsOffsets,  offset: 0,      index: 2)
-    encoder.setBytes(&N,                   length: stride, index: 3)
-    encoder.setBytes(&ap,                  length: stride, index: 4)
-    encoder.setBytes(&ao,                  length: stride, index: 5)
-    encoder.setBuffer(bpCountBuf,          offset: 0,      index: 6)
-
-    encoder.dispatchThreads(tiling, threadsPerThreadgroup: MTLSizeMake(1,1,1))
-    encoder.endEncoding()
-    commandBuffer.commit()
-    commandBuffer.waitUntilCompleted()
-
-    // 3) Compute prefix sum of bpCount --> bpOffset 
+    // 2) Prefix sum of bpCount → bpOffset
     let bpOffsetBuf = device.makeBuffer(length: countSize, options: [])!
     parallelPrefixSumCPU(countBuf: bpCountBuf, offsetBuf: bpOffsetBuf, totalCells: totalCells)
 
-    // 4) Figure out total expansions = last element's offset + last element's count
-    //    (We must read back the prefix sum array, or at least the last element.)
-    var totalExpansions: Int32 = 0
-    do {
-      let ptrOffset = bpOffsetBuf.contents().bindMemory(to: Int32.self, capacity: totalCells)
-      let ptrCount  = bpCountBuf.contents().bindMemory(to: Int32.self,  capacity: totalCells)
-      let lastOffset = ptrOffset[totalCells - 1]
-      let lastCount  = ptrCount[totalCells - 1]
-      totalExpansions = lastOffset + lastCount
+    // 3) Find total expansions from last offset + last count
+    let offPtr  = bpOffsetBuf.contents().bindMemory(to: Int32.self, capacity: totalCells)
+    let cntPtr  = bpCountBuf.contents().bindMemory(to: Int32.self,  capacity: totalCells)
+    let totalExpansions = offPtr[totalCells - 1] + cntPtr[totalCells - 1]
+
+    // 4) Allocate bpStorage and run "bp_write" kernel
+    let bpStorageBuf = device.makeBuffer(length: Int(totalExpansions) * 2 * stride, options: [])!
+
+    runKernel(pipelineState: psoBpCount, numThreads: totalCells) { enc in
+      enc.setComputePipelineState(psoBpWrite)
+      enc.setBuffer(dp_in,              offset: 0,      index: 0)
+      enc.setBuffer(allFSAPairs,        offset: 0,      index: 1)
+      enc.setBuffer(allFSAPairsOffsets, offset: 0,      index: 2)
+      enc.setBytes(&N,                  length: stride, index: 3)
+      enc.setBytes(&ap,                 length: stride, index: 4)
+      enc.setBytes(&ao,                 length: stride, index: 5)
+      enc.setBuffer(bpCountBuf,         offset: 0,      index: 6)
+      enc.setBuffer(bpOffsetBuf,        offset: 0,      index: 7)
+      enc.setBuffer(bpStorageBuf,       offset: 0,      index: 8)
     }
 
-    // 5) Allocate bpStorage - each expansion is 2 ints.
-    let bpStorageSize = Int(totalExpansions) * 2 * MemoryLayout<Int32>.stride
-    let bpStorageBuf = device.makeBuffer(length: bpStorageSize, options: [])!
-
-    // 6) Launch bp_write kernel
-    commandBuffer = queue.makeCommandBuffer()!
-    encoder = commandBuffer.makeComputeCommandEncoder()!
-    encoder.setComputePipelineState(psoBpWrite)
-    encoder.setBuffer(dp_in,              offset: 0,      index: 0)
-    encoder.setBuffer(allFSAPairs,        offset: 0,      index: 1)
-    encoder.setBuffer(allFSAPairsOffsets, offset: 0,      index: 2)
-    encoder.setBytes(&N,                  length: stride, index: 3)
-    encoder.setBytes(&ap,                 length: stride, index: 4)
-    encoder.setBytes(&ao,                 length: stride, index: 5)
-    encoder.setBuffer(bpCountBuf,         offset: 0,      index: 6)
-    encoder.setBuffer(bpOffsetBuf,        offset: 0,      index: 7)
-    encoder.setBuffer(bpStorageBuf,       offset: 0,      index: 8)
-
-    encoder.dispatchThreads(tiling, threadsPerThreadgroup: MTLSizeMake(1,1,1))
-    encoder.endEncoding()
-    commandBuffer.commit()
-    commandBuffer.waitUntilCompleted()
-
-    let end = DispatchTime.now()
-    let nanoTime = end.uptimeNanoseconds - start.uptimeNanoseconds
-    let timeMs = Double(nanoTime) / 1_000_000
-    print("Built backpointers in \(timeMs) ms"); fflush(stdout)
-
+    let ms = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000
+    print("Built backpointers in \(ms) ms"); fflush(stdout)
     return (bpCountBuf, bpOffsetBuf, bpStorageBuf)
 }
 
-// TODO: GPU parallel prefix sum?
-private func parallelPrefixSumCPU(countBuf: MTLBuffer, offsetBuf: MTLBuffer, totalCells: Int) {
-    let psStart = DispatchTime.now()
-    // Bind memory of each buffer to `Int32`.
+func parallelPrefixSumCPU(countBuf: MTLBuffer, offsetBuf: MTLBuffer, totalCells: Int) {
+    let t0 = DispatchTime.now()
     let ptrCount  = countBuf.contents().bindMemory(to: Int32.self, capacity: totalCells)
     let ptrOffset = offsetBuf.contents().bindMemory(to: Int32.self, capacity: totalCells)
 
-    // Decide how many chunks (and threads) we want to use.
-    // For large arrays, 8 or 16 is typical; for smaller arrays, fewer might be fine.
     let numChunks = 8
     let chunkSize = (totalCells + numChunks - 1) / numChunks
-
-    // This array will hold the total sum of each chunk (to be prefix-summed later).
     var partialSum = [Int32](repeating: 0, count: numChunks)
 
-    // === Phase 1: Parallel local prefix sums ===
-    // Each chunk i does:
-    //   offset[start]   = 0
-    //   offset[start+1] = count[start]
-    //   ...
-    //   offset[end-1]   = sum of count from start..(end-2)
-    // The chunk's total sum is partialSum[i].
-    DispatchQueue.concurrentPerform(iterations: numChunks) { chunkIndex in
-        let start = chunkIndex * chunkSize
-        let end   = min(start + chunkSize, totalCells)
-        if start >= end { partialSum[chunkIndex] = 0; return }
-
+    // Phase 1: per-chunk prefix sums
+    DispatchQueue.concurrentPerform(iterations: numChunks) { c in
+        let start = c * chunkSize, end = min(start + chunkSize, totalCells)
         var sum: Int32 = 0
         for i in start..<end { ptrOffset[i] = sum; sum += ptrCount[i] }
-        partialSum[chunkIndex] = sum
+        partialSum[c] = sum
     }
 
-    // === Phase 2: Prefix sum of partialSum array (single-threaded) ===
+    // Phase 2: prefix-sum of partialSum (single-threaded)
     for i in 1..<numChunks { partialSum[i] += partialSum[i - 1] }
 
-    // === Phase 3: Add offsets to each chunk in parallel ===
-    // For chunk i > 0, we add partialSum[i-1] to everything in that chunk's offset array.
-    DispatchQueue.concurrentPerform(iterations: numChunks) { chunkIndex in
-        // chunk 0 doesn't need adjustment because it starts at 0
-        guard chunkIndex > 0 else { return }
-
-        let start = chunkIndex * chunkSize
-        let end   = min(start + chunkSize, totalCells)
-        let offsetAdjustment = partialSum[chunkIndex - 1]
-
-        for i in start..<end { ptrOffset[i] += offsetAdjustment }
+    // Phase 3: add chunk offsets in parallel
+    DispatchQueue.concurrentPerform(iterations: numChunks) { c in
+        guard c > 0 else { return }
+        let start = c * chunkSize, end = min(start + chunkSize, totalCells)
+        let offset = partialSum[c - 1]
+        for i in start..<end { ptrOffset[i] += offset }
     }
 
-    let psTimeMs = Double(DispatchTime.now().uptimeNanoseconds - psStart.uptimeNanoseconds) / 1_000_000
-    print("Computed prefix sum in \(psTimeMs) ms"); fflush(stdout)
+    let ms = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000
+    print("Prefix sum completed in \(ms) ms"); fflush(stdout)
+}
+
+func runKernel(pipelineState: MTLComputePipelineState, numThreads: Int, body: (MTLComputeCommandEncoder) -> Void) {
+    let commandBuffer = queue.makeCommandBuffer()!, enc = commandBuffer.makeComputeCommandEncoder()!
+    enc.setComputePipelineState(pipelineState)
+    body(enc)
+    enc.dispatchThreads(MTLSize(width: numThreads, height: 1, depth: 1), threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+    enc.endEncoding(); commandBuffer.commit(); commandBuffer.waitUntilCompleted()
 }
 
 private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 0, startIdx: Int = 0,
