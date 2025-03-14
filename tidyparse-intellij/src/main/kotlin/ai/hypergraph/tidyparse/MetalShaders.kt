@@ -2,14 +2,15 @@
 
 package ai.hypergraph.tidyparse
 
+import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.kaliningraph.repair.pythonStatementCNF
-import ai.hypergraph.kaliningraph.tokenizeByWhitespace
+import ai.hypergraph.kaliningraph.repair.*
 import com.sun.jna.*
 import org.intellij.lang.annotations.Language
 import java.io.File
 import java.util.*
+import kotlin.math.absoluteValue
 import kotlin.system.measureTimeMillis
 import kotlin.time.*
 
@@ -25,7 +26,7 @@ fun main() {
   val levFSA = makeLevFSA(pythonCode, radius)
   val maxWordLen = pythonCode.size + radius + 10
 
-//  initiateSerialRepair(pythonCode, cfg).take(100).forEach { println("$it / ${it in cfg.language}") }
+  initiateSerialRepair(pythonCode, cfg).take(10).forEach { println("$it / ${it in cfg.language}") }
 //  System.exit(1)
 
   val numStates = levFSA.numStates
@@ -41,11 +42,11 @@ fun main() {
     measureTimedValue {
       mapIndexed { p, outer -> outer.mapIndexed { q, inner -> inner.filter { it in (p + 1)..<q } } }.flatten()
         .let { it.flatten().toIntArray() to it.map { it.size }.toIntArray().parallelPrefixSizes() }
-    }.also { println("Completed prefix scan in: $it") }.value
+    }.also { println("Completed prefix scan in: ${it.duration}") }.value
 
-  val (allFSAPairsFlattened, allFSAPairsOffsets) = levFSA.allPairs2.parallelPrefixScan()
+  val (allFSAPairsFlattened, allFSAPairsOffsets) = levFSA.midpoints.parallelPrefixScan()
 
-  println("\nLinked GPU in ${measureTimeMillis { GPUBridge.setupPython() }}ms\n")
+  println("\nLinked GPU in ${measureTimeMillis { GPUBridge.setupCFG(cfg) }}ms\n")
   val clock = TimeSource.Monotonic.markNow()
 
   measureTimeMillis {
@@ -66,7 +67,11 @@ fun main() {
       return cfg.unitProductions.flatMap { (A, σ) ->
         nominalForm.flattenedTriples.filter { arc -> arc.second(σ) }.map { (q0, sp, q1) ->
           val Aidx = cfg.bindex[A]
-          listOf(stateMap[q0]!!, stateMap[q1]!!, Aidx).map { it.toUShort() } + sp.predByte(Aidx)
+          // row, col, Aidx, terminal encoding
+          val pb = sp.predByte(Aidx)
+//          if (!sp.arg.startsWith("[!=]") && sp.arg.toString() !in setOf("NAME", "STRING"))
+//          println(A + "->" + sp.arg.toString() + " ::= " + pb.toString(2).padStart(16, '0'))
+          listOf(stateMap[q0]!!, stateMap[q1]!!, Aidx).map { it.toUShort() } + pb
 //          .also { if(it != 65534.toUShort()) println("${sp.arg}/$A/$it/${terminalLists[Aidx]}/${terminalLists[Aidx].indexOf(sp.arg.drop(4)) + 1}") }
         }.flatten()
       }.toUShortArray()
@@ -74,8 +79,10 @@ fun main() {
     }
 
     val maxSamples = 10_000
+
+    // This should match the CPU reference implementation exactly, but tends to produce many invalid samples
     val samples = GPUBridge.cflClosure(
-      levFSA.byteFormat(cfg),
+      levFSA.byteFormat(cfg).also { println("Bytes: ${it.size}") },
       allFSAPairsFlattened, allFSAPairsOffsets,
       levFSA.finalIdxs.toIntArray(), levFSA.finalIdxs.size,
       numStates, maxWordLen, maxSamples
@@ -89,8 +96,6 @@ fun main() {
       else if (it - 1 == 0) "" // TODO: why do we need to block NEWLINE?
       else cfg.tmLst[it.toInt() - 1]
     }.split(Regex("( 0)+")) // Runs of zeros delimit individual words
-      .map { it.replace(" return", " ") }
-      .map { it.replace(" ...", " ") } // TODO: remove all postprocessing
       .filter { it.isNotBlank() }
       .map { it.tokenizeByWhitespace().joinToString(" ") }
       .distinct()
@@ -106,14 +111,173 @@ fun main() {
   }.also { println("Total time: ${it}ms\n") }
 }
 
+fun initiateSerialRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequence<Σᐩ> {
+  val upperBound = MAX_RADIUS * 3
+//  val monoEditBounds = cfg.maxParsableFragmentB(brokenStr, pad = upperBound)
+  val timer = TimeSource.Monotonic.markNow()
+  val bindex = cfg.bindex
+  val width = cfg.nonterminals.size
+  val vindex = cfg.vindex
+  val ups = cfg.unitProductions
+  val t2vs = cfg.tmToVidx
+  val maxBranch = vindex.maxOf { it.size }
+  val startIdx = bindex[START_SYMBOL]
+
+  fun nonemptyLevInt(levFSA: FSA): Int? {
+    val ap: List<List<List<Int>?>> = levFSA.allPairs
+    val dp = Array(levFSA.numStates) { Array(levFSA.numStates) { BooleanArray(width) { false } } }
+
+    levFSA.allIndexedTxs0(ups, bindex).forEach { (q0, nt, q1) -> dp[q0][q1][nt] = true }
+    var minRad: Int = Int.MAX_VALUE
+
+    // For pairs (p,q) in topological order
+    for (dist: Int in 1 until dp.size) {
+      for (iP: Int in 0 until dp.size - dist) {
+        val p = iP
+        val q = iP + dist
+        if (ap[p][q] == null) continue
+        val appq = ap[p][q]!!
+        for ((A: Int, indexArray: IntArray) in vindex.withIndex()) {
+          outerloop@for(j: Int in 0..<indexArray.size step 2) {
+            val B = indexArray[j]
+            val C = indexArray[j + 1]
+            for (r in appq)
+              if (dp[p][r][B] && dp[r][q][C]) {
+                dp[p][q][A] = true
+                break@outerloop
+              }
+          }
+
+          if (p == 0 && A == startIdx && q in levFSA.finalIdxs && dp[p][q][A]) {
+            val (x, y) = levFSA.idsToCoords[q]!!
+            /** See final state conditions for [makeExactLevCFL] */
+            // The minimum radius such that this final state is included in the L-FSA
+            minRad = minOf(minRad, (brokenStr.size - x + y).absoluteValue)
+          }
+        }
+      }
+    }
+
+    return if (minRad == Int.MAX_VALUE) null else minRad
+  }
+
+  val led = (3 until upperBound)
+    .firstNotNullOfOrNull { nonemptyLevInt(makeLevFSA(brokenStr, it)) } ?:
+  upperBound.also { println("Hit upper bound") }
+  val radius = led + LED_BUFFER
+
+  println("Identified LED=$led, radius=$radius in ${timer.elapsedNow()}")
+
+  val levFSA = makeLevFSA(brokenStr, radius)
+
+  val nStates = levFSA.numStates
+  val tml = cfg.tmLst
+  val tms = tml.size
+  val tmm = cfg.tmMap
+
+  // 1) Create dp array of parse trees
+  val dp: Array<Array<Array<GRE?>>> = Array(nStates) { Array(nStates) { Array(width) { null } } }
+
+  // 2) Initialize terminal productions A -> a
+  val aitx = levFSA.allIndexedTxs1(ups)
+  for ((p, σ, q) in aitx) for (Aidx in t2vs[tmm[σ]!!])
+    dp[p][q][Aidx] = ((dp[p][q][Aidx] as? GRE.SET) ?: GRE.SET(tms))
+      .apply { s.set(tmm[σ]!!)/*; dq[p][q].set(Aidx)*/ }
+
+  var maxChildren = 0
+  var location = -1 to -1
+
+  // 3) CYK + Floyd Warshall parsing
+  for (dist in 1 until nStates) {
+    for (p in 0 until (nStates - dist)) {
+      val q = p + dist
+      if (levFSA.allPairs[p][q] == null) continue
+      val appq = levFSA.allPairs[p][q]!!
+
+      for ((Aidx, indexArray) in vindex.withIndex()) {
+        //      println("${cfg.bindex[Aidx]}(${pm!!.ntLengthBounds[Aidx]}):${levFSA.stateLst[p]}-${levFSA.stateLst[q]}(${levFSA.SPLP(p, q)})")
+        val rhsPairs = dp[p][q][Aidx]?.let { mutableListOf(it) } ?: mutableListOf()
+        outerLoop@for (j in 0..<indexArray.size step 2) {
+          val Bidx = indexArray[j]
+          val Cidx = indexArray[j + 1]
+          for (r in appq) {
+            val left = dp[p][r][Bidx]
+            if (left == null) continue
+            val right = dp[r][q][Cidx]
+            if (right == null) continue
+            // Found a parse for A
+            rhsPairs += left * right
+            //            if (rhsPairs.size > 10) break@outerLoop
+          }
+        }
+
+        val list = rhsPairs.toTypedArray()
+        if (rhsPairs.isNotEmpty()) {
+          if (list.size > maxChildren) {
+            maxChildren = list.size
+            location = p to q
+          }
+          dp[p][q][Aidx] = GRE.CUP(*list)
+        }
+      }
+    }
+  }
+
+  println("Completed parse matrix in: ${timer.elapsedNow()}")
+
+  // 4) Gather final parse trees from dp[0][f][startIdx], for all final states f
+  val allParses = levFSA.finalIdxs.mapNotNull { q -> dp[0][q][startIdx] }
+
+  val clock = TimeSource.Monotonic.markNow()
+  // 5) Combine them under a single GRE
+  return (
+      if (allParses.isEmpty()) sequenceOf()
+      else GRE.CUP(*allParses.toTypedArray()).let {
+        it.words(tml) { clock.hasTimeLeft() }
+//      if ( == null) it.words(tml) { clock.hasTimeLeft() }
+//      else it.wordsOrdered(tml, ngrams) { clock.hasTimeLeft() }
+      }
+  ).also { println("Parsing took ${timer.elapsedNow()} with |σ|=${brokenStr.size}, " +
+     "|Q|=$nStates, |G|=${cfg.size}, maxBranch=$maxBranch, |V|=$width, |Σ|=$tms, maxChildren=$maxChildren@$location") }
+}
+
+sealed class GRE(open vararg val args: GRE) {
+  class SET(val s: KBitSet): GRE() { constructor(size: Int): this(KBitSet(size)) }
+  class CUP(override vararg val args: GRE): GRE(*args)
+  class CAT(val l: GRE, val r: GRE): GRE(l, r)
+
+  fun words(terminals: List<Σᐩ>, shouldContinue: () -> Boolean = { true }): Sequence<Σᐩ> =
+    enumerate(shouldContinue).takeWhile { shouldContinue() }.distinct()
+      .map { it.mapNotNull { terminals[it].let { if (it == "ε") null else it } }.joinToString(" ") }
+
+  fun enumerate(shouldContinue: () -> Boolean = { true }): Sequence<List<Int>> = sequence {
+    if (!shouldContinue()) emptySequence<List<Int>>()
+    else when (this@GRE) {
+      is SET -> yieldAll(s.toList().map { listOf(it) })
+      is CUP -> for (a in args) yieldAll(a.enumerate(shouldContinue))
+//      yieldAll(args.map { it.enumerate().toSet() }.reduce { a, b -> a + b })
+      is CAT -> for (lhs in l.enumerate(shouldContinue)) for (rhs in r.enumerate(shouldContinue))
+        if (lhs.isEmpty()) {
+          if (rhs.isEmpty()) yield(emptyList()) else rhs
+        } else {
+          if (rhs.isEmpty()) yield(lhs)
+          else yield(lhs + rhs)
+        }
+    }
+  }
+
+  operator fun plus(g: GRE): GRE = CUP(this, g)
+  operator fun times(g: GRE): GRE = CAT(this, g)
+}
+
 object GPUBridge {
-  @Language("c++") val metalSrc = """
+  @Language("c++") fun metalSrc(grammarHeader: String) = """
 // https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf
 #include <metal_stdlib>
 using namespace metal;
 
-// The following header must be regenerated on a per-CFG basis
-${encodeGrammarHeader()}
+// The following header is regenerated on a per-CFG basis
+$grammarHeader
 
 // Helper to decode (row,col) in the upper-triangle from tid
 inline void decodeUpperTriangle(int i, int N, thread int &r, thread int &c) {
@@ -139,12 +303,12 @@ kernel void cfl_mul_upper(
 ) {
     int r, c;
     decodeUpperTriangle(int(tid) / numNonterminals, numStates, r, c);
-    int A = tid % numNonterminals, snt = numStates * numNonterminals, dpIndex = r*snt + c*numNonterminals + A;
+    int A = tid % numNonterminals, snt = numStates * numNonterminals, dpIdx = r*snt + c*numNonterminals + A;
 
-    if (dp_in[dpIndex]) {
-      dp_out[dpIndex] = dp_in[dpIndex];
+    if (dp_in[dpIdx]) {
+      dp_out[dpIdx] = dp_in[dpIdx];
       atomic_fetch_add_explicit(&numNonzero, 1, memory_order_relaxed);
-      if (dp_in[dpIndex] & 0x01) return; // The last bit will represent a nonterminal
+      if (dp_in[dpIdx] & 0x01) return; // The last bit will represent a nonterminal
     }
 
     // Grammar offsets for A
@@ -165,7 +329,7 @@ kernel void cfl_mul_upper(
           int idxMC = m * snt + c * numNonterminals + C;
 
           if (dp_in[idxBM] && dp_in[idxMC]) {
-             dp_out[dpIndex] |= 0x01;
+             dp_out[dpIdx] |= 0x01;
              atomic_fetch_add_explicit(&numNonzero, 1, memory_order_relaxed);
              return;
           }
@@ -188,9 +352,9 @@ kernel void bp_count(
 
     int r, c;
     decodeUpperTriangle(tid / numNonterminals, N, r, c);
-    int A = tid % numNonterminals, snt = N * numNonterminals, dpIndex = r*snt + c*numNonterminals + A;
+    int A = tid % numNonterminals, snt = N * numNonterminals, dpIdx = r*snt + c*numNonterminals + A;
 
-    if (!(dp_in[dpIndex] & 0x01)) { bpCount[dpIndex] = 0; return; }
+    if (!(dp_in[dpIdx] & 0x01)) { bpCount[dpIdx] = 0; return; }
 
     // Grammar offsets for A
     int startGC = vidx_offsets[A];
@@ -230,13 +394,12 @@ kernel void bp_write(
   uint tid [[thread_position_in_grid]]
 ) {
     int N = numStates;
-    int totalCells = (N*(N-1))/2 * numNonterminals;
 
     int r, c;
     decodeUpperTriangle(tid / numNonterminals, N, r, c);
-    int A = tid % numNonterminals, snt = N * numNonterminals, dpIndex = r*snt + c*numNonterminals + A;
+    int A = tid % numNonterminals, snt = N * numNonterminals, dpIdx = r*snt + c*numNonterminals + A;
 
-    if (!(dp_in[dpIndex] & 0x01)) return;
+    if (!(dp_in[dpIdx] & 0x01)) return;
 
     // Grammar offsets
     int startGC = vidx_offsets[A];
@@ -245,7 +408,7 @@ kernel void bp_write(
     int aoi = r*N + c + 1;
     int pairOffset = allFSAPairsOffsets[aoi - 1];
     int pairOffsetNext = (aoi < allFSAPairsOffsetsSize) ? allFSAPairsOffsets[aoi] : allFSAPairsSize;
-    int outPos = bpOffset[dpIndex];
+    int outPos = bpOffset[dpIdx];
 
     // Exactly like bp_count, but now we store expansions
     for (int idx = pairOffset; idx < pairOffsetNext; idx++)
@@ -273,7 +436,7 @@ inline bool alreadyVisited( thread const int* visitedList, int visitedCount, int
     return false;
 }
 
-inline void sampleCellIterative(
+inline void sampleTopDown(
   const device ushort*   dp_in,
   const device int*      bpCount,
   const device int*      bpOffset,
@@ -285,14 +448,17 @@ inline void sampleCellIterative(
   const int              maxWordLen
 ) {
     constexpr int MAX_STACK = 1024; int stack[MAX_STACK]; int top = 0; stack[top++] = startDPIdx;
-    int visitedList[MAX_STACK]; int visitedCount = 0; visitedList[visitedCount++] = startDPIdx;
+    int visitedList[MAX_STACK]; int visitedCount = 0;
 
     // While frames left to process, and haven't overflowed localWord
     for (int iter = 0; iter < maxWordLen * 9 && top > 0 && wordLen < maxWordLen - 5; iter++) {
       int dpIdx = stack[--top];
       int expCount = bpCount[dpIdx];
       
-      if ((dp_in[dpIdx] >> 1) && !(dp_in[dpIdx] & 0x01)) { // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
+      bool vst = alreadyVisited(visitedList, visitedCount, dpIdx);
+      visitedList[visitedCount++] = dpIdx;
+      
+      if ((dp_in[dpIdx] >> 1) && (!(dp_in[dpIdx] & 0x01) || vst)) { // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
         int nonterminal = dpIdx % numNonterminals;
         int predicate = dp_in[dpIdx];
         bool isNegativeLiteral = predicate & 0x8000;
@@ -308,9 +474,9 @@ inline void sampleCellIterative(
           ushort tmChoice = possibleTms[int(lcg_randomRange(rngState, uint(tmCount)))];
           localWord[wordLen++] = tmChoice + 1;
         } else { localWord[wordLen++] = (numTms != 0) ? all_tm[ntOffset + literal - 1] + 1 : 99; } // Must have been a positive literal
-      } else if (top + 2 < MAX_STACK) {
+      } else if ((top + 2 < MAX_STACK) && !vst) {
         int randIdx, idxBM, idxMC; bool visited = true;
-        for (int j = 0; j < 10 && visited; j++) {
+        for (int j = 0; j < expCount && visited; j++) {
           randIdx = bpOffset[dpIdx] + int(lcg_randomRange(rngState, uint(expCount)));
           idxBM = bpStorage[randIdx * 2 + 0];
           idxMC = bpStorage[randIdx * 2 + 1];
@@ -318,13 +484,11 @@ inline void sampleCellIterative(
         }
 
         if (!visited) { // Restricts overlapping subspans
-          visitedList[visitedCount++] = idxBM; visitedList[visitedCount++] = idxMC;
+//          visitedList[visitedCount++] = idxBM; visitedList[visitedCount++] = idxMC;
           stack[top++] = idxMC; stack[top++] = idxBM;
         } 
       }
     }
-    
-//    for (int i = wordLen; i < maxWordLen; i++) { localWord[wordLen++] = 0; }
 }
 
 kernel void sample_words(
@@ -357,7 +521,7 @@ kernel void sample_words(
     int startIdx = r*snt + c*numNonterminals + A;
 
     int wordLen = 0;
-    sampleCellIterative(dp_in, bpCount, bpOffset, bpStorage, startIdx, rngState, localWord, wordLen, maxWordLen);
+    sampleTopDown(dp_in, bpCount, bpOffset, bpStorage, startIdx, rngState, localWord, wordLen, maxWordLen);
 
     for (int i=0; i<maxWordLen; i++) sampledWords[int(tid)*maxWordLen + i] = localWord[i];
 }
@@ -368,7 +532,7 @@ kernel void sample_words(
   @JvmStatic fun cflClosure(
 /**[NativeBridge.cflMultiply] */
     dpIn: UShortArray,
-    allFSAPairs: IntArray, allFSAPairsOffsets: IntArray,
+    mdpts: IntArray, mdptsOffsets: IntArray,
     acceptStates: IntArray, acceptStatesSize: Int,
     numStates: Int, maxWordLen: Int, maxSamples: Int
   ): ByteArray =
@@ -376,14 +540,14 @@ kernel void sample_words(
       nativeBridge.cflMultiply(
         dp_in = Memory(2L * dpIn.size).apply { write(0, dpIn.toShortArray(), 0, dpIn.size) },
         dp_out = outMem,
-        allFSAPairs = Memory(4L * allFSAPairs.size).apply { write(0, allFSAPairs, 0, allFSAPairs.size) },
-        allFSAPairsOffsets = Memory(4L * allFSAPairsOffsets.size).apply { write(0, allFSAPairsOffsets, 0, allFSAPairsOffsets.size) },
+        allFSAPairs = Memory(4L * mdpts.size).apply { write(0, mdpts, 0, mdpts.size) },
+        allFSAPairsOffsets = Memory(4L * mdptsOffsets.size).apply { write(0, mdptsOffsets, 0, mdptsOffsets.size) },
         acceptStates =  Memory(4L * acceptStatesSize).apply { write(0, acceptStates, 0, acceptStates.size) },
         acceptStatesSize = acceptStatesSize,
         dpSize = dpIn.size,
         numStates = numStates,
-        allFSAPairsSize = allFSAPairs.size,
-        allFSAPairsOffsetsSize = allFSAPairsOffsets.size,
+        allFSAPairsSize = mdpts.size,
+        allFSAPairsOffsetsSize = mdptsOffsets.size,
         maxWordLen = maxWordLen,
         maxSamples = maxSamples
       )
@@ -457,8 +621,8 @@ kernel void sample_words(
         maxWordLen: Int(maxWordLen),
         maxSamples: Int(maxSamples),
         numStates: N,
-        acceptStatesPt: acceptStates,
-        acceptStatesSize: Int(acceptStatesSize)
+        accsPt: acceptStates,
+        accsSize: Int(acceptStatesSize)
     )
 
     memcpy(dp_out, sampledWordsBuf.contents(), Int(maxSamples) * Int(maxWordLen))
@@ -551,16 +715,14 @@ private func sampleWords(
     maxWordLen: Int,
     maxSamples: Int,
     numStates: Int,
-    acceptStatesPt: UnsafePointer<CInt>?,
-    acceptStatesSize: Int
+    accsPt: UnsafePointer<CInt>?,
+    accsSize: Int
 ) -> MTLBuffer {
     let t0 = DispatchTime.now()
     let totalCount = numStates * numStates * numNonterminals
     let dpPtr = dp_in.contents().bindMemory(to: UInt16.self, capacity: totalCount)
 
-    let acceptStates = acceptStatesPt.map {
-        Array(UnsafeBufferPointer(start: $0, count: acceptStatesSize)).map(Int.init)
-    } ?? []
+    let acceptStates = accsPt.map { Array(UnsafeBufferPointer(start: $0, count: accsSize)).map(Int.init) } ?? []
     var startIdxs = [Int32]()
     for q in acceptStates {
         let dpIndex = q * numNonterminals + startIdx
@@ -623,7 +785,6 @@ private func buildBackpointers(
     let bpCountBuf = device.makeBuffer(length: countSize, options: [])!
 
     runKernel(pipelineState: psoBpCount, numThreads: totalCells) { enc in
-      enc.setComputePipelineState(psoBpCount)
       enc.setBuffer(dp_in,               offset: 0,      index: 0)
       enc.setBuffer(allFSAPairs,         offset: 0,      index: 1)
       enc.setBuffer(allFSAPairsOffsets,  offset: 0,      index: 2)
@@ -645,8 +806,7 @@ private func buildBackpointers(
     // 4) Allocate bpStorage and run "bp_write" kernel
     let bpStorageBuf = device.makeBuffer(length: Int(totalExpansions) * 2 * stride, options: [])!
 
-    runKernel(pipelineState: psoBpCount, numThreads: totalCells) { enc in
-      enc.setComputePipelineState(psoBpWrite)
+    runKernel(pipelineState: psoBpWrite, numThreads: totalCells) { enc in
       enc.setBuffer(dp_in,              offset: 0,      index: 0)
       enc.setBuffer(allFSAPairs,        offset: 0,      index: 1)
       enc.setBuffer(allFSAPairsOffsets, offset: 0,      index: 2)
@@ -722,10 +882,9 @@ private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 
     psoSmpWord  = try! device.makeComputePipelineState(function: library.makeFunction(name: "sample_words")!)
 }"""
 
-  fun encodeGrammarHeader(cfg: CFG = pythonStatementCNF): String =
-    genNTTerminalMapping(cfg) + genFlattenedBinaryProds(cfg)
+  private fun grammarHeader(cfg: CFG): String = genNTTerminalMap(cfg) + genFlattenedBinaryProds(cfg)
 
-  fun genNTTerminalMapping(cfg: CFG): String {
+  private fun genNTTerminalMap(cfg: CFG): String {
     val terminalLists = cfg.nonterminals.map {
       if (it !in cfg.unitNonterminals) emptyList<Int>()
       else cfg.bimap.UNITS[it]!!.map { cfg.tmMap[it]!! }
@@ -739,23 +898,19 @@ private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 
               constant int numNonterminals = ${cfg.nonterminals.size};""".trimIndent()
   }
 
-  fun genFlattenedBinaryProds(cfg: CFG): String {
+  private fun genFlattenedBinaryProds(cfg: CFG): String {
     val grammarFlattened = cfg.vindex.map { it.toList() }.flatten().toIntArray()
-    val grLen = grammarFlattened.size//.also { println("grLen: $it") }
-    val grammarOffsets = cfg.vindex.map { it.size }
-      .fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
-    val goLen = grammarOffsets.size//.also { println("goLen: $it") }
-    return "constant int vilen=$grLen; constant int volen=$goLen;" +
+    val grammarOffsets = cfg.vindex.map { it.size }.fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
+    return "constant int vilen=${grammarFlattened.size}; constant int volen=${grammarOffsets.size};" +
         grammarFlattened.joinToString(",", "constant int constant vidx[]={", "};") +
         grammarOffsets.joinToString(",", "constant int vidx_offsets[]={", "};")
   }
 
-  private val nativeBridge: NativeBridge =
-    if (System.getProperty("os.name").startsWith("Mac")) getMetalBridge() else TODO()
+  private val nativeBridge: NativeBridge = if (System.getProperty("os.name").startsWith("Mac")) metalBridge() else TODO()
 
-  fun setupPython() = pythonStatementCNF.run { nativeBridge.setup(nonterminals.size, bindex[START_SYMBOL], metalSrc) }
+  fun setupCFG(cfg: CFG) = nativeBridge.setup(cfg.nonterminals.size, cfg.bindex[START_SYMBOL], metalSrc(grammarHeader(cfg)))
 
-  private fun getMetalBridge(): NativeBridge {
+  private fun metalBridge(): NativeBridge {
     val directory = "src/main/resources/dlls".also { File(it).mkdirs() }
     val dylib = File("$directory/libMetalBridge.dylib")
 
