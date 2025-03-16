@@ -93,7 +93,7 @@ fun main() {
     val (valid, invalid) = samples.joinToString(" ") {
       if (it + 0 == 0) "0" // Should only happen at the end of the word
       else if (it - 1 !in cfg.tmLst.indices) "??${it.toInt()}??" // Should never happen
-      else if (it - 1 == 0) "" // TODO: why do we need to block NEWLINE?
+      else if (it - 1 == 0) "NL" // TODO: why do we need to block NEWLINE?
       else cfg.tmLst[it.toInt() - 1]
     }.split(Regex("( 0)+")) // Runs of zeros delimit individual words
       .filter { it.isNotBlank() }
@@ -223,6 +223,29 @@ fun initiateSerialRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequence<Σᐩ> {
     }
   }
 
+//  fun Array<Array<Array<GRE?>>>.debugCounts() {
+//    for (r in this.indices) {
+//      val row = this[r]
+//      for (c in row.indices) {
+//        val count = row[c].count { it != null }
+//        print(if (count == 0) "    " else "$count".padEnd(4, ' '))
+//      }
+//      println()
+//    }
+//  }
+//  dp.debugCounts()
+//  fun Array<Array<Array<GRE?>>>.debugShape() {
+//    for (r in this.indices) {
+//      val row = this[r]
+//      val rowStrings = row.indices.map { c ->
+//        if (row[c].any { it != null }) "X" else " "
+//      }
+//      println(rowStrings.joinToString(""))
+//    }
+//  }
+//
+//  dp.debugShape()
+
   println("Completed parse matrix in: ${timer.elapsedNow()}")
 
   // 4) Gather final parse trees from dp[0][f][startIdx], for all final states f
@@ -302,7 +325,7 @@ kernel void cfl_mul_upper(
   uint                 tid                     [[thread_position_in_grid]]
 ) {
     int r, c;
-    decodeUpperTriangle(int(tid) / numNonterminals, numStates, r, c);
+    decodeUpperTriangle((tid) / numNonterminals, numStates, r, c);
     int A = tid % numNonterminals, snt = numStates * numNonterminals, dpIdx = r*snt + c*numNonterminals + A;
 
     if (dp_in[dpIdx]) {
@@ -321,14 +344,18 @@ kernel void cfl_mul_upper(
     int pairOffsetNext = (aoi < allFSAPairsOffsetsSize) ? allFSAPairsOffsets[aoi] : allFSAPairsSize;
 
     // loop over midpoints
-    for (int idx = pairOffset; idx < pairOffsetNext; idx++)
-       for (int g = startGC, m = allFSAPairs[idx]; g < endGC; g += 2) {
+    for (int pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx++)
+       for (int g = startGC, m = allFSAPairs[pairIdx]; g < endGC; g += 2) {
           int B = vidx[g]; int C = vidx[g+1];
           
           int idxBM = r * snt + m * numNonterminals + B;
           int idxMC = m * snt + c * numNonterminals + C;
 
-          if (dp_in[idxBM] && dp_in[idxMC]) {
+          if (dp_in[idxBM] && dp_in[idxMC]
+//              && r < m && m < c 
+//              && idxBM < dpIdx
+//              && idxMC > dpIdx
+          ) {
              dp_out[dpIdx] |= 0x01;
              atomic_fetch_add_explicit(&numNonzero, 1, memory_order_relaxed);
              return;
@@ -347,7 +374,7 @@ kernel void bp_count(
   uint tid [[thread_position_in_grid]]
 ) {
     int N = numStates;
-    int totalCells = (N*(N-1))/2 * numNonterminals;
+    int totalCells = (N * (N - 1) / 2) * numNonterminals;
     if (tid >= totalCells) return;
 
     int r, c;
@@ -367,17 +394,21 @@ kernel void bp_count(
 
     int count = 0;
     // loop over midpoints
-    for (int idx = pairOffset; idx < pairOffsetNext; idx++)
-      for (int g = startGC, m = allFSAPairs[idx]; g < endGC; g += 2) {
+    for (int pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx++)
+      for (int g = startGC, m = allFSAPairs[pairIdx]; g < endGC; g += 2) {
         int B = vidx[g], C = vidx[g+1];
 
         int idxBM = r*snt + m*numNonterminals + B;
         int idxMC = m*snt + c*numNonterminals + C;
-        if (dp_in[idxBM] && dp_in[idxMC]) count++;
+        if (dp_in[idxBM] && dp_in[idxMC]
+            && r < m && m < c 
+            && idxBM < dpIdx
+            && idxMC > dpIdx
+         ) count++;
 //        if ((dp_in[idxBM] & 0x01 && dp_in[idxMC] & 0x01) || ((1<dp_in[idxBM]) && (1<dp_in[idxMC]))) count++;
       }
 
-    bpCount[r*snt + c*numNonterminals + A] = count;//max(count, 1);
+    bpCount[dpIdx] = count;//max(count, 1);
 }
 
 kernel void bp_write(
@@ -411,13 +442,18 @@ kernel void bp_write(
     int outPos = bpOffset[dpIdx];
 
     // Exactly like bp_count, but now we store expansions
-    for (int idx = pairOffset; idx < pairOffsetNext; idx++)
-      for (int g = startGC, m = allFSAPairs[idx]; g < endGC; g += 2) {
-        int B = vidx[g], C = vidx[g+1];
+    for (int pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx++)
+      for (int poff = startGC, mdpt = allFSAPairs[pairIdx]; poff < endGC; poff += 2) {
+        int B = vidx[poff], C = vidx[poff+1];
 
-        int idxBM = r*snt + m*numNonterminals + B;
-        int idxMC = m*snt + c*numNonterminals + C;
-        if (dp_in[idxBM] && dp_in[idxMC]) {
+        int idxBM = r*snt + mdpt*numNonterminals + B;
+        int idxMC = mdpt*snt + c*numNonterminals + C;
+        if (dp_in[idxBM] && dp_in[idxMC] 
+            && r < mdpt && mdpt < c 
+            && idxBM < dpIdx  // Why are these necessary? Maybe indexing bug?
+            && idxMC > dpIdx
+        ) {
+//          if (2*bpCount[dpIdx] < (outPos - bpOffset[dpIdx])) return;
           // store (B, m, C) in bpStorage
           // Suppose each triple is 2 consecutive int in bpStorage:
           bpStorage[outPos*2 + 0] = idxBM;
@@ -431,9 +467,9 @@ inline uint lcg_random(thread uint& state) { return 1664525u * state + 101390422
 //inline uint lcg_random(thread uint& state) { return state % 10; }
 inline uint lcg_randomRange(thread uint& state, uint range) { return lcg_random(state) % range; }
 
-inline bool alreadyVisited( thread const int* visitedList, int visitedCount, int candidate ) {
-    for (int i = 0; i < visitedCount; i++) { if (visitedList[i] == candidate) return true; }
-    return false;
+inline int alreadyVisited(thread const int* visitedList, int visitedCount, int candidate) {
+    for (int i = visitedCount; 0 < i; i--) { if (visitedList[i] == candidate) return i + 1; }
+    return 0;
 }
 
 inline void sampleTopDown(
@@ -451,16 +487,16 @@ inline void sampleTopDown(
     int visitedList[MAX_STACK]; int visitedCount = 0;
 
     // While frames left to process, and haven't overflowed localWord
-    for (int iter = 0; iter < maxWordLen * 9 && top > 0 && wordLen < maxWordLen - 5; iter++) {
+    for (int iter = 0; iter < maxWordLen * 999 && top > 0 && wordLen < maxWordLen - 5; iter++) {
       int dpIdx = stack[--top];
       int expCount = bpCount[dpIdx];
       
-      bool vst = alreadyVisited(visitedList, visitedCount, dpIdx);
+      int vst = alreadyVisited(visitedList, visitedCount, dpIdx);
       visitedList[visitedCount++] = dpIdx;
       
-      if ((dp_in[dpIdx] >> 1) && (!(dp_in[dpIdx] & 0x01) || vst)) { // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
+      if ((dp_in[dpIdx] >> 1) && (!(dp_in[dpIdx] & 0x01))) { // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
         int nonterminal = dpIdx % numNonterminals;
-        int predicate = dp_in[dpIdx];
+        ushort predicate = dp_in[dpIdx];
         bool isNegativeLiteral = predicate & 0x8000;
         ushort literal = (predicate >> 1) & 0x7FFF;
         int numTms = nt_tm_lens[nonterminal];
@@ -478,13 +514,17 @@ inline void sampleTopDown(
         int randIdx, idxBM, idxMC; bool visited = true;
         for (int j = 0; j < expCount && visited; j++) {
           randIdx = bpOffset[dpIdx] + int(lcg_randomRange(rngState, uint(expCount)));
-          idxBM = bpStorage[randIdx * 2 + 0];
-          idxMC = bpStorage[randIdx * 2 + 1];
+          idxBM = bpStorage[2 * randIdx + 0];
+          idxMC = bpStorage[2 * randIdx + 1];
           visited = alreadyVisited(visitedList, visitedCount, idxBM) || alreadyVisited(visitedList, visitedCount, idxMC);
         }
 
+        if (vst) { 
+          localWord[maxWordLen - 2] = vst; //(visitedList[visitedCount - 1] % numNonterminals) + 1; 
+          localWord[maxWordLen - 4] = visitedCount; //(visitedList[visitedCount - 1] % numNonterminals) + 1; 
+        }
+
         if (!visited) { // Restricts overlapping subspans
-//          visitedList[visitedCount++] = idxBM; visitedList[visitedCount++] = idxMC;
           stack[top++] = idxMC; stack[top++] = idxBM;
         } 
       }
@@ -583,7 +623,7 @@ kernel void sample_words(
 ) {
     guard let dp_out, let allFSAPairs, let allFSAPairsOffsets else { return }
     
-    var N = Int(numStates), ap = Int(allFSAPairsSize), ao = Int(allFSAPairsOffsetsSize)
+    let N = Int(numStates), ap = Int(allFSAPairsSize), ao = Int(allFSAPairsOffsetsSize)
 
     // Stage 1: Construct the dense parse chart
     var bufA = reconstructDPBuffer(dp_in: dp_in_sparse, dpSize: Int(dpSize), numStates: N)
@@ -614,6 +654,7 @@ kernel void sample_words(
 
     // Stage 4: Decode the datastructure
     let sampledWordsBuf = sampleWords(
+//    let sampledWordsBuf = sampleWordsCPU(
         dp_in: bufA,
         bpCount: bpCountBuf,
         bpOffset: bpOffsetBuf,
@@ -637,10 +678,10 @@ private func iterateFixpoint(
     allPairsOffsetsSize: Int
 ) -> MTLBuffer {
     var N = numStates, ap = allPairsSize, ao = allPairsOffsetsSize
-    let totalCount = N*N*numNonterminals
+    let totalCount = N * N * numNonterminals
     let dpSizeBytes = totalCount * MemoryLayout<UInt16>.stride
     let stride = MemoryLayout<Int32>.stride
-    let totalPairs = N*(N-1)/2
+    let totalPairs = N * (N - 1) / 2
     let totalThreads = totalPairs * numNonterminals
 
     let numNonzero = device.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared)!
@@ -650,7 +691,7 @@ private func iterateFixpoint(
        var zero: UInt32 = 0
        memcpy(numNonzero.contents(), &zero, MemoryLayout<UInt32>.size)
 
-       runKernel(pipelineState: psoCflMul, numThreads: totalThreads) { enc in
+       runKernel(pipelineState: cfl_mul_upper, numThreads: totalThreads) { enc in
           enc.setBuffer(bufA,        offset: 0,      index: 0)
           enc.setBuffer(bufA,        offset: 0,      index: 1)
           enc.setBuffer(pairsBuf,    offset: 0,      index: 2)
@@ -667,7 +708,29 @@ private func iterateFixpoint(
           break
        } else { prevValue = currentValue }
     }
+
+//    printNonzeroCounts(bufA: bufA, numStates: numStates)
+
     return bufA
+}
+
+func printNonzeroCounts(bufA: MTLBuffer, numStates: Int) {
+    let totalCount = numStates * numStates * numNonterminals
+    
+    let bufAPtr = bufA.contents().bindMemory(to: UInt16.self, capacity: totalCount)
+    
+    for r in 0..<numStates {
+        for c in 1..<numStates {
+            let baseIndex = r * (numStates * numNonterminals) + c * numNonterminals
+            
+            var count = 0
+            for v in 0..<numNonterminals { if bufAPtr[baseIndex + v] != 0 { count += 1 } }
+            
+            let output = count == 0 ? "    " : String(format: "%4d", count)
+            print(output, terminator: "")
+        }
+        print()
+    }
 }
 
 // takes a flattened array of sparse quadruples and reconstructs a dense matrix
@@ -726,8 +789,10 @@ private func sampleWords(
     var startIdxs = [Int32]()
     for q in acceptStates {
         let dpIndex = q * numNonterminals + startIdx
+        print("Start idx: \(dpIndex)"); fflush(stdout)
         if dpPtr[dpIndex] != 0 { startIdxs.append(Int32(dpIndex)) }
     }
+
 
     let i32stride = MemoryLayout<UInt32>.stride
     let seeds = (0..<maxSamples).map { _ in UInt32.random(in: .min ..< .max) }
@@ -738,7 +803,7 @@ private func sampleWords(
     let resultSize = maxSamples * maxWordLen
     let outBuf = device.makeBuffer(length: resultSize, options: [])!
 
-    runKernel(pipelineState: psoSmpWord, numThreads: maxSamples) { enc in
+    runKernel(pipelineState: sample_words, numThreads: maxSamples) { enc in
         enc.setBuffer(dp_in,       offset: 0, index: 0)
         enc.setBuffer(bpCount,     offset: 0, index: 1)
         enc.setBuffer(bpOffset,    offset: 0, index: 2)
@@ -753,6 +818,7 @@ private func sampleWords(
     }
 
     // Show a few samples.
+    let allIndices = Array(0..<maxSamples).shuffled()
     let ptr = outBuf.contents().bindMemory(to: UInt8.self, capacity: resultSize)
     for i in 0..<min(5, maxSamples) {
         let slice = Array(UnsafeBufferPointer(start: ptr + i*maxWordLen, count: maxWordLen))
@@ -761,6 +827,85 @@ private func sampleWords(
 
     let ms = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000
     print("Sampled words in \(ms) ms"); fflush(stdout)
+    return outBuf
+}
+
+private func sampleWordsCPU(
+    dp_in: MTLBuffer,
+    bpCount: MTLBuffer,
+    bpOffset: MTLBuffer,
+    bpStorage: MTLBuffer,
+    maxWordLen: Int,
+    maxSamples: Int,
+    numStates: Int,
+    accsPt: UnsafePointer<CInt>?,
+    accsSize: Int
+) -> MTLBuffer {
+    print("Sampling words..."); fflush(stdout)
+    let t0 = DispatchTime.now()
+    let totalCount = numStates * numStates * numNonterminals
+    let dp = UnsafeBufferPointer(start: dp_in.contents().assumingMemoryBound(to: UInt16.self), count: totalCount)
+    let bpCount = UnsafeBufferPointer(start: bpCount.contents().assumingMemoryBound(to: Int32.self), count: totalCount)
+    let bpOffset = UnsafeBufferPointer(start: bpOffset.contents().assumingMemoryBound(to: Int32.self), count: totalCount)
+    let bpStore = UnsafeBufferPointer(start: bpStorage.contents().assumingMemoryBound(to: Int32.self), count: bpStorage.length / MemoryLayout<Int32>.stride)
+
+    let acceptStates = accsPt.map { Array(UnsafeBufferPointer(start: $0, count: accsSize)).map(Int.init) } ?? []
+    let startIdxs = acceptStates.compactMap { q in
+        let idx = q * numNonterminals + startIdx
+        return dp[idx] != 0 ? Int32(idx) : nil
+    }
+
+    let seeds = (0..<maxSamples).map { _ in UInt32.random(in: .min ..< .max) }
+    let outBuf = device.makeBuffer(length: maxSamples * maxWordLen, options: [])!
+    let outPtr = outBuf.contents().assumingMemoryBound(to: UInt8.self)
+
+    func lcgRandom(_ state: inout UInt32) -> UInt32 {
+        state = state &* 1664525 &+ 1013904223
+        return state
+    }
+
+    func sampleTopDown(_ idqx: Int, _ rng: inout UInt32, _ word: inout [UInt8], _ len: inout Int, _ depth: Int, _ same: Int) {
+        if len >= maxWordLen - 5 { print("Exception: OVERFLOW"); fflush(stdout) }
+        print("size: \(bpCount.count)/\(idqx)"); fflush(stdout)
+        let tm_contents = dp[idqx], expCount = Int(bpCount[idqx])
+        let ntm = idqx % numNonterminals, numTms = nt_tm_lens[ntm], ntoffset = offsets[ntm]
+        if same == 1 || (tm_contents >> 1 != 0) && (tm_contents & 1 == 0 || Int(lcgRandom(&rng) % UInt32(expCount + 1)) == expCount) {
+//            print("nt_tm: \(nt_tm_lens.count)/\(ntm) offsets: \(offsets.count)/\(ntm) "); fflush(stdout)
+            let lit = Int((tm_contents >> 1) & 0x7FFF), isNeg = (tm_contents & 0x8000) != 0
+            if isNeg {
+                let r = Int(lcgRandom(&rng) % UInt32(numTms))
+                let ix = ntoffset + (r < lit - 1 ? r : r + 1)
+//                print("ix: \(ix)/\(all_tm.count)/\(len)"); fflush(stdout)
+                word[len] = UInt8(truncatingIfNeeded: all_tm[ix] + 1)
+            } else {
+                let ix = ntoffset + lit - 1
+//                print("ix:\(ix)/ntoffset:\(ntoffset)/lit:\(lit)/\(all_tm.count)/\(len)"); fflush(stdout)
+                word[len] = numTms != 0 ? UInt8(truncatingIfNeeded: all_tm[ix] + 1) : 99
+            }
+            len += 1
+        } else if expCount > 0 {
+            let p = Int(lcgRandom(&rng) % UInt32(expCount))
+            let nextId = Int(bpOffset[idqx]) + p
+            print("sampled: \(p)/\(expCount)"); fflush(stdout)
+            print("expanding (\(depth)): \(nt_names[ntm])"); fflush(stdout)
+            let curWord = word.map { "\($0 == 0 ? "" : tm_names[Int($0) - 1])" }.joined(separator: " ")
+            print("current word: \(word)"); fflush(stdout)
+            print("current word: \(curWord)"); fflush(stdout)
+            let e = Int(bpOffset[idqx]) + p
+            let idxBM = Int(bpStore[e * 2]), idxMC = Int(bpStore[e * 2 + 1])
+            sampleTopDown(idxBM, &rng, &word, &len, depth + 1, idxBM == idqx ? 1 : 0)
+            sampleTopDown(idxMC, &rng, &word, &len, depth + 1, idxMC == idqx ? 1 : 0)
+        } else { print("Exception: ELSE"); fflush(stdout) }
+    }
+
+    for i in 0..<20 {
+        var rng = seeds[i], word = [UInt8](repeating: 0, count: maxWordLen), len = 0
+        sampleTopDown(Int(startIdxs[Int(lcgRandom(&rng) % UInt32(startIdxs.count))]), &rng, &word, &len, 0, 0)
+        outPtr.advanced(by: i * maxWordLen).initialize(from: word, count: maxWordLen)
+    }
+
+    let ms = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000
+    print("Sampled words in \(ms) ms")
     return outBuf
 }
 
@@ -778,13 +923,11 @@ private func buildBackpointers(
     let stride     = MemoryLayout<Int32>.stride
     let totalCells = (N * (N - 1) / 2) * numNonterminals
     let countSize  = N * N * numNonterminals * stride
-    let ones       = MTLSize(width: 1, height: 1, depth: 1)
-    let msize      = MTLSize(width: totalCells, height: 1, depth: 1)
 
     // 1) Allocate bpCount and run "bp_count" kernel
     let bpCountBuf = device.makeBuffer(length: countSize, options: [])!
 
-    runKernel(pipelineState: psoBpCount, numThreads: totalCells) { enc in
+    runKernel(pipelineState: bp_count, numThreads: totalCells) { enc in
       enc.setBuffer(dp_in,               offset: 0,      index: 0)
       enc.setBuffer(allFSAPairs,         offset: 0,      index: 1)
       enc.setBuffer(allFSAPairsOffsets,  offset: 0,      index: 2)
@@ -806,7 +949,7 @@ private func buildBackpointers(
     // 4) Allocate bpStorage and run "bp_write" kernel
     let bpStorageBuf = device.makeBuffer(length: Int(totalExpansions) * 2 * stride, options: [])!
 
-    runKernel(pipelineState: psoBpWrite, numThreads: totalCells) { enc in
+    runKernel(pipelineState: bp_write, numThreads: totalCells) { enc in
       enc.setBuffer(dp_in,              offset: 0,      index: 0)
       enc.setBuffer(allFSAPairs,        offset: 0,      index: 1)
       enc.setBuffer(allFSAPairsOffsets, offset: 0,      index: 2)
@@ -864,9 +1007,12 @@ func runKernel(pipelineState: MTLComputePipelineState, numThreads: Int, body: (M
 }
 
 private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 0, startIdx: Int = 0,
-            psoCflMul: MTLComputePipelineState!, serialize: MTLComputePipelineState!,
-            psoBpCount: MTLComputePipelineState!, psoBpWrite: MTLComputePipelineState!,
-            psoSmpWord: MTLComputePipelineState!
+            cfl_mul_upper: MTLComputePipelineState!,
+            bp_count: MTLComputePipelineState!, 
+            bp_write: MTLComputePipelineState!,
+            sample_words: MTLComputePipelineState!
+
+${genNTTerminalMapForSwift(pythonStatementCNF)}
 
 @_cdecl("setup") public func setup(_ nnt: CInt, startIndex: CInt, _ str: UnsafePointer<CChar>?) {
     device = MTLCreateSystemDefaultDevice()!
@@ -875,16 +1021,16 @@ private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 
     let metalSrc = str != nil ? String(cString: str!) : ""
     numNonterminals = Int(nnt)
     startIdx = Int(startIndex)
-    let library = try! device.makeLibrary(source: metalSrc, options: nil)
-    psoCflMul   = try! device.makeComputePipelineState(function: library.makeFunction(name: "cfl_mul_upper")!)
-    psoBpCount  = try! device.makeComputePipelineState(function: library.makeFunction(name: "bp_count")!)
-    psoBpWrite  = try! device.makeComputePipelineState(function: library.makeFunction(name: "bp_write")!)
-    psoSmpWord  = try! device.makeComputePipelineState(function: library.makeFunction(name: "sample_words")!)
+    let library   = try! device.makeLibrary(source: metalSrc, options: nil)
+    cfl_mul_upper = try! device.makeComputePipelineState(function: library.makeFunction(name: "cfl_mul_upper")!)
+    bp_count      = try! device.makeComputePipelineState(function: library.makeFunction(name: "bp_count")!)
+    bp_write      = try! device.makeComputePipelineState(function: library.makeFunction(name: "bp_write")!)
+    sample_words  = try! device.makeComputePipelineState(function: library.makeFunction(name: "sample_words")!)
 }"""
 
-  private fun grammarHeader(cfg: CFG): String = genNTTerminalMap(cfg) + genFlattenedBinaryProds(cfg)
+  private fun grammarHeader(cfg: CFG): String = genNTTerminalMapForC(cfg) + genFlattenedBinaryProds(cfg)
 
-  private fun genNTTerminalMap(cfg: CFG): String {
+  private fun genNTTerminalMapForC(cfg: CFG): String {
     val terminalLists = cfg.nonterminals.map {
       if (it !in cfg.unitNonterminals) emptyList<Int>()
       else cfg.bimap.UNITS[it]!!.map { cfg.tmMap[it]!! }
@@ -896,6 +1042,22 @@ private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 
               constant uint offsets[] = {${offsets.joinToString(",")}};
               constant uint nt_tm_lens[] = {${terminalLists.map { it.size }.joinToString(",")}};
               constant int numNonterminals = ${cfg.nonterminals.size};""".trimIndent()
+  }
+
+  private fun genNTTerminalMapForSwift(cfg: CFG): String {
+    val terminalLists = cfg.nonterminals.map {
+      if (it !in cfg.unitNonterminals) emptyList<Int>()
+      else cfg.bimap.UNITS[it]!!.map { cfg.tmMap[it]!! }
+    }
+    val allTerminals = terminalLists.flatMap { it }
+    val offsets = terminalLists.scan(0) { acc, list -> acc + list.size }.dropLast(1)
+
+    return """let all_tm: [Int] = [${allTerminals.joinToString(",")}];
+              let offsets: [Int] = [${offsets.joinToString(",")}];
+              let nt_tm_lens: [Int] = [${terminalLists.map { it.size }.joinToString(",")}];
+              let nt_names: [String] = [${cfg.nonterminals.joinToString(",") { "\"$it\"" }}]; // For debugging only
+              let tm_names: [String] = [${cfg.tmLst.joinToString(",") { "\"$it\"" }}]; // For debugging only
+              """.trimIndent().also { println(it) }
   }
 
   private fun genFlattenedBinaryProds(cfg: CFG): String {
