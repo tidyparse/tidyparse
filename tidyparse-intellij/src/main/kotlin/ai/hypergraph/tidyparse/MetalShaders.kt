@@ -223,29 +223,6 @@ fun initiateSerialRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequence<Σᐩ> {
     }
   }
 
-//  fun Array<Array<Array<GRE?>>>.debugCounts() {
-//    for (r in this.indices) {
-//      val row = this[r]
-//      for (c in row.indices) {
-//        val count = row[c].count { it != null }
-//        print(if (count == 0) "    " else "$count".padEnd(4, ' '))
-//      }
-//      println()
-//    }
-//  }
-//  dp.debugCounts()
-//  fun Array<Array<Array<GRE?>>>.debugShape() {
-//    for (r in this.indices) {
-//      val row = this[r]
-//      val rowStrings = row.indices.map { c ->
-//        if (row[c].any { it != null }) "X" else " "
-//      }
-//      println(rowStrings.joinToString(""))
-//    }
-//  }
-//
-//  dp.debugShape()
-
   println("Completed parse matrix in: ${timer.elapsedNow()}")
 
   // 4) Gather final parse trees from dp[0][f][startIdx], for all final states f
@@ -313,6 +290,18 @@ inline void decodeUpperTriangle(int i, int N, thread int &r, thread int &c) {
     c = r + 1 + offset;
 }
 
+#define PREAMBLE(tid, numStates, r, c, A, dpIdx, snt, startGC, endGC, aoi, pairOffset, pairOffsetNext) \
+    int r, c; \
+    decodeUpperTriangle(tid / numNonterminals, numStates, r, c); \
+    int A = tid % numNonterminals; \
+    int snt = numStates * numNonterminals; \
+    int dpIdx = r * snt + c * numNonterminals + A; \
+    int startGC = vidx_offsets[A]; \
+    int endGC = (A + 1 < volen) ? vidx_offsets[A + 1] : vilen; \
+    int aoi = r * numStates + c + 1; \
+    int pairOffset = allFSAPairsOffsets[aoi - 1]; \
+    int pairOffsetNext = (aoi < allFSAPairsOffsetsSize) ? allFSAPairsOffsets[aoi] : allFSAPairsSize;
+
 kernel void cfl_mul_upper(
   const device ushort* dp_in                   [[buffer(0)]],
   device ushort*       dp_out                  [[buffer(1)]],
@@ -324,9 +313,7 @@ kernel void cfl_mul_upper(
   device atomic_uint&  numNonzero              [[buffer(7)]],
   uint                 tid                     [[thread_position_in_grid]]
 ) {
-    int r, c;
-    decodeUpperTriangle((tid) / numNonterminals, numStates, r, c);
-    int A = tid % numNonterminals, snt = numStates * numNonterminals, dpIdx = r*snt + c*numNonterminals + A;
+    PREAMBLE(tid, numStates, r, c, A, dpIdx, snt, startGC, endGC, aoi, pairOffset, pairOffsetNext)
 
     if (dp_in[dpIdx]) {
       dp_out[dpIdx] = dp_in[dpIdx];
@@ -334,27 +321,18 @@ kernel void cfl_mul_upper(
       if (dp_in[dpIdx] & 0x01) return; // The last bit will represent a nonterminal
     }
 
-    // Grammar offsets for A
-    int startGC = vidx_offsets[A];
-    int endGC   = (A+1 < volen) ? vidx_offsets[A+1] : vilen;
-
-    // midpoints between (r..c)
-    int aoi = r * numStates + c + 1;
-    int pairOffset = allFSAPairsOffsets[aoi - 1];
-    int pairOffsetNext = (aoi < allFSAPairsOffsetsSize) ? allFSAPairsOffsets[aoi] : allFSAPairsSize;
-
     // loop over midpoints
     for (int pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx++)
-       for (int g = startGC, m = allFSAPairs[pairIdx]; g < endGC; g += 2) {
+       for (int g = startGC, mdpt = allFSAPairs[pairIdx]; g < endGC; g += 2) {
           int B = vidx[g]; int C = vidx[g+1];
           
-          int idxBM = r * snt + m * numNonterminals + B;
-          int idxMC = m * snt + c * numNonterminals + C;
+          int idxBM = r * snt + mdpt * numNonterminals + B;
+          int idxMC = mdpt * snt + c * numNonterminals + C;
 
           if (dp_in[idxBM] && dp_in[idxMC]
-//              && r < m && m < c 
-//              && idxBM < dpIdx
-//              && idxMC > dpIdx
+              && r < mdpt && mdpt < c && r < c - 1 && ((mdpt - r) + (c - mdpt) == (c - r))
+              && idxBM < dpIdx
+              && idxMC > dpIdx
           ) {
              dp_out[dpIdx] |= 0x01;
              atomic_fetch_add_explicit(&numNonzero, 1, memory_order_relaxed);
@@ -377,31 +355,20 @@ kernel void bp_count(
     int totalCells = (N * (N - 1) / 2) * numNonterminals;
     if (tid >= totalCells) return;
 
-    int r, c;
-    decodeUpperTriangle(tid / numNonterminals, N, r, c);
-    int A = tid % numNonterminals, snt = N * numNonterminals, dpIdx = r*snt + c*numNonterminals + A;
+    PREAMBLE(tid, numStates, r, c, A, dpIdx, snt, startGC, endGC, aoi, pairOffset, pairOffsetNext)
 
     if (!(dp_in[dpIdx] & 0x01)) { bpCount[dpIdx] = 0; return; }
-
-    // Grammar offsets for A
-    int startGC = vidx_offsets[A];
-    int endGC   = (A+1 < volen) ? vidx_offsets[A+1] : vilen;
-
-    // All possible midpoints
-    int aoi = r*N + c + 1;
-    int pairOffset = allFSAPairsOffsets[aoi - 1];
-    int pairOffsetNext = (aoi < allFSAPairsOffsetsSize) ? allFSAPairsOffsets[aoi] : allFSAPairsSize;
 
     int count = 0;
     // loop over midpoints
     for (int pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx++)
-      for (int g = startGC, m = allFSAPairs[pairIdx]; g < endGC; g += 2) {
+      for (int g = startGC, mdpt = allFSAPairs[pairIdx]; g < endGC; g += 2) {
         int B = vidx[g], C = vidx[g+1];
 
-        int idxBM = r*snt + m*numNonterminals + B;
-        int idxMC = m*snt + c*numNonterminals + C;
+        int idxBM = r*snt + mdpt*numNonterminals + B;
+        int idxMC = mdpt*snt + c*numNonterminals + C;
         if (dp_in[idxBM] && dp_in[idxMC]
-            && r < m && m < c 
+            && r < mdpt && mdpt < c && r < c - 1 && ((mdpt - r) + (c - mdpt) == (c - r))
             && idxBM < dpIdx
             && idxMC > dpIdx
          ) count++;
@@ -424,21 +391,10 @@ kernel void bp_write(
   device int*          bpStorage              [[buffer(8)]],
   uint tid [[thread_position_in_grid]]
 ) {
-    int N = numStates;
-
-    int r, c;
-    decodeUpperTriangle(tid / numNonterminals, N, r, c);
-    int A = tid % numNonterminals, snt = N * numNonterminals, dpIdx = r*snt + c*numNonterminals + A;
+    PREAMBLE(tid, numStates, r, c, A, dpIdx, snt, startGC, endGC, aoi, pairOffset, pairOffsetNext)
 
     if (!(dp_in[dpIdx] & 0x01)) return;
 
-    // Grammar offsets
-    int startGC = vidx_offsets[A];
-    int endGC   = (A+1 < volen) ? vidx_offsets[A+1] : vilen;
-
-    int aoi = r*N + c + 1;
-    int pairOffset = allFSAPairsOffsets[aoi - 1];
-    int pairOffsetNext = (aoi < allFSAPairsOffsetsSize) ? allFSAPairsOffsets[aoi] : allFSAPairsSize;
     int outPos = bpOffset[dpIdx];
 
     // Exactly like bp_count, but now we store expansions
@@ -449,8 +405,8 @@ kernel void bp_write(
         int idxBM = r*snt + mdpt*numNonterminals + B;
         int idxMC = mdpt*snt + c*numNonterminals + C;
         if (dp_in[idxBM] && dp_in[idxMC] 
-            && r < mdpt && mdpt < c 
-            && idxBM < dpIdx  // Why are these necessary? Maybe indexing bug?
+            && r < mdpt && mdpt < c && r < c - 1 && ((mdpt - r) + (c - mdpt) == (c - r))
+            && idxBM < dpIdx // Why are these necessary? Maybe indexing bug?
             && idxMC > dpIdx
         ) {
 //          if (2*bpCount[dpIdx] < (outPos - bpOffset[dpIdx])) return;
@@ -463,8 +419,8 @@ kernel void bp_write(
       }
 }
 
-inline uint lcg_random(thread uint& state) { return 1664525u * state + 1013904223u; }
-//inline uint lcg_random(thread uint& state) { return state % 10; }
+//inline uint lcg_random(thread uint& state) { return 1664525u * state + 1013904223u; }
+inline uint lcg_random(thread uint& state) { return state % 100; }
 inline uint lcg_randomRange(thread uint& state, uint range) { return lcg_random(state) % range; }
 
 inline int alreadyVisited(thread const int* visitedList, int visitedCount, int candidate) {
@@ -484,17 +440,14 @@ inline void sampleTopDown(
   const int              maxWordLen
 ) {
     constexpr int MAX_STACK = 1024; int stack[MAX_STACK]; int top = 0; stack[top++] = startDPIdx;
-    int visitedList[MAX_STACK]; int visitedCount = 0;
 
     // While frames left to process, and haven't overflowed localWord
-    for (int iter = 0; iter < maxWordLen * 999 && top > 0 && wordLen < maxWordLen - 5; iter++) {
-      int dpIdx = stack[--top];
+    for (int iter = 0; iter < maxWordLen * 99 && top > 0 && wordLen < maxWordLen - 5; iter++) {
+      bool same = stack[top] < 0;
+      int dpIdx = abs(stack[--top]);
       int expCount = bpCount[dpIdx];
       
-      int vst = alreadyVisited(visitedList, visitedCount, dpIdx);
-      visitedList[visitedCount++] = dpIdx;
-      
-      if ((dp_in[dpIdx] >> 1) && (!(dp_in[dpIdx] & 0x01))) { // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
+      if (same || (dp_in[dpIdx] >> 1) && !(dp_in[dpIdx] & 0x01)) { // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
         int nonterminal = dpIdx % numNonterminals;
         ushort predicate = dp_in[dpIdx];
         bool isNegativeLiteral = predicate & 0x8000;
@@ -510,23 +463,13 @@ inline void sampleTopDown(
           ushort tmChoice = possibleTms[int(lcg_randomRange(rngState, uint(tmCount)))];
           localWord[wordLen++] = tmChoice + 1;
         } else { localWord[wordLen++] = (numTms != 0) ? all_tm[ntOffset + literal - 1] + 1 : 99; } // Must have been a positive literal
-      } else if ((top + 2 < MAX_STACK) && !vst) {
-        int randIdx, idxBM, idxMC; bool visited = true;
-        for (int j = 0; j < expCount && visited; j++) {
-          randIdx = bpOffset[dpIdx] + int(lcg_randomRange(rngState, uint(expCount)));
-          idxBM = bpStorage[2 * randIdx + 0];
-          idxMC = bpStorage[2 * randIdx + 1];
-          visited = alreadyVisited(visitedList, visitedCount, idxBM) || alreadyVisited(visitedList, visitedCount, idxMC);
-        }
+      } else if (top + 2 < MAX_STACK) {
+        int randIdx = bpOffset[dpIdx] + int(lcg_randomRange(rngState, uint(expCount)));
+        int idxBM = bpStorage[2 * randIdx + 0];
+        int idxMC = bpStorage[2 * randIdx + 1];
 
-        if (vst) { 
-          localWord[maxWordLen - 2] = vst; //(visitedList[visitedCount - 1] % numNonterminals) + 1; 
-          localWord[maxWordLen - 4] = visitedCount; //(visitedList[visitedCount - 1] % numNonterminals) + 1; 
-        }
-
-        if (!visited) { // Restricts overlapping subspans
-          stack[top++] = idxMC; stack[top++] = idxBM;
-        } 
+//      stack[top++] = idxMC; stack[top++] = idxBM;
+        stack[top++] = (idxMC == dpIdx) ? -idxMC : idxMC; stack[top++] = (idxBM == dpIdx) ? -idxBM : idxBM;
       }
     }
 }
@@ -709,28 +652,7 @@ private func iterateFixpoint(
        } else { prevValue = currentValue }
     }
 
-//    printNonzeroCounts(bufA: bufA, numStates: numStates)
-
     return bufA
-}
-
-func printNonzeroCounts(bufA: MTLBuffer, numStates: Int) {
-    let totalCount = numStates * numStates * numNonterminals
-    
-    let bufAPtr = bufA.contents().bindMemory(to: UInt16.self, capacity: totalCount)
-    
-    for r in 0..<numStates {
-        for c in 1..<numStates {
-            let baseIndex = r * (numStates * numNonterminals) + c * numNonterminals
-            
-            var count = 0
-            for v in 0..<numNonterminals { if bufAPtr[baseIndex + v] != 0 { count += 1 } }
-            
-            let output = count == 0 ? "    " : String(format: "%4d", count)
-            print(output, terminator: "")
-        }
-        print()
-    }
 }
 
 // takes a flattened array of sparse quadruples and reconstructs a dense matrix
@@ -795,7 +717,7 @@ private func sampleWords(
 
 
     let i32stride = MemoryLayout<UInt32>.stride
-    let seeds = (0..<maxSamples).map { _ in UInt32.random(in: .min ..< .max) }
+    let seeds = (0..<maxSamples).map { $0 }//.map { _ in UInt32.random(in: .min ..< .max) }
     let seedsBuf = device.makeBuffer(bytes: seeds, length: maxSamples * i32stride, options: [])!
     let startBuf = device.makeBuffer(bytes: startIdxs, length: startIdxs.count * i32stride, options: [])!
 
@@ -1057,7 +979,7 @@ ${genNTTerminalMapForSwift(pythonStatementCNF)}
               let nt_tm_lens: [Int] = [${terminalLists.map { it.size }.joinToString(",")}];
               let nt_names: [String] = [${cfg.nonterminals.joinToString(",") { "\"$it\"" }}]; // For debugging only
               let tm_names: [String] = [${cfg.tmLst.joinToString(",") { "\"$it\"" }}]; // For debugging only
-              """.trimIndent().also { println(it) }
+           """.trimIndent()
   }
 
   private fun genFlattenedBinaryProds(cfg: CFG): String {
