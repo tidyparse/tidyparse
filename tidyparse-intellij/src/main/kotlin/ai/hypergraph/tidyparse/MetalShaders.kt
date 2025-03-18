@@ -198,7 +198,7 @@ kernel void bp_count(
 ) {
     PREAMBLE(tid, numStates, r, c, A, dpIdx, snt, startGC, endGC, aoi, pairOffset, pairOffsetNext)
 
-    if (!dp_in[dpIdx]) { bpCount[dpIdx] = 0; return; }
+    if (!(dp_in[dpIdx] & 0x01)) { bpCount[dpIdx] = 0; return; }
 
     int count = 0;
     for (int pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx++)
@@ -228,7 +228,7 @@ kernel void bp_write(
 ) {
     PREAMBLE(tid, numStates, r, c, A, dpIdx, snt, startGC, endGC, aoi, pairOffset, pairOffsetNext)
 
-    if (!dp_in[dpIdx]) return;
+    if (!(dp_in[dpIdx] & 0x01)) return;
 
     int outPos = bpOffset[dpIdx];
 
@@ -268,7 +268,8 @@ inline void sampleTopDown(
       int dpIdx = abs(stack[--top]);
       int expCount = bpCount[dpIdx];
       
-      if ((dp_in[dpIdx] >> 1)) { // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
+      // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
+      if ((dp_in[dpIdx] >> 1) && (!(dp_in[dpIdx] & 0x01) || (int(lcg_randomRange(rngState, uint(expCount))) % 2 == 0))) {
         int nonterminal = dpIdx % numNonterminals;
         ushort predicate = dp_in[dpIdx];
         bool isNegativeLiteral = predicate & 0x8000;
@@ -327,6 +328,52 @@ kernel void sample_words(
     sampleTopDown(dp_in, bpCount, bpOffset, bpStorage, startIdx, rngState, localWord, wordLen, maxWordLen);
 
     for (int i=0; i<maxWordLen; i++) sampledWords[int(tid)*maxWordLen + i] = localWord[i];
+}
+
+kernel void prefix_sum_p1(
+    device const int * inBuf  [[buffer(0)]],
+    device       int * outBuf [[buffer(1)]],
+    device       int * blkSum [[buffer(2)]],
+    constant    uint &N       [[buffer(3)]],
+                uint gid      [[thread_position_in_grid]],
+                uint grpId    [[threadgroup_position_in_grid]],
+                uint lid      [[thread_position_in_threadgroup]],
+                uint tpg      [[threads_per_threadgroup]]
+) {
+    threadgroup int tile[1024];
+    uint base = grpId * tpg, idx = base + lid;
+
+    int v = (idx < N) ? inBuf[idx] : 0;
+    tile[lid] = v;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint offset = 1; offset < tpg; offset <<= 1) {
+        int n = (lid >= offset) ? tile[lid - offset] : 0;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        tile[lid] += n;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    int inclusive = tile[lid];
+    tile[lid] = inclusive - v;
+
+    if ((idx + 1 == N) || (lid == tpg - 1)) { blkSum[grpId] = inclusive; }
+    if (idx < N) { outBuf[idx] = tile[lid]; }
+}
+
+kernel void prefix_sum_p2(
+    device int *       outBuf [[buffer(0)]],
+    device const int * blkSum [[buffer(1)]],
+    constant uint &N         [[buffer(2)]],
+    uint gid                 [[thread_position_in_grid]],
+    uint grpId               [[threadgroup_position_in_grid]],
+    uint lid                 [[thread_position_in_threadgroup]],
+    uint tpg                 [[threads_per_threadgroup]]
+) {
+    if (grpId == 0) return;
+    int offset = blkSum[grpId - 1];
+    uint idx = grpId * tpg + lid;
+    if (idx < N) { outBuf[idx] += offset; }
 }
 """
 
@@ -453,7 +500,7 @@ private func iterateFixpoint(
        var zero: UInt32 = 0
        memcpy(numNonzero.contents(), &zero, MemoryLayout<UInt32>.size)
 
-       runKernel(pipelineState: cfl_mul_upper, numThreads: totalThreads) { enc in
+       runKernel(cfl_mul_upper, totalThreads) { enc in
           enc.setBuffer(bufA,        offset: 0,      index: 0)
           enc.setBuffer(bufA,        offset: 0,      index: 1)
           enc.setBuffer(pairsBuf,    offset: 0,      index: 2)
@@ -542,7 +589,7 @@ private func sampleWords(
     let resultSize = maxSamples * maxWordLen
     let outBuf = device.makeBuffer(length: resultSize, options: [])!
 
-    runKernel(pipelineState: sample_words, numThreads: maxSamples) { enc in
+    runKernel(sample_words, maxSamples) { enc in
         enc.setBuffer(dp_in,       offset: 0, index: 0)
         enc.setBuffer(bpCount,     offset: 0, index: 1)
         enc.setBuffer(bpOffset,    offset: 0, index: 2)
@@ -580,7 +627,7 @@ private func buildBackpointers(
     // 1) Allocate bpCount and run "bp_count" kernel
     let bpCountBuf = device.makeBuffer(length: countSize, options: [])!
 
-    runKernel(pipelineState: bp_count, numThreads: totalThreads) { enc in
+    runKernel(bp_count, totalThreads) { enc in
       enc.setBuffer(dp_in,               offset: 0,      index: 0)
       enc.setBuffer(allFSAPairs,         offset: 0,      index: 1)
       enc.setBuffer(allFSAPairsOffsets,  offset: 0,      index: 2)
@@ -592,7 +639,7 @@ private func buildBackpointers(
 
     // 2) Prefix sum of bpCount → bpOffset
     let bpOffsetBuf = device.makeBuffer(length: countSize, options: [])!
-    parallelPrefixSumCPU(countBuf: bpCountBuf, offsetBuf: bpOffsetBuf, totalCells: totalCells)
+    parallelPrefixSumGPU(countBuf: bpCountBuf, offsetBuf: bpOffsetBuf, totalCells: totalCells)
 
     // 3) Find total expansions from last offset + last count
     let offPtr  = bpOffsetBuf.contents().bindMemory(to: Int32.self, capacity: totalCells)
@@ -603,7 +650,7 @@ private func buildBackpointers(
     // 4) Allocate bpStorage and run "bp_write" kernel
     let bpStorageBuf = device.makeBuffer(length: Int(totalExpansions) * 2 * stride, options: [])!
 
-    runKernel(pipelineState: bp_write, numThreads: totalThreads) { enc in
+    runKernel(bp_write, totalThreads) { enc in
       enc.setBuffer(dp_in,              offset: 0,      index: 0)
       enc.setBuffer(allFSAPairs,        offset: 0,      index: 1)
       enc.setBuffer(allFSAPairsOffsets, offset: 0,      index: 2)
@@ -620,43 +667,42 @@ private func buildBackpointers(
     return (bpCountBuf, bpOffsetBuf, bpStorageBuf)
 }
 
-func parallelPrefixSumCPU(countBuf: MTLBuffer, offsetBuf: MTLBuffer, totalCells: Int) {
+func parallelPrefixSumGPU(countBuf: MTLBuffer, offsetBuf: MTLBuffer, totalCells: Int) {
     let t0 = DispatchTime.now()
-    let ptrCount  = countBuf.contents().bindMemory(to: Int32.self, capacity: totalCells)
-    let ptrOffset = offsetBuf.contents().bindMemory(to: Int32.self, capacity: totalCells)
+    guard totalCells > 1 else { return }
+    let tpg = 256
+    let numGroups = (totalCells + tpg - 1) / tpg
+    let sumsBuf = device.makeBuffer(length: numGroups * MemoryLayout<Int32>.stride, options: [])!
+    var N = UInt32(totalCells)
 
-    let numChunks = 8
-    let chunkSize = (totalCells + numChunks - 1) / numChunks
-    var partialSum = [Int32](repeating: 0, count: numChunks)
-
-    // Phase 1: per-chunk prefix sums
-    DispatchQueue.concurrentPerform(iterations: numChunks) { c in
-        let start = c * chunkSize, end = min(start + chunkSize, totalCells)
-        var sum: Int32 = 0
-        for i in start..<end { ptrOffset[i] = sum; sum += ptrCount[i] }
-        partialSum[c] = sum
+    runKernel(prefix_sum_p1, numGroups * tpg, tpg) { enc in
+        enc.setBuffer(countBuf,  offset: 0, index: 0)
+        enc.setBuffer(offsetBuf, offset: 0, index: 1)
+        enc.setBuffer(sumsBuf,   offset: 0, index: 2)
+        enc.setBytes(&N, length: 4, index: 3)
     }
 
-    // Phase 2: prefix-sum of partialSum (single-threaded)
-    for i in 1..<numChunks { partialSum[i] += partialSum[i - 1] }
+    let ptr = sumsBuf.contents().bindMemory(to: Int32.self, capacity: numGroups)
+    for i in 1..<numGroups { ptr[i] += ptr[i - 1] }
 
-    // Phase 3: add chunk offsets in parallel
-    DispatchQueue.concurrentPerform(iterations: numChunks) { c in
-        guard c > 0 else { return }
-        let start = c * chunkSize, end = min(start + chunkSize, totalCells)
-        let offset = partialSum[c - 1]
-        for i in start..<end { ptrOffset[i] += offset }
+    runKernel(prefix_sum_p2, numGroups * tpg, tpg) { enc in
+        enc.setBuffer(offsetBuf, offset: 0, index: 0)
+        enc.setBuffer(sumsBuf,   offset: 0, index: 1)
+        enc.setBytes(&N, length: 4, index: 2)
     }
 
     let ms = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000
-    print("Prefix sum completed in \(ms) ms"); fflush(stdout)
+    print("GPU prefix sum in \(ms) ms"); fflush(stdout)
 }
 
-func runKernel(pipelineState: MTLComputePipelineState, numThreads: Int, body: (MTLComputeCommandEncoder) -> Void) {
+func runKernel(_ pipelineState: MTLComputePipelineState, _ numThreads: Int, _ theadsPerGrp: Int = 1, body: (MTLComputeCommandEncoder) -> Void) {
     let commandBuffer = queue.makeCommandBuffer()!, enc = commandBuffer.makeComputeCommandEncoder()!
     enc.setComputePipelineState(pipelineState)
     body(enc)
-    enc.dispatchThreads(MTLSize(width: numThreads, height: 1, depth: 1), threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+    enc.dispatchThreads(
+        MTLSize(width: numThreads, height: 1, depth: 1), 
+        threadsPerThreadgroup: MTLSize(width: theadsPerGrp, height: 1, depth: 1)
+    )
     enc.endEncoding(); commandBuffer.commit(); commandBuffer.waitUntilCompleted()
 }
 
@@ -664,7 +710,9 @@ private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 
             cfl_mul_upper: MTLComputePipelineState!,
             bp_count: MTLComputePipelineState!, 
             bp_write: MTLComputePipelineState!,
-            sample_words: MTLComputePipelineState!
+            sample_words: MTLComputePipelineState!,
+            prefix_sum_p1: MTLComputePipelineState!,
+            prefix_sum_p2: MTLComputePipelineState!
 
 @_cdecl("setup") public func setup(_ nnt: CInt, startIndex: CInt, _ str: UnsafePointer<CChar>?) {
     device = MTLCreateSystemDefaultDevice()!
@@ -678,6 +726,8 @@ private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 
     bp_count      = try! device.makeComputePipelineState(function: library.makeFunction(name: "bp_count")!)
     bp_write      = try! device.makeComputePipelineState(function: library.makeFunction(name: "bp_write")!)
     sample_words  = try! device.makeComputePipelineState(function: library.makeFunction(name: "sample_words")!)
+    prefix_sum_p1 = try! device.makeComputePipelineState(function: library.makeFunction(name: "prefix_sum_p1")!)
+    prefix_sum_p2 = try! device.makeComputePipelineState(function: library.makeFunction(name: "prefix_sum_p2")!)
 }"""
 
   private fun grammarHeader(cfg: CFG): String = (genNTTerminalMapForC(cfg) + genFlattenedBinaryProds(cfg))
