@@ -40,7 +40,7 @@ val parser = Parser(
   // "violet" to "violet",
 )
 
-// ./gradlew browserDevelopmentRun --continuous
+// ./gradlew :tidyparse-web:jsBrowserDevelopmentRun --continuous
 fun main() {
 //  benchmarkWGPU()
   if (window.navigator.userAgent.indexOf("hrome") != -1) {

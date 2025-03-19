@@ -1,3 +1,9 @@
+import kotlinx.browser.window
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.await
+import kotlinx.coroutines.launch
+import org.w3c.files.File
 import kotlin.random.Random
 
 /**
@@ -14,33 +20,11 @@ import kotlin.random.Random
  *    out[row*N + col] = sum(M[row*N + k] * M[k*N + col]), for k in [0..N-1]
  *
  */
-private const val WGSL_MAT_MUL = """
-struct Params { N: u32 };
 
-@group(0) @binding(0) var<storage, read>       M:   array<i32>;
-@group(0) @binding(1) var<storage, read_write> Out: array<i32>;
-@group(0) @binding(2) var<uniform>             param: Params;
+private lateinit var WGSL_MAT_MUL_SRC: String
 
-// We'll launch one thread per cell => dispatchWorkgroups(N, N)
-// at @workgroup_size(1,1,1).  That means we have N*N threads total.
-@compute @workgroup_size(1,1,1)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let row = gid.y;
-    let col = gid.x;
-    let N = param.N;
-
-    if (row >= N || col >= N) { return; }
-
-    let rowOffset = row * N;
-    var acc = 0;
-    for (var k = 0u; k < N; k = k + 1u) {
-        let a = M[rowOffset + k];
-        let b = M[k * N + col];
-        acc = acc + (a * b);
-    }
-    Out[rowOffset + col] = acc;
-}
-"""
+fun loadWGSL(file: String): Job =
+  MainScope().launch { window.fetch(file).await().apply { WGSL_MAT_MUL_SRC = if (ok) { text().await() } else "" } }
 
 /**
  * Demonstrates square matrix multiplication in Kotlin/JS:
@@ -48,7 +32,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
  *  2) GPU: naive row*col multiply in a compute shader
  * and compares total sums of the result.
  */
-fun benchmarkWGPU() {
+fun benchmarkWGPU() = loadWGSL("matmul_int.wgsl").invokeOnCompletion { runBenchmark() }
+
+fun runBenchmark() {
   // 1) Pick dimension N (try 256 or so for a quick test)
   val N = 1024
   val size = N * N
@@ -125,7 +111,7 @@ fun squareAndSumGPU(mat: IntArray, N: Int): dynamic {
 
     // 4) Compile WGSL
     val modDesc = js("{}")
-    modDesc.code = WGSL_MAT_MUL
+    modDesc.code = WGSL_MAT_MUL_SRC
     val shaderModule = device.createShaderModule(modDesc)
 
     // 5) Pipeline
