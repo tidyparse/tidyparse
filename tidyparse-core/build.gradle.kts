@@ -26,11 +26,6 @@ kotlin {
   }
 
   sourceSets {
-//    all {
-//      languageSettings.apply {
-//        languageVersion = "2.0"
-//      }
-//    }
     commonMain {
       dependencies {
         api(kotlin("stdlib:2.1.0"))

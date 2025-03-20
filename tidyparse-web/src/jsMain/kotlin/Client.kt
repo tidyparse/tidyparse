@@ -3,8 +3,11 @@ import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.types.PlatformVars
 import kotlinx.browser.*
 import kotlinx.coroutines.*
+import kotlinx.dom.appendText
 import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
+import web.gpu.GPU
+import web.gpu.GPUDevice
 import kotlin.js.Promise
 
 /**
@@ -42,12 +45,32 @@ val parser = Parser(
 
 // ./gradlew :tidyparse-web:jsBrowserDevelopmentRun --continuous
 fun main() {
-  MainScope().launch { benchmarkWGPU() }
   if (window.navigator.userAgent.indexOf("hrome") != -1) {
     PlatformVars.PLATFORM_CALLER_STACKTRACE_DEPTH = 4
   }
 
   if (window["PROGRAMMING_LANG"] == "python") pythonSetup() else defaultSetup()
+  MainScope().launch { loadGPUIfAvailable(); benchmarkWGPU() }
+}
+
+lateinit var gpu: GPUDevice
+
+suspend fun loadGPUIfAvailable() {
+  val tmpDev = (navigator.gpu as? GPU)?.requestAdapter()?.requestDevice()
+  val gpuAvailDiv = document.getElementById("gpuAvail") as HTMLDivElement
+
+  if (tmpDev != null) {
+    gpu = tmpDev
+    val obj = document.createElement("object").apply {
+      setAttribute("type", "image/svg+xml")
+      setAttribute("data", "/webgpu.svg")
+      setAttribute("width", "35")
+      setAttribute("height", "35")
+    }
+    gpuAvailDiv.appendChild(obj)
+  } else {
+    gpuAvailDiv.appendText("WebGPU is NOT available.")
+  }
 }
 
 fun defaultSetup() {
