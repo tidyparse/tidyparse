@@ -1,14 +1,9 @@
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.kaliningraph.repair.LED_BUFFER
-import ai.hypergraph.kaliningraph.repair.TIMEOUT_MS
-import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
+import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.tidyparse.initiateSuspendableRepair
 import kotlinx.coroutines.*
-import kotlinx.coroutines.await
 import org.w3c.dom.*
-import kotlin.js.Promise
-import kotlin.js.unsafeCast
 import kotlin.math.ln
 
 class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val output: Node) : JSTidyEditor(editor, output) {

@@ -1,7 +1,6 @@
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import com.strumenta.antlrkotlin.parsers.generated.Python3Lexer
-import org.antlr.v4.kotlinruntime.CharStreams
-import org.antlr.v4.kotlinruntime.Token
+import org.antlr.v4.kotlinruntime.*
 
 data class PyCodeSnippet(val rawCode: String) {
   // Keep all tokens, including whitespace/comments. The hidden channel is included by default.

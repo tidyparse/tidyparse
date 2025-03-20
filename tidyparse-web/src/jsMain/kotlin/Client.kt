@@ -42,7 +42,7 @@ val parser = Parser(
 
 // ./gradlew :tidyparse-web:jsBrowserDevelopmentRun --continuous
 fun main() {
-//  benchmarkWGPU()
+  MainScope().launch { benchmarkWGPU() }
   if (window.navigator.userAgent.indexOf("hrome") != -1) {
     PlatformVars.PLATFORM_CALLER_STACKTRACE_DEPTH = 4
   }
@@ -81,7 +81,6 @@ fun defaultSetup() {
 
 fun pythonSetup() {
   println("Starting TidyPython")
-//  benchmarkWGPU(); return
   inputField.addEventListener("input", { jsPyEditor.run { continuation { handleInput() } } })
 
   window.onload = {
@@ -129,12 +128,12 @@ fun loadNgrams(file: String = "python_4grams.txt") =
 fun initPyodide() = MainScope().launch {
   jsPyEditor.pyodide = window.asDynamic()
     .loadPyodide(js("{ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.27.2/full/' }"))
-    .unsafeCast<Promise<dynamic>>().await()
+    .unsafeCast<Promise<*>>().await()
 
-  jsPyEditor.pyodide.loadPackage("micropip").unsafeCast<Promise<dynamic>>().await()
+  jsPyEditor.pyodide.loadPackage("micropip").unsafeCast<Promise<*>>().await()
 
   val micropip = jsPyEditor.pyodide.pyimport("micropip")
-  micropip.install("black").unsafeCast<Promise<dynamic>>().await()
+  micropip.install("black").unsafeCast<Promise<*>>().await()
 
   val runPromise = jsPyEditor.pyodide.runPythonAsync(
     """

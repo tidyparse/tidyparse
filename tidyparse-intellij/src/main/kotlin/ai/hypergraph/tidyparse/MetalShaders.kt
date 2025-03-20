@@ -2,12 +2,11 @@
 
 package ai.hypergraph.tidyparse
 
-import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.kaliningraph.repair.*
+import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
+import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import com.sun.jna.*
-import org.intellij.lang.annotations.Language
 import java.io.File
 import java.util.*
 import kotlin.system.measureTimeMillis
@@ -111,7 +110,8 @@ fun main() {
 }
 
 object GPUBridge {
-  @Language("c++") fun metalSrc(grammarHeader: String) = """
+  /* language=c++ */
+  fun metalSrc(grammarHeader: String) = """
 // https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf
 #include <metal_stdlib>
 using namespace metal;
@@ -409,8 +409,7 @@ kernel void prefix_sum_p2(
       maxWordLen: Int, maxSamples: Int,
     )
   }
-  /** Caller: [GPUBridge.cflClosure] */
-  @Language("swift") val swiftSrc = """$swiftImports
+  /** language=swift caller: [GPUBridge.cflClosure] */ val swiftSrc = """$swiftImports
 @_cdecl("cflMultiply") public func cflMultiply(
     _ dp_in_sparse: UnsafePointer<UInt16>?,
     _ dp_out: UnsafeMutablePointer<UInt16>?,

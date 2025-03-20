@@ -1,11 +1,3 @@
-import kotlinx.browser.window
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.MainScope
-import kotlinx.coroutines.await
-import kotlinx.coroutines.launch
-import kotlin.js.Promise
-
-@JsName("navigator")
 external val navigator: dynamic
 
 /**
@@ -31,7 +23,449 @@ external val navigator: dynamic
  * which we approximate with repeated "square + OR" steps for up to ceil(log2(Q)) iterations.
  */
 
-private lateinit var WGSL_BAR_HILLEL: String
+//language=wgsl
+private val WGSL_BAR_HILLEL: String = """
+// -------------------------------------------------------------------------
+// Example buffer/struct declarations
+// Adjust as appropriate for your own pipeline layout
+// -------------------------------------------------------------------------
+
+struct Uniforms {
+    numStates               : i32,
+    allFSAPairsSize         : i32,
+    allFSAPairsOffsetsSize  : i32,
+    numNonterminals         : i32,
+    volen                   : i32,
+    vilen                   : i32,
+};
+
+// Device buffers
+@group(0) @binding(0) var<storage, read>        dp_in               : array<u16>;
+@group(0) @binding(1) var<storage, read_write>  dp_out              : array<u16>;
+@group(0) @binding(2) var<storage, read>        allFSAPairs         : array<i32>;
+@group(0) @binding(3) var<storage, read>        allFSAPairsOffsets  : array<i32>;
+
+// Uniform buffer holding int scalars
+@group(0) @binding(4) var<uniform>              uni                 : Uniforms;
+
+// Atomic counter for number of nonzero entries
+@group(0) @binding(5) var<storage, read_write>  numNonzero          : atomic<u32>;
+
+// Grammar header data (example)
+@group(0) @binding(6) var<storage, read>        vidx_offsets        : array<i32>;
+@group(0) @binding(7) var<storage, read>        vidx                : array<i32>;
+
+// For the bp_count kernel
+@group(0) @binding(8) var<storage, read_write>  bpCount             : array<i32>;
+
+// -------------------------------------------------------------------------
+// Helper function: decode (row, col) from tid in the upper-triangle
+// -------------------------------------------------------------------------
+fn decodeUpperTriangle(i: i32, N: i32) -> vec2<i32> {
+    let d     = f32( (2 * N - 1) * (2 * N - 1) ) - f32(8 * i);
+    let root  = sqrt(d);
+    let rF    = (f32(2 * N - 1) - root) * 0.5;
+    let r     = i32(floor(rF));
+    let rowSt = r * (N - 1) - (r * (r - 1)) / 2;
+    let off   = i - rowSt;
+    let c     = r + 1 + off;
+    return vec2<i32>(r, c);
+}
+
+// -------------------------------------------------------------------------
+// cfl_mul_upper kernel (Metal -> WGSL)
+// -------------------------------------------------------------------------
+@compute @workgroup_size(64)
+fn cfl_mul_upper(@builtin(global_invocation_id) gid : vec3<u32>) {
+    let tid         = i32(gid.x);
+    let numStates   = uni.numStates;
+    let nnt         = uni.numNonterminals;
+    // totalCells = (numStates*(numStates-1)/2)*numNonterminals
+    let totalCells  = (numStates * (numStates - 1) / 2) * nnt;
+
+    if (tid >= totalCells) { return; }
+
+    // Decode (r, c) for the upper-triangle
+    let i       = tid / nnt;
+    let rc      = decodeUpperTriangle(i, numStates);
+    let r       = rc.x;
+    let c       = rc.y;
+    let A       = tid % nnt;
+    let snt     = numStates * nnt;
+    let dpIdx   = r * snt + c * nnt + A;
+
+    // These come from the grammar header
+    let startGC = vidx_offsets[A];
+    let endGC   = if (A + 1 < uni.volen) { vidx_offsets[A + 1] } else { uni.vilen };
+
+    // aoi = r * numStates + c + 1
+    let aoi             = r * numStates + c + 1;
+    let pairOffset      = allFSAPairsOffsets[aoi - 1];
+    let pairOffsetNext  = if (aoi < uni.allFSAPairsOffsetsSize) {
+                              allFSAPairsOffsets[aoi]
+                          } else {
+                              uni.allFSAPairsSize
+                          };
+
+    // Check if dp_in[dpIdx] is already non-zero
+    let val = dp_in[dpIdx];
+    if (val != 0u) {
+        // Mirror original cfl_mul_upper: copy dp_in -> dp_out, increment count
+        dp_out[dpIdx] = val;
+        atomicAdd(&numNonzero, 1u);
+
+        // If the last bit (0x01) is set, return
+        if ((val & 0x01u) != 0u) { return; }
+    }
+
+    // Otherwise, search FSA pairs
+    for (var pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx++) {
+        let mdpt = allFSAPairs[pairIdx];
+
+        var g = startGC;
+        while (g < endGC) {
+            let B = vidx[g];
+            let C = vidx[g + 1];
+
+            let idxBM = r      * snt + mdpt * nnt + B;
+            let idxMC = mdpt   * snt + c    * nnt + C;
+
+            if ((dp_in[idxBM] != 0u) && (dp_in[idxMC] != 0u)) {
+                // Set dp_out[dpIdx] bit 0 => 'nonterminal found'
+                dp_out[dpIdx] = dp_out[dpIdx] | 0x01u;
+                atomicAdd(&numNonzero, 1u);
+                return;
+            }
+            g = g + 2;
+        }
+    }
+}
+
+// -------------------------------------------------------------------------
+// bp_count kernel (Metal -> WGSL)
+// -------------------------------------------------------------------------
+@compute @workgroup_size(64)
+fn bp_count(@builtin(global_invocation_id) gid : vec3<u32>) {
+    let tid         = i32(gid.x);
+    let numStates   = uni.numStates;
+    let nnt         = uni.numNonterminals;
+    let totalCells  = (numStates * (numStates - 1) / 2) * nnt;
+
+    if (tid >= totalCells) { return; }
+
+    // Decode (r, c) for the upper-triangle
+    let i       = tid / nnt;
+    let rc      = decodeUpperTriangle(i, numStates);
+    let r       = rc.x;
+    let c       = rc.y;
+    let A       = tid % nnt;
+    let snt     = numStates * nnt;
+    let dpIdx   = r * snt + c * nnt + A;
+
+    let startGC = vidx_offsets[A];
+    let endGC   = if (A + 1 < uni.volen) { vidx_offsets[A + 1] } else { uni.vilen };
+
+    let aoi             = r * numStates + c + 1;
+    let pairOffset      = allFSAPairsOffsets[aoi - 1];
+    let pairOffsetNext  = if (aoi < uni.allFSAPairsOffsetsSize) {
+                              allFSAPairsOffsets[aoi]
+                          } else {
+                              uni.allFSAPairsSize
+                          };
+
+    // If dp_in[dpIdx] does NOT have bit 0 set, then bpCount = 0
+    if ((dp_in[dpIdx] & 0x01u) == 0u) {
+        bpCount[dpIdx] = 0;
+        return;
+    }
+
+    // Otherwise accumulate the possible backpointers
+    var count = 0;
+    for (var pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx++) {
+        let mdpt = allFSAPairs[pairIdx];
+
+        var g = startGC;
+        while (g < endGC) {
+            let B = vidx[g];
+            let C = vidx[g + 1];
+
+            let idxBM = r      * snt + mdpt * nnt + B;
+            let idxMC = mdpt   * snt + c    * nnt + C;
+            if ((dp_in[idxBM] != 0u) && (dp_in[idxMC] != 0u)) {
+                count = count + 1;
+            }
+            g = g + 2;
+        }
+    }
+
+    bpCount[dpIdx] = count;
+}
+
+@compute @workgroup_size(64)
+fn bp_write(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let tid         = i32(gid.x);
+    let numStates   = uni.numStates;
+    let nnt         = uni.numNonterminals;
+    let totalCells  = (numStates * (numStates - 1) / 2) * nnt;
+
+    if (tid >= totalCells) { return; }
+
+    // Decode (r, c, A, dpIdx)
+    let i        = tid / nnt;
+    let rc       = decodeUpperTriangle(i, numStates);
+    let r        = rc.x;
+    let c        = rc.y;
+    let A        = tid % nnt;
+    let snt      = numStates * nnt;
+    let dpIdx    = r * snt + c * nnt + A;
+
+    // startGC, endGC
+    let startGC  = vidx_offsets[A];
+    let endGC    = if (A + 1 < uni.volen) { vidx_offsets[A + 1] } else { uni.vilen };
+
+    // aoi, pair offsets
+    let aoi             = r * numStates + c + 1;
+    let pairOffset      = allFSAPairsOffsets[aoi - 1];
+    let pairOffsetNext  = if (aoi < uni.allFSAPairsOffsetsSize) {
+                              allFSAPairsOffsets[aoi]
+                          } else {
+                              uni.allFSAPairsSize
+                          };
+
+    // If dp_in[dpIdx] has bit 0 set
+    if ((dp_in[dpIdx] & 0x01u) == 0u) { return; }
+
+    var outPos = bpOffset[dpIdx];
+
+    // Similar to bp_count, but we record expansions in bpStorage
+    for (var pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx++) {
+        let mdpt = allFSAPairs[pairIdx];
+
+        var poff = startGC;
+        while (poff < endGC) {
+            let B = vidx[poff];
+            let C = vidx[poff + 1];
+
+            let idxBM = r    * snt + mdpt * nnt + B;
+            let idxMC = mdpt * snt + c    * nnt + C;
+
+            if ((dp_in[idxBM] != 0u) && (dp_in[idxMC] != 0u)) {
+                // Each record is 2 ints
+                bpStorage[outPos * 2 + 0] = idxBM;
+                bpStorage[outPos * 2 + 1] = idxMC;
+                outPos = outPos + 1;
+            }
+            poff = poff + 2;
+        }
+    }
+}
+
+fn lcg_random(stateRef: ptr<function, u32>) -> u32 {
+    // replicate: state = 1664525u * state + 1013904223u
+    let newVal = (1664525u * (*stateRef)) + 1013904223u;
+    *stateRef = newVal;
+    return newVal;
+}
+
+fn lcg_randomRange(stateRef: ptr<function, u32>, range: u32) -> u32 {
+    return lcg_random(stateRef) % range;
+}
+
+fn sampleTopDown(
+    dp_in       : array<u16>,
+    bpCount     : array<i32>,
+    bpOffset    : array<i32>,
+    bpStorage   : array<i32>,
+    startDPIdx  : i32,
+    rngStateRef : ptr<function, u32>,
+    localWord   : ptr<function, array<u16, 1024>>,
+    maxWordLen  : i32
+) {
+    // We'll create a stack up to 1024
+    var stack: array<i32, 1024>;
+    var top    = 0;
+    var wordLen= 0;
+
+    stack[top] = startDPIdx;
+    top = top + 1;
+
+    // We interpret uni.numNonterminals, etc., as global from `uni`.
+    let nnt = uni.numNonterminals;
+
+    // main loop
+    var iter = 0;
+    loop {
+        if ((iter >= maxWordLen * 98) || (top <= 0) || (wordLen >= maxWordLen - 5)) { break; }
+        iter = iter + 1;
+
+        top = top - 1;
+        let dpIdx = abs(stack[top]);
+
+        let expCount = bpCount[dpIdx];
+        // dp_in[dpIdx] >> 1 => checks high bits
+        // dp_in[dpIdx] & 0x01 => checks the binary expansion bit
+        let predicate = dp_in[dpIdx];
+        let canRecurse = ((predicate & 0x01u) != 0u);
+
+        // If ( (predicate >> 1u) != 0 ) => the node has some “literal” bits set
+        // Or we randomly choose to treat it as a leaf ...
+        let hasLiteral = ((predicate >> 1u) != 0u);
+
+        // Random check:
+        let rVal = i32(lcg_randomRange(rngStateRef, u32(expCount))); 
+        // Original logic:
+        // if ( (dp_in[dpIdx] >> 1) && ( ! (dp_in[dpIdx] & 0x01) || (rVal % 2 == 0) ) ) { ... }
+        if (hasLiteral && ( !canRecurse || ((rVal % 2) == 0) )) {
+            // treat as leaf/terminal
+            let nonterminal     = dpIdx % nnt;
+            let isNegative      = ((predicate & 0x8000u) != 0u);
+            let literal         = (predicate >> 1u) & 0x7FFFu;
+            let numTms         = nt_tm_lens[nonterminal];
+            let ntOffset       = offsets[nonterminal];
+
+            if (isNegative) {
+                // choose from among all possible except “literal - 1”
+                var possibleTms: array<u16, 100>;
+                var tmCount = 0;
+                for (var i = 0; i < min(numTms, 100); i = i + 1) {
+                    if (i != (literal - 1u)) {
+                        possibleTms[tmCount] = all_tm[i32(ntOffset) + i];
+                        tmCount = tmCount + 1;
+                    }
+                }
+                let choiceIndex = i32(lcg_randomRange(rngStateRef, u32(tmCount)));
+                let tmChoice    = possibleTms[choiceIndex];
+                (*localWord)[wordLen] = tmChoice + 1u; // your original code
+                wordLen = wordLen + 1;
+            } else {
+                // positive literal
+                if (numTms != 0) {
+                    let tmVal = all_tm[i32(ntOffset) + i32(literal) - 1];
+                    (*localWord)[wordLen] = tmVal + 1u;
+                } else {
+                    (*localWord)[wordLen] = 99u; // fallback
+                }
+                wordLen = wordLen + 1;
+            }
+        } else {
+            // do a binary expansion if there's room on the stack
+            if (top + 2 < 1024) {
+                let randIdx = bpOffset[dpIdx] + rVal;
+                let idxBM   = bpStorage[randIdx * 2 + 0];
+                let idxMC   = bpStorage[randIdx * 2 + 1];
+                stack[top] = idxMC;
+                top = top + 1;
+                stack[top] = idxBM;
+                top = top + 1;
+            }
+        }
+    }
+}
+
+@compute @workgroup_size(64)
+fn sample_words(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let tid = gid.x;
+
+    // If needed, clamp to numStartIndices:
+    if (tid >= u32(samplerUni.numStartIndices)) { return; }
+
+    // We'll create a local array in function scope
+    var localWord: array<u16, 1024>;
+    // Zero-initialize
+    for (var i = 0; i < samplerUni.maxWordLen; i = i + 1) { localWord[i] = 0u; }
+
+    // Grab rngState from seeds[tid]
+    var rngState = seeds[tid];
+
+    // Choose a random index in [0..numStartIndices-1]
+    let rIndex   = lcg_randomRange(&rngState, u32(samplerUni.numStartIndices));
+    let dpIndex  = startIndices[i32(rIndex)];
+
+    // decode row & col if needed:
+    //    A = dpIndex % numNonterminals
+    //    rowCol = dpIndex / numNonterminals
+    //    c = rowCol % numStates
+    //    r = rowCol / numStates
+    //    then startIdx = r*snt + c*numNonterminals + A
+    let nnt   = uni.numNonterminals;
+    let A     = dpIndex % nnt;
+    let rowCol= dpIndex / nnt;
+    let c     = rowCol % uni.numStates;
+    let r     = rowCol / uni.numStates;
+    let snt   = uni.numStates * nnt;
+    let startIdx = r * snt + c * nnt + A;
+
+    // Now call sampleTopDown
+    sampleTopDown(dp_in, bpCount, bpOffset, bpStorage,
+                  startIdx, &rngState, &localWord, samplerUni.maxWordLen);
+
+    // Copy to sampledWords buffer
+    // dp_in was 16 bits, but in original code we wrote into a “char”
+    // so we do a cast from u16 -> u8 (truncation).
+    for (var i = 0; i < samplerUni.maxWordLen; i = i + 1) {
+        sampledWords[u32(tid) * u32(samplerUni.maxWordLen) + u32(i)]
+            = u8(localWord[i] & 0x00FFu);
+    }
+}
+
+@compute @workgroup_size(1024)
+fn prefix_sum_p1(
+    @builtin(global_invocation_id) globalId: vec3<u32>,
+    @builtin(workgroup_id)         groupId : vec3<u32>,
+    @builtin(local_invocation_id)  localId : vec3<u32>
+) {
+    let N       = prefixUni.N; // total length
+    let gid     = globalId.x;
+    let grpId   = groupId.x;
+    let lid     = localId.x;
+    let tpg     = 1024u; // fixed to match @workgroup_size(1024)
+
+    var<workgroup> tile: array<i32, 1024>;
+
+    let base = grpId * tpg;
+    let idx  = base + lid;
+
+    let v = if (idx < N) { outBuf[idx] } else { 0 };
+    tile[lid] = v;
+    workgroupBarrier();
+
+    var offset = 1u;
+    while (offset < tpg) {
+        let n = if (lid >= offset) { tile[lid - offset] } else { 0 };
+        workgroupBarrier();
+        tile[lid] = tile[lid] + n;
+        workgroupBarrier();
+
+        offset = offset << 1;
+    }
+
+    let inclusive = tile[lid];
+    tile[lid] = inclusive - v;
+
+    // If last thread in this group or last element in entire array
+    if ((idx + 1u == N) || (lid == tpg - 1u)) { blkSum[grpId] = inclusive; }
+
+    if (idx < N) { outBuf[idx] = tile[lid]; }
+}
+
+@compute @workgroup_size(1024)
+fn prefix_sum_p2(
+    @builtin(global_invocation_id) globalId: vec3<u32>,
+    @builtin(workgroup_id)         groupId : vec3<u32>,
+    @builtin(local_invocation_id)  localId : vec3<u32>
+) {
+    let N     = prefixUni.N;
+    let grpId = groupId.x;
+    let lid   = localId.x;
+    let tpg   = 1024u;
+
+    if (grpId == 0u) { return; }
+
+    let offsetVal = blkSum[grpId - 1u];
+    let idx = grpId * tpg + lid;
+
+    if (idx < N) { outBuf[idx] = outBuf[idx] + offsetVal; }
+}"""
 
 /**
  * Perform a Bar-Hillel intersection / "CYK-like" step on GPU using exponentiation-by-squaring.
