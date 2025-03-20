@@ -15,7 +15,6 @@ version = property("pluginVersion")!!
 kotlin {
   jvm {
     compilations.all { kotlinOptions.jvmTarget = property("javaVersion") as String }
-    withJava()
     testRuns["test"].executionTask.configure {
       useJUnitPlatform()
     }
