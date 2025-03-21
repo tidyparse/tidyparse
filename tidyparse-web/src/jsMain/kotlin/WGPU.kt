@@ -1,3 +1,4 @@
+import js.buffer.AllowSharedBufferSource
 import js.buffer.ArrayBuffer
 import js.typedarrays.Int32Array
 import kotlinx.coroutines.await
@@ -5,34 +6,7 @@ import web.gpu.*
 import web.performance.performance
 import kotlin.js.Promise
 import kotlin.random.Random
-
-//language=wgsl
-private const val WGSL_MAT_MUL_SRC: String = """
-struct Params { N: u32 };
-
-@group(0) @binding(0) var<storage, read>       M:   array<i32>;
-@group(0) @binding(1) var<storage, read_write> Out: array<i32>;
-@group(0) @binding(2) var<uniform>             param: Params;
-
-// We'll launch one thread per cell => dispatchWorkgroups(N, N)
-// at @workgroup_size(1,1,1).  That means we have N*N threads total.
-@compute @workgroup_size(1,1,1)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let row = gid.y;
-    let col = gid.x;
-    let N = param.N;
-
-    if (row >= N || col >= N) { return; }
-
-    let rowOffset = row * N;
-    var acc = 0;
-    for (var k = 0u; k < N; k = k + 1u) {
-        let a = M[rowOffset + k];
-        let b = M[k * N + col];
-        acc = acc + (a * b);
-    }
-    Out[rowOffset + col] = acc;
-}"""
+import kotlin.reflect.KProperty
 
 suspend fun benchmarkWGPU() {
   val N = 1024
@@ -58,83 +32,119 @@ fun squareAndSumCpu(a: IntArray, n: Int): Long {
   return o.fold(0L) { x, y -> x + y }
 }
 
-inline fun <T> jsObject(init: dynamic.() -> Unit): T {
-  val o = js("{}")
-  init(o)
-  return o as T
-}
+//language=wgsl
+val WGSL_MAT_MUL by Shader("""
+struct Params { N: u32 };
+
+@group(0) @binding(0) var<storage, read>       M:   array<i32>;
+@group(0) @binding(1) var<storage, read_write> Out: array<i32>;
+@group(0) @binding(2) var<uniform>             param: Params;
+
+// We'll launch one thread per cell => dispatchWorkgroups(N, N)
+// at @workgroup_size(1,1,1).  That means we have N*N threads total.
+@compute @workgroup_size(1,1,1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let row = gid.y;
+    let col = gid.x;
+    let N = param.N;
+
+    if (row >= N || col >= N) { return; }
+
+    let rowOffset = row * N;
+    var acc = 0;
+    for (var k = 0u; k < N; k = k + 1u) {
+        let a = M[rowOffset + k];
+        let b = M[k * N + col];
+        acc = acc + (a * b);
+    }
+    Out[rowOffset + col] = acc;
+}""")
 
 suspend fun squareAndSumGPU(a: Array<Int>, n: Int): Long {
-  // 2) Convert input to Int32Array
+  // 1) Convert input to Int32Array
   val s = a.size         // total elements
   val bytes = s * 4      // size in bytes
-  val data = Int32Array<ArrayBuffer>(s)
-  data.set(a, 0)
+  val data = Int32Array<ArrayBuffer>(s).apply { set(a, 0) }
 
-  // 3) Make & fill buffers
-  // usage bits:
+  // 2) Make & fill usage bits:
+  // https://www.w3.org/TR/webgpu/#buffer-usage
   //   STORAGE (128) + COPY_DST (8) = 136
   //   STORAGE (128) + COPY_SRC (4) = 132
   //   MAP_READ (1) + COPY_DST (8) = 9
   //   UNIFORM (64) + COPY_DST (8) = 72
-  val bufM: GPUBuffer = makeBuffer(bytes, 136)
+  val bufM: GPUBuffer = makeBuffer(bytes, 136, data)
   val bufO: GPUBuffer = makeBuffer(bytes, 132)
-  val bufS: GPUBuffer = makeBuffer(bytes, 9)
-  val bufP: GPUBuffer = makeBuffer(16, 72)
+  val bufP: GPUBuffer = makeBuffer(16, 72, Int32Array<ArrayBuffer>(4).apply { set(arrayOf(n), 0) })
 
-  queueWrite(bufM, data)
-  // write N into a 16-byte uniform buffer
-  queueWrite(bufP, Int32Array<ArrayBuffer>(4).apply { set(arrayOf(n), 0) })
+  // 3) Invoke kernel
+  val bufS = WGSL_MAT_MUL(bufM, bufO, bufP, readFrom = bufO, threads = n)
 
-  // 4) Create pipeline & bind group
-  val pipeline = makePipeline(WGSL_MAT_MUL_SRC)
-  val bindGroup = bindBuffers(pipeline, bufM, bufO, bufP)
-
-  // 5) Encode commands
-  val encoder: GPUCommandEncoder = gpu.createCommandEncoder()
-  encoder.beginComputePass().apply {
-    setPipeline(pipeline)
-    setBindGroup(0, bindGroup)
-    dispatchWorkgroups(n, n) // naive NxN threads
-    end()
-  }
-
-  // copy the “out” buffer to staging, so we can read it on CPU
-  encoder.copyBufferToBuffer(bufO, 0.0, bufS, 0.0, bytes.toDouble())
-  gpu.queue.submit(arrayOf(encoder.finish()))
-
-  // 6) Map & sum
-  (bufS.mapAsync(1) as Promise<*>).await()
-  val i32 = Int32Array(bufS.getMappedRange())
-
+  // 4) Map & sum on CPU
+  val i32 = Int32Array(bufS)
   var sum = 0L
   for (i in 0 until s) sum += i32[i]
 
   return sum
 }
 
-fun makeBuffer(sz: Int, us: Int): GPUBuffer =
-  gpu.createBuffer(GPUBufferDescriptor(size = sz.toDouble(), usage = us))
+class Shader(val src: String) {
+  lateinit var name: String
+  lateinit var pipeline: GPUComputePipeline
 
-suspend fun makePipeline(wgsl: String, entryPoint: String = "main"): GPUComputePipeline =
-  gpu.createComputePipeline(
-    GPUComputePipelineDescriptor(
-      layout = "auto",
-      compute = GPUProgrammableStage(
-        module = gpu.createShaderModule(GPUShaderModuleDescriptor(code = wgsl)),
-        entryPoint = entryPoint
+  companion object {
+    private suspend fun makePipeline(wgsl: String, entryPoint: String = "main"): GPUComputePipeline =
+      gpu.createComputePipeline(
+        GPUComputePipelineDescriptor(
+          layout = "auto",
+          compute = GPUProgrammableStage(
+            module = gpu.createShaderModule(GPUShaderModuleDescriptor(code = wgsl)),
+            entryPoint = entryPoint
+          )
+        )
       )
-    )
-  )
 
-fun bindBuffers(pipeline: GPUComputePipeline, vararg buffers: GPUBuffer): GPUBindGroup {
-  val lay = pipeline.getBindGroupLayout(0)
-  val ent = buffers.mapIndexed { index, buf ->
-    GPUBindGroupEntry(binding = index, resource = jsObject<GPUBindingResource> { buffer = buf })
-  }.toTypedArray()
+    private fun bindBuffers(pipeline: GPUComputePipeline, vararg buffers: GPUBuffer): GPUBindGroup {
+      val lay = pipeline.getBindGroupLayout(0)
 
-  return gpu.createBindGroup(GPUBindGroupDescriptor(layout = lay, entries = ent))
+      inline fun <T> jsObject(init: dynamic.() -> Unit): T {
+        val o = js("{}")
+        init(o)
+        return o as T
+      }
+
+      val ent = buffers.mapIndexed { index, buf ->
+        GPUBindGroupEntry(
+          binding = index,
+          resource = jsObject<GPUBindingResource> { buffer = buf }
+        )
+      }.toTypedArray()
+
+      return gpu.createBindGroup(GPUBindGroupDescriptor(layout = lay, entries = ent))
+    }
+  }
+
+  suspend fun bind() { pipeline = makePipeline(src) }
+
+  operator fun getValue(tr: Any?, property: KProperty<*>): Shader = this.also { name = property.name }
+
+  suspend operator fun invoke(vararg inputs: GPUBuffer, readFrom: GPUBuffer, threads: Int): ArrayBuffer {
+    val encoder: GPUCommandEncoder = gpu.createCommandEncoder()
+    val output = makeBuffer(readFrom.size.toInt(), 9)
+    encoder.beginComputePass().apply {
+      setPipeline(pipeline)
+      setBindGroup(0, bindBuffers(pipeline, *inputs))
+      dispatchWorkgroups(threads, threads)
+      end()
+    }
+
+    encoder.copyBufferToBuffer(readFrom, 0.0, output, 0.0, output.size)
+    gpu.queue.submit(arrayOf(encoder.finish()))
+
+    (output.mapAsync(1) as Promise<*>).await()
+    return output.getMappedRange()
+  }
 }
 
-fun queueWrite(buf: GPUBuffer, data: Int32Array<ArrayBuffer>) =
-  gpu.queue.writeBuffer(buf, 0.0, data)
+fun makeBuffer(sz: Int, us: Int, data: AllowSharedBufferSource? = null): GPUBuffer =
+  gpu.createBuffer(GPUBufferDescriptor(size = sz.toDouble(), usage = us))
+    .also { if (data != null) { gpu.queue.writeBuffer(it, 0.0, data) } }

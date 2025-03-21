@@ -50,12 +50,23 @@ fun main() {
   }
 
   if (window["PROGRAMMING_LANG"] == "python") pythonSetup() else defaultSetup()
-  MainScope().launch { loadGPUIfAvailable(); benchmarkWGPU() }
+  tryBootstrapGPU()
 }
 
 lateinit var gpu: GPUDevice
+var gpuAvailable = false
 
-suspend fun loadGPUIfAvailable() {
+fun tryBootstrapGPU() {
+  MainScope().launch {
+    checkWebGPUAvailability()
+    if (gpuAvailable) {
+      WGSL_MAT_MUL.bind()
+      benchmarkWGPU()
+    }
+  }
+}
+
+suspend fun checkWebGPUAvailability() {
   val tmpDev = (navigator.gpu as? GPU)?.requestAdapter()?.requestDevice()
   val gpuAvailDiv = document.getElementById("gpuAvail") as HTMLDivElement
 
@@ -68,6 +79,7 @@ suspend fun loadGPUIfAvailable() {
       setAttribute("height", "35")
     }
     gpuAvailDiv.appendChild(obj)
+    gpuAvailable = true
   } else {
     gpuAvailDiv.appendText("WebGPU is NOT available.")
   }
