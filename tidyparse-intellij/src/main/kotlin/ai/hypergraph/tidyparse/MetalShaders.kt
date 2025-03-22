@@ -81,7 +81,7 @@ fun main() {
 
     val maxSamples = 1_000
 
-    val samples = GPUBridge.cflClosure(
+    val samples = GPUBridge.repairPipeline(
       levFSA.byteFormat(cfg),
       allFSAPairsFlattened, allFSAPairsOffsets,
       levFSA.finalIdxs.toIntArray(), levFSA.finalIdxs.size,
@@ -369,15 +369,15 @@ kernel void prefix_sum_p2(
 
   val swiftImports = "import Foundation\nimport Metal\nimport Dispatch"
 
-  @JvmStatic fun cflClosure(
-/**[NativeBridge.cflMultiply] */
+  @JvmStatic fun repairPipeline(
+/**[NativeBridge.repairPipeline] */
     dpIn: UShortArray,
     mdpts: IntArray, mdptsOffsets: IntArray,
     acceptStates: IntArray, acceptStatesSize: Int,
     numStates: Int, maxWordLen: Int, maxSamples: Int
   ): ByteArray =
     Memory(maxWordLen * maxSamples.toLong()).also { outMem ->
-      nativeBridge.cflMultiply(
+      nativeBridge.repairPipeline(
         dp_in = Memory(2L * dpIn.size).apply { write(0, dpIn.toShortArray(), 0, dpIn.size) },
         dp_out = outMem,
         allFSAPairs = Memory(4L * mdpts.size).apply { write(0, mdpts, 0, mdpts.size) },
@@ -396,7 +396,7 @@ kernel void prefix_sum_p2(
   interface NativeBridge : Library {
     fun setup(numNts: Int, startIdx: Int, s: String)
 
-               fun cflMultiply(
+               fun repairPipeline(
     /** [GPUBridge.swiftSrc] */
       // Expects a flattened array of triples containing the indices (r, c, A) that are initially set
       dp_in: Pointer,              // buffer(0)
@@ -409,8 +409,8 @@ kernel void prefix_sum_p2(
       maxWordLen: Int, maxSamples: Int,
     )
   }
-  /** language=swift caller: [GPUBridge.cflClosure] */ val swiftSrc = """$swiftImports
-@_cdecl("cflMultiply") public func cflMultiply(
+  /** language=swift caller: [GPUBridge.repairPipeline] */ val swiftSrc = """$swiftImports
+@_cdecl("repairPipeline") public func repairPipeline(
     _ dp_in_sparse: UnsafePointer<UInt16>?,
     _ dp_out: UnsafeMutablePointer<UInt16>?,
     _ allFSAPairs: UnsafePointer<CInt>?,

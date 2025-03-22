@@ -57,10 +57,10 @@ lateinit var gpu: GPUDevice
 var gpuAvailable = false
 
 fun tryBootstrapGPU() {
-  MainScope().launch {
+  MainScope().async {
     checkWebGPUAvailability()
     if (gpuAvailable) {
-      WGSL_MAT_MUL.bind()
+      WGSL_ITERATE.bind()
       benchmarkWGPU()
     }
   }
