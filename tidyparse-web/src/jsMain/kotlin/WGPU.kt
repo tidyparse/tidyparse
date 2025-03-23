@@ -13,11 +13,15 @@ import kotlin.reflect.KProperty
 suspend fun benchmarkWGPU() {
   val N = 1024
   val P = 5
-  val M = IntArray(N * N) { Random.nextInt(2, 10) }
-//  val t0 = performance.now()
-//  val cSum = iterateCPU(M, P)
-//  val t1 = performance.now()
-//  println("CPU hash=$cSum in ${t1 - t0} ms (N=$N, P=$P)")
+  val M = IntArray(N * N) { i ->
+    val r = i / N // Row index
+    val c = i % N // Column index
+    if (c > r) Random.nextInt(2, 10) else 0
+  }
+  val t0 = performance.now()
+  val cSum = iterateCPU(M, P)
+  val t1 = performance.now()
+  println("CPU hash=$cSum in ${t1 - t0} ms (N=$N, P=$P)")
   val t2 = performance.now()
   val gSum = iterateGPU(M.toTypedArray(), P)
   val t3 = performance.now()
@@ -35,7 +39,7 @@ fun iterateCPU(a: IntArray, P: Int): Int {
         for (k in 0 until n) {
           sum += current[r * n + k] * current[k * n + c]
         }
-        next[r * n + c] = current[r * n + c] + sum
+        next[r * n + c] = sum
       }
     }
     current = next
@@ -56,8 +60,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let row = gid.y;
     let col = gid.x;
     let N = param.N;
-
-    if (row >= N || col >= N) { return; }
+    
+    if (col <= row) { return; }
 
     let rowOffset = row * N;
     var acc = 0;
@@ -66,8 +70,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let b = M[k * N + col];
         acc = acc + (a * b);
     }
-    let m_rc = M[rowOffset + col];
-    Out[rowOffset + col] = m_rc + acc;
+    
+    Out[rowOffset + col] = acc;
 }
 """)
 
@@ -77,10 +81,9 @@ suspend fun iterateGPU(input: Array<Int>, P: Int): Int {
   val bytes = s * 4
 
   val bufM = makeBuffer(bytes, 140, Int32Array<ArrayBuffer>(s).apply { set(input, 0) })
-  val bufO = makeBuffer(bytes, 140)
   val bufP = makeBuffer(16, 72, Int32Array<ArrayBuffer>(4).apply { set(arrayOf(n), 0) })
 
-  val bufS = WGSL_ITERATE.invoke(bufM, bufO, bufP, threads = n, iterations = P)
+  val bufS = WGSL_ITERATE.invoke(bufM, bufP, threads = n, iterations = P)
 
   return Int32Array(bufS).asList().hashCode()
 }
@@ -122,11 +125,13 @@ class Shader(val src: String) {
 
   operator fun getValue(tr: Any?, property: KProperty<*>): Shader = this.also { name = property.name }
 
+  // Invocation strategies: eliminates some of the ceremony of calling a GSL shader
+
   suspend operator fun invoke(vararg inputs: GPUBuffer, threads: Int, iterations: Int = 1): ArrayBuffer {
     val encoder: GPUCommandEncoder = gpu.createCommandEncoder()
 
     val buf1 = inputs[0] // Initial input buffer
-    val param = inputs[2] // Uniform buffer
+    val param = inputs[1] // Uniform buffer
 
     val buf2 = makeBuffer(buf1.size.toInt(), buf1.usage)
 
