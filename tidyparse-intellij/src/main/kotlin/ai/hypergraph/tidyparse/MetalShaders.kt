@@ -267,7 +267,7 @@ inline void sampleTopDown(
         bool isNegativeLiteral = predicate & 0x8000;
         ushort literal = (predicate >> 1) & 0x7FFF;
         int numTms = nt_tm_lens[nonterminal];
-        uint ntOffset = offsets[nonterminal];
+        uint ntOffset = nt_tm_offsets[nonterminal];
         if (isNegativeLiteral) {
           ushort possibleTms[100];
           uint tmCount = 0; 
@@ -721,10 +721,10 @@ private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 
   private fun genNTTerminalMapForC(cfg: CFG): String {
     val terminalLists = cfg.nonterminals.map { cfg.bimap.UNITS[it]?.map { cfg.tmMap[it]!! } ?: emptyList() }
     val allTerminals = terminalLists.flatMap { it }
-    val offsets = terminalLists.scan(0) { acc, list -> acc + list.size }.dropLast(1)
+    val ntTmOffsets = terminalLists.scan(0) { acc, list -> acc + list.size }.dropLast(1)
 
     return """constant uint16_t all_tm[] = {${allTerminals.joinToString(",")}};
-              constant uint offsets[] = {${offsets.joinToString(",")}};
+              constant uint nt_tm_offsets[] = {${ntTmOffsets.joinToString(",")}};
               constant uint nt_tm_lens[] = {${terminalLists.map { it.size }.joinToString(",")}};
               constant int numNonterminals = ${cfg.nonterminals.size};""".trimIndent()
   }

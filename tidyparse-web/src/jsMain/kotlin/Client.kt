@@ -60,7 +60,7 @@ fun tryBootstrapGPU() {
   MainScope().async {
     checkWebGPUAvailability()
     if (gpuAvailable) {
-      WGSL_ITERATE.bind()
+      WGSL_GEMX_ITERATE.bind()
       benchmarkWGPU()
     }
   }
