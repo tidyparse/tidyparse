@@ -6,6 +6,7 @@ import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import js.array.asList
 import js.buffer.*
+import js.json.parse
 import js.typedarrays.Int32Array
 import kotlinx.coroutines.await
 import web.gpu.*
@@ -16,18 +17,15 @@ import kotlin.random.Random
 import kotlin.reflect.KProperty
 import kotlin.time.*
 
-suspend fun webGPURepair() {
+suspend fun benchmarkWGPURepair() {
   val cfg = pythonStatementCNFAllProds
 
   val pythonCode = "NAME = [ ( STRING , NAME ) , , ( NAME , NAME ) , ( NAME , NAME ) , ( NAME , NAME ) , , ( NAME , NAME ) ] NEWLINE"
     .tokenizeByWhitespace()
   val radius = 5
   val levFSA = makeLevFSA(pythonCode, radius)
-  val maxWordLen = pythonCode.size + radius + 10
 
-  val numStates = levFSA.numStates
-
-  fun List<List<List<Int>>>.prefixScan(): Pair<IntArray, IntArray> =
+  fun List<List<List<Int>>>.prefixScan(): Pair<IntArray, IntArray> = // TODO: move into shader kernel
     measureTimedValue {
       fun IntArray.prefixSumSizes(): IntArray =
         IntArray(size + 1).also { prefix ->
@@ -35,15 +33,11 @@ suspend fun webGPURepair() {
           for (i in 1..size) prefix[i] += prefix[i - 1]
         }
 
-      // 1) Filter each triple-nested list
       val filtered = mapIndexed { p, outer ->
         outer.mapIndexed { q, inner -> inner.filter { it in (p + 1) until q } }
       }.flatten()
 
-      // 2) Flatten all integers
       val flattened = filtered.flatten().toIntArray()
-
-      // 3) Build an offsets array with leading 0 and cumulative sums
       val offsets = filtered.map { it.size }.toIntArray().prefixSumSizes()
 
       flattened to offsets
@@ -52,260 +46,228 @@ suspend fun webGPURepair() {
   val (allFSAPairsFlattened, allFSAPairsOffsets) = levFSA.midpoints.prefixScan()
   val clock = TimeSource.Monotonic.markNow()
 
-  fun FSA.byteFormat(cfg: CFG): UIntArray {
+  fun FSA.byteFormat(cfg: CFG): IntArray {
     val terminalLists = cfg.nonterminals.map { cfg.bimap.UNITS[it] ?: emptyList() }
     // 0 and 1 are reserved for (0) no parse exists and (1) parse exists, but an internal nonterminal node
     // Other byte values are used to denote the presence (+) or absence (-) of a leaf terminal
-    fun StrPred.predByte(A: Int): UInt = (
+    fun StrPred.predByte(A: Int): Int = (
       if (arg == "[.*]" || (arg.startsWith("[!=]") && arg.drop(4) !in terminalLists[A])) Int.MAX_VALUE - 1 // All possible terminals
-      else if (arg.startsWith("[!=]")) (1.shl(32) + (terminalLists[A].indexOf(arg.drop(4)) + 1).shl(1)) // Represent negation using sign bit
+      else if (arg.startsWith("[!=]")) (1.shl(30) + (terminalLists[A].indexOf(arg.drop(4)) + 1).shl(1)) // Represent negation using sign bit
       else (terminalLists[A].indexOf(arg) + 1).shl(1)
-    ).toUInt() // Otherwise positive sign bit
+    )
 
-    return cfg.unitProductions.flatMap { (A, σ) ->
+    val rowCoeff = numStates * cfg.nonterminals.size  // Precomputed for row index
+    val colCoeff = cfg.nonterminals.size              // Precomputed for column index
+    val parseChart = IntArray(rowCoeff * numStates) { 0 }
+
+    cfg.unitProductions.flatMap { (A, σ) ->
       nominalForm.flattenedTriples.filter { arc -> arc.second(σ) }.map { (q0, sp, q1) ->
         val Aidx = cfg.bindex[A]
-        // row, col, Aidx, terminal encoding
-        val pb = sp.predByte(Aidx)
-        listOf(stateMap[q0]!!, stateMap[q1]!!, Aidx).map { it.toUInt() } + pb
+        // row, col, Aidx, terminal
+        listOf(stateMap[q0]!!, stateMap[q1]!!, Aidx, sp.predByte(Aidx))
       }
-    }.distinct().flatten().toUIntArray()
-  } // Maybe create dense chart directly instead since no FFI transfer cost?
+    }.forEach { (r, c, v, i) -> parseChart[r * rowCoeff + c * colCoeff + v] = i }
 
-  // TM layout (for decoding)
-//  val terminalLists = cfg.nonterminals.map { cfg.bimap.UNITS[it]?.map { cfg.tmMap[it]!! } ?: emptyList() }
-//  val all_tm = terminalLists.flatMap { it }.toIntArray()
-//  val nt_tm_offsets = terminalLists.scan(0) { acc, list -> acc + list.size }.dropLast(1).toIntArray()
-//  val nt_tm_lens = terminalLists.map { it.size }.toIntArray()
-//  val numNonterminals = cfg.nonterminals.size
+    return parseChart
+  }
 
   val grammarFlattened = cfg.vindex.map { it.toList() }.flatten().toIntArray()
   val grammarOffsets = cfg.vindex.map { it.size }.fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
 
-  packCFLStruct(
-    levFSA.byteFormat(cfg),
+  /** Memory layout: [WGSL_STRUCT] */
+  val metadata: Int32Array<ArrayBuffer> = packStruct(
+    constants = listOf(levFSA.numStates, cfg.nonterminals.size),
+
+    levFSA.byteFormat(cfg).let { dpIn -> IntArray(dpIn.size) { dpIn[it].toInt() } },
 
     // FSA Encoding
     allFSAPairsFlattened,
     allFSAPairsOffsets,
     levFSA.finalIdxs.toIntArray(),
-    numStates,
 
     // CFG Encoding
     grammarFlattened,
     grammarOffsets,
   )
 
+  cflIter(metadata)
+
   println("Round trip repair: ${clock.elapsedNow()}")
 }
 
-/**
- * Packs the following data into a single Int32Array matching the WGSL struct:
- *
- *   dpIn:               UIntArray (converted to Int32)
- *   mdpts:              IntArray
- *   mdptsOffsets:       IntArray
- *   acceptStates:       IntArray
- *   acceptStatesSize:   Int
- *   numStates:          Int
- *   grammarFlattened:   IntArray
- *   grammarOffsets:     IntArray
- *   vilen:              Int
- *   volen:              Int
- */
+fun packStruct(constants: List<Int>, vararg arrays: IntArray): Int32Array<ArrayBuffer> {
+  val offsets = arrays.scan(arrays.size * 2 + constants.size) { acc, arr -> acc + arr.size }.dropLast(1)
 
-fun packCFLStruct(
-  dpIn: UIntArray,
-  mdpts: IntArray,
-  mdptsOffsets: IntArray,
-  acceptStates: IntArray,
-  numStates: Int,
-  grammarFlattened: IntArray,
-  grammarOffsets: IntArray,
-): Int32Array<ArrayBuffer> {
-  // -- Convert dpIn to signed ints (if needed) --
-  val dpInInt = IntArray(dpIn.size) { dpIn[it].toInt() }
+  val header = buildList {
+    addAll(0, constants)
+    arrays.forEachIndexed { index, arr ->
+      add(offsets[index]) // Offset for this array
+      add(arr.size)       // Length of this array
+    }
+  }
 
-  // -- Compute sizes --
-  val dpInSize             = dpInInt.size
-  val mdptsSize            = mdpts.size
-  val mdptsOffsetsSize     = mdptsOffsets.size
-  val acceptStatesLen      = acceptStates.size
-  val grammarFlattenedSize = grammarFlattened.size
-  val grammarOffsetsSize   = grammarOffsets.size
+  val buffer = header + arrays.flatMap { it.asIterable() }
 
-  // WGSL struct has 13 fields in the header (each 1 x i32/u32 = 4 bytes).
-  //   1) dpInOffset
-  //   2) dpInSize
-  //   3) mdptsOffset
-  //   4) mdptsSize
-  //   5) mdptsOffsetsOffset
-  //   6) mdptsOffsetsSize
-  //   7) acceptStatesOffset
-  //   8) acceptStatesSize
-  //   9) numStates
-  //   10) grammarFlattenedOffset
-  //   11) grammarFlattenedSize
-  //   12) grammarOffsetsOffset
-  //   13) grammarOffsetsSize
-  val HEADER_COUNT = 13
-
-  // sum of all array lengths
-  val tailCount = dpInSize + mdptsSize + mdptsOffsetsSize +
-      acceptStatesLen + grammarFlattenedSize + grammarOffsetsSize
-
-  // total number of 32-bit elements:
-  val totalInts = HEADER_COUNT + tailCount
-
-  val bufferData = IntArray(totalInts)
-
-  var offset = HEADER_COUNT
-
-  // 1) dpIn
-  val dpInOffset = offset
-  for ((i, v) in dpInInt.withIndex()) { bufferData[offset + i] = v }
-  offset += dpInSize
-
-  // 2) mdpts
-  val mdptsOffset = offset
-  for ((i, v) in mdpts.withIndex()) { bufferData[offset + i] = v }
-  offset += mdptsSize
-
-  // 3) mdptsOffsets
-  val mdptsOffsetsOffset = offset
-  for ((i, v) in mdptsOffsets.withIndex()) { bufferData[offset + i] = v }
-  offset += mdptsOffsetsSize
-
-  // 4) acceptStates
-  val acceptStatesOffset = offset
-  for ((i, v) in acceptStates.withIndex()) { bufferData[offset + i] = v }
-  offset += acceptStatesLen
-
-  // 5) grammarFlattened
-  val grammarFlattenedOffset = offset
-  for ((i, v) in grammarFlattened.withIndex()) { bufferData[offset + i] = v }
-  offset += grammarFlattenedSize
-
-  // 6) grammarOffsets
-  val grammarOffsetsOffset = offset
-  for ((i, v) in grammarOffsets.withIndex()) { bufferData[offset + i] = v }
-  offset += grammarOffsetsSize
-
-   bufferData[0] = dpInOffset
-   bufferData[1] = dpInSize
-   bufferData[2] = mdptsOffset
-   bufferData[3] = mdptsSize
-   bufferData[4] = mdptsOffsetsOffset
-   bufferData[5] = mdptsOffsetsSize
-   bufferData[6] = acceptStatesOffset
-   bufferData[7] = acceptStatesLen
-   bufferData[8] = numStates
-   bufferData[9] = grammarFlattenedOffset
-  bufferData[10] = grammarFlattenedSize
-  bufferData[11] = grammarOffsetsOffset
-  bufferData[12] = grammarOffsetsSize
-
-  // Done! Return the Int32Array with everything packed.
-  return Int32Array<ArrayBuffer>(totalInts).apply { set(bufferData.toTypedArray(), 0) }
+  return Int32Array<ArrayBuffer>(buffer.size).apply { set(buffer.toTypedArray(), 0) }
 }
 
 //language=wgsl
 val WGSL_STRUCT = """struct CFLStruct {
-    // dpIn
-    dpInOffset        : u32,
-    dpInSize          : u32,
+             numStates : u32,
+       numNonterminals : u32,
+ 
+            dpInOffset : u32,
+              dpInSize : u32,
 
-    // mdpts
-    mdptsOffset       : u32,
-    mdptsSize         : u32,
+           mdptsOffset : u32,
+             mdptsSize : u32,
 
-    // mdptsOffsets
-    mdptsOffsetsOffset: u32,
-    mdptsOffsetsSize  : u32,
+    mdptsOffsetsOffset : u32,
+      mdptsOffsetsSize : u32,
 
-    // acceptStates
-    acceptStatesOffset: u32,
-    acceptStatesSize  : u32,
+    acceptStatesOffset : u32,
+      acceptStatesSize : u32,
 
-    // numStates
-    numStates         : u32,
+grammarFlattenedOffset : u32,
+  grammarFlattenedSize : u32,
 
-    // grammarFlattened
-    grammarFlattenedOffset: u32,
-    grammarFlattenedSize  : u32,
+  grammarOffsetsOffset : u32,
+    grammarOffsetsSize : u32,
 
-    // grammarOffsets
-    grammarOffsetsOffset  : u32,
-    grammarOffsetsSize    : u32,
-
-    tail : array<i32>,
+               payload : array<u32>
 };""".trimIndent()
 
 //language=wgsl
-val CFL_ITER by Shader("""$WGSL_STRUCT
+val cfl_mul_upper by Shader(WGSL_STRUCT + """
+fn decodeUpperTriangle(i : u32, N : u32) -> vec2<u32> {
+    // same formula as your Metal kernel
+    let d     = f32( (2u*N - 1u) * (2u*N - 1u) ) - f32(8u * i);
+    let root  = sqrt(d);
+    let rFloat= (f32(2u*N - 1u) - root) * 0.5;
+    let rInt  = u32(floor(rFloat));
+    // rowStart = r*(N-1) - (r*(r-1))/2
+    let rowStart = rInt*(N - 1u) - (rInt*(rInt - 1u))/2u;
+    let offset   = i - rowStart;
+    let cInt     = rInt + 1u + offset;
+    return vec2<u32>(rInt, cInt);
+}
 
-  @group(0) @binding(0) var<storage, read> cflStruct: CFLStruct;
+fn getDpIn(index: u32) -> u32 { return cs.payload[cs.dpInOffset + index]; }
+fn setDpOut(index: u32, val: u32) { cs.payload[cs.dpOutOffset + index] = val; }
+fn getDpOut(index: u32) -> u32 { return cs.payload[cs.dpOutOffset + index]; }
+fn getMdpt(index: u32) -> u32 { return cs.payload[cs.mdptsOffset + index]; }
+fn getMdptOffset(index: u32) -> u32 { return u32(cs.payload[cs.mdptsOffsetsOffset + index]); }
+fn getGrammarSymbol(index: u32) -> u32 { return u32(cs.payload[cs.grammarFlattenedOffset + index]); }
+fn getGrammarOffset(index: u32) -> u32 { return u32(cs.payload[cs.grammarOffsetsOffset + index]); }
 
-  fn getDpIn(index: u32) -> u32 { return fsaStruct.tail[cflStruct.dpInOffset + index]; }
+  @group(0) @binding(0) var<storage, read_write> cs: CFLStruct;
 
-  @compute @workgroup_size(64)
-  fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-      //...
-  }
-""".trimIndent())
+  @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+      let tid = gid.x;
 
-/*
-private func iterateFixpoint(
-bufA: MTLBuffer,
-pairsBuf: MTLBuffer,
-pairsOffBuf: MTLBuffer,
-numStates: Int,
-allPairsSize: Int,
-allPairsOffsetsSize: Int
-) -> MTLBuffer {
-  var N = numStates, ap = allPairsSize, ao = allPairsOffsetsSize
-  let totalCount = N * N * numNonterminals
-      let dpSizeBytes = totalCount * MemoryLayout<UInt16>.stride
-  let stride = MemoryLayout<Int32>.stride
-  let totalPairs = N * (N - 1) / 2
-  let totalThreads = totalPairs * numNonterminals
+      let N  = cs.numStates;
+      let NT = cs.numNonterminals;
 
-      let numNonzero = device.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared)!
-  var prevValue: UInt32 = 0
+      // totalCells = (numStates*(numStates-1)/2)*numNonterminals
+      let half = (N * (N - 1u)) / 2u;
+      let totalCells = half * NT;
+      if (tid >= totalCells) { return; }
 
-  for r in 0..<numStates {
-    var zero: UInt32 = 0
-    memcpy(numNonzero.contents(), &zero, MemoryLayout<UInt32>.size)
+      // triIndex = tid / numNonterminals
+      let triIndex = tid / NT;
+      // Nonterminal = tid % numNonterminals
+      let A        = tid % NT;
 
-    runKernel("cfl_mul_upper", totalThreads) { enc in
-      enc.setBuffer(bufA,        offset: 0,      index: 0)
-      enc.setBuffer(bufA,        offset: 0,      index: 1)
-      enc.setBuffer(pairsBuf,    offset: 0,      index: 2)
-      enc.setBuffer(pairsOffBuf, offset: 0,      index: 3)
-      enc.setBytes(&N,           length: stride, index: 4)
-      enc.setBytes(&ap,          length: stride, index: 5)
-      enc.setBytes(&ao,          length: stride, index: 6)
-      enc.setBuffer(numNonzero,  offset: 0,      index: 7)
-    }
+      // decode (r, c) from triIndex
+      let rc = decodeUpperTriangle(triIndex, N);
+      let r  = rc.x;
+      let c  = rc.y;
 
-    let currentValue = numNonzero.contents().bindMemory(to: UInt32.self, capacity: 1).pointee
-    if (currentValue == prevValue) {
-      print("Fixpoint escape at round: \(r)/\(numStates), total=\(currentValue), size: \(dpSizeBytes)"); fflush(stdout)
-      break
-    } else { prevValue = currentValue }
-  }
+      // snt = numStates * numNonterminals
+      let snt    = N * NT;
+      let dpIdx  = r*snt + c*NT + A;
 
-  return bufA
-}*/
+      // grammar offsets for A
+      //   startGC = grammarOffsets[A]
+      //   endGC   = (A+1 < numNonterminals) ? grammarOffsets[A+1] : grammarFlattenedSize
+      let startGC = getGrammarOffset(A);
+      let endGC   = select(cs.grammarFlattenedSize, getGrammarOffset(A + 1u), A + 1u < NT);
 
-suspend fun iterateCFL(
-  bufA: GPUBuffer,
-  pairsBuf: GPUBuffer,
-  pairsOffBuff: GPUBuffer,
-  numStates: Int,
-  allPairsSize: Int,
-  allPairsOffsetsSize: Int
-): GPUBuffer { TODO() }
+      // aoi = r*numStates + c + 1
+      let aoi = r*N + c + 1u;
+
+      // pairOffset = allFSAPairsOffsets[aoi - 1]
+      // pairOffsetNext = (aoi < allFSAPairsOffsetsSize) ? allFSAPairsOffsets[aoi] : allFSAPairsSize
+      let pairOffset = getMdptOffset(aoi - 1u);
+      let pairOffsetNext = select(cs.mdptsSize, getMdptOffset(aoi), aoi < cs.mdptsOffsetsSize);
+
+      // If dp_in[dpIdx] != 0, copy and check the last bit
+      let dpVal = getDpIn(dpIdx);
+      if (dpVal != 0) {
+          // Copy to dpOut
+          setDpOut(dpIdx, dpVal);
+
+          // If the last bit is set, return
+          if ((dpVal & 0x01) != 0) { return; }
+      }
+
+      // Now loop over midpoints & grammar pairs
+      for (var pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx = pairIdx + 1u) {
+          // mdpt = allFSAPairs[pairIdx]
+          let mdpt = u32(getMdpt(pairIdx)); // mdpt is a state index
+
+          // For each pair of grammar symbols in [startGC..endGC) stepping by 2
+          var g = startGC;
+          loop {
+              if (g >= endGC) { break; }
+              let B = getGrammarSymbol(g);
+              let C = getGrammarSymbol(g + 1u);
+
+              let idxBM = r*snt + mdpt*NT + B;
+              let idxMC = mdpt*snt + c*NT + C;
+
+              // If dp_in[idxBM] && dp_in[idxMC], set last bit in dp_out and return
+              if ((getDpIn(idxBM) != 0) && (getDpIn(idxMC) != 0)) {
+                  // set the 0x01 bit
+                  let oldVal = getDpOut(dpIdx);
+                  setDpOut(dpIdx, oldVal | 0x01);
+                  return;
+              }
+
+              g = g + 2u;
+          }
+      }
+  }""".trimIndent())
+
+fun cflIter(packedMetadata: Int32Array<ArrayBuffer>) {
+  // 1) Make a GPUBuffer from the packed metadata
+  val metaSizeBytes = packedMetadata.length * 4
+  val metaBuf = makeBuffer(
+    sz = metaSizeBytes,
+    us = 140, //GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST or GPUBufferUsage.COPY_SRC,
+    data = packedMetadata
+  )
+
+  // Let’s read them from the first few fields in packedMetadata:
+  val numStates = packedMetadata[0]
+  val numNonterminals = packedMetadata[1]
+  val totalCells = (numStates * (numStates - 1)) / 2 * numNonterminals
+
+  // 4) Prepare command encoder
+  val encoder = gpu.createCommandEncoder()
+  val pass = encoder.beginComputePass()
+  pass.setPipeline(cfl_mul_upper.pipeline)
+  // The “bindBuffers” style in your code might do:
+  pass.setBindGroup(0, Shader.bindBuffers(cfl_mul_upper.pipeline, metaBuf))
+
+  // 5) The kernel has a workgroup size of 64 in x, so we do:
+  //    pass.dispatchWorkgroups(ceilDivide(totalCells, 64u), 1, 1)
+  val blocks = (totalCells + 63) / 64
+  pass.dispatchWorkgroups(blocks, 1, 1)
+
+  pass.end()
+  gpu.queue.submit(arrayOf(encoder.finish()))
+}
 
 suspend fun benchmarkWGPU() {
   val N = 1024
@@ -400,7 +362,7 @@ class Shader(val src: String) {
         )
       )
 
-    private fun bindBuffers(pipeline: GPUComputePipeline, vararg buffers: GPUBuffer): GPUBindGroup {
+    fun bindBuffers(pipeline: GPUComputePipeline, vararg buffers: GPUBuffer): GPUBindGroup {
       val lay = pipeline.getBindGroupLayout(0)
       inline fun <T> jsObject(init: dynamic.() -> Unit): T {
         val o = js("{}")

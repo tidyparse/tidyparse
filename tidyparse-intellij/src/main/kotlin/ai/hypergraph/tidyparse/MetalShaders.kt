@@ -66,7 +66,7 @@ fun main() {
         if (arg == "[.*]" || (arg.startsWith("[!=]") && arg.drop(4) !in terminalLists[A])) 65_534 // All possible terminals
         else if (arg.startsWith("[!=]")) (1.shl(16) + (terminalLists[A].indexOf(arg.drop(4)) + 1).shl(1)) // Represent negation using sign bit
         else (terminalLists[A].indexOf(arg) + 1).shl(1)
-      ).toUShort() // Otherwise positive sign bit
+      ).toUShort()
 
       return cfg.unitProductions.flatMap { (A, σ) ->
         nominalForm.flattenedTriples.filter { arc -> arc.second(σ) }.map { (q0, sp, q1) ->
