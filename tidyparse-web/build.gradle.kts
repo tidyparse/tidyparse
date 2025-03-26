@@ -35,12 +35,11 @@ kotlin {
     val jsMain by getting {
       dependencies {
         implementation(project(":tidyparse-core"))
-        implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2025.3.16")
+        implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2025.3.19")
       }
     }
   }
 }
-
 
 // To deploy the browser application, run:
 //  ./gradlew :tidyparse-web:jsBrowserProductionWebpack

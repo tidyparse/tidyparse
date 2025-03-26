@@ -317,7 +317,7 @@ suspend fun iterateGPU(input: Array<Int>, P: Int): Int {
 }
 
 suspend fun benchmarkWGPU() {
-  val N = 1024
+  val N = 302
   val P = 5
   val M = IntArray(N * N) { i ->
     val r = i / N // Row index

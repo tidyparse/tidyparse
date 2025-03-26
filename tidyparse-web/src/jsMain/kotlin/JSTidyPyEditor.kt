@@ -66,6 +66,8 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
   private fun String.getErrorType(): String =
     if (isEmpty()) "" else lines().dropLast(1).lastOrNull()?.substringBeforeLast(":") ?: this
 
+  private fun String.getErrorMessage(): String = substringAfterLast(": ")
+
   override fun formatCode(pythonCode: String): String = try {
     jsPyEditor.pyodide.runPython("""
       from black import format_str, FileMode
@@ -101,10 +103,12 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
     runningJob?.cancel()
 
-    if (!containsUnk && tokens in cfg.language)
+    if (!containsUnk && tokens in cfg.language) {
 //      val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
-      writeDisplayText("✅ ${tokens.dropLast(1).joinToString(" ")}".also { cache[workHash] = it })
-    else /* Repair */ Unit.also {
+      val compilerFeedback = getOutput(pcs.rawCode)
+        .let { tcm -> if (tcm.getErrorType().isEmpty()) "" else "\n\n⚠\uFE0F ${tcm.getErrorMessage()}" }
+      writeDisplayText("✅ ${tokens.dropLast(1).joinToString(" ")}$compilerFeedback".also { cache[workHash] = it })
+    } else /* Repair */ Unit.also {
       runningJob = MainScope().launch {
         initiateSuspendableRepair(tokens, cfg, ngrams)
           // Drop NEWLINE (added by default to PyCodeSnippets)
