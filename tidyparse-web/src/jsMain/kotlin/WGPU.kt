@@ -6,11 +6,11 @@ import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import js.array.asList
 import js.buffer.*
-import js.json.parse
 import js.typedarrays.Int32Array
 import kotlinx.coroutines.await
 import web.gpu.*
 import web.performance.performance
+import kotlin.apply
 import kotlin.js.Promise
 import kotlin.math.sqrt
 import kotlin.random.Random
@@ -74,11 +74,11 @@ suspend fun benchmarkWGPURepair() {
   val grammarFlattened = cfg.vindex.map { it.toList() }.flatten().toIntArray()
   val grammarOffsets = cfg.vindex.map { it.size }.fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
 
+  val dpIn = levFSA.byteFormat(cfg).let { dpi -> IntArray(dpi.size) { dpi[it].toInt() } }
+
   /** Memory layout: [WGSL_STRUCT] */
   val metadata: Int32Array<ArrayBuffer> = packStruct(
     constants = listOf(levFSA.numStates, cfg.nonterminals.size),
-
-    levFSA.byteFormat(cfg).let { dpIn -> IntArray(dpIn.size) { dpIn[it].toInt() } },
 
     // FSA Encoding
     allFSAPairsFlattened,
@@ -90,13 +90,95 @@ suspend fun benchmarkWGPURepair() {
     grammarOffsets,
   )
 
-  cflIter(metadata)
+  val dpComplete = iterateFixpoint(metadata, dpIn)
 
   println("Round trip repair: ${clock.elapsedNow()}")
 }
 
+suspend fun iterateFixpoint(packedMetadata: Int32Array<ArrayBuffer>, dpInitial: IntArray): IntArray {
+  // 1) Make the metadata buffer
+  val metaSizeBytes = packedMetadata.length * 4
+  val metaBuf = makeBuffer(
+    sz    = metaSizeBytes,
+    us    = GPUBufferUsage.STORAGE,
+    data  = packedMetadata
+  )
+
+  // 2) Make the DP chart buffer
+  val dpBuf = makeBuffer(
+    sz   = dpInitial.size * 4,
+    us   = GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_SRC or GPUBufferUsage.COPY_DST,
+    data = Int32Array<ArrayBuffer>(dpInitial.size).apply { set(dpInitial.toTypedArray(), 0) }
+  )
+
+  // 3) Atomic changes buffer: 4 bytes
+  val changesBuf = makeBuffer(
+    sz = 4,
+    us = GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_SRC or GPUBufferUsage.COPY_DST
+  )
+
+  val numStates       = packedMetadata[0]
+  val numNonterminals = packedMetadata[1]
+  val totalThreads    = (numStates*(numStates -1))/2 * numNonterminals
+
+  var prevValue = -1
+  for (round in 0 until numStates) {
+    // (a) Zero out changesBuf
+    gpu.queue.writeBuffer(changesBuf, 0.0, Int32Array<ArrayBuffer>(arrayOf(0)))
+
+    // (b) Dispatch the kernel
+    val encoder = gpu.createCommandEncoder()
+    val pass = encoder.beginComputePass()
+    pass.setPipeline(cfl_mul_upper.pipeline)
+    pass.setBindGroup(
+      0,
+      Shader.bindBuffers(
+        cfl_mul_upper.pipeline,
+        dpBuf,      // dp_in
+        dpBuf,      // dp_out
+        metaBuf,    // cfl_struct
+        changesBuf  // atomicChange
+      )
+    )
+    pass.dispatchWorkgroups(totalThreads, 1, 1)
+    pass.end()
+    gpu.queue.submit(arrayOf(encoder.finish()))
+
+    // (c) Copy just the 4 bytes of changesBuf back to CPU
+    val readEncoder = gpu.createCommandEncoder()
+    val readOut = makeBuffer(4, GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
+    readEncoder.copyBufferToBuffer(changesBuf, 0.0, readOut, 0.0, 4.0)
+    gpu.queue.submit(arrayOf(readEncoder.finish()))
+
+    (readOut.mapAsync(1) as Promise<*>).await()
+    val arr   = Int32Array(readOut.getMappedRange())
+    val count = arr[0]
+    if (count == prevValue) {
+      println("Fixpoint reached at round=$round changes=$count")
+      break
+    }
+    prevValue = count
+  }
+
+  // 4) We have converged or used up all rounds -> read final DP
+  val outEncoder = gpu.createCommandEncoder()
+  val outBuf = makeBuffer(dpInitial.size * 4, GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
+  outEncoder.copyBufferToBuffer(
+    source            = dpBuf,
+    sourceOffset      = 0.0,
+    destination       = outBuf,
+    destinationOffset = 0.0,
+    size              = (dpInitial.size*4).toDouble()
+  )
+  gpu.queue.submit(arrayOf(outEncoder.finish()))
+
+  (outBuf.mapAsync(1) as Promise<*>).await()
+  val finalArray = Int32Array(outBuf.getMappedRange())
+  return finalArray.asList().toIntArray()
+}
+
 fun packStruct(constants: List<Int>, vararg arrays: IntArray): Int32Array<ArrayBuffer> {
-  val offsets = arrays.scan(arrays.size * 2 + constants.size) { acc, arr -> acc + arr.size }.dropLast(1)
+  val offsets = arrays.scan(constants.size + arrays.size * 2) { acc, arr -> acc + arr.size }.dropLast(1)
 
   val header = buildList {
     addAll(0, constants)
@@ -112,12 +194,10 @@ fun packStruct(constants: List<Int>, vararg arrays: IntArray): Int32Array<ArrayB
 }
 
 //language=wgsl
-val WGSL_STRUCT = """struct CFLStruct {
+val cfl_mul_upper by Shader("""
+struct CFLStruct {
              numStates : u32,
        numNonterminals : u32,
- 
-            dpInOffset : u32,
-              dpInSize : u32,
 
            mdptsOffset : u32,
              mdptsSize : u32,
@@ -135,12 +215,11 @@ grammarFlattenedOffset : u32,
     grammarOffsetsSize : u32,
 
                payload : array<u32>
-};""".trimIndent()
+};
 
-//language=wgsl
-val cfl_mul_upper by Shader(WGSL_STRUCT + """
+struct AtomicChange { count: atomic<u32> };
+
 fn decodeUpperTriangle(i : u32, N : u32) -> vec2<u32> {
-    // same formula as your Metal kernel
     let d     = f32( (2u*N - 1u) * (2u*N - 1u) ) - f32(8u * i);
     let root  = sqrt(d);
     let rFloat= (f32(2u*N - 1u) - root) * 0.5;
@@ -152,121 +231,89 @@ fn decodeUpperTriangle(i : u32, N : u32) -> vec2<u32> {
     return vec2<u32>(rInt, cInt);
 }
 
-fn getDpIn(index: u32) -> u32 { return cs.payload[cs.dpInOffset + index]; }
-fn setDpOut(index: u32, val: u32) { cs.payload[cs.dpOutOffset + index] = val; }
-fn getDpOut(index: u32) -> u32 { return cs.payload[cs.dpOutOffset + index]; }
-fn getMdpt(index: u32) -> u32 { return cs.payload[cs.mdptsOffset + index]; }
-fn getMdptOffset(index: u32) -> u32 { return u32(cs.payload[cs.mdptsOffsetsOffset + index]); }
+         fn getMdpt(index: u32) -> u32 { return cs.payload[cs.mdptsOffset + index]; }
+   fn getMdptOffset(index: u32) -> u32 { return u32(cs.payload[cs.mdptsOffsetsOffset + index]); }
 fn getGrammarSymbol(index: u32) -> u32 { return u32(cs.payload[cs.grammarFlattenedOffset + index]); }
 fn getGrammarOffset(index: u32) -> u32 { return u32(cs.payload[cs.grammarOffsetsOffset + index]); }
 
-  @group(0) @binding(0) var<storage, read_write> cs: CFLStruct;
+@group(0) @binding(0) var<storage, read>         dp_in : array<u32>;
+@group(0) @binding(1) var<storage, read_write>  dp_out : array<u32>;
+@group(0) @binding(2) var<storage, read>            cs : CFLStruct;
+@group(0) @binding(3) var<storage, read_write> changes : AtomicChange;
 
-  @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-      let tid = gid.x;
+@compute @workgroup_size(1, 1, 1) fn cfl_mul_upper(@builtin(global_invocation_id) gid : vec3<u32>) {
+    let tid = gid.x;
 
-      let N  = cs.numStates;
-      let NT = cs.numNonterminals;
+    let N  = cs.numStates;
+    let NT = cs.numNonterminals;
+    let totalCells = (N * (N - 1u)) / 2u * NT;
+    if (tid >= totalCells) { return; }
+    let A  = tid % NT;
+    let rc = decodeUpperTriangle(tid / NT, N);
+    let r  = rc.x;
+    let c  = rc.y;
+    let snt     = N * NT;
+    let dpIdx   = r*snt + c*NT + A;
+    let startGC = getGrammarOffset(A);
+    let endGC   = select(cs.grammarFlattenedSize, getGrammarOffset(A + 1u), A + 1u < NT);
+    let aoi     = r*N + c + 1u;
+    let pairOffset     = getMdptOffset(aoi - 1u);
+    let pairOffsetNext = select(cs.mdptsSize, getMdptOffset(aoi), aoi < cs.mdptsOffsetsSize);
 
-      // totalCells = (numStates*(numStates-1)/2)*numNonterminals
-      let half = (N * (N - 1u)) / 2u;
-      let totalCells = half * NT;
-      if (tid >= totalCells) { return; }
+    let dpVal = dp_in[dpIdx];
+    if (dpVal != 0) {
+        dp_out[dpIdx] = dpVal;
+        atomicAdd(&changes.count, 1u);
+        if ((dpVal & 0x01) != 0) { return; }
+    }
 
-      // triIndex = tid / numNonterminals
-      let triIndex = tid / NT;
-      // Nonterminal = tid % numNonterminals
-      let A        = tid % NT;
+    for (var pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx = pairIdx + 1u) {
+        let mdpt = u32(getMdpt(pairIdx)); // mdpt is a state index
 
-      // decode (r, c) from triIndex
-      let rc = decodeUpperTriangle(triIndex, N);
-      let r  = rc.x;
-      let c  = rc.y;
+        var g = startGC;
+        loop {
+            if (g >= endGC) { break; }
+            let B = getGrammarSymbol(g);
+            let C = getGrammarSymbol(g + 1u);
 
-      // snt = numStates * numNonterminals
-      let snt    = N * NT;
-      let dpIdx  = r*snt + c*NT + A;
+            let idxBM = r*snt + mdpt*NT + B;
+            let idxMC = mdpt*snt + c*NT + C;
 
-      // grammar offsets for A
-      //   startGC = grammarOffsets[A]
-      //   endGC   = (A+1 < numNonterminals) ? grammarOffsets[A+1] : grammarFlattenedSize
-      let startGC = getGrammarOffset(A);
-      let endGC   = select(cs.grammarFlattenedSize, getGrammarOffset(A + 1u), A + 1u < NT);
+            if ((dp_in[idxBM] != 0) && (dp_in[idxMC] != 0)) {
+                dp_out[dpIdx] |= 0x01;
+                atomicAdd(&changes.count, 1u);
+                return;
+            }
 
-      // aoi = r*numStates + c + 1
-      let aoi = r*N + c + 1u;
+            g = g + 2u;
+        }
+    }
+}""".trimIndent())
 
-      // pairOffset = allFSAPairsOffsets[aoi - 1]
-      // pairOffsetNext = (aoi < allFSAPairsOffsetsSize) ? allFSAPairsOffsets[aoi] : allFSAPairsSize
-      let pairOffset = getMdptOffset(aoi - 1u);
-      let pairOffsetNext = select(cs.mdptsSize, getMdptOffset(aoi), aoi < cs.mdptsOffsetsSize);
+object GPUBufferUsage {
+  const val MAP_READ      = 0x0001
+  const val MAP_WRITE     = 0x0002
+  const val COPY_SRC      = 0x0004
+  const val COPY_DST      = 0x0008
+  const val INDEX         = 0x0010
+  const val VERTEX        = 0x0020
+  const val UNIFORM       = 0x0040
+  const val STORAGE       = 0x0080
+  const val INDIRECT      = 0x0100
+  const val QUERY_RESOLVE = 0x0200
+}
 
-      // If dp_in[dpIdx] != 0, copy and check the last bit
-      let dpVal = getDpIn(dpIdx);
-      if (dpVal != 0) {
-          // Copy to dpOut
-          setDpOut(dpIdx, dpVal);
+suspend fun iterateGPU(input: Array<Int>, P: Int): Int {
+  val n = sqrt(input.size.toDouble()).toInt()
+  val s = input.size
+  val bytes = s * 4
 
-          // If the last bit is set, return
-          if ((dpVal & 0x01) != 0) { return; }
-      }
+  val bufM = makeBuffer(bytes, 140, Int32Array<ArrayBuffer>(s).apply { set(input, 0) })
+  val bufP = makeBuffer(16, 72, Int32Array<ArrayBuffer>(4).apply { set(arrayOf(n), 0) })
 
-      // Now loop over midpoints & grammar pairs
-      for (var pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx = pairIdx + 1u) {
-          // mdpt = allFSAPairs[pairIdx]
-          let mdpt = u32(getMdpt(pairIdx)); // mdpt is a state index
+  val bufS = WGSL_GEMX_ITERATE.invoke(bufM, bufP, threads = n, iterations = P)
 
-          // For each pair of grammar symbols in [startGC..endGC) stepping by 2
-          var g = startGC;
-          loop {
-              if (g >= endGC) { break; }
-              let B = getGrammarSymbol(g);
-              let C = getGrammarSymbol(g + 1u);
-
-              let idxBM = r*snt + mdpt*NT + B;
-              let idxMC = mdpt*snt + c*NT + C;
-
-              // If dp_in[idxBM] && dp_in[idxMC], set last bit in dp_out and return
-              if ((getDpIn(idxBM) != 0) && (getDpIn(idxMC) != 0)) {
-                  // set the 0x01 bit
-                  let oldVal = getDpOut(dpIdx);
-                  setDpOut(dpIdx, oldVal | 0x01);
-                  return;
-              }
-
-              g = g + 2u;
-          }
-      }
-  }""".trimIndent())
-
-fun cflIter(packedMetadata: Int32Array<ArrayBuffer>) {
-  // 1) Make a GPUBuffer from the packed metadata
-  val metaSizeBytes = packedMetadata.length * 4
-  val metaBuf = makeBuffer(
-    sz = metaSizeBytes,
-    us = 140, //GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST or GPUBufferUsage.COPY_SRC,
-    data = packedMetadata
-  )
-
-  // Let’s read them from the first few fields in packedMetadata:
-  val numStates = packedMetadata[0]
-  val numNonterminals = packedMetadata[1]
-  val totalCells = (numStates * (numStates - 1)) / 2 * numNonterminals
-
-  // 4) Prepare command encoder
-  val encoder = gpu.createCommandEncoder()
-  val pass = encoder.beginComputePass()
-  pass.setPipeline(cfl_mul_upper.pipeline)
-  // The “bindBuffers” style in your code might do:
-  pass.setBindGroup(0, Shader.bindBuffers(cfl_mul_upper.pipeline, metaBuf))
-
-  // 5) The kernel has a workgroup size of 64 in x, so we do:
-  //    pass.dispatchWorkgroups(ceilDivide(totalCells, 64u), 1, 1)
-  val blocks = (totalCells + 63) / 64
-  pass.dispatchWorkgroups(blocks, 1, 1)
-
-  pass.end()
-  gpu.queue.submit(arrayOf(encoder.finish()))
+  return Int32Array(bufS).asList().hashCode()
 }
 
 suspend fun benchmarkWGPU() {
@@ -315,7 +362,7 @@ struct Params { N: u32 };
 @group(0) @binding(2) var<uniform>             param: Params;
 
 @compute @workgroup_size(1,1,1)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn WGSL_GEMX_ITERATE(@builtin(global_invocation_id) gid: vec3<u32>) {
     let row = gid.y;
     let col = gid.x;
     let N = param.N;
@@ -332,19 +379,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     
     Out[rowOffset + col] = acc;
 }""")
-
-suspend fun iterateGPU(input: Array<Int>, P: Int): Int {
-  val n = sqrt(input.size.toDouble()).toInt()
-  val s = input.size
-  val bytes = s * 4
-
-  val bufM = makeBuffer(bytes, 140, Int32Array<ArrayBuffer>(s).apply { set(input, 0) })
-  val bufP = makeBuffer(16, 72, Int32Array<ArrayBuffer>(4).apply { set(arrayOf(n), 0) })
-
-  val bufS = WGSL_GEMX_ITERATE.invoke(bufM, bufP, threads = n, iterations = P)
-
-  return Int32Array(bufS).asList().hashCode()
-}
 
 class Shader(val src: String) {
   lateinit var name: String
@@ -379,17 +413,16 @@ class Shader(val src: String) {
     }
   }
 
-  suspend fun bind() { pipeline = makePipeline(src) }
+  suspend fun bind() { pipeline = makePipeline(src, name) }
 
   operator fun getValue(tr: Any?, property: KProperty<*>): Shader = this.also { name = property.name }
 
   // Invocation strategies: eliminates some of the ceremony of calling a GSL shader
-
   suspend operator fun invoke(vararg inputs: GPUBuffer, threads: Int, iterations: Int = 1): ArrayBuffer {
     val encoder: GPUCommandEncoder = gpu.createCommandEncoder()
 
     val buf1 = inputs[0] // Initial input buffer
-    val param = inputs[1] // Uniform buffer
+    val param = inputs[1]
 
     val buf2 = makeBuffer(buf1.size.toInt(), buf1.usage)
 
