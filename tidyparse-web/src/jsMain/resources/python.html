@@ -55,13 +55,12 @@ gen_exp2 = ((x for u in range(4) for x in (u*2, u*10, u*u))
     </div>
 </div>
 <div title="Minimizes total edits per repair." id="confrow1">
-    <label>Generation timeout:<input id="timeout" type="number" value="1000" min="100" step="100" style="margin-left: 0.4em; margin-right: 0.4em; width: 5em" >ms</label><div style="margin-right: 4em"></div>
+    <label>Max edit distance: <a href="https://en.wikipedia.org/wiki/Edit_distance#Language_edit_distance">LED</a> + <input id="max-edits" type="number" value="2" min="0" max="3" step="1" style="margin-right: 4.2em"></label>
     <label for="minimize-checkbox">Minimize repairs&nbsp;</label>
     <input type="checkbox" id="minimize-checkbox" checked>
 </div>
 <div title="Adds nonterminal stubs to CFG." id="confrow2">
-    <div id="gpuAvail" style="margin-right: 340px; margin-top:-45px"></div>
-    <label>Max edit distance: <a href="https://en.wikipedia.org/wiki/Edit_distance#Language_edit_distance">LED</a> + <input id="max-edits" type="number" value="2" min="0" max="3" step="1" style="margin-right: 12.2em"></label><div style="margin-right: 4.43em"></div>
+    <div id="gpuAvail" style="margin-right: 770px; margin-top:-50px"></div>
 <!--    <label for="ntstubs-checkbox">Nonterminal stubs&nbsp;</label>-->
 <!--    <input type="checkbox" id="ntstubs-checkbox" checked>-->
 </div>

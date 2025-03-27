@@ -53,7 +53,7 @@ fun main() {
   }
 
   if (window["PROGRAMMING_LANG"] == "python") pythonSetup() else defaultSetup()
-  tryBootstrapGPU()
+  tryBootstrapingGPU()
 }
 
 fun defaultSetup() {
@@ -64,7 +64,6 @@ fun defaultSetup() {
     jsEditor.getLatestCFG()
     jsEditor.redecorateLines()
     LED_BUFFER = maxEdits.value.toInt()
-    TIMEOUT_MS = timeout.value.toInt()
   }
 
   inputField.addEventListener("input", { jsEditor.run { continuation { handleInput() } } })
@@ -92,7 +91,6 @@ fun pythonSetup() {
   window.onload = {
     jsPyEditor.redecorateLines()
 //    LED_BUFFER = maxEdits.value.toInt()
-    TIMEOUT_MS = timeout.value.toInt()
     jsPyEditor.minimize = true
     loadNgrams()
     initPyodide()
@@ -102,7 +100,6 @@ fun pythonSetup() {
 
   mincheck.addEventListener("change", { jsPyEditor.minimize = mincheck.checked })
   maxEdits.addEventListener("change", { LED_BUFFER = maxEdits.value.toInt() })
-  timeout.addEventListener("change", { TIMEOUT_MS = timeout.value.toInt() })
 }
 
 val exSelector by lazy { document.getElementById("ex-selector") as HTMLSelectElement }
