@@ -1,5 +1,6 @@
 @file:OptIn(ExperimentalUnsignedTypes::class)
 
+import Shader.Companion.makeBuffer
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
@@ -8,16 +9,12 @@ import js.array.asList
 import js.buffer.*
 import js.typedarrays.Int32Array
 import kotlinx.browser.document
-import kotlinx.coroutines.MainScope
-import kotlinx.coroutines.async
-import kotlinx.coroutines.await
+import kotlinx.coroutines.*
 import kotlinx.dom.appendText
 import org.w3c.dom.HTMLDivElement
-import web.events.EventType
-import web.events.addEventListener
+import web.events.*
 import web.gpu.*
 import web.performance.performance
-import kotlin.apply
 import kotlin.js.Promise
 import kotlin.math.sqrt
 import kotlin.random.Random
@@ -34,6 +31,7 @@ fun tryBootstrapGPU() {
       WGSL_GEMX_ITERATE.bind()
       cfl_mul_upper.bind()
       benchmarkWGPURepair()
+      benchmarkWGPU()
     }
   }
 }
@@ -117,8 +115,8 @@ suspend fun benchmarkWGPURepair() {
 
   val dpIn = levFSA.byteFormat(cfg).let { dpi -> IntArray(dpi.size) { dpi[it].toInt() } }
 
-  /** Memory layout: [WGSL_STRUCT] */
-  val metadata: Int32Array<ArrayBuffer> = packStruct(
+  /** Memory layout: [cfl_mul_upper] */
+  val metadata: IntArray = packStruct(
     constants = listOf(levFSA.numStates, cfg.nonterminals.size),
 
     // FSA Encoding
@@ -131,158 +129,22 @@ suspend fun benchmarkWGPURepair() {
     grammarOffsets,
   )
 
-  println("Starting repair...")
-  val dpComplete = iterateFixpoint(metadata, dpIn)
+  val dpComplete = cfl_mul_upper.invokeCFLFixpoint(dpIn, metadata)
 
   println("Round trip repair: ${clock.elapsedNow()}")
 }
 
-suspend fun iterateFixpoint(
-  packedMetadata: Int32Array<ArrayBuffer>,
-  dpInitial: IntArray
-): IntArray {
-  gpu.pushErrorScope(GPUErrorFilter.validation)
-
-  // 1) Make the metadata buffer
-  val metaSizeBytes = packedMetadata.length * 4
-  val metaBuf = makeBuffer(
-    sz = metaSizeBytes,
-    us = GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST,
-    data = packedMetadata
-  )
-
-  // 2) Make two DP chart buffers for ping-pong:
-  val dpBuf1 = makeBuffer(
-    sz = dpInitial.size * 4,
-    us = GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_SRC or GPUBufferUsage.COPY_DST,
-    data = Int32Array<ArrayBuffer>(dpInitial.size).apply { set(dpInitial.toTypedArray(), 0) }
-  )
-  // dpBuf2 is initialized to the same data, or zeros, or doesn’t matter if you overwrite it fully anyway:
-  val dpBuf2 = makeBuffer(
-    sz = dpInitial.size * 4,
-    us = GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_SRC or GPUBufferUsage.COPY_DST
-  )
-
-  // 3) Atomic changes buffer: 4 bytes
-  val changesBuf = makeBuffer(
-    sz = 4,
-    us = GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_SRC or GPUBufferUsage.COPY_DST
-  )
-
-  val numStates       = packedMetadata[0]
-  val numNonterminals = packedMetadata[1]
-  val totalThreads    = (numStates*(numStates -1))/2 * numNonterminals
-
-  println("Total threads: $totalThreads")
-  println("Maxwork: ${gpu.limits.maxComputeWorkgroupsPerDimension}")
-
-  var prevValue = -1
-
-  // For each round, we select which buffer is "dp_in" and which is "dp_out":
-  for (round in 0 until numStates) {
-    println("Round: $round")
-
-    // (a) Zero out changesBuf
-    gpu.queue.writeBuffer(changesBuf, 0.0, Int32Array<ArrayBuffer>(arrayOf(0)))
-
-    // Pick dpIn/dpOut by round
-    val dpIn  = if (round % 2 == 0) dpBuf1 else dpBuf2
-    val dpOut = if (round % 2 == 0) dpBuf2 else dpBuf1
-
-    // (b) Dispatch the kernel
-    val encoder = gpu.createCommandEncoder()
-    val pass = encoder.beginComputePass()
-    pass.setPipeline(cfl_mul_upper.pipeline)
-
-    // dpIn is read-only (binding=0), dpOut is read-write (binding=1)
-    pass.setBindGroup(
-      0,
-      Shader.bindBuffers(
-        cfl_mul_upper.pipeline,
-        dpIn,       // dp_in  (read)
-        dpOut,      // dp_out (write)
-        metaBuf,    // cfl_struct
-        changesBuf  // atomicChange
-      )
-    )
-
-    pass.dispatchWorkgroups(numStates, numStates, numNonterminals)
-    pass.end()
-
-    gpu.queue.submit(arrayOf(encoder.finish()))
-
-    // (c) Copy just the 4 bytes of changesBuf back to CPU
-    val readEncoder = gpu.createCommandEncoder()
-    val readOut = makeBuffer(4, GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
-    readEncoder.copyBufferToBuffer(changesBuf, 0.0, readOut, 0.0, 4.0)
-    gpu.queue.submit(arrayOf(readEncoder.finish()))
-
-    (readOut.mapAsync(1) as Promise<*>).await()
-    val arr   = Int32Array(readOut.getMappedRange())
-    val count = arr[0]
-    println("Count: $count")
-    if (count == prevValue) {
-      println("Fixpoint reached at round=$round changes=$count")
-      break
-    }
-    prevValue = count
-  }
-
-  // 4) We have converged or used up all rounds -> read final DP
-  // The "final" buffer is whichever was used as the "dp_out" in the last iteration
-  val finalBuf = if (numStates % 2 == 0) dpBuf1 else dpBuf2
-
-  val outEncoder = gpu.createCommandEncoder()
-  val outBuf = makeBuffer(dpInitial.size * 4, GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
-  outEncoder.copyBufferToBuffer(
-    source            = finalBuf,
-    sourceOffset      = 0.0,
-    destination       = outBuf,
-    destinationOffset = 0.0,
-    size              = (dpInitial.size * 4).toDouble()
-  )
-  gpu.queue.submit(arrayOf(outEncoder.finish()))
-
-  (outBuf.mapAsync(1) as Promise<*>).await()
-  val finalArray = Int32Array(outBuf.getMappedRange())
-
-  val error = gpu.popErrorScopeAsync().await()
-  if (error != null) {
-    console.error("GPU validation/usage error:", error.message)
-  } else {
-    console.log("No GPU errors, got result of size = ${finalArray.asList().size}")
-  }
-
-  return finalArray.asList().toIntArray()
-}
-
-fun packStruct(constants: List<Int>, vararg arrays: IntArray): Int32Array<ArrayBuffer> {
-  val offsets = arrays.scan(constants.size + arrays.size * 2) { acc, arr -> acc + arr.size }.dropLast(1)
-
-  val header = buildList {
-    addAll(0, constants)
-    arrays.forEachIndexed { index, arr ->
-      add(offsets[index]) // Offset for this array
-      add(arr.size)       // Length of this array
-    }
-  }
-
-  val buffer = header + arrays.flatMap { it.asIterable() }
-
-  return Int32Array<ArrayBuffer>(buffer.size).apply { set(buffer.toTypedArray(), 0) }
-}
-
 //language=wgsl
 val cfl_mul_upper by Shader("""
-struct CFLStruct {
+struct CFLStruct { // Carries metadata about the CFL & NFA under intersection
              numStates : u32,      numNonterminals : u32,
-             
+
            mdptsOffset : u32,            mdptsSize : u32,
     mdptsOffsetsOffset : u32,     mdptsOffsetsSize : u32,
     acceptStatesOffset : u32,     acceptStatesSize : u32,
 grammarFlattenedOffset : u32, grammarFlattenedSize : u32,
   grammarOffsetsOffset : u32,   grammarOffsetsSize : u32,
-  
+
                payload : array<u32>
 };
 
@@ -347,17 +209,181 @@ fn getGrammarOffset(index: u32) -> u32 { return u32(cs.payload[cs.grammarOffsets
     }
 }""".trimIndent())
 
-object GPUBufferUsage {
-  const val MAP_READ      = 0x0001
-  const val MAP_WRITE     = 0x0002
-  const val COPY_SRC      = 0x0004
-  const val COPY_DST      = 0x0008
-  const val INDEX         = 0x0010
-  const val VERTEX        = 0x0020
-  const val UNIFORM       = 0x0040
-  const val STORAGE       = 0x0080
-  const val INDIRECT      = 0x0100
-  const val QUERY_RESOLVE = 0x0200
+class Shader(val src: String) {
+  lateinit var name: String
+  lateinit var pipeline: GPUComputePipeline
+
+  companion object {
+    private suspend fun makePipeline(wgsl: String, entryPoint: String = "main"): GPUComputePipeline =
+      gpu.createComputePipeline(
+        GPUComputePipelineDescriptor(
+          layout = "auto",
+          compute = GPUProgrammableStage(
+            module = gpu.createShaderModule(GPUShaderModuleDescriptor(code = wgsl)),
+            entryPoint = entryPoint
+          )
+        )
+      )
+
+    fun bindBuffers(pipeline: GPUComputePipeline, vararg buffers: GPUBuffer): GPUBindGroup {
+      val lay = pipeline.getBindGroupLayout(0)
+      inline fun <T> jsObject(init: dynamic.() -> Unit): T {
+        val o = js("{}")
+        init(o)
+        return o as T
+      }
+      val ent = buffers.mapIndexed { index, buf ->
+        GPUBindGroupEntry(
+          binding = index,
+          resource = jsObject<GPUBindingResource> { buffer = buf }
+        )
+      }.toTypedArray()
+      return gpu.createBindGroup(GPUBindGroupDescriptor(layout = lay, entries = ent))
+    }
+
+    fun IntArray.makeBuffer(usage: Int): GPUBuffer =
+      Int32Array<ArrayBuffer>(size).apply { set(this@makeBuffer.toTypedArray(), 0) }
+        .let { makeBuffer(sz = size * 4, us = usage, data = it) }
+
+    fun makeBuffer(sz: Int, us: Int, data: AllowSharedBufferSource? = null): GPUBuffer =
+      gpu.createBuffer(GPUBufferDescriptor(size = sz.toDouble(), usage = us))
+        .also { if (data != null) { gpu.queue.writeBuffer(it, 0.0, data) } }
+
+    object GPUBufferUsage {
+      const val MAP_READ      = 0x0001
+      const val MAP_WRITE     = 0x0002
+      const val COPY_SRC      = 0x0004
+      const val COPY_DST      = 0x0008
+      const val INDEX         = 0x0010
+      const val VERTEX        = 0x0020
+      const val UNIFORM       = 0x0040
+      const val STORAGE       = 0x0080
+      const val INDIRECT      = 0x0100
+      const val QUERY_RESOLVE = 0x0200
+      const val STCPSD = STORAGE or COPY_SRC or COPY_DST
+    }
+  }
+
+  suspend fun bind() { pipeline = makePipeline(src, name) }
+
+  operator fun getValue(tr: Any?, property: KProperty<*>): Shader = this.also { name = property.name }
+
+  /** Writes zero into this buffer (assumed to be at least 4 bytes) to reset changes. */
+  fun GPUBuffer.zeroOut() {
+    gpu.queue.writeBuffer(
+      buffer = this,
+      bufferOffset = 0.0,
+      data = Int32Array<ArrayBuffer>(1).apply { set(arrayOf(0), 0) }
+    )
+  }
+
+  /** Copies [count] 32-bit integers from this GPU buffer back to CPU as a List<Int>. */
+  suspend fun GPUBuffer.readInts(count: Int): IntArray {
+    val bytesNeeded = (count * 4)
+    val readDst = makeBuffer(bytesNeeded, GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
+    val cmd = gpu.createCommandEncoder()
+    cmd.copyBufferToBuffer(this, 0.0, readDst, 0.0, bytesNeeded.toDouble())
+    gpu.queue.submit(arrayOf(cmd.finish()))
+    (readDst.mapAsync(1) as Promise<*>).await()
+    return Int32Array(readDst.getMappedRange()).asList().toIntArray()
+  }
+
+  // Invocation strategies: eliminates some of the ceremony of calling a GSL shader
+  suspend fun invokeCFLFixpoint(vararg inputs: IntArray): IntArray {
+    require(inputs.size >= 2) { "Expected at least dpIn + metadata, got ${inputs.size} buffers." }
+
+    val dpIn = inputs[0].makeBuffer(usage = GPUBufferUsage.STCPSD)
+    val metaBuf = inputs[1].makeBuffer(usage = GPUBufferUsage.STORAGE + GPUBufferUsage.COPY_DST)
+
+    val (numStates, numNonterminals) = inputs[1]
+
+    val dpOut = makeBuffer(dpIn.size.toInt(), dpIn.usage)
+
+    val changesBuf = makeBuffer(sz = 4, us = GPUBufferUsage.STCPSD)
+
+    var prevValue = -1
+    val maxRounds = numStates
+
+    repeat(maxRounds) { round ->
+      changesBuf.zeroOut()
+      val (inBuf, outBuf) = if (round % 2 == 0) dpIn to dpOut else dpOut to dpIn
+
+      val cmdEnc = gpu.createCommandEncoder()
+      cmdEnc.beginComputePass().apply {
+        setPipeline(pipeline)
+        setBindGroup(0, bindBuffers(pipeline, inBuf, outBuf, metaBuf, changesBuf))
+        // The kernel uses (r, c, A) => [numStates, numStates, numNonterminals]
+        dispatchWorkgroups(numStates, numStates, numNonterminals)
+        end()
+      }
+      gpu.queue.submit(arrayOf(cmdEnc.finish()))
+
+      val changesThisRound = changesBuf.readInts(1)[0]
+//      println("Round=$round, changes=$changesThisRound")
+
+      if (changesThisRound == prevValue) {
+        println("Fixpoint reached at round=$round")
+        return outBuf.readInts(dpIn.size.toInt() / 4)
+      }
+      prevValue = changesThisRound
+    }
+
+    return (if (maxRounds % 2 == 0) dpIn else dpOut).readInts(dpIn.size.toInt() / 4)
+  }
+
+  suspend operator fun invoke(vararg inputs: GPUBuffer, threads: Int, iterations: Int = 1): ArrayBuffer {
+    val encoder: GPUCommandEncoder = gpu.createCommandEncoder()
+
+    val buf1 = inputs[0] // Initial input buffer
+    val param = inputs[1]
+
+    val buf2 = makeBuffer(buf1.size.toInt(), buf1.usage)
+
+    for (step in 1..iterations) {
+      val (currentM, currentOut) = if (step % 2 == 1) buf1 to buf2 else buf2 to buf1
+      val bindGroup = bindBuffers(pipeline, currentM, currentOut, param)
+      encoder.beginComputePass().apply {
+        setPipeline(pipeline)
+        setBindGroup(0, bindGroup)
+        dispatchWorkgroups(threads, threads)
+        end()
+      }
+    }
+
+    val finalOut = if (iterations % 2 == 1) buf2 else buf1
+
+    val output = makeBuffer(finalOut.size.toInt(), 9) // MAP_READ + COPY_DST
+    encoder.copyBufferToBuffer(finalOut, 0.0, output, 0.0, output.size)
+    gpu.queue.submit(arrayOf(encoder.finish()))
+
+    (output.mapAsync(1) as Promise<*>).await()
+    return output.getMappedRange()
+  }
+
+  suspend operator fun invoke(vararg inputs: GPUBuffer, readFrom: GPUBuffer, threads: Int): IntArray {
+    gpu.createCommandEncoder().beginComputePass().apply {
+      setPipeline(pipeline)
+      setBindGroup(0, bindBuffers(pipeline, *inputs))
+      dispatchWorkgroups(threads, threads)
+      end()
+    }
+
+    return readFrom.readInts(readFrom.size.toInt())
+  }
+}
+
+fun packStruct(constants: List<Int>, vararg arrays: IntArray): IntArray {
+  val offsets = arrays.scan(constants.size + arrays.size * 2) { acc, arr -> acc + arr.size }.dropLast(1)
+
+  val header = buildList {
+    addAll(0, constants)
+    arrays.forEachIndexed { index, arr ->
+      add(offsets[index]) // Offset for this array
+      add(arr.size)       // Length of this array
+    }
+  }
+
+  return (header + arrays.flatMap { it.asIterable() }).toIntArray()
 }
 
 suspend fun iterateGPU(input: Array<Int>, P: Int): Int {
@@ -418,8 +444,7 @@ struct Params { N: u32 };
 @group(0) @binding(1) var<storage, read_write> Out: array<i32>;
 @group(0) @binding(2) var<uniform>             param: Params;
 
-@compute @workgroup_size(1,1,1)
-fn WGSL_GEMX_ITERATE(@builtin(global_invocation_id) gid: vec3<u32>) {
+@compute @workgroup_size(1,1,1) fn WGSL_GEMX_ITERATE(@builtin(global_invocation_id) gid: vec3<u32>) {
     let row = gid.y;
     let col = gid.x;
     let N = param.N;
@@ -436,92 +461,3 @@ fn WGSL_GEMX_ITERATE(@builtin(global_invocation_id) gid: vec3<u32>) {
     
     Out[rowOffset + col] = acc;
 }""")
-
-class Shader(val src: String) {
-  lateinit var name: String
-  lateinit var pipeline: GPUComputePipeline
-
-  companion object {
-    private suspend fun makePipeline(wgsl: String, entryPoint: String = "main"): GPUComputePipeline =
-      gpu.createComputePipeline(
-        GPUComputePipelineDescriptor(
-          layout = "auto",
-          compute = GPUProgrammableStage(
-            module = gpu.createShaderModule(GPUShaderModuleDescriptor(code = wgsl)),
-            entryPoint = entryPoint
-          )
-        )
-      )
-
-    fun bindBuffers(pipeline: GPUComputePipeline, vararg buffers: GPUBuffer): GPUBindGroup {
-      val lay = pipeline.getBindGroupLayout(0)
-      inline fun <T> jsObject(init: dynamic.() -> Unit): T {
-        val o = js("{}")
-        init(o)
-        return o as T
-      }
-      val ent = buffers.mapIndexed { index, buf ->
-        GPUBindGroupEntry(
-          binding = index,
-          resource = jsObject<GPUBindingResource> { buffer = buf }
-        )
-      }.toTypedArray()
-      return gpu.createBindGroup(GPUBindGroupDescriptor(layout = lay, entries = ent))
-    }
-  }
-
-  suspend fun bind() { pipeline = makePipeline(src, name) }
-
-  operator fun getValue(tr: Any?, property: KProperty<*>): Shader = this.also { name = property.name }
-
-  // Invocation strategies: eliminates some of the ceremony of calling a GSL shader
-  suspend operator fun invoke(vararg inputs: GPUBuffer, threads: Int, iterations: Int = 1): ArrayBuffer {
-    val encoder: GPUCommandEncoder = gpu.createCommandEncoder()
-
-    val buf1 = inputs[0] // Initial input buffer
-    val param = inputs[1]
-
-    val buf2 = makeBuffer(buf1.size.toInt(), buf1.usage)
-
-    for (step in 1..iterations) {
-      val (currentM, currentOut) = if (step % 2 == 1) buf1 to buf2 else buf2 to buf1
-      val bindGroup = bindBuffers(pipeline, currentM, currentOut, param)
-      encoder.beginComputePass().apply {
-        setPipeline(pipeline)
-        setBindGroup(0, bindGroup)
-        dispatchWorkgroups(threads, threads)
-        end()
-      }
-    }
-
-    val finalOut = if (iterations % 2 == 1) buf2 else buf1
-
-    val output = makeBuffer(finalOut.size.toInt(), 9) // MAP_READ + COPY_DST
-    encoder.copyBufferToBuffer(finalOut, 0.0, output, 0.0, output.size)
-    gpu.queue.submit(arrayOf(encoder.finish()))
-
-    (output.mapAsync(1) as Promise<*>).await()
-    return output.getMappedRange()
-  }
-
-  suspend operator fun invoke(vararg inputs: GPUBuffer, readFrom: GPUBuffer, threads: Int): ArrayBuffer {
-    val encoder: GPUCommandEncoder = gpu.createCommandEncoder()
-    encoder.beginComputePass().apply {
-      setPipeline(pipeline)
-      setBindGroup(0, bindBuffers(pipeline, *inputs))
-      dispatchWorkgroups(threads, threads)
-      end()
-    }
-
-    val output = makeBuffer(readFrom.size.toInt(), 9)
-    encoder.copyBufferToBuffer(readFrom, 0.0, output, 0.0, output.size)
-    gpu.queue.submit(arrayOf(encoder.finish()))
-
-    (output.mapAsync(1) as Promise<*>).await()
-    return output.getMappedRange()
-  }
-}
-
-fun makeBuffer(sz: Int, us: Int, data: AllowSharedBufferSource? = null): GPUBuffer =
-  gpu.createBuffer(GPUBufferDescriptor(size = sz.toDouble(), usage = us))
-    .also { if (data != null) { gpu.queue.writeBuffer(it, 0.0, data) } }
