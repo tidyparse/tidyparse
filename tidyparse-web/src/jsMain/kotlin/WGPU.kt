@@ -62,13 +62,11 @@ suspend fun benchmarkWGPURepair() {
   val cfg = pythonStatementCNFAllProds
 
   val t0 = TimeSource.Monotonic.markNow()
-  val pythonCode = "NAME = [ ( STRING , NAME ) , , ( NAME , NAME ) , ( NAME , NAME ) , ( NAME , NAME ) , , ( NAME , NAME ) ] NEWLINE"
-    .tokenizeByWhitespace()
+  val pythonCode = "NAME = [ ( STRING , NAME ) , , ( NAME , NAME ) , ( NAME , NAME ) , ( NAME , NAME ) , , ( NAME , NAME ) ] NEWLINE".tokenizeByWhitespace()
   val radius = 3
   val levFSA = makeLevFSA(pythonCode, radius)
 
-  val (allFSAPairsFlattened, allFSAPairsOffsets) = levFSA.midpoints.prefixScan()
-
+  // Initializes entries of M_0 parse chart
   fun FSA.byteFormat(cfg: CFG): IntArray {
     val terminalLists = cfg.nonterminals.map { cfg.bimap.UNITS[it] ?: emptyList() }
     // 0 and 1 are reserved for (0) no parse exists and (1) parse exists, but an internal nonterminal node
@@ -94,10 +92,7 @@ suspend fun benchmarkWGPURepair() {
     return parseChart
   }
 
-  val grammarFlattened = cfg.vindex.map { it.toList() }.flatten().toIntArray()
-  val grammarOffsets = cfg.vindex.map { it.size }.fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
-
-  val dpIn = levFSA.byteFormat(cfg).let { dpi -> IntArray(dpi.size) { dpi[it].toInt() } }
+  val (allFSAPairsFlattened, allFSAPairsOffsets) = levFSA.midpoints.prefixScan()
 
   /** Memory layout: [CFL_STRUCT] */
   val metadata: IntArray = packStruct(
@@ -109,9 +104,11 @@ suspend fun benchmarkWGPURepair() {
     levFSA.finalIdxs.toIntArray(),
 
     // CFG Encoding
-    grammarFlattened,
-    grammarOffsets,
+    cfg.vindex.map { it.toList() }.flatten().toIntArray(),
+    cfg.vindex.map { it.size }.fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
   )
+
+  val dpIn = levFSA.byteFormat(cfg).let { dpi -> IntArray(dpi.size) { dpi[it].toInt() } }
 
   println("Preprocessing took ${t0.elapsedNow()}")
   val dpComplete = cfl_mul_upper.invokeCFLFixpoint(dpIn, metadata)
@@ -141,10 +138,10 @@ fn getGrammarOffset(index: u32) -> u32 { return u32(cs.payload[cs.grammarOffsets
 val cfl_mul_upper by Shader(CFL_STRUCT + """
 struct AtomicChange { count: atomic<u32> };
 
-@group(0) @binding(0) var<storage, read>         dp_in : array<u32>;
-@group(0) @binding(1) var<storage, read_write>  dp_out : array<u32>;
-@group(0) @binding(2) var<storage, read>            cs : CFLStruct;
-@group(0) @binding(3) var<storage, read_write> changes : AtomicChange;
+@group(0) @binding(0) var<storage, read>          dp_in : array<u32>;
+@group(0) @binding(1) var<storage, read_write>   dp_out : array<u32>;
+@group(0) @binding(2) var<storage, read>             cs : CFLStruct;
+@group(0) @binding(3) var<storage, read_write>  changes : AtomicChange;
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let r = gid.x;      // row index
@@ -189,16 +186,16 @@ struct AtomicChange { count: atomic<u32> };
                 return;
             }
 
-            g = g + 2u;
+            g += 2;
         }
     }
 }""".trimIndent())
 
 //language=wgsl
 val bp_count by Shader(CFL_STRUCT + """
-@group(0) @binding(0) var<storage, read>         dp_in : array<u32>;
-@group(0) @binding(1) var<storage, read_write>  dp_out : array<u32>;
-@group(0) @binding(2) var<storage, read>            cs : CFLStruct;
+@group(0) @binding(0) var<storage, read>           dp_in : array<u32>;
+@group(0) @binding(1) var<storage, read_write>  bp_count : array<u32>;
+@group(0) @binding(2) var<storage, read>              cs : CFLStruct;
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let r = gid.x;      // row index
@@ -218,11 +215,8 @@ val bp_count by Shader(CFL_STRUCT + """
     let pairOffset     = getMdptOffset(aoi - 1u);
     let pairOffsetNext = select(cs.mdptsSize, getMdptOffset(aoi), aoi < cs.mdptsOffsetsSize);
 
-    // If dp_in[dpIdx] does NOT have bit 0 set, then bpCount = 0
-    if ((dp_in[dpIdx] & 0x01u) == 0u) {
-        bpCount[dpIdx] = 0;
-        return;
-    }
+    // If dp_in[dpIdx] does NOT have bit 0 set, then bp_count = 0
+    if ((dp_in[dpIdx] & 0x01u) == 0u) { bp_count[dpIdx] = 0; return; }
 
     // Otherwise accumulate the possible backpointers
     var count = 0;
@@ -236,21 +230,21 @@ val bp_count by Shader(CFL_STRUCT + """
 
             let idxBM = r      * snt + mdpt * nnt + B;
             let idxMC = mdpt   * snt + c    * nnt + C;
-            if ((dp_in[idxBM] != 0u) && (dp_in[idxMC] != 0u)) {
-                count = count + 1;
-            }
-            g = g + 2;
+            if ((dp_in[idxBM] != 0u) && (dp_in[idxMC] != 0u)) { count++; }
+            g += 2;
         }
     }
 
-    bpCount[dpIdx] = count;
+    bp_count[dpIdx] = count;
 }""".trimIndent())
 
 //language=wgsl
 val bp_write by Shader(CFL_STRUCT + """
-@group(0) @binding(0) var<storage, read>           dp_in : array<u32>;
-@group(0) @binding(1) var<storage, read_write>  bp_count : array<u32>;
-@group(0) @binding(2) var<storage, read>              cs : CFLStruct;
+@group(0) @binding(0) var<storage, read>             dp_in : array<u32>;
+@group(0) @binding(1) var<storage, read_write>    bp_count : array<u32>;
+@group(0) @binding(1) var<storage, read_write>   bp_offset : array<u32>;
+@group(0) @binding(1) var<storage, read_write>  bp_storage : array<u32>;
+@group(0) @binding(2) var<storage, read>                cs : CFLStruct;
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let r = gid.x;      // row index
@@ -270,15 +264,12 @@ val bp_write by Shader(CFL_STRUCT + """
     let pairOffset     = getMdptOffset(aoi - 1u);
     let pairOffsetNext = select(cs.mdptsSize, getMdptOffset(aoi), aoi < cs.mdptsOffsetsSize);
 
-    // If dp_in[dpIdx] does NOT have bit 0 set, then bpCount = 0
-    if ((dp_in[dpIdx] & 0x01u) == 0u) {
-        bpCount[dpIdx] = 0;
-        return;
-    }
+    // If dp_in[dpIdx] does NOT have bit 0 set, then bp_count = 0
+    if ((dp_in[dpIdx] & 0x01u) == 0u) { return; }
 
-    var outPos = bpOffset[dpIdx];
+    var outPos = bp_offset[dpIdx];
 
-    // Similar to bp_count, but we record expansions in bpStorage
+    // Similar to bp_count, but we record expansions in bp_storage
     for (var pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx++) {
         let mdpt = allFSAPairs[pairIdx];
 
@@ -292,29 +283,29 @@ val bp_write by Shader(CFL_STRUCT + """
 
             if ((dp_in[idxBM] != 0u) && (dp_in[idxMC] != 0u)) {
                 // Each record is 2 ints
-                bpStorage[outPos * 2 + 0] = idxBM;
-                bpStorage[outPos * 2 + 1] = idxMC;
-                outPos = outPos + 1;
+                bp_storage[outPos * 2 + 0] = idxBM;
+                bp_storage[outPos * 2 + 1] = idxMC;
+                outPos++;
             }
-            poff = poff + 2;
+            poff += 2;
         }
     }
 }""".trimIndent())
 
 //language=wgsl
 val prefix_sum_p1 by Shader("""
-@compute @workgroup_size(1024) fn prefix_sum_p1(
+@compute @workgroup_size(1024) fn main(
     @builtin(global_invocation_id) globalId: vec3<u32>,
     @builtin(workgroup_id)         groupId : vec3<u32>,
     @builtin(local_invocation_id)  localId : vec3<u32>
 ) {
-    let N       = prefixUni.N; // total length
-    let gid     = globalId.x;
-    let grpId   = groupId.x;
-    let lid     = localId.x;
-    let tpg     = 1024u; // fixed to match @workgroup_size(1024)
+    let N     = prefixUni.N; // total length
+    let gid   = globalId.x;
+    let grpId = groupId.x;
+    let lid   = localId.x;
+    let tpg   = 1024u; // fixed to match @workgroup_size(1024)
 
-    var<workgroup> tile: array<i32, 1024>;
+    var<workgroup> tile: array<u32, 1024>;
 
     let base = grpId * tpg;
     let idx  = base + lid;
@@ -344,7 +335,7 @@ val prefix_sum_p1 by Shader("""
 
 //language=wgsl
 val prefix_sum_p2 by Shader("""
-@compute @workgroup_size(1024) fn prefix_sum_p2(
+@compute @workgroup_size(1024) fn main(
     @builtin(global_invocation_id) globalId: vec3<u32>,
     @builtin(workgroup_id)         groupId : vec3<u32>,
     @builtin(local_invocation_id)  localId : vec3<u32>
@@ -364,7 +355,66 @@ val prefix_sum_p2 by Shader("""
 
 //language=wgsl
 val sample_words by Shader("""
-  fn lcg_random(stateRef: ptr<function, u32>) -> u32 {
+// Example uniform struct for the small constant values:
+struct Uniforms {
+    numStartIndices : u32,
+    numStates       : u32,
+    maxWordLen      : u32,
+};
+
+@group(0) @binding(0) var<storage, read> dp_in: array<u32>;
+@group(0) @binding(1) var<storage, read> bp_count: array<u32>;
+@group(0) @binding(2) var<storage, read> bp_offset: array<u32>;
+@group(0) @binding(3) var<storage, read> bp_storage: array<u32>;
+@group(0) @binding(4) var<storage, read> startIndices: array<u32>;
+@group(0) @binding(5) var<storage, read> seeds: array<u32>;
+@group(0) @binding(6) var<storage, read_write> sampledWords: array<u32>;
+@group(0) @binding(7) var<uniform> uniforms: Uniforms;
+
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let tid = gid.x;
+
+    // If needed, clamp to numStartIndices:
+    if (tid >= u32(samplerUni.numStartIndices)) { return; }
+
+    // We'll create a local array in function scope
+    var localWord: array<u32, 1024>;
+    // Zero-initialize
+    for (var i = 0; i < samplerUni.maxWordLen; i = i + 1) { localWord[i] = 0u; }
+
+    // Grab rngState from seeds[tid]
+    var rngState = seeds[tid];
+
+    // Choose a random index in [0..numStartIndices-1]
+    let rIndex   = lcg_randomRange(&rngState, u32(samplerUni.numStartIndices));
+    let dpIndex  = startIndices[u32(rIndex)];
+
+    // decode row & col if needed:
+    //    A = dpIndex % numNonterminals
+    //    rowCol = dpIndex / numNonterminals
+    //    c = rowCol % numStates
+    //    r = rowCol / numStates
+    //    then startIdx = r*snt + c*numNonterminals + A
+    let nnt      = uni.numNonterminals;
+    let A        = dpIndex % nnt;
+    let rowCol   = dpIndex / nnt;
+    let c        = rowCol % uni.numStates;
+    let r        = rowCol / uni.numStates;
+    let snt      = uni.numStates * nnt;
+    let startIdx = r * snt + c * nnt + A;
+
+    // Now call sampleTopDown
+    sampleTopDown(dp_in, bp_count, bp_offset, bp_storage, startIdx, &rngState, &localWord, samplerUni.maxWordLen);
+
+    // Copy to sampledWords buffer
+    // dp_in was 16 bits, but in original code we wrote into a “char”
+    // so we do a cast from u32 -> u8 (truncation).
+    for (var i = 0; i < samplerUni.maxWordLen; i = i + 1) {
+        sampledWords[u32(tid) * u32(samplerUni.maxWordLen) + u32(i)] = u8(localWord[i] & 0x00FFu);
+    }
+}
+
+fn lcg_random(stateRef: ptr<function, u32>) -> u32 {
     let newVal = (1664525u * (*stateRef)) + 1013904223u;
     *stateRef = newVal;
     return newVal;
@@ -373,22 +423,21 @@ val sample_words by Shader("""
 fn lcg_randomRange(stateRef: ptr<function, u32>, range: u32) -> u32 { return lcg_random(stateRef) % range; }
 
 fn sampleTopDown(
-    dp_in       : array<u16>,
-    bpCount     : array<i32>,
-    bpOffset    : array<i32>,
-    bpStorage   : array<i32>,
-    startDPIdx  : i32,
+    dp_in       : array<u32>,
+    bp_count     : array<u32>,
+    bp_sffset    : array<u32>,
+    bp_storage   : array<u32>,
+    startDPIdx  : u32,
     rngStateRef : ptr<function, u32>,
-    localWord   : ptr<function, array<u16, 1024>>,
-    maxWordLen  : i32
+    localWord   : ptr<function, array<u32, 1024>>,
+    maxWordLen  : u32
 ) {
     // We'll create a stack up to 1024
-    var stack: array<i32, 1024>;
-    var top    = 0;
-    var wordLen= 0;
+    var stack: array<u32, 1024>;
+    var top     = 0;
+    var wordLen = 0;
 
-    stack[top] = startDPIdx;
-    top = top + 1;
+    stack[top] = startDPIdx; top++;
 
     // We interpret uni.numNonterminals, etc., as global from `uni`.
     let nnt = uni.numNonterminals;
@@ -397,12 +446,12 @@ fn sampleTopDown(
     var iter = 0;
     loop {
         if ((iter >= maxWordLen * 98) || (top <= 0) || (wordLen >= maxWordLen - 5)) { break; }
-        iter = iter + 1;
+        iter++;
 
         top = top - 1;
         let dpIdx = abs(stack[top]);
 
-        let expCount = bpCount[dpIdx];
+        let expCount = bp_count[dpIdx];
         // dp_in[dpIdx] >> 1 => checks high bits
         // dp_in[dpIdx] & 0x01 => checks the binary expansion bit
         let predicate = dp_in[dpIdx];
@@ -413,97 +462,47 @@ fn sampleTopDown(
         let hasLiteral = ((predicate >> 1u) != 0u);
 
         // Random check:
-        let rVal = i32(lcg_randomRange(rngStateRef, u32(expCount))); 
+        let rVal = u32(lcg_randomRange(rngStateRef, u32(expCount))); 
         // Original logic:
         // if ( (dp_in[dpIdx] >> 1) && ( ! (dp_in[dpIdx] & 0x01) || (rVal % 2 == 0) ) ) { ... }
         if (hasLiteral && ( !canRecurse || ((rVal % 2) == 0) )) {
             // treat as leaf/terminal
-            let nonterminal     = dpIdx % nnt;
-            let isNegative      = ((predicate & 0x8000u) != 0u);
-            let literal         = (predicate >> 1u) & 0x7FFFu;
-            let numTms         = nt_tm_lens[nonterminal];
-            let ntOffset       = offsets[nonterminal];
+            let nonterminal = dpIdx % nnt;
+            let isNegative  = ((predicate & 0x8000u) != 0u);
+            let literal     = (predicate >> 1u) & 0x7FFFu;
+            let numTms      = nt_tm_lens[nonterminal];
+            let ntOffset    = offsets[nonterminal];
 
             if (isNegative) {
                 // choose from among all possible except “literal - 1”
-                var possibleTms: array<u16, 100>;
+                var possibleTms: array<u32, 100>;
                 var tmCount = 0;
                 for (var i = 0; i < min(numTms, 100); i = i + 1) {
                     if (i != (literal - 1u)) {
-                        possibleTms[tmCount] = all_tm[i32(ntOffset) + i];
-                        tmCount = tmCount + 1;
+                        possibleTms[tmCount] = all_tm[u32(ntOffset) + i]; tmCount++;
                     }
                 }
-                let choiceIndex = i32(lcg_randomRange(rngStateRef, u32(tmCount)));
+                let choiceIndex = u32(lcg_randomRange(rngStateRef, u32(tmCount)));
                 let tmChoice    = possibleTms[choiceIndex];
-                (*localWord)[wordLen] = tmChoice + 1u; // your original code
-                wordLen = wordLen + 1;
+                (*localWord)[wordLen] = tmChoice + 1u; wordLen++;
             } else {
                 // positive literal
                 if (numTms != 0) {
-                    let tmVal = all_tm[i32(ntOffset) + i32(literal) - 1];
+                    let tmVal = all_tm[u32(ntOffset) + u32(literal) - 1];
                     (*localWord)[wordLen] = tmVal + 1u;
                 } else { (*localWord)[wordLen] = 99u; }
-                wordLen = wordLen + 1;
+                wordLen++;
             }
         } else {
             // do a binary expansion if there's room on the stack
             if (top + 2 < 1024) {
-                let randIdx = bpOffset[dpIdx] + rVal;
-                let idxBM   = bpStorage[randIdx * 2 + 0];
-                let idxMC   = bpStorage[randIdx * 2 + 1];
-                stack[top] = idxMC;
-                top = top + 1;
-                stack[top] = idxBM;
-                top = top + 1;
+                let randIdx = bp_offset[dpIdx] + rVal;
+                let idxBM   = bp_storage[randIdx * 2 + 0];
+                let idxMC   = bp_storage[randIdx * 2 + 1];
+                stack[top]  = idxMC; top++;
+                stack[top]  = idxBM; top++;
             }
         }
-    }
-}
-
-@compute @workgroup_size(64)
-fn sample_words(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let tid = gid.x;
-
-    // If needed, clamp to numStartIndices:
-    if (tid >= u32(samplerUni.numStartIndices)) { return; }
-
-    // We'll create a local array in function scope
-    var localWord: array<u16, 1024>;
-    // Zero-initialize
-    for (var i = 0; i < samplerUni.maxWordLen; i = i + 1) { localWord[i] = 0u; }
-
-    // Grab rngState from seeds[tid]
-    var rngState = seeds[tid];
-
-    // Choose a random index in [0..numStartIndices-1]
-    let rIndex   = lcg_randomRange(&rngState, u32(samplerUni.numStartIndices));
-    let dpIndex  = startIndices[i32(rIndex)];
-
-    // decode row & col if needed:
-    //    A = dpIndex % numNonterminals
-    //    rowCol = dpIndex / numNonterminals
-    //    c = rowCol % numStates
-    //    r = rowCol / numStates
-    //    then startIdx = r*snt + c*numNonterminals + A
-    let nnt   = uni.numNonterminals;
-    let A     = dpIndex % nnt;
-    let rowCol= dpIndex / nnt;
-    let c     = rowCol % uni.numStates;
-    let r     = rowCol / uni.numStates;
-    let snt   = uni.numStates * nnt;
-    let startIdx = r * snt + c * nnt + A;
-
-    // Now call sampleTopDown
-    sampleTopDown(dp_in, bpCount, bpOffset, bpStorage,
-                  startIdx, &rngState, &localWord, samplerUni.maxWordLen);
-
-    // Copy to sampledWords buffer
-    // dp_in was 16 bits, but in original code we wrote into a “char”
-    // so we do a cast from u16 -> u8 (truncation).
-    for (var i = 0; i < samplerUni.maxWordLen; i = i + 1) {
-        sampledWords[u32(tid) * u32(samplerUni.maxWordLen) + u32(i)]
-            = u8(localWord[i] & 0x00FFu);
     }
 }""".trimIndent())
 
@@ -531,10 +530,7 @@ class Shader(val src: String) {
         return o as T
       }
       val ent = buffers.mapIndexed { index, buf ->
-        GPUBindGroupEntry(
-          binding = index,
-          resource = jsObject<GPUBindingResource> { buffer = buf }
-        )
+        GPUBindGroupEntry(binding = index, resource = jsObject<GPUBindingResource> { buffer = buf })
       }.toTypedArray()
       return gpu.createBindGroup(GPUBindGroupDescriptor(layout = lay, entries = ent))
     }
@@ -641,7 +637,7 @@ class Shader(val src: String) {
 
     val finalOut = if (iterations % 2 == 1) buf2 else buf1
 
-    val output = makeBuffer(finalOut.size.toInt(), 9) // MAP_READ + COPY_DST
+    val output = makeBuffer(finalOut.size.toInt(), GPUBufferUsage.MAP_READ or GPUBufferUsage.COPY_DST)
     encoder.copyBufferToBuffer(finalOut, 0.0, output, 0.0, output.size)
     gpu.queue.submit(arrayOf(encoder.finish()))
 
