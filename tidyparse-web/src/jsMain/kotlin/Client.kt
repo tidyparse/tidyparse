@@ -6,7 +6,10 @@ import kotlinx.coroutines.*
 import kotlinx.dom.appendText
 import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
+import web.events.EventType
+import web.events.addEventListener
 import web.gpu.GPU
+import web.gpu.GPUAdapter
 import web.gpu.GPUDevice
 import kotlin.js.Promise
 
@@ -51,38 +54,6 @@ fun main() {
 
   if (window["PROGRAMMING_LANG"] == "python") pythonSetup() else defaultSetup()
   tryBootstrapGPU()
-}
-
-lateinit var gpu: GPUDevice
-var gpuAvailable = false
-
-fun tryBootstrapGPU() {
-  MainScope().async {
-    checkWebGPUAvailability()
-    if (gpuAvailable) {
-      WGSL_GEMX_ITERATE.bind()
-      benchmarkWGPU()
-    }
-  }
-}
-
-suspend fun checkWebGPUAvailability() {
-  val tmpDev = (navigator.gpu as? GPU)?.requestAdapter()?.requestDevice()
-  val gpuAvailDiv = document.getElementById("gpuAvail") as HTMLDivElement
-
-  if (tmpDev != null) {
-    gpu = tmpDev
-    val obj = document.createElement("object").apply {
-      setAttribute("type", "image/svg+xml")
-      setAttribute("data", "/webgpu.svg")
-      setAttribute("width", "35")
-      setAttribute("height", "35")
-    }
-    gpuAvailDiv.appendChild(obj)
-    gpuAvailable = true
-  } else {
-    gpuAvailDiv.appendText("WebGPU is NOT available.")
-  }
 }
 
 fun defaultSetup() {
@@ -145,20 +116,18 @@ val ntscheck by lazy { document.getElementById("ntstubs-checkbox") as HTMLInputE
 val timeout by lazy { document.getElementById("timeout") as HTMLInputElement }
 val maxEdits by lazy { document.getElementById("max-edits") as HTMLInputElement }
 
-fun loadNgrams(file: String = "python_4grams.txt") =
-  MainScope().launch {
-    val response = window.fetch(file).await()
-    if (response.ok) {
-      var numNgrams = 0
-      var n = 0
-      response.text().await().lines().forEach { line ->
-        val (ngram, count) = line.split(" ::: ")
-        jsPyEditor.ngrams[ngram.split(" ").also { n = it.size }] = count.toDouble()
-        numNgrams++
-      }
-      console.info("Processed $numNgrams $n-grams.")
+fun loadNgrams(file: String = "python_4grams.txt") = MainScope().launch {
+  val response = window.fetch(file).await()
+  if (response.ok) {
+    var numNgrams = 0
+    var n = 0
+    response.text().await().lines().filter { it.isNotBlank() }.forEach { line ->
+      val (ngram, count) = line.split(" ::: ")
+      jsPyEditor.ngrams[ngram.split(" ").also { n = it.size }] = count.toDouble()
+      numNgrams++
     }
   }
+}
 
 fun initPyodide() = MainScope().launch {
   jsPyEditor.pyodide = window.asDynamic()

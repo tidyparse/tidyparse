@@ -42,31 +42,31 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
   var pyodide: dynamic? = null
 
-  fun getOutput(code: String): String {
+  fun getOutput(code: String): String = try {
     val types = code.replace("NUMBER", "1").replace("STRING", "\"\"")
     val pyCode = """
-        import sys
-        from io import StringIO
-        _output = StringIO()
-        sys.stdout = sys.stderr = _output
-        try:
-            compile(""${'"'}${types.trimIndent()}${'"'}"", 'test_compile.py', 'exec')
-        except Exception:
-            import traceback
-            traceback.print_exc()
-        _result = _output.getvalue()
+      import sys
+      from io import StringIO
+      _output = StringIO()
+      sys.stdout = sys.stderr = _output
+      try:
+          compile(""${'"'}${types.trimIndent()}${'"'}"", 'test_compile.py', 'exec')
+      except Exception:
+          import traceback
+          traceback.print_exc()
+      _result = _output.getvalue()
     """.trimIndent()
 
     // Run the Python code synchronously.
     jsPyEditor.pyodide.runPython(pyCode)
     // Retrieve _result from the Pyodide globals.
-    return jsPyEditor.pyodide.globals.get("_result") as String
-  }
+    jsPyEditor.pyodide.globals.get("_result") as String
+  } catch (e: dynamic) { "Error during compilation: $e".also { println(it) } }
 
   private fun String.getErrorType(): String =
     if (isEmpty()) "" else lines().dropLast(1).lastOrNull()?.substringBeforeLast(":") ?: this
 
-  private fun String.getErrorMessage(): String = substringAfterLast(": ")
+  private fun String.getErrorMessage(): String = substringAfter(": ")
 
   override fun formatCode(pythonCode: String): String = try {
     jsPyEditor.pyodide.runPython("""

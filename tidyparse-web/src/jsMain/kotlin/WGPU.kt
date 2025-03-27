@@ -7,7 +7,14 @@ import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import js.array.asList
 import js.buffer.*
 import js.typedarrays.Int32Array
+import kotlinx.browser.document
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.await
+import kotlinx.dom.appendText
+import org.w3c.dom.HTMLDivElement
+import web.events.EventType
+import web.events.addEventListener
 import web.gpu.*
 import web.performance.performance
 import kotlin.apply
@@ -16,6 +23,40 @@ import kotlin.math.sqrt
 import kotlin.random.Random
 import kotlin.reflect.KProperty
 import kotlin.time.*
+
+lateinit var gpu: GPUDevice
+var gpuAvailable = false
+
+fun tryBootstrapGPU() {
+  MainScope().async {
+    checkWebGPUAvailability()
+    if (gpuAvailable) {
+      WGSL_GEMX_ITERATE.bind()
+      cfl_mul_upper.bind()
+      benchmarkWGPURepair()
+    }
+  }
+}
+
+suspend fun checkWebGPUAvailability() {
+  val tmpDev = (navigator.gpu as? GPU)?.requestAdapter()?.requestDevice()?.also { gpu = it }
+  val gpuAvailDiv = document.getElementById("gpuAvail") as HTMLDivElement
+
+  if (tmpDev != null) {
+    val obj = document.createElement("object").apply {
+      setAttribute("type", "image/svg+xml")
+      setAttribute("data", "/webgpu.svg")
+      setAttribute("width", "35")
+      setAttribute("height", "35")
+    }
+    gpuAvailDiv.appendChild(obj)
+    gpuAvailable = true
+    gpu.addEventListener(EventType("uncapturederror"),
+      { e: dynamic -> println("Uncaptured GPU error: ${e.error.message}") })
+  } else {
+    gpuAvailDiv.appendText("WebGPU is NOT available.")
+  }
+}
 
 suspend fun benchmarkWGPURepair() {
   val cfg = pythonStatementCNFAllProds
@@ -90,25 +131,36 @@ suspend fun benchmarkWGPURepair() {
     grammarOffsets,
   )
 
+  println("Starting repair...")
   val dpComplete = iterateFixpoint(metadata, dpIn)
 
   println("Round trip repair: ${clock.elapsedNow()}")
 }
 
-suspend fun iterateFixpoint(packedMetadata: Int32Array<ArrayBuffer>, dpInitial: IntArray): IntArray {
+suspend fun iterateFixpoint(
+  packedMetadata: Int32Array<ArrayBuffer>,
+  dpInitial: IntArray
+): IntArray {
+  gpu.pushErrorScope(GPUErrorFilter.validation)
+
   // 1) Make the metadata buffer
   val metaSizeBytes = packedMetadata.length * 4
   val metaBuf = makeBuffer(
-    sz    = metaSizeBytes,
-    us    = GPUBufferUsage.STORAGE,
-    data  = packedMetadata
+    sz = metaSizeBytes,
+    us = GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST,
+    data = packedMetadata
   )
 
-  // 2) Make the DP chart buffer
-  val dpBuf = makeBuffer(
-    sz   = dpInitial.size * 4,
-    us   = GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_SRC or GPUBufferUsage.COPY_DST,
+  // 2) Make two DP chart buffers for ping-pong:
+  val dpBuf1 = makeBuffer(
+    sz = dpInitial.size * 4,
+    us = GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_SRC or GPUBufferUsage.COPY_DST,
     data = Int32Array<ArrayBuffer>(dpInitial.size).apply { set(dpInitial.toTypedArray(), 0) }
+  )
+  // dpBuf2 is initialized to the same data, or zeros, or doesn’t matter if you overwrite it fully anyway:
+  val dpBuf2 = makeBuffer(
+    sz = dpInitial.size * 4,
+    us = GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_SRC or GPUBufferUsage.COPY_DST
   )
 
   // 3) Atomic changes buffer: 4 bytes
@@ -121,27 +173,42 @@ suspend fun iterateFixpoint(packedMetadata: Int32Array<ArrayBuffer>, dpInitial: 
   val numNonterminals = packedMetadata[1]
   val totalThreads    = (numStates*(numStates -1))/2 * numNonterminals
 
+  println("Total threads: $totalThreads")
+  println("Maxwork: ${gpu.limits.maxComputeWorkgroupsPerDimension}")
+
   var prevValue = -1
+
+  // For each round, we select which buffer is "dp_in" and which is "dp_out":
   for (round in 0 until numStates) {
+    println("Round: $round")
+
     // (a) Zero out changesBuf
     gpu.queue.writeBuffer(changesBuf, 0.0, Int32Array<ArrayBuffer>(arrayOf(0)))
+
+    // Pick dpIn/dpOut by round
+    val dpIn  = if (round % 2 == 0) dpBuf1 else dpBuf2
+    val dpOut = if (round % 2 == 0) dpBuf2 else dpBuf1
 
     // (b) Dispatch the kernel
     val encoder = gpu.createCommandEncoder()
     val pass = encoder.beginComputePass()
     pass.setPipeline(cfl_mul_upper.pipeline)
+
+    // dpIn is read-only (binding=0), dpOut is read-write (binding=1)
     pass.setBindGroup(
       0,
       Shader.bindBuffers(
         cfl_mul_upper.pipeline,
-        dpBuf,      // dp_in
-        dpBuf,      // dp_out
+        dpIn,       // dp_in  (read)
+        dpOut,      // dp_out (write)
         metaBuf,    // cfl_struct
         changesBuf  // atomicChange
       )
     )
-    pass.dispatchWorkgroups(totalThreads, 1, 1)
+
+    pass.dispatchWorkgroups(numStates, numStates, numNonterminals)
     pass.end()
+
     gpu.queue.submit(arrayOf(encoder.finish()))
 
     // (c) Copy just the 4 bytes of changesBuf back to CPU
@@ -153,6 +220,7 @@ suspend fun iterateFixpoint(packedMetadata: Int32Array<ArrayBuffer>, dpInitial: 
     (readOut.mapAsync(1) as Promise<*>).await()
     val arr   = Int32Array(readOut.getMappedRange())
     val count = arr[0]
+    println("Count: $count")
     if (count == prevValue) {
       println("Fixpoint reached at round=$round changes=$count")
       break
@@ -161,19 +229,30 @@ suspend fun iterateFixpoint(packedMetadata: Int32Array<ArrayBuffer>, dpInitial: 
   }
 
   // 4) We have converged or used up all rounds -> read final DP
+  // The "final" buffer is whichever was used as the "dp_out" in the last iteration
+  val finalBuf = if (numStates % 2 == 0) dpBuf1 else dpBuf2
+
   val outEncoder = gpu.createCommandEncoder()
   val outBuf = makeBuffer(dpInitial.size * 4, GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
   outEncoder.copyBufferToBuffer(
-    source            = dpBuf,
+    source            = finalBuf,
     sourceOffset      = 0.0,
     destination       = outBuf,
     destinationOffset = 0.0,
-    size              = (dpInitial.size*4).toDouble()
+    size              = (dpInitial.size * 4).toDouble()
   )
   gpu.queue.submit(arrayOf(outEncoder.finish()))
 
   (outBuf.mapAsync(1) as Promise<*>).await()
   val finalArray = Int32Array(outBuf.getMappedRange())
+
+  val error = gpu.popErrorScopeAsync().await()
+  if (error != null) {
+    console.error("GPU validation/usage error:", error.message)
+  } else {
+    console.log("No GPU errors, got result of size = ${finalArray.asList().size}")
+  }
+
   return finalArray.asList().toIntArray()
 }
 
@@ -196,40 +275,18 @@ fun packStruct(constants: List<Int>, vararg arrays: IntArray): Int32Array<ArrayB
 //language=wgsl
 val cfl_mul_upper by Shader("""
 struct CFLStruct {
-             numStates : u32,
-       numNonterminals : u32,
-
-           mdptsOffset : u32,
-             mdptsSize : u32,
-
-    mdptsOffsetsOffset : u32,
-      mdptsOffsetsSize : u32,
-
-    acceptStatesOffset : u32,
-      acceptStatesSize : u32,
-
-grammarFlattenedOffset : u32,
-  grammarFlattenedSize : u32,
-
-  grammarOffsetsOffset : u32,
-    grammarOffsetsSize : u32,
-
+             numStates : u32,      numNonterminals : u32,
+             
+           mdptsOffset : u32,            mdptsSize : u32,
+    mdptsOffsetsOffset : u32,     mdptsOffsetsSize : u32,
+    acceptStatesOffset : u32,     acceptStatesSize : u32,
+grammarFlattenedOffset : u32, grammarFlattenedSize : u32,
+  grammarOffsetsOffset : u32,   grammarOffsetsSize : u32,
+  
                payload : array<u32>
 };
 
 struct AtomicChange { count: atomic<u32> };
-
-fn decodeUpperTriangle(i : u32, N : u32) -> vec2<u32> {
-    let d     = f32( (2u*N - 1u) * (2u*N - 1u) ) - f32(8u * i);
-    let root  = sqrt(d);
-    let rFloat= (f32(2u*N - 1u) - root) * 0.5;
-    let rInt  = u32(floor(rFloat));
-    // rowStart = r*(N-1) - (r*(r-1))/2
-    let rowStart = rInt*(N - 1u) - (rInt*(rInt - 1u))/2u;
-    let offset   = i - rowStart;
-    let cInt     = rInt + 1u + offset;
-    return vec2<u32>(rInt, cInt);
-}
 
          fn getMdpt(index: u32) -> u32 { return cs.payload[cs.mdptsOffset + index]; }
    fn getMdptOffset(index: u32) -> u32 { return u32(cs.payload[cs.mdptsOffsetsOffset + index]); }
@@ -242,16 +299,16 @@ fn getGrammarOffset(index: u32) -> u32 { return u32(cs.payload[cs.grammarOffsets
 @group(0) @binding(3) var<storage, read_write> changes : AtomicChange;
 
 @compute @workgroup_size(1, 1, 1) fn cfl_mul_upper(@builtin(global_invocation_id) gid : vec3<u32>) {
-    let tid = gid.x;
+    let r = gid.x;      // row index
+    let c = gid.y;      // column index
+    let A = gid.z;      // nonterminal index
 
     let N  = cs.numStates;
     let NT = cs.numNonterminals;
-    let totalCells = (N * (N - 1u)) / 2u * NT;
-    if (tid >= totalCells) { return; }
-    let A  = tid % NT;
-    let rc = decodeUpperTriangle(tid / NT, N);
-    let r  = rc.x;
-    let c  = rc.y;
+
+    // If c <= r, skip to ensure upper triangle
+    if (c <= r) { return; }
+    
     let snt     = N * NT;
     let dpIdx   = r*snt + c*NT + A;
     let startGC = getGrammarOffset(A);
