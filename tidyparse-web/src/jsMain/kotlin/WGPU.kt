@@ -24,15 +24,13 @@ import kotlin.time.*
 lateinit var gpu: GPUDevice
 var gpuAvailable = false
 
-fun tryBootstrapGPU() {
-  MainScope().async {
-    checkWebGPUAvailability()
-    if (gpuAvailable) {
-      WGSL_GEMX_ITERATE.bind()
-      cfl_mul_upper.bind()
-      benchmarkWGPURepair()
-      benchmarkWGPU()
-    }
+fun tryBootstrapGPU() = MainScope().async {
+  checkWebGPUAvailability()
+  if (gpuAvailable) {
+    WGSL_GEMX_ITERATE.bind()
+    cfl_mul_upper.bind()
+    benchmarkWGPURepair()
+    benchmarkWGPU()
   }
 }
 
@@ -59,31 +57,13 @@ suspend fun checkWebGPUAvailability() {
 suspend fun benchmarkWGPURepair() {
   val cfg = pythonStatementCNFAllProds
 
+  val t0 = TimeSource.Monotonic.markNow()
   val pythonCode = "NAME = [ ( STRING , NAME ) , , ( NAME , NAME ) , ( NAME , NAME ) , ( NAME , NAME ) , , ( NAME , NAME ) ] NEWLINE"
     .tokenizeByWhitespace()
-  val radius = 5
+  val radius = 3
   val levFSA = makeLevFSA(pythonCode, radius)
 
-  fun List<List<List<Int>>>.prefixScan(): Pair<IntArray, IntArray> = // TODO: move into shader kernel
-    measureTimedValue {
-      fun IntArray.prefixSumSizes(): IntArray =
-        IntArray(size + 1).also { prefix ->
-          copyInto(prefix, destinationOffset = 1)
-          for (i in 1..size) prefix[i] += prefix[i - 1]
-        }
-
-      val filtered = mapIndexed { p, outer ->
-        outer.mapIndexed { q, inner -> inner.filter { it in (p + 1) until q } }
-      }.flatten()
-
-      val flattened = filtered.flatten().toIntArray()
-      val offsets = filtered.map { it.size }.toIntArray().prefixSumSizes()
-
-      flattened to offsets
-    }.also { println("Completed prefix scan in: ${it.duration}") }.value
-
   val (allFSAPairsFlattened, allFSAPairsOffsets) = levFSA.midpoints.prefixScan()
-  val clock = TimeSource.Monotonic.markNow()
 
   fun FSA.byteFormat(cfg: CFG): IntArray {
     val terminalLists = cfg.nonterminals.map { cfg.bimap.UNITS[it] ?: emptyList() }
@@ -129,9 +109,10 @@ suspend fun benchmarkWGPURepair() {
     grammarOffsets,
   )
 
+  println("Preprocessing took ${t0.elapsedNow()}")
   val dpComplete = cfl_mul_upper.invokeCFLFixpoint(dpIn, metadata)
 
-  println("Round trip repair: ${clock.elapsedNow()}")
+  println("Round trip repair: ${t0.elapsedNow()}")
 }
 
 //language=wgsl
@@ -290,20 +271,20 @@ class Shader(val src: String) {
 
   // Invocation strategies: eliminates some of the ceremony of calling a GSL shader
   suspend fun invokeCFLFixpoint(vararg inputs: IntArray): IntArray {
+    var t0 = TimeSource.Monotonic.markNow()
     require(inputs.size >= 2) { "Expected at least dpIn + metadata, got ${inputs.size} buffers." }
 
     val dpIn = inputs[0].makeBuffer(usage = GPUBufferUsage.STCPSD)
     val metaBuf = inputs[1].makeBuffer(usage = GPUBufferUsage.STORAGE + GPUBufferUsage.COPY_DST)
 
     val (numStates, numNonterminals) = inputs[1]
-
     val dpOut = makeBuffer(dpIn.size.toInt(), dpIn.usage)
-
     val changesBuf = makeBuffer(sz = 4, us = GPUBufferUsage.STCPSD)
 
     var prevValue = -1
     val maxRounds = numStates
 
+    println("Time to iter: ${t0.elapsedNow()}")
     repeat(maxRounds) { round ->
       changesBuf.zeroOut()
       val (inBuf, outBuf) = if (round % 2 == 0) dpIn to dpOut else dpOut to dpIn
@@ -319,13 +300,13 @@ class Shader(val src: String) {
       gpu.queue.submit(arrayOf(cmdEnc.finish()))
 
       val changesThisRound = changesBuf.readInts(1)[0]
-//      println("Round=$round, changes=$changesThisRound")
 
       if (changesThisRound == prevValue) {
         println("Fixpoint reached at round=$round")
         return outBuf.readInts(dpIn.size.toInt() / 4)
       }
       prevValue = changesThisRound
+      println("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
     }
 
     return (if (maxRounds % 2 == 0) dpIn else dpOut).readInts(dpIn.size.toInt() / 4)
@@ -461,3 +442,21 @@ struct Params { N: u32 };
     
     Out[rowOffset + col] = acc;
 }""")
+
+fun List<List<List<Int>>>.prefixScan(): Pair<IntArray, IntArray> = // TODO: move into shader kernel
+  measureTimedValue {
+    fun IntArray.prefixSumSizes(): IntArray =
+      IntArray(size + 1).also { prefix ->
+        copyInto(prefix, destinationOffset = 1)
+        for (i in 1..size) prefix[i] += prefix[i - 1]
+      }
+
+    val filtered = mapIndexed { p, outer ->
+      outer.mapIndexed { q, inner -> inner.filter { it in (p + 1) until q } }
+    }.flatten()
+
+    val flattened = filtered.flatten().toIntArray()
+    val offsets = filtered.map { it.size }.toIntArray().prefixSumSizes()
+
+    flattened to offsets
+  }.also { println("Completed prefix scan in: ${it.duration}") }.value
