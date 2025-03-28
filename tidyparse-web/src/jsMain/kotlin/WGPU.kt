@@ -1,6 +1,7 @@
 @file:OptIn(ExperimentalUnsignedTypes::class)
 
 import Shader.Companion.makeBuffer
+import Shader.Companion.readInts
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
@@ -111,9 +112,89 @@ suspend fun benchmarkWGPURepair() {
   val dpIn = levFSA.byteFormat(cfg).let { dpi -> IntArray(dpi.size) { dpi[it].toInt() } }
 
   println("Preprocessing took ${t0.elapsedNow()}")
+  repairPipeline(cfg, levFSA, dpIn, metadata)
+  println("Round trip repair: ${t0.elapsedNow()}")
+}
+
+suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpIn: IntArray, metadata: IntArray): List<List<String>> {
   val dpComplete = cfl_mul_upper.invokeCFLFixpoint(dpIn, metadata)
 
-  println("Round trip repair: ${t0.elapsedNow()}")
+  val numStates       = metadata[0]
+  val numNonterminals = metadata[1]
+  val totalCells      = numStates * numStates * numNonterminals
+
+  val dpBuf   = dpComplete.makeBuffer(GPUBufferUsage.STCPSD)
+  val metaBuf = metadata.makeBuffer(GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
+
+  val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNonterminals, dpBuf, metaBuf)
+
+  val startNT     = cfg.bindex[START_SYMBOL]
+  val finalStates = fsa.finalIdxs
+  val startIdxs   = mutableListOf<Int>()
+  for (q in finalStates) {
+    val dpIndex = q * numNonterminals + startNT
+    if (dpIndex in dpComplete.indices && dpComplete[dpIndex] != 0) { startIdxs.add(dpIndex) }
+  }
+
+  if (startIdxs.isEmpty()) {
+    println("No valid parse found: dpComplete has no entries in final states!")
+    return emptyList()
+  }
+
+  // Create a GPU buffer with these valid start indices
+  val startIndicesBuf = startIdxs.toIntArray().makeBuffer(GPUBufferUsage.STCPSD)
+  val numStartIndices = startIdxs.size
+
+  val maxSamples = 1000
+  val maxWordLen = 30  // or pythonCode.size + radius + 10, etc.
+
+  val seeds = IntArray(maxSamples) { Random.nextInt() }
+  val seedsBuf = seeds.makeBuffer(GPUBufferUsage.STCPSD)
+
+  val outBufSize = maxSamples * maxWordLen * 4
+  val outBuf = Shader.makeBuffer(outBufSize, GPUBufferUsage.STCPSD)
+
+  // We also need a small uniform buffer for { numStartIndices, numStates, maxWordLen }:
+  val uniData = intArrayOf(numStartIndices, numStates, maxWordLen)
+  val uniBuf  = uniData.makeBuffer(GPUBufferUsage.UNIFORM)
+
+  Shader.runSampleWordsKernel(
+    dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf,
+    startIndicesBuf, seedsBuf, outBuf, uniBuf,
+    numSamples = maxSamples
+  )
+
+  val rawTokens = outBuf.readInts(maxSamples * maxWordLen)
+
+  val wordsPerSample = mutableListOf<List<String>>()
+  var offset = 0
+  for (sampleIdx in 0 until maxSamples) {
+    // Extract that row
+    val row = rawTokens.slice(offset until offset + maxWordLen)
+    offset += maxWordLen
+
+    val tokens = row.map { it and 0xFF }  // keep just the low byte
+
+    val slices = mutableListOf<List<Int>>()
+    var current = mutableListOf<Int>()
+    for (t in tokens) {
+      if (t == 0) {
+        // zero => delimiter
+        if (current.isNotEmpty()) {
+          slices.add(current.toList())
+          current.clear()
+        }
+      } else { current.add(t) }
+    }
+
+    if (current.isNotEmpty()) { slices.add(current) }
+
+    val sampleWords = slices.map { codeList -> codeList.joinToString("") { c -> c.toChar().toString() } }
+
+    if (sampleWords.isNotEmpty()) { wordsPerSample.add(sampleWords) }
+  }
+
+  return wordsPerSample
 }
 
 //language=wgsl
@@ -185,7 +266,7 @@ struct AtomicChange { count: atomic<u32> };
             }
         }
     }
-}""".trimIndent())
+}""")
 
 //language=wgsl
 val bp_count by Shader(CFL_STRUCT + """
@@ -231,7 +312,7 @@ val bp_count by Shader(CFL_STRUCT + """
     }
 
     bp_count[dpIdx] = count;
-}""".trimIndent())
+}""")
 
 //language=wgsl
 val bp_write by Shader(CFL_STRUCT + """
@@ -283,7 +364,7 @@ val bp_write by Shader(CFL_STRUCT + """
             }
         }
     }
-}""".trimIndent())
+}""")
 
 //language=wgsl
 val prefix_sum_p1 by Shader("""
@@ -347,11 +428,10 @@ val prefix_sum_p2 by Shader("""
     let idx = grpId * tpg + lid;
 
     if (idx < N) { outBuf[idx] = outBuf[idx] + offsetVal; }
-}""".trimIndent())
+}""")
 
 //language=wgsl
 val sample_words by Shader("""
-// Example uniform struct for the small constant values:
 struct Uniforms {
     numStartIndices : u32,
     numStates       : u32,
@@ -500,6 +580,20 @@ fn sampleTopDown(
     }
 }""".trimIndent())
 
+object GPUBufferUsage {
+  const val MAP_READ      = 0x0001
+  const val MAP_WRITE     = 0x0002
+  const val COPY_SRC      = 0x0004
+  const val COPY_DST      = 0x0008
+  const val INDEX         = 0x0010
+  const val VERTEX        = 0x0020
+  const val UNIFORM       = 0x0040
+  const val STORAGE       = 0x0080
+  const val INDIRECT      = 0x0100
+  const val QUERY_RESOLVE = 0x0200
+  const val STCPSD = STORAGE or COPY_SRC or COPY_DST
+}
+
 class Shader(val src: String) {
   lateinit var name: String
   lateinit var pipeline: GPUComputePipeline
@@ -529,6 +623,17 @@ class Shader(val src: String) {
       return gpu.createBindGroup(GPUBindGroupDescriptor(layout = lay, entries = ent))
     }
 
+    /** Copies [count] 32-bit integers from this GPU buffer back to CPU as a List<Int>. */
+    suspend fun GPUBuffer.readInts(count: Int): IntArray {
+      val bytesNeeded = (count * 4)
+      val readDst = makeBuffer(bytesNeeded, GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
+      val cmd = gpu.createCommandEncoder()
+      cmd.copyBufferToBuffer(this, 0.0, readDst, 0.0, bytesNeeded.toDouble())
+      gpu.queue.submit(arrayOf(cmd.finish()))
+      (readDst.mapAsync(1) as Promise<*>).await()
+      return Int32Array(readDst.getMappedRange()).asList().toIntArray()
+    }
+
     fun IntArray.makeBuffer(usage: Int): GPUBuffer =
       Int32Array<ArrayBuffer>(size).apply { set(this@makeBuffer.toTypedArray(), 0) }
         .let { makeBuffer(sz = size * 4, us = usage, data = it) }
@@ -537,35 +642,165 @@ class Shader(val src: String) {
       gpu.createBuffer(GPUBufferDescriptor(size = sz.toDouble(), usage = us))
         .also { if (data != null) { gpu.queue.writeBuffer(it, 0.0, data) } }
 
-    object GPUBufferUsage {
-      const val MAP_READ      = 0x0001
-      const val MAP_WRITE     = 0x0002
-      const val COPY_SRC      = 0x0004
-      const val COPY_DST      = 0x0008
-      const val INDEX         = 0x0010
-      const val VERTEX        = 0x0020
-      const val UNIFORM       = 0x0040
-      const val STORAGE       = 0x0080
-      const val INDIRECT      = 0x0100
-      const val QUERY_RESOLVE = 0x0200
-      const val STCPSD = STORAGE or COPY_SRC or COPY_DST
+    suspend fun prefixSumGPU(inputBuf: GPUBuffer, length: Int): GPUBuffer {
+      // 1) Create a buffer for partial sums of each block, size = numGroups
+      val tpg = 1024
+      val numGroups = (length + tpg - 1) / tpg
+      val blkSumBuf = makeBuffer(numGroups * 4, GPUBufferUsage.STCPSD)
+
+      // 2) Uniform buffer with { N = length }
+      val uniBuf = makeBuffer(4, GPUBufferUsage.UNIFORM)
+      val intData = Int32Array<ArrayBuffer>(1)
+      intData[0] = length
+      gpu.queue.writeBuffer(uniBuf, 0.0, intData)
+
+      // -- Pass 1 --
+      runPrefixSumPass1(length, inputBuf, blkSumBuf, uniBuf)
+
+      // Wait + map partial sums to CPU
+      val partialSums = blkSumBuf.readInts(numGroups)
+      // Do an in-place scan on partialSums
+      for (i in 1 until numGroups) { partialSums[i] += partialSums[i - 1] }
+      // Write it back
+      gpu.queue.writeBuffer(blkSumBuf, 0.0, Int32Array<ArrayBuffer>(partialSums.toTypedArray()), 0.0)
+
+      runPrefixSumPass2(length, inputBuf, blkSumBuf, uniBuf)
+
+      return inputBuf
+    }
+
+    suspend fun runPrefixSumPass1(length: Int, vararg buffs: GPUBuffer) {
+      val cmd = gpu.createCommandEncoder()
+      val pass = cmd.beginComputePass()
+      pass.setPipeline(prefix_sum_p1.pipeline)
+      // @group(0) @binding(0) => outBuf
+      // @group(0) @binding(1) => blkSum
+      // @group(0) @binding(2) => prefixUni
+      pass.setBindGroup(0, bindBuffers(prefix_sum_p1.pipeline, *buffs))
+      val tpg = 1024
+      val numGroups = (length + tpg - 1) / tpg
+      pass.dispatchWorkgroups(numGroups) // 1D dispatch
+      pass.end()
+      gpu.queue.submit(arrayOf(cmd.finish()))
+    }
+
+    suspend fun runPrefixSumPass2(length: Int, vararg buffs: GPUBuffer) {
+      val cmd = gpu.createCommandEncoder()
+      val pass = cmd.beginComputePass()
+      pass.setPipeline(prefix_sum_p2.pipeline)
+      pass.setBindGroup(0, bindBuffers(prefix_sum_p2.pipeline, *buffs))
+      val tpg = 1024
+      val numGroups = (length + tpg - 1) / tpg
+      pass.dispatchWorkgroups(numGroups)
+      pass.end()
+      gpu.queue.submit(arrayOf(cmd.finish()))
+    }
+
+    suspend fun buildBackpointers(numStates: Int, numNonterminals: Int, dpIn: GPUBuffer, metaBuf: GPUBuffer): Triple<GPUBuffer, GPUBuffer, GPUBuffer> {
+      // totalCells = N*N*NT
+      val totalCells = numStates * numStates * numNonterminals
+
+      // 1) Allocate bpCount of size = totalCells * 4 bytes
+      val bpCountBuf = makeBuffer(totalCells * 4, GPUBufferUsage.STCPSD)
+
+      // 2) Run the bp_count kernel
+      runBpCountKernel(numStates, numNonterminals, dpIn, bpCountBuf, metaBuf)
+
+      // 3) Build the prefix sum array (bpOffsetBuf)
+      val bpOffsetBuf = prefixSumGPU(bpCountBuf, totalCells)
+
+      // 4) Read the last offset + last count to find how many expansions total
+      //    We read two final integers:
+      //       offsetVal = bpOffsetBuf[totalCells - 1]
+      //       countVal  = bpCountBuf [totalCells - 1]
+      val lastIdx = totalCells - 1
+      val readCmd = gpu.createCommandEncoder()
+      val readLen = 2 * 4 // 2 integers
+      val readBack = makeBuffer(readLen, GPUBufferUsage.MAP_READ or GPUBufferUsage.COPY_DST)
+      // copy last 8 bytes from each buffer into readBack
+      readCmd.copyBufferToBuffer(bpOffsetBuf, (lastIdx * 4).toDouble(), readBack, 0.0, 4.0)
+      readCmd.copyBufferToBuffer(bpCountBuf,  (lastIdx * 4).toDouble(), readBack, 4.0, 4.0)
+      gpu.queue.submit(arrayOf(readCmd.finish()))
+
+      (readBack.mapAsync(1) as Promise<*>).await()
+      val readArray = Int32Array(readBack.getMappedRange()) // 2 elements
+      val offsetVal = readArray[0]
+      val countVal  = readArray[1]
+      val totalExpansions = offsetVal + countVal
+
+      // 5) Allocate bpStorage, each expansion is 2 ints => need totalExpansions * 2 * 4 bytes
+      val expansionsBufSize = totalExpansions * 2 * 4
+      val bpStorageBuf = makeBuffer(expansionsBufSize, GPUBufferUsage.STCPSD)
+
+      // 6) Run bp_write
+      runBpWriteKernel(numStates, numNonterminals, dpIn, bpCountBuf, bpOffsetBuf, bpStorageBuf, metaBuf)
+
+      return Triple(bpCountBuf, bpOffsetBuf, bpStorageBuf)
+    }
+
+    /** Invokes the bp_count pipeline over (N, N, NT). */
+    suspend fun runBpCountKernel(numStates: Int, numNonterminals: Int, vararg buffs: GPUBuffer) {
+      val cmdEnc = gpu.createCommandEncoder()
+      val pass = cmdEnc.beginComputePass()
+      pass.setPipeline(bp_count.pipeline)
+      // We use exactly 3 bindings: dp_in (0), bp_count (1), cflStruct (2).
+      pass.setBindGroup(0, bindBuffers(bp_count.pipeline, *buffs))
+      pass.dispatchWorkgroups(numStates, numStates, numNonterminals)
+      pass.end()
+      gpu.queue.submit(arrayOf(cmdEnc.finish()))
+    }
+
+    /** Invokes the bp_write pipeline over (N, N, NT). */
+    suspend fun runBpWriteKernel(numStates: Int, numNonterminals: Int, vararg buffs: GPUBuffer) {
+      val cmdEnc = gpu.createCommandEncoder()
+      val pass = cmdEnc.beginComputePass()
+      pass.setPipeline(bp_write.pipeline)
+      pass.setBindGroup(0, bindBuffers(bp_write.pipeline, *buffs))
+      pass.dispatchWorkgroups(numStates, numStates, numNonterminals)
+      pass.end()
+      gpu.queue.submit(arrayOf(cmdEnc.finish()))
+    }
+
+    /**
+     * Dispatches the `sample_words` shader over [numSamples] threads in 1D, with
+     * a workgroup size of 64. The kernel stores each sampled word into [outBuf].
+     *
+     * Inputs:
+     *   - dpIn         : GPUBuffer containing parse chart (dp_in)
+     *   - bpCount      : GPUBuffer for the “bp_count” array
+     *   - bpOffset     : GPUBuffer with prefix-summed offsets
+     *   - bpStorage    : GPUBuffer with all expansions (2 ints per record)
+     *   - startIndices : GPUBuffer listing valid dpIndices from which we can sample
+     *   - seeds        : GPUBuffer with one 32-bit RNG seed per thread
+     *   - outBuf       : GPUBuffer in which we store the final words
+     *   - uniformsBuf  : Uniform buffer with { numStartIndices, numStates, maxWordLen }
+     *   - numSamples   : number of random samples to generate
+     */
+    suspend fun runSampleWordsKernel(vararg buffs: GPUBuffer, numSamples: Int) {
+      // Compute how many workgroups in X dimension we need.
+      // Our kernel is @compute @workgroup_size(64), so each group handles 64 threads in X.
+      val workgroupSize = 64
+      val groupCountX   = (numSamples + workgroupSize - 1) / workgroupSize
+
+      // Create command encoder, begin compute pass
+      val cmdEnc = gpu.createCommandEncoder()
+      val pass = cmdEnc.beginComputePass()
+      pass.setPipeline(sample_words.pipeline)
+
+      // We have 8 bindings, in the same order declared by @binding(...)
+      pass.setBindGroup(0, bindBuffers(sample_words.pipeline, *buffs))
+
+      // Dispatch for (numSamples) threads along X
+      pass.dispatchWorkgroups(groupCountX /* x */, 1 /* y */, 1 /* z */)
+
+      pass.end()
+      gpu.queue.submit(arrayOf(cmdEnc.finish()))
     }
   }
 
   suspend fun bind() { pipeline = makePipeline(src) }
 
   operator fun getValue(tr: Any?, property: KProperty<*>): Shader = this.also { name = property.name }
-
-  /** Copies [count] 32-bit integers from this GPU buffer back to CPU as a List<Int>. */
-  suspend fun GPUBuffer.readInts(count: Int): IntArray {
-    val bytesNeeded = (count * 4)
-    val readDst = makeBuffer(bytesNeeded, GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
-    val cmd = gpu.createCommandEncoder()
-    cmd.copyBufferToBuffer(this, 0.0, readDst, 0.0, bytesNeeded.toDouble())
-    gpu.queue.submit(arrayOf(cmd.finish()))
-    (readDst.mapAsync(1) as Promise<*>).await()
-    return Int32Array(readDst.getMappedRange()).asList().toIntArray()
-  }
 
   // Invocation strategies: eliminates some of the ceremony of calling a GSL shader
   suspend fun invokeCFLFixpoint(vararg inputs: IntArray): IntArray {
@@ -648,161 +883,6 @@ class Shader(val src: String) {
     }
 
     return readFrom.readInts(readFrom.size.toInt())
-  }
-
-  suspend fun prefixSumGPU(inputBuf: GPUBuffer, length: Int): GPUBuffer {
-    // 1) Create a buffer for partial sums of each block, size = numGroups
-    val tpg = 1024
-    val numGroups = (length + tpg - 1) / tpg
-    val blkSumBuf = makeBuffer(numGroups * 4, GPUBufferUsage.STCPSD)
-
-    // 2) Uniform buffer with { N = length }
-    val uniBuf = makeBuffer(4, GPUBufferUsage.UNIFORM)
-    val intData = Int32Array<ArrayBuffer>(1)
-    intData[0] = length
-    gpu.queue.writeBuffer(uniBuf, 0.0, intData)
-
-    // -- Pass 1 --
-    runPrefixSumPass1(length, inputBuf, blkSumBuf, uniBuf)
-
-    // Wait + map partial sums to CPU
-    val partialSums = blkSumBuf.readInts(numGroups)
-    // Do an in-place scan on partialSums
-    for (i in 1 until numGroups) { partialSums[i] += partialSums[i - 1] }
-    // Write it back
-    gpu.queue.writeBuffer(blkSumBuf, 0.0, Int32Array<ArrayBuffer>(partialSums.toTypedArray()), 0.0)
-
-    runPrefixSumPass2(length, inputBuf, blkSumBuf, uniBuf)
-
-    return inputBuf
-  }
-
-  suspend fun runPrefixSumPass1(length: Int, vararg buffs: GPUBuffer) {
-    val cmd = gpu.createCommandEncoder()
-    val pass = cmd.beginComputePass()
-    pass.setPipeline(prefix_sum_p1.pipeline)
-    // @group(0) @binding(0) => outBuf
-    // @group(0) @binding(1) => blkSum
-    // @group(0) @binding(2) => prefixUni
-    pass.setBindGroup(0, bindBuffers(prefix_sum_p1.pipeline, *buffs))
-    val tpg = 1024
-    val numGroups = (length + tpg - 1) / tpg
-    pass.dispatchWorkgroups(numGroups) // 1D dispatch
-    pass.end()
-    gpu.queue.submit(arrayOf(cmd.finish()))
-  }
-
-  suspend fun runPrefixSumPass2(length: Int, vararg buffs: GPUBuffer) {
-    val cmd = gpu.createCommandEncoder()
-    val pass = cmd.beginComputePass()
-    pass.setPipeline(prefix_sum_p2.pipeline)
-    pass.setBindGroup(0, bindBuffers(prefix_sum_p2.pipeline, *buffs))
-    val tpg = 1024
-    val numGroups = (length + tpg - 1) / tpg
-    pass.dispatchWorkgroups(numGroups)
-    pass.end()
-    gpu.queue.submit(arrayOf(cmd.finish()))
-  }
-
-  suspend fun buildBackpointers(numStates: Int, numNonterminals: Int, dpIn: GPUBuffer, metaBuf: GPUBuffer): Triple<GPUBuffer, GPUBuffer, GPUBuffer> {
-    // totalCells = N*N*NT
-    val totalCells = numStates * numStates * numNonterminals
-
-    // 1) Allocate bpCount of size = totalCells * 4 bytes
-    val bpCountBuf = makeBuffer(totalCells * 4, GPUBufferUsage.STCPSD)
-
-    // 2) Run the bp_count kernel
-    runBpCountKernel(numStates, numNonterminals, dpIn, bpCountBuf, metaBuf)
-
-    // 3) Build the prefix sum array (bpOffsetBuf)
-    val bpOffsetBuf = prefixSumGPU(bpCountBuf, totalCells)
-
-    // 4) Read the last offset + last count to find how many expansions total
-    //    We read two final integers:
-    //       offsetVal = bpOffsetBuf[totalCells - 1]
-    //       countVal  = bpCountBuf [totalCells - 1]
-    val lastIdx = totalCells - 1
-    val readCmd = gpu.createCommandEncoder()
-    val readLen = 2 * 4 // 2 integers
-    val readBack = makeBuffer(readLen, GPUBufferUsage.MAP_READ or GPUBufferUsage.COPY_DST)
-    // copy last 8 bytes from each buffer into readBack
-    readCmd.copyBufferToBuffer(bpOffsetBuf, (lastIdx * 4).toDouble(), readBack, 0.0, 4.0)
-    readCmd.copyBufferToBuffer(bpCountBuf,  (lastIdx * 4).toDouble(), readBack, 4.0, 4.0)
-    gpu.queue.submit(arrayOf(readCmd.finish()))
-
-    (readBack.mapAsync(1) as Promise<*>).await()
-    val readArray = Int32Array(readBack.getMappedRange()) // 2 elements
-    val offsetVal = readArray[0]
-    val countVal  = readArray[1]
-    val totalExpansions = offsetVal + countVal
-
-    // 5) Allocate bpStorage, each expansion is 2 ints => need totalExpansions * 2 * 4 bytes
-    val expansionsBufSize = totalExpansions * 2 * 4
-    val bpStorageBuf = makeBuffer(expansionsBufSize, GPUBufferUsage.STCPSD)
-
-    // 6) Run bp_write
-    runBpWriteKernel(numStates, numNonterminals, dpIn, bpCountBuf, bpOffsetBuf, bpStorageBuf, metaBuf)
-
-    return Triple(bpCountBuf, bpOffsetBuf, bpStorageBuf)
-  }
-
-  /** Invokes the bp_count pipeline over (N, N, NT). */
-  suspend fun runBpCountKernel(numStates: Int, numNonterminals: Int, vararg buffs: GPUBuffer) {
-    val cmdEnc = gpu.createCommandEncoder()
-    val pass = cmdEnc.beginComputePass()
-    pass.setPipeline(bp_count.pipeline)
-    // We use exactly 3 bindings: dp_in (0), bp_count (1), cflStruct (2).
-    pass.setBindGroup(0, bindBuffers(bp_count.pipeline, *buffs))
-    pass.dispatchWorkgroups(numStates, numStates, numNonterminals)
-    pass.end()
-    gpu.queue.submit(arrayOf(cmdEnc.finish()))
-  }
-
-  /** Invokes the bp_write pipeline over (N, N, NT). */
-  suspend fun runBpWriteKernel(numStates: Int, numNonterminals: Int, vararg buffs: GPUBuffer) {
-    val cmdEnc = gpu.createCommandEncoder()
-    val pass = cmdEnc.beginComputePass()
-    pass.setPipeline(bp_write.pipeline)
-    pass.setBindGroup(0, bindBuffers(bp_write.pipeline, *buffs))
-    pass.dispatchWorkgroups(numStates, numStates, numNonterminals)
-    pass.end()
-    gpu.queue.submit(arrayOf(cmdEnc.finish()))
-  }
-
-  /**
-   * Dispatches the `sample_words` shader over [numSamples] threads in 1D, with
-   * a workgroup size of 64. The kernel stores each sampled word into [outBuf].
-   *
-   * Inputs:
-   *   - dpIn         : GPUBuffer containing parse chart (dp_in)
-   *   - bpCount      : GPUBuffer for the “bp_count” array
-   *   - bpOffset     : GPUBuffer with prefix-summed offsets
-   *   - bpStorage    : GPUBuffer with all expansions (2 ints per record)
-   *   - startIndices : GPUBuffer listing valid dpIndices from which we can sample
-   *   - seeds        : GPUBuffer with one 32-bit RNG seed per thread
-   *   - outBuf       : GPUBuffer in which we store the final words
-   *   - uniformsBuf  : Uniform buffer with { numStartIndices, numStates, maxWordLen }
-   *   - numSamples   : number of random samples to generate
-   */
-  suspend fun runSampleWordsKernel(vararg buffs: GPUBuffer, numSamples: Int) {
-    // Compute how many workgroups in X dimension we need.
-    // Our kernel is @compute @workgroup_size(64), so each group handles 64 threads in X.
-    val workgroupSize = 64
-    val groupCountX   = (numSamples + workgroupSize - 1) / workgroupSize
-
-    // Create command encoder, begin compute pass
-    val cmdEnc = gpu.createCommandEncoder()
-    val pass = cmdEnc.beginComputePass()
-    pass.setPipeline(sample_words.pipeline)
-
-    // We have 8 bindings, in the same order declared by @binding(...)
-    pass.setBindGroup(0, bindBuffers(sample_words.pipeline, *buffs))
-
-    // Dispatch for (numSamples) threads along X
-    pass.dispatchWorkgroups(groupCountX /* x */, 1 /* y */, 1 /* z */)
-
-    pass.end()
-    gpu.queue.submit(arrayOf(cmdEnc.finish()))
   }
 }
 
