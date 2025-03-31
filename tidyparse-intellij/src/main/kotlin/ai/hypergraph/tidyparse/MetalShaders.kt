@@ -501,6 +501,7 @@ private func iterateFixpoint(
        }
 
        let currentValue = numNonzero.contents().bindMemory(to: UInt32.self, capacity: 1).pointee
+       print("Fixpoint changes at round: \(r)/\(numStates), total=\(currentValue), size: \(dpSizeBytes)"); fflush(stdout)
        if (currentValue == prevValue) {
           print("Fixpoint escape at round: \(r)/\(numStates), total=\(currentValue), size: \(dpSizeBytes)"); fflush(stdout)
           break
