@@ -82,7 +82,7 @@ fun main() {
     val maxSamples = 1_000
 
     val samples = GPUBridge.repairPipeline(
-      levFSA.byteFormat(cfg),
+      levFSA.byteFormat(cfg).also { println("Initial nonzeros: ${it.size / 4}") },
       allFSAPairsFlattened, allFSAPairsOffsets,
       levFSA.finalIdxs.toIntArray(), levFSA.finalIdxs.size,
       numStates, maxWordLen, maxSamples
@@ -157,10 +157,11 @@ kernel void cfl_mul_upper(
 ) {
     PREAMBLE(tid, numStates, r, c, A, dpIdx, snt, startGC, endGC, aoi, pairOffset, pairOffsetNext)
 
-    if (dp_in[dpIdx]) {
-      dp_out[dpIdx] = dp_in[dpIdx];
+    int dpVal = dp_in[dpIdx];
+    if (dpVal) {
+      dp_out[dpIdx] = dpVal;
       atomic_fetch_add_explicit(&numNonzero, 1, memory_order_relaxed);
-      if (dp_in[dpIdx] & 0x01) return; // The last bit will represent a nonterminal
+      if (dpVal & 0x01) return; // The last bit will represent a nonterminal
     }
 
     for (int pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx++)
@@ -212,10 +213,9 @@ kernel void bp_write(
         constant  int&     numStates              [[buffer(3)]],
         constant  int&     allFSAPairsSize        [[buffer(4)]],
         constant  int&     allFSAPairsOffsetsSize [[buffer(5)]],
-  const   device  int*     bpCount                [[buffer(6)]],
-  const   device  int*     bpOffset               [[buffer(7)]],
+  const   device  int*     bpOffset               [[buffer(6)]],
   // Suppose each entry in bpStorage is 2 x int.
-  device          int*     bpStorage              [[buffer(8)]],
+  device          int*     bpStorage              [[buffer(7)]],
                   uint     tid                    [[thread_position_in_grid]]
 ) {
     PREAMBLE(tid, numStates, r, c, A, dpIdx, snt, startGC, endGC, aoi, pairOffset, pairOffsetNext)
@@ -256,7 +256,7 @@ inline void sampleTopDown(
     
     // While frames left to process, and haven't overflowed localWord
     for (int iter = 0; iter < maxWordLen * 98 && top > 0 && wordLen < maxWordLen - 5; iter++) {
-      int dpIdx = abs(stack[--top]);
+      int dpIdx = stack[--top];
       int expCount = bpCount[dpIdx];
       
          // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
@@ -646,9 +646,8 @@ private func buildBackpointers(
       enc.setBytes(&N,                  length: stride, index: 3)
       enc.setBytes(&ap,                 length: stride, index: 4)
       enc.setBytes(&ao,                 length: stride, index: 5)
-      enc.setBuffer(bpCountBuf,         offset: 0,      index: 6)
-      enc.setBuffer(bpOffsetBuf,        offset: 0,      index: 7)
-      enc.setBuffer(bpStorageBuf,       offset: 0,      index: 8)
+      enc.setBuffer(bpOffsetBuf,        offset: 0,      index: 6)
+      enc.setBuffer(bpStorageBuf,       offset: 0,      index: 7)
     }
 
     let ms = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000
