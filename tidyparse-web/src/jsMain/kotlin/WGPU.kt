@@ -16,7 +16,6 @@ import org.w3c.dom.HTMLDivElement
 import web.events.*
 import web.gpu.*
 import web.performance.performance
-import kotlin.apply
 import kotlin.js.Promise
 import kotlin.math.sqrt
 import kotlin.random.Random
@@ -30,13 +29,8 @@ external val navigator: dynamic
 fun tryBootstrapingGPU() = MainScope().async {
   checkWebGPUAvailability()
   if (gpuAvailable) {
-    WGSL_GEMX_ITERATE.bind()
-    cfl_mul_upper.bind()
-    prefix_sum_p1.bind()
-    prefix_sum_p2.bind()
-    bp_count.bind()
-    bp_write.bind()
-//    sample_words.bind()
+    listOf(WGSL_GEMX_ITERATE, cfl_mul_upper, prefix_sum_p1, prefix_sum_p2,
+      bp_count, bp_write, sample_words).forEach { it.bind() }
     benchmarkWGPURepair()
     benchmarkWGPU()
   }
@@ -114,7 +108,7 @@ suspend fun benchmarkWGPURepair() {
     cfg.vindex.map { it.size }.fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
   )
 
-  val dpIn = levFSA.byteFormat(cfg).let { dpi -> IntArray(dpi.size) { dpi[it].toInt() } }
+  val dpIn = levFSA.byteFormat(cfg)
   println("Initial nonzeros: ${dpIn.count { it != 0 }}")
 
   println("Preprocessing took ${t0.elapsedNow()}")
@@ -149,34 +143,31 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpIn: IntArray, metadata: IntArra
   val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNonterminals, dpBuf, metaBuf)
 
   // Create a GPU buffer with these valid start indices
-  val startIndicesBuf = startIdxs.toIntArray().makeBuffer(GPUBufferUsage.STCPSD)
+  val startIndicesBuf = startIdxs.toIntArray()
   val numStartIndices = startIdxs.size
 
   val maxSamples = 1000
-  val maxWordLen = 30 // or pythonCode.size + radius + 10, etc.
+  val maxWordLen = 30
 
-  val seeds = IntArray(maxSamples) { Random.nextInt() }
-  val seedsBuf = seeds.makeBuffer(GPUBufferUsage.STCPSD)
-
-  val outBufSize = maxSamples * maxWordLen * 4
-  val outBuf = Shader.makeBuffer(outBufSize, GPUBufferUsage.STCPSD)
-
-  val uniData = intArrayOf(numStartIndices, numStates, maxWordLen, numNonterminals)
-  val uniBuf  = uniData.makeBuffer(GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
+  val outBuf = makeBuffer(maxSamples * maxWordLen * 4, GPUBufferUsage.STCPSD)
+  val uniforms  = (intArrayOf(numStartIndices, numStates, maxWordLen, numNonterminals) + startIndicesBuf)
+    .makeBuffer(GPUBufferUsage.STCPSD)
 
   val terminalLists = cfg.nonterminals.map { cfg.bimap.UNITS[it]?.map { cfg.tmMap[it]!! } ?: emptyList() }
-  val all_tm = terminalLists.flatMap { it }.toIntArray().makeBuffer(GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
-  val nt_tm_offsets = terminalLists.scan(0) { acc, list -> acc + list.size }.dropLast(1).toIntArray().makeBuffer(GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
-  val nt_tm_lens = terminalLists.map { it.size }.toIntArray().makeBuffer(GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
+  val all_tm = terminalLists.flatMap { it }.toIntArray()
+  val nt_tm_offsets = terminalLists.scan(0) { acc, list -> acc + list.size }.dropLast(1).toIntArray()
+  val nt_tm_lens = terminalLists.map { it.size }.toIntArray()
 
-  Shader.runSampleWordsKernel(
-    dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf,
-    startIndicesBuf, seedsBuf, outBuf, uniBuf,
-    all_tm, nt_tm_offsets, nt_tm_lens,
-    numSamples = maxSamples
+  val terminals = packStruct(emptyList(), all_tm, nt_tm_offsets, nt_tm_lens)
+    .makeBuffer(GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
+
+  println("Invoking sampler...")
+  val rawTokens = sample_words.invoke(
+    dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, uniforms, terminals,
+    readFrom = outBuf, threads = (maxSamples + 64 - 1) / 64
   )
 
-  val rawTokens = outBuf.readInts(maxSamples * maxWordLen)
+  println("Sum: ${rawTokens.sum()}")
 
   val wordsPerSample = mutableListOf<List<String>>()
   var offset = 0
@@ -185,7 +176,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpIn: IntArray, metadata: IntArra
     val row = rawTokens.slice(offset until offset + maxWordLen)
     offset += maxWordLen
 
-    val tokens = row.map { it and 0xFF }  // keep just the low byte
+    val tokens = row.map { it and 0xFF }
 
     val slices = mutableListOf<List<Int>>()
     var current = mutableListOf<Int>()
@@ -202,7 +193,6 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpIn: IntArray, metadata: IntArra
     if (current.isNotEmpty()) { slices.add(current) }
 
     val sampleWords = slices.map { codeList -> codeList.joinToString("") { c -> c.toChar().toString() } }
-
     if (sampleWords.isNotEmpty()) { wordsPerSample.add(sampleWords) }
   }
 
@@ -292,7 +282,6 @@ val bp_count by Shader(CFL_STRUCT + """
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     $PREAMBLE
     
-    // If dp_in[dpIdx] does NOT have bit 0 set, then bp_count = 0
     if ((dp_in[dpIdx] & 0x01u) == 0u) { bp_count[dpIdx] = 0; return; }
     
     var count = 0u;
@@ -436,41 +425,30 @@ fn main(
 
 //language=wgsl
 val sample_words by Shader("""
-struct Uniforms {
-    numStartIndices : u32,
-    numStates       : u32,
-    maxWordLen      : u32,
-    numNonterminals : u32
-};
-
 @group(0) @binding(0) var<storage, read>              dp_in : array<u32>;
 @group(0) @binding(1) var<storage, read>           bp_count : array<u32>;
 @group(0) @binding(2) var<storage, read>          bp_offset : array<u32>;
 @group(0) @binding(3) var<storage, read>         bp_storage : array<u32>;
-@group(0) @binding(4) var<storage, read>       startIndices : array<u32>;
-@group(0) @binding(5) var<storage, read>              seeds : array<u32>;
-@group(0) @binding(6) var<storage, read_write> sampledWords : array<u32>;
-@group(0) @binding(7) var<storage, read>           uniforms : Uniforms;
-@group(0) @binding(8) var<storage, read>         nt_tm_lens : array<u32>;
-@group(0) @binding(9) var<storage, read>            offsets : array<u32>;
-@group(0) @binding(10) var<storage, read>            all_tm : array<u32>;
-
+@group(0) @binding(4) var<storage, read_write> sampledWords : array<u32>;
+@group(0) @binding(5) var<storage, read>           uniforms : Uniforms;
+@group(0) @binding(6) var<storage, read>          terminals : Terminals;
+  
 @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let tid = gid.x;
 
     if (tid >= uniforms.numStartIndices) { return; }
 
     var localWord: array<u32, 1024>;
-    for (var i = 0; i < uniforms.maxWordLen; i++) { localWord[i] = 0u; }
+    for (var i = 0u; i < uniforms.maxWordLen; i++) { localWord[i] = 0u; }
+    let q = terminals.offsets_size;
 
-    var rngState = seeds[tid];
+    var rngState = tid;
 
-    // Use direct uniform access for range calculation
-    let rIndex   = lcg_randomRange(&rngState, uniforms.numStartIndices);
-    let dpIndex  = startIndices[rIndex]; // rIndex is already u32
+    let rIndex    = lcg_randomRange(&rngState, uniforms.numStartIndices);
+    let dpIndex   = uniforms.startIndices[rIndex];
 
     let nnt       = uniforms.numNonterminals;
-    let numStates = uniforms.numStates; // Use uniform directly
+    let numStates = uniforms.numStates;
     let A         = dpIndex % nnt;
     let rowCol    = dpIndex / nnt;
     let c         = rowCol % numStates;
@@ -478,29 +456,35 @@ struct Uniforms {
     let snt       = numStates * nnt;
     let startIdx  = r * snt + c * nnt + A;
 
-    // Call with addresses of storage buffers and the localWord pointer
-    sampleTopDown(
-        &dp_in,
-        &bp_count,
-        &bp_offset,
-        &bp_storage,
-        &nt_tm_lens,
-        &offsets,
-        &all_tm,
-        startIdx,
-        &rngState,
-        &localWord,
-        uniforms.maxWordLen
-    );
+    sampleTopDown(&dp_in, &bp_count, &bp_offset, &bp_storage, startIdx, &rngState, &localWord, uniforms.maxWordLen, nnt);
 
-    let baseIndex = tid * uniforms.maxWordLen; // Calculate base index once
+    let baseIndex = tid * uniforms.maxWordLen;
     for (var i = 0u; i < uniforms.maxWordLen; i = i + 1u) {
-        if (i >= 1024u) { break; } // Prevent reading out-of-bounds from localWord
+        if (i >= 1024u) { break; }
         sampledWords[u32(tid) * u32(uniforms.maxWordLen) + u32(i)] = u32(localWord[i] & 0x00FFu);
     }
 }
 
-// Helper random functions remain the same
+struct Uniforms {
+    numStartIndices : u32,
+    numStates       : u32,
+    maxWordLen      : u32,
+    numNonterminals : u32,
+    startIndices    : array<u32>
+};
+
+fn get_nt_tm_lens(index: u32) -> u32 { return u32(terminals.payload[terminals.nt_tm_lens_offset + index]); }
+fn get_offsets(index: u32) -> u32 { return u32(terminals.payload[terminals.offsets_offset + index]); }
+fn get_all_tms(index: u32) -> u32 { return u32(terminals.payload[terminals.all_tms_offset + index]); }
+
+struct Terminals {
+    nt_tm_lens_offset : u32,    nt_tm_lens_size : u32,
+       offsets_offset : u32,       offsets_size : u32,
+       all_tms_offset : u32,       all_tms_size : u32,
+       
+       payload : array<u32>
+}
+
 fn lcg_random(stateRef: ptr<function, u32>) -> u32 {
     let newVal = (1664525u * (*stateRef)) + 1013904223u;
     *stateRef = newVal;
@@ -517,59 +501,39 @@ fn sampleTopDown(
     bp_count_ptr    : ptr<storage, array<u32>, read>,
     bp_offset_ptr   : ptr<storage, array<u32>, read>,
     bp_storage_ptr  : ptr<storage, array<u32>, read>,
-    nt_tm_lens_ptr  : ptr<storage, array<u32>, read>,
-    offsets_ptr     : ptr<storage, array<u32>, read>,
-    all_tm_ptr      : ptr<storage, array<u32>, read>,
     startDPIdx      : u32,
     rngStateRef     : ptr<function, u32>,
     localWord       : ptr<function, array<u32, 1024>>,
-    maxWordLen      : u32
+    maxWordLen      : u32,
+    nnt             : u32
 ) {
-    // Access storage buffer elements via the pointers.
-    // WGSL allows direct indexing on pointers to arrays: ptr[index] is valid.
-    // No need for explicit dereference like (*ptr)[index]
+    var stack: array<u32, 1024>;
+    var top     = 0;
+    var wordLen = 0u;
 
-    var stack: array<u32, 1024>; // Fixed-size array, OK in <function> space
-    var top     = 0; // Use signed int for top? Or check top > 0 before decrement
-    var wordLen = 0u; // Use u32 for consistency
+    if (top < 1024) { stack[top] = startDPIdx; top++; }
 
-    // Check bounds before initial push
-    if (top < 1024) {
-        stack[top] = startDPIdx;
-        top++;
-    }
-
-    // Access uniforms directly as they are global
-    let nnt = uniforms.numNonterminals;
-
-    // main loop
-    var iter = 0u; // Use u32
-    loop {
-        // Combine break conditions for clarity
+    var iter = 0u; loop {
         if (top <= 0 || wordLen >= maxWordLen || iter >= (maxWordLen * 98u)) { break; }
-        iter++;
-
-        top = top - 1; // Now safe due to check above
-        let dpIdx = stack[top]; // No abs needed if only pushing u32 indices?
+        iter++; top--;
+        let dpIdx = stack[top];
 
         let expCount = bp_count_ptr[dpIdx];
         let predicate = dp_in_ptr[dpIdx];
         let canRecurse = (predicate & 0x01u) != 0u;
         let hasLiteral = (predicate >> 1u) != 0u;
 
-        let rVal = lcg_randomRange(rngStateRef, expCount); // No need for u32() cast
+        let rVal = lcg_randomRange(rngStateRef, expCount);
 
         if (hasLiteral && (!canRecurse || ((rVal % 2u) == 0u))) {
-            // treat as leaf/terminal
             let nonterminal = dpIdx % nnt;
-            let isNegative  = (predicate & 0x8000u) != 0u; // Check high bit for negativity
-            let literal     = (predicate >> 1u) & 0x7FFFu; // Mask after shift
+            let isNegative  = (predicate & 0x8000u) != 0u;
+            let literal     = (predicate >> 1u) & 0x7FFFu;
 
-            // Bounds check for nonterminal access
-            if (nonterminal >= uniforms.numNonterminals /* or arrayLength(nt_tm_lens_ptr) */) { continue; }
+            if (nonterminal >= nnt) { continue; }
 
-            let numTms   = nt_tm_lens_ptr[nonterminal];
-            let ntOffset = offsets_ptr[nonterminal];
+            let numTms   = get_nt_tm_lens(nonterminal);
+            let ntOffset = get_offsets(nonterminal);
 
             if (isNegative) {
                 // choose from among all possible except “literal - 1”
@@ -582,7 +546,7 @@ fn sampleTopDown(
 
                     if (i != (literal - 1u)) { // Check if literal > 0?
                         if (tmCount < 100u) { // Bounds check for possibleTms
-                            possibleTms[tmCount] = all_tm_ptr[tmIndex];
+                            possibleTms[tmCount] = get_all_tms(tmIndex);
                             tmCount++;
                         } else { break; } // Stop if possibleTms is full
                     }
@@ -597,7 +561,6 @@ fn sampleTopDown(
                        wordLen++;
                     } else { break; } // Stop if localWord is full
                 } // else: what happens if tmCount is 0? Word remains unchanged?
-
             } else {
                 // positive literal
                 if (numTms != 0u && literal > 0u) { // Ensure literal is valid index (1-based)
@@ -605,7 +568,7 @@ fn sampleTopDown(
                     // Bounds checks
                     // if (tmIndex >= arrayLength(all_tm_ptr)) { continue; }
                     if (wordLen < 1024u) {
-                        let tmVal = all_tm_ptr[tmIndex];
+                        let tmVal = get_all_tms(tmIndex);
                         (*localWord)[wordLen] = tmVal + 1u;
                         wordLen++;
                     } else { break; } // Stop if localWord is full
@@ -663,15 +626,17 @@ class Shader(val src: String) {
 
   companion object {
     private suspend fun makePipeline(wgsl: String, entryPoint: String = "main"): GPUComputePipeline =
-      gpu.createComputePipelineAsync(
-        GPUComputePipelineDescriptor(
-          layout = "auto",
-          compute = GPUProgrammableStage(
-            module = gpu.createShaderModule(GPUShaderModuleDescriptor(code = wgsl)),
-            entryPoint = entryPoint
+      try {
+        gpu.createComputePipelineAsync(
+          GPUComputePipelineDescriptor(
+            layout = "auto",
+            compute = GPUProgrammableStage(
+              module = gpu.createShaderModule(GPUShaderModuleDescriptor(code = wgsl)),
+              entryPoint = entryPoint
+            )
           )
-        )
-      ).await()
+        ).await()
+      } catch (e: Throwable) { e.printStackTrace(); throw e }
 
     fun bindBuffers(pipeline: GPUComputePipeline, vararg buffers: GPUBuffer): GPUBindGroup {
       val lay = pipeline.getBindGroupLayout(0)
@@ -686,15 +651,13 @@ class Shader(val src: String) {
       return gpu.createBindGroup(GPUBindGroupDescriptor(layout = lay, entries = ent))
     }
 
-    /** Copies [count] 32-bit integers from this GPU buffer back to CPU as a List<Int>. */
-    suspend fun GPUBuffer.readInts(count: Int): IntArray {
-      val bytesNeeded = (count * 4)
-      val readDst = makeBuffer(bytesNeeded, GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
+    suspend fun GPUBuffer.readInts(): IntArray {
+      val readDst = makeBuffer(size.toInt(), GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
       val cmd = gpu.createCommandEncoder()
-      cmd.copyBufferToBuffer(this, 0.0, readDst, 0.0, bytesNeeded.toDouble())
+      cmd.copyBufferToBuffer(this, 0.0, readDst, 0.0, size)
       gpu.queue.submit(arrayOf(cmd.finish()))
       (readDst.mapAsync(1) as Promise<*>).await()
-      return Int32Array(readDst.getMappedRange()).asList().toIntArray()
+      return Int32Array(readDst.getMappedRange()).asList().toIntArray().also { readDst.unmap() }
     }
 
     fun IntArray.makeBuffer(usage: Int): GPUBuffer =
@@ -709,18 +672,14 @@ class Shader(val src: String) {
     const val PREFIX_SUM_WORKGROUP_SIZE = 256
 
     suspend fun prefixSumGPU(inputBuf: GPUBuffer, length: Int): GPUBuffer {
-      println("Starting prefix sum (Revised Kernels)...")
       val tpg = PREFIX_SUM_WORKGROUP_SIZE
-      // Ensure integer division rounds up
       val numGroups = (length + tpg - 1) / tpg
-      println("Prefix Sum: Length=$length, WorkgroupSize=$tpg, NumGroups=$numGroups")
 
       val outputBuf = makeBuffer(inputBuf.size.toInt(), GPUBufferUsage.STCPSD)
       val blockSumsBuf = makeBuffer(numGroups * 4, GPUBufferUsage.STCPSD)
       val scannedBlockSumsBuf = makeBuffer(numGroups * 4, GPUBufferUsage.STCPSD) // For exclusive scan results
       val uniBuf = makeBuffer(4, GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
 
-      // 2. Prepare Uniform Buffer
       val uniIntData = Int32Array<ArrayBuffer>(1)
       uniIntData[0] = length
       gpu.queue.writeBuffer(uniBuf, 0.0, uniIntData)
@@ -728,61 +687,42 @@ class Shader(val src: String) {
       fun Shader.invoke(numGroups: Int, vararg buffs: GPUBuffer) {
         val cmdEncoder = gpu.createCommandEncoder()
         val passEncoder = cmdEncoder.beginComputePass()
-        passEncoder.setPipeline(pipeline) // Use the REVISED kernel pipeline
-        // Bind resources according to @binding declarations in prefix_sum_p1_scan
+        passEncoder.setPipeline(pipeline)
         passEncoder.setBindGroup(0, bindBuffers(pipeline, *buffs))
-        passEncoder.dispatchWorkgroups(numGroups) // Dispatch workgroups
+        passEncoder.dispatchWorkgroups(numGroups)
         passEncoder.end()
         gpu.queue.submit(arrayOf(cmdEncoder.finish()))
       }
 
-      // --- Pass 1: Intra-workgroup scan & Calculate Block Sums ---
-      println("Running Prefix Sum Pass 1 (Scan within blocks)...")
       prefix_sum_p1.invoke(numGroups = numGroups, inputBuf, outputBuf, blockSumsBuf, uniBuf)
 
-      // --- CPU Scan of Block Sums ---
-      println("Reading block sums back to CPU...")
-      // This await IS crucial to ensure Pass 1 completes before CPU processes its results
-      val blockSumsCPU = blockSumsBuf.readInts(numGroups)
+      val blockSumsCPU = blockSumsBuf.readInts()
 
-      println("Performing exclusive scan on block sums on CPU...")
       val scannedBlockSumsCPU = IntArray(numGroups)
-      var accumulatedSum = 0L // Use Long to avoid potential overflow during accumulation
+      var accumulatedSum = 0L
       for (i in 0 until numGroups) {
-        // Exclusive scan: store the sum *before* adding the current element
         scannedBlockSumsCPU[i] = accumulatedSum.toInt()
-        accumulatedSum += blockSumsCPU[i].toUInt().toLong() // Treat block sums as unsigned if necessary, accumulate as Long
+        accumulatedSum += blockSumsCPU[i].toUInt().toLong()
       }
 
-      println("Writing scanned block sums back to GPU...")
-      // Write the correctly scanned (exclusive) sums back to the dedicated buffer
       val scannedSumsData = Int32Array<ArrayBuffer>(scannedBlockSumsCPU.toTypedArray())
       gpu.queue.writeBuffer(scannedBlockSumsBuf, 0.0, scannedSumsData)
 
-      // --- Pass 2: Add Scanned Block Sums ---
-      println("Running Prefix Sum Pass 2 (Add block offsets)...")
       prefix_sum_p2.invoke(numGroups = numGroups, outputBuf, scannedBlockSumsBuf, uniBuf)
 
-      println("Prefix sum finished.")
-      // The final result is now in outputBuf
       return outputBuf
     }
 
     suspend fun buildBackpointers(numStates: Int, numNonterminals: Int, dpIn: GPUBuffer, metaBuf: GPUBuffer): Triple<GPUBuffer, GPUBuffer, GPUBuffer> {
       val totalCells = numStates * numStates * numNonterminals
 
-      // 1) Allocate bpCount of size = totalCells * 4 bytes
       val bpCountBuf = makeBuffer(totalCells * 4, GPUBufferUsage.STCPSD)
 
       println("Total cells: $totalCells = $numStates^2 * $numNonterminals")
-      // 2) Run the bp_count kernel
       bp_count.invoke3d(numStates, numNonterminals, dpIn, bpCountBuf, metaBuf)
 
-      // 3) Build the prefix sum array (bpOffsetBuf)
       val bpOffsetBuf = prefixSumGPU(bpCountBuf, totalCells)
-//      println(bpOffsetBuf.readInts(totalCells).takeLast(100))
 
-      // 4) Read the last offset + last count to find how many expansions total
       val lastIdx = totalCells - 1
       val readCmd = gpu.createCommandEncoder()
       val readLen = 2 * 4 // 2 integers
@@ -797,49 +737,17 @@ class Shader(val src: String) {
       val countVal  = readArray[1]
       val totalExpansions = offsetVal + countVal
 
-      // 5) Allocate bpStorage, each expansion is 2 ints => need totalExpansions * 2 * 4 bytes
       val expansionsBufSize = totalExpansions * 2 * 4
       val bpStorageBuf = makeBuffer(expansionsBufSize, GPUBufferUsage.STCPSD)
 
-      // 6) Run bp_write
       bp_write.invoke3d(numStates, numNonterminals, dpIn, bpOffsetBuf, bpStorageBuf, metaBuf)
       println("Writing expansions back to GPU...")
 
       return Triple(bpCountBuf, bpOffsetBuf, bpStorageBuf)
     }
-
-    /**
-     * Dispatches the `sample_words` shader over [numSamples] threads in 1D, with
-     * a workgroup size of 64. The kernel stores each sampled word into [outBuf].
-     *
-     * Inputs:
-     *   - dpIn         : GPUBuffer containing parse chart (dp_in)
-     *   - bpCount      : GPUBuffer for the “bp_count” array
-     *   - bpOffset     : GPUBuffer with prefix-summed offsets
-     *   - bpStorage    : GPUBuffer with all expansions (2 ints per record)
-     *   - startIndices : GPUBuffer listing valid dpIndices from which we can sample
-     *   - seeds        : GPUBuffer with one 32-bit RNG seed per thread
-     *   - outBuf       : GPUBuffer in which we store the final words
-     *   - uniformsBuf  : Uniform buffer with { numStartIndices, numStates, maxWordLen }
-     *   - numSamples   : number of random samples to generate
-     */
-    fun runSampleWordsKernel(vararg buffs: GPUBuffer, numSamples: Int) {
-      println("Sampling words...")
-      val workgroupSize = 64
-      val groupCountX   = (numSamples + workgroupSize - 1) / workgroupSize
-
-      // Create command encoder, begin compute pass
-      val cmdEnc = gpu.createCommandEncoder()
-      val pass = cmdEnc.beginComputePass()
-      pass.setPipeline(sample_words.pipeline)
-      pass.setBindGroup(0, bindBuffers(sample_words.pipeline, *buffs))
-      pass.dispatchWorkgroups(groupCountX /* x */, 1 /* y */, 1 /* z */)
-      pass.end()
-      gpu.queue.submit(arrayOf(cmdEnc.finish()))
-    }
   }
 
-  suspend fun bind() { try { pipeline = makePipeline(src) } catch (e:Exception) { e.printStackTrace(); throw e } }
+  suspend fun bind() { pipeline = makePipeline(src) }
 
   operator fun getValue(tr: Any?, property: KProperty<*>): Shader = this.also { name = property.name }
 
@@ -849,6 +757,7 @@ class Shader(val src: String) {
     require(inputs.size >= 2) { "Expected at least dpIn + metadata, got ${inputs.size} buffers." }
 
     val dpIn = inputs[0].makeBuffer(usage = GPUBufferUsage.STCPSD)
+    println("Time to load buffer: ${t0.elapsedNow()}")
 
     val metaBuf = inputs[1].makeBuffer(usage = GPUBufferUsage.STORAGE + GPUBufferUsage.COPY_DST)
     val (numStates, numNonterminals) = inputs[1]
@@ -859,24 +768,23 @@ class Shader(val src: String) {
     var prevValue = -1
     val maxRounds = numStates
 
-    println("Time to iter: ${t0.elapsedNow()}")
     repeat(maxRounds) { round ->
       gpu.queue.writeBuffer(changesBuf, 0.0, data = Int32Array<ArrayBuffer>(1).apply { set(arrayOf(0), 0) })
       val (inBuf, outBuf) = if (round % 2 == 0) dpIn to dpOut else dpOut to dpIn
 
       invoke3d(numStates, numNonterminals, inBuf, outBuf, metaBuf, changesBuf)
 
-      val changesThisRound = changesBuf.readInts(1)[0]
+      val changesThisRound = changesBuf.readInts()[0]
 
       if (changesThisRound == prevValue) {
         println("Fixpoint reached at round=$round")
-        return outBuf.readInts(dpIn.size.toInt() / 4)
+        return outBuf.readInts()
       }
       prevValue = changesThisRound
       println("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
     }
 
-    return (if (maxRounds % 2 == 0) dpIn else dpOut).readInts(dpIn.size.toInt() / 4)
+    return (if (maxRounds % 2 == 0) dpIn else dpOut).readInts()
   }
 
   fun invoke3d(t1: Int, t2: Int, vararg inputs: GPUBuffer) {
@@ -922,15 +830,15 @@ class Shader(val src: String) {
     gpu.createCommandEncoder().beginComputePass().apply {
       setPipeline(pipeline)
       setBindGroup(0, bindBuffers(pipeline, *inputs))
-      dispatchWorkgroups(threads, threads)
+      dispatchWorkgroups(threads, 1, 1)
       end()
     }
 
-    return readFrom.readInts(readFrom.size.toInt())
+    return readFrom.readInts()
   }
 }
 
-fun packStruct(constants: List<Int>, vararg arrays: IntArray): IntArray {
+fun packStruct(constants: List<Int> = emptyList(), vararg arrays: IntArray): IntArray {
   val offsets = arrays.scan(0) { acc, arr -> acc + arr.size }.dropLast(1)
 
   val header = buildList {

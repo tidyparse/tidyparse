@@ -293,18 +293,17 @@ kernel void sample_words(
   const device int*     bpOffset        [[buffer(2)]], // parse chart with offsets into bpStorage
   const device int*     bpStorage       [[buffer(3)]], // flat array without zeros
   const device int*     startIndices    [[buffer(4)]], // each entry is a dpIndex
-  const device uint*    seeds           [[buffer(5)]],
-        device char*    sampledWords    [[buffer(6)]],
-      constant int&     numStartIndices [[buffer(7)]],
-      constant int&     numStates       [[buffer(8)]],
-      constant int&     maxWordLen      [[buffer(9)]],
+        device char*    sampledWords    [[buffer(5)]],
+      constant int&     numStartIndices [[buffer(6)]],
+      constant int&     numStates       [[buffer(7)]],
+      constant int&     maxWordLen      [[buffer(8)]],
                uint     tid             [[thread_position_in_grid]]
 ) {
     thread ushort localWord[1024];
     for (int i=0; i<maxWordLen; i++) { localWord[i] = 0; }
 
     // pick a random dpIndex from [0..numStartIndices-1]
-    uint rngState = seeds[tid];
+    uint rngState = tid;
     int dpIndex = startIndices[lcg_randomRange(rngState, (uint)numStartIndices)];
 
     int A = dpIndex % numNonterminals; // This should always be 74=START
@@ -571,8 +570,6 @@ private func sampleWords(
     }
 
     let i32stride = MemoryLayout<UInt32>.stride
-    let seeds = (0..<maxSamples).map { _ in UInt32.random(in: .min ..< .max) }
-    let seedsBuf = device.makeBuffer(bytes: seeds, length: maxSamples * i32stride, options: [])!
     let startBuf = device.makeBuffer(bytes: startIdxs, length: startIdxs.count * i32stride, options: [])!
 
     // We'll store each sampled word in a row of length `maxWordLen`.
@@ -585,12 +582,11 @@ private func sampleWords(
         enc.setBuffer(bpOffset,    offset: 0, index: 2)
         enc.setBuffer(bpStorage,   offset: 0, index: 3)
         enc.setBuffer(startBuf,    offset: 0, index: 4)
-        enc.setBuffer(seedsBuf,    offset: 0, index: 5)
-        enc.setBuffer(outBuf,      offset: 0, index: 6)
+        enc.setBuffer(outBuf,      offset: 0, index: 5)
         var si = Int32(startIdxs.count), n = Int32(numStates), wl = Int32(maxWordLen)
-        enc.setBytes(&si,          length: 4, index: 7)
-        enc.setBytes(&n,           length: 4, index: 8)
-        enc.setBytes(&wl,          length: 4, index: 9)
+        enc.setBytes(&si,          length: 4, index: 6)
+        enc.setBytes(&n,           length: 4, index: 7)
+        enc.setBytes(&wl,          length: 4, index: 8)
     }
 
     let ms = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000
