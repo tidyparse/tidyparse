@@ -646,6 +646,12 @@ private func buildBackpointers(
       enc.setBuffer(bpStorageBuf,       offset: 0,      index: 7)
     }
 
+    let countPtr = UnsafeBufferPointer(start: bpCountBuf.contents().assumingMemoryBound(to: Int32.self), count: totalCells)
+    let bpCountSum = countPtr.reduce(0) { $0 + Int64($1) }
+    print("bpCountBuf: \(bpCountSum)")
+    print("bpOffsetBufSize: \(totalCells * 4)")
+    print("bpStorageBufSize: \(Int(totalExpansions) * 2)")
+
     let ms = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000
     print("Built backpointers in \(ms) ms"); fflush(stdout)
     return (bpCountBuf, bpOffsetBuf, bpStorageBuf)
