@@ -1,6 +1,8 @@
 @file:OptIn(ExperimentalUnsignedTypes::class)
 
 import Shader.Companion.GPUBuffer
+import Shader.Companion.readIndices
+import Shader.Companion.readInts
 import Shader.Companion.toGPUBuffer
 import Shader.Companion.toGPUBufferFast
 import ai.hypergraph.kaliningraph.automata.*
@@ -113,27 +115,34 @@ suspend fun benchmarkWGPURepair() {
   println("Received: ${words.size} words")
   words.take(10).map { println(it.joinToString(" ")) }
   println("Round trip repair: ${t0.elapsedNow()}")
+
+  val (valid, invalid) = words.map { it.joinToString(" ") }.distinct().shuffled().take(10)
+    .partition { it in cfg.language && levFSA.recognizes(it) }
+
+  println("\nValid samples:\n")
+  valid.take(10).forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
+  println("\nInvalid samples:\n")
+  invalid.take(10).forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
 }
 
 suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpIn: IntArray, metadata: IntArray): List<List<String>> {
   val (numStates, numNonterminals) = fsa.numStates to cfg.nonterminals.size
-  val dpComplete = cfl_mul_upper.invokeCFLFixpoint(numStates, numNonterminals, dpIn, metadata)
+  val dpBuf = cfl_mul_upper.invokeCFLFixpoint(numStates, numNonterminals, dpIn, metadata)
 
   val startNT     = cfg.bindex[START_SYMBOL]
   val finalStates = fsa.finalIdxs
-  val startIdxs   = finalStates.map { it * numNonterminals + startNT }.filter { dpComplete[it] != 0 }
+  val startIdxs   = finalStates.map { it * numNonterminals + startNT }
+    .let { it.zip(dpBuf.readIndices(it)) }.filter { (_, v) -> v != 0 }.map { it.first }
 
   if (!startIdxs.isEmpty()) { println("Valid parse found: dpComplete has ${startIdxs.size} start indices") }
   else { println("No valid parse found: dpComplete has no entries in final states!"); return emptyList() }
 
-  val t1 = TimeSource.Monotonic.markNow()
-  val dpBuf = dpComplete.toGPUBufferFast(GPUBufferUsage.STCPSD)
-  println("Time to copy back dpBuf: ${t1.elapsedNow()}")
   val t2 = TimeSource.Monotonic.markNow()
   val metaBuf = metadata.toGPUBuffer(GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
   println("Time to copy metadata: ${t2.elapsedNow()}")
 
-  val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNonterminals, dpBuf, metaBuf)
+  val (bpCountBuf, bpOffsetBuf, bpStorageBuf) =
+    Shader.buildBackpointers(numStates, numNonterminals, dpBuf, metaBuf)
   println("Built backpointers!")
 
 //  println("bpCountBuf: ${bpCountBuf.readInts().sum()}")
@@ -147,7 +156,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpIn: IntArray, metadata: IntArra
   val maxWordLen = fsa.width + 10
 
   val outBuf = GPUBuffer(maxSamples * maxWordLen * 4, GPUBufferUsage.STCPSD)
-  val uniforms  = (intArrayOf(numStartIndices, numStates, maxWordLen, numNonterminals) + startIndicesBuf)
+  val uniforms = (intArrayOf(numStartIndices, numStates, maxWordLen, numNonterminals) + startIndicesBuf)
     .toGPUBuffer(GPUBufferUsage.STCPSD)
 
   val terminalLists = cfg.nonterminals.map { cfg.bimap.UNITS[it]?.map { cfg.tmMap[it]!! } ?: emptyList() }
@@ -162,7 +171,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpIn: IntArray, metadata: IntArra
   val t3 = TimeSource.Monotonic.markNow()
   val rawTokens: IntArray = sample_words.invoke(
     dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, uniforms, terminals,
-    readFrom = outBuf, threads = (maxSamples + 64 - 1) / 64
+    readFrom = outBuf, threads = (maxSamples + 63) / 64
   )
   println("Sampled words in ${t3.elapsedNow()}")
 
@@ -696,6 +705,27 @@ class Shader(val src: String) {
       return t
     }
 
+    suspend fun GPUBuffer.readIndices(indices: List<Int>): List<Int> {
+      val t0 = TimeSource.Monotonic.markNow()
+      val stagingBuffer = GPUBuffer(indices.size * 4L, GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
+      val encoder = gpu.createCommandEncoder()
+      indices.forEachIndexed { i, idx ->
+        encoder.copyBufferToBuffer(
+          source = this,
+          sourceOffset = idx.toDouble() * 4,
+          destination = stagingBuffer,
+          destinationOffset = i.toDouble() * 4,
+          size = 4.0
+        )
+      }
+      gpu.queue.submit(arrayOf(encoder.finish()))
+      (stagingBuffer.mapAsync(1) as Promise<*>).await()
+      val t = Int32Array(stagingBuffer.getMappedRange())
+        .asList().toIntArray().toList().also { stagingBuffer.unmap() }
+      println("Read ${indices.size}/${size.toInt()} bytes in ${t0.elapsedNow()}")
+      return t
+    }
+
     suspend fun IntArray.toGPUBufferSparse(usage: Int, totalSizeInInts: Int, rowCoeff: Int, colCoeff: Int): GPUBuffer {
       require(this.size % 4 == 0) { "Input array size must be a multiple of 4 for sparse data (r,c,v,i)." }
       require(totalSizeInInts > 0) { "totalSizeInInts must be positive." }
@@ -706,16 +736,9 @@ class Shader(val src: String) {
       // Helper to upload Int32Array efficiently via staging
       suspend fun Int32Array<ArrayBuffer>.uploadInt32ArrayToGPUBuffer(usage: Int): GPUBuffer {
         val byteSize = this.byteLength.toLong()
-        val destinationUsage = usage or GPUBufferUsage.COPY_DST
-        val destinationBuffer = gpu.createBuffer(GPUBufferDescriptor(
-          size = byteSize.toDouble(),
-          usage = destinationUsage
-        ))
+        val destinationBuffer = GPUBuffer(byteSize, usage or GPUBufferUsage.COPY_DST)
 
-        val stagingBuffer = gpu.createBuffer(GPUBufferDescriptor(
-          size = byteSize.toDouble(),
-          usage = GPUBufferUsage.MAP_WRITE or GPUBufferUsage.COPY_SRC
-        ))
+        val stagingBuffer = GPUBuffer(byteSize, GPUBufferUsage.MAP_WRITE or GPUBufferUsage.COPY_SRC)
 
         try {
           stagingBuffer.mapAsync(GPUBufferUsage.MAP_WRITE).await() // Standard API call
@@ -750,20 +773,16 @@ class Shader(val src: String) {
       // --- 3. Create Final Destination Buffer ---
       val outputByteSize = totalSizeInInts.toLong() * Int32Array.BYTES_PER_ELEMENT.toLong()
       // Ensure the destination buffer has STORAGE for shader write and COPY_DST
-      val outputBuffer = gpu.createBuffer(GPUBufferDescriptor(
-        size = outputByteSize.toDouble(),
-        usage = usage or GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST
-      ))
+      val outputBuffer = GPUBuffer(outputByteSize, usage or GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
+
       // Optional: Clear buffer if initial zeros needed?
       // gpu.createCommandEncoder().apply { clearBuffer(outputBuffer, 0, outputByteSize) }
       //    .let { gpu.queue.submit(arrayOf(it.finish())) }
       // Consider if waiting for clear is necessary: gpu.queue.onSubmittedWorkDone().await()
 
       // --- 4. Create Uniform Buffer for Coefficients ---
-      val coeffsBuffer = gpu.createBuffer(GPUBufferDescriptor(
-        size = (2 * 4).toDouble(),
-        usage = GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST
-      ))
+      val coeffsBuffer = GPUBuffer(8, GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
+
       // Write rowCoeff and colCoeff into the uniform buffer
       gpu.queue.writeBuffer(coeffsBuffer, 0.0, Int32Array<ArrayBuffer>(arrayOf(rowCoeff, colCoeff)))
 
@@ -841,7 +860,7 @@ class Shader(val src: String) {
       Int32Array<ArrayBuffer>(size).apply { set(this@toGPUBuffer.toTypedArray(), 0) }
         .let { GPUBuffer(sz = size * 4, us = usage, data = it) }
 
-    fun GPUBuffer(sz: Int, us: Int, data: AllowSharedBufferSource? = null): GPUBuffer =
+    fun GPUBuffer(sz: Number, us: Int, data: AllowSharedBufferSource? = null): GPUBuffer =
       gpu.createBuffer(GPUBufferDescriptor(size = sz.toDouble(), usage = us))
         .also { if (data != null) { gpu.queue.writeBuffer(it, 0.0, data) } }
 
@@ -926,7 +945,7 @@ class Shader(val src: String) {
 
   // Invocation strategies: eliminates some of the ceremony of calling a GSL shader
 
-  suspend fun invokeCFLFixpoint(numStates: Int, numNonterminals: Int, vararg inputs: IntArray): IntArray {
+  suspend fun invokeCFLFixpoint(numStates: Int, numNonterminals: Int, vararg inputs: IntArray): GPUBuffer {
     var t0 = TimeSource.Monotonic.markNow()
     require(inputs.size >= 2) { "Expected at least dpIn + metadata, got ${inputs.size} buffers." }
 
@@ -942,33 +961,20 @@ class Shader(val src: String) {
 
     var prevValue = -1
 
-//    val cmdEnc = gpu.createCommandEncoder()
     repeat(numStates) { round ->
       gpu.queue.writeBuffer(changesBuf, 0.0, data = Int32Array<ArrayBuffer>(1).apply { set(arrayOf(0), 0) })
       val (inBuf, outBuf) = if (round % 2 == 0) dpIn to dpOut else dpOut to dpIn
 
       invoke3d(numStates, numNonterminals, inBuf, outBuf, metaBuf, changesBuf)
-//      cmdEnc.beginComputePass().apply {
-//        setPipeline(pipeline)
-//        setBindGroup(0, bindBuffers(pipeline, inBuf, outBuf, metaBuf, changesBuf))
-//        dispatchWorkgroups(numStates, numStates, numNonterminals)
-//        end()
-//      }
 
       val changesThisRound = changesBuf.readInts()[0]
 
-      if (changesThisRound == prevValue) {
-        println("Fixpoint reached at round=$round")
-        val t1 = TimeSource.Monotonic.markNow()
-        val t = outBuf.readInts()
-        println("Time to read dpComplete: ${t1.elapsedNow()}")
-        return t
-      }
+      if (changesThisRound == prevValue) return outBuf.also { println("Fixpoint reached at round=$round") }
       prevValue = changesThisRound
       println("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
     }
 
-    return (if (numStates % 2 == 0) dpIn else dpOut).readInts()
+    return (if (numStates % 2 == 0) dpIn else dpOut)
   }
 
   fun invoke3d(t1: Int, t2: Int, vararg inputs: GPUBuffer) {
