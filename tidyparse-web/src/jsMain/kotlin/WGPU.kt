@@ -127,7 +127,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpIn: IntArray, metadata: IntArra
   else { println("No valid parse found: dpComplete has no entries in final states!"); return emptyList() }
 
   val t1 = TimeSource.Monotonic.markNow()
-  val dpBuf   = dpComplete.toGPUBufferFast(GPUBufferUsage.STCPSD)
+  val dpBuf = dpComplete.toGPUBufferFast(GPUBufferUsage.STCPSD)
   println("Time to copy back dpBuf: ${t1.elapsedNow()}")
   val t2 = TimeSource.Monotonic.markNow()
   val metaBuf = metadata.toGPUBuffer(GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
@@ -167,26 +167,28 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpIn: IntArray, metadata: IntArra
   println("Sampled words in ${t3.elapsedNow()}")
 
   val t4 = TimeSource.Monotonic.markNow()
-
-  val wordsPerSample = (0 until maxSamples).map { sampleIdx ->
-      val offset = sampleIdx * maxWordLen
-      rawTokens.slice(offset until offset + maxWordLen).map { it and 0xFF }
-        .fold(mutableListOf<MutableList<Int>>()) { slices, token ->
-          if (token == 0) {
-            if (slices.lastOrNull()?.isNotEmpty() == true) slices.add(mutableListOf())
-          } else {
-            if (slices.isEmpty() || slices.last().isEmpty()) slices.add(mutableListOf())
-            slices.last().add(token)
-          }
-          slices
-        }.filter { it.isNotEmpty() }
-        .map { slice -> slice.joinToString(" ") { c -> if (c == 0) "0" else cfg.tmLst[c - 1] } }
-    }.filter { it.isNotEmpty() }
-
+  val wordsPerSample = rawTokens.splitIntoWords(cfg, maxSamples, maxWordLen)
   println("Decoded tokens in ${t4.elapsedNow()}")
 
   return wordsPerSample
 }
+
+// TODO: kernelize?
+fun IntArray.splitIntoWords(cfg: CFG, maxSamples: Int, maxWordLen: Int) =
+  (0 until maxSamples).map { sampleIdx ->
+    val offset = sampleIdx * maxWordLen
+    slice(offset until offset + maxWordLen).map { it and 0xFF }
+      .fold(mutableListOf<MutableList<Int>>()) { slices, token ->
+        if (token == 0) {
+          if (slices.lastOrNull()?.isNotEmpty() == true) slices.add(mutableListOf())
+        } else {
+          if (slices.isEmpty() || slices.last().isEmpty()) slices.add(mutableListOf())
+          slices.last().add(token)
+        }
+        slices
+      }.filter { it.isNotEmpty() }
+      .map { slice -> slice.joinToString(" ") { c -> if (c == 0) "0" else cfg.tmLst[c - 1] } }
+  }.filter { it.isNotEmpty() }
 
 //language=wgsl
 const val CFL_STRUCT = """struct CFLStruct { // Carries metadata about the CFL + NFA intersection
@@ -784,7 +786,7 @@ class Shader(val src: String) {
     }
 
     suspend fun IntArray.toGPUBufferFast(usage: Int): GPUBuffer {
-      val dataSize = this.size
+      val dataSize = size
       val byteSize = dataSize * Int32Array.BYTES_PER_ELEMENT.toLong() // Use Long for byteSize
 
       // 1. Create the final destination buffer
@@ -810,7 +812,7 @@ class Shader(val src: String) {
         // --- CRITICAL SECTION: Efficient Copy ---
         // Direct loop is often the most straightforward in JS environments
         // Need to Avoid creating intermediate Kotlin/JS collections here.
-        for (i in 0 until dataSize) { bufferView[i] = this[i] }
+        for (i in 0 until dataSize) bufferView[i] = this[i]
         // -----------------------------------------
 
         // 5. Unmap the staging buffer (gives data ownership back to GPU)
