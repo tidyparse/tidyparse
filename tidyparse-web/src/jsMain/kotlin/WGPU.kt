@@ -700,7 +700,7 @@ class Shader(val src: String) {
       cmd.copyBufferToBuffer(this, 0.0, readDst, 0.0, size)
       gpu.queue.submit(arrayOf(cmd.finish()))
       (readDst.mapAsync(1) as Promise<*>).await()
-      val t = Int32Array(readDst.getMappedRange()).asList().toIntArray().also { readDst.unmap() }
+      val t = Int32Array(readDst.getMappedRange()).asList().toIntArray().also { readDst.destroy() }
       println("Read ${size.toInt()} bytes in ${t0.elapsedNow()}")
       return t
     }
@@ -721,7 +721,7 @@ class Shader(val src: String) {
       gpu.queue.submit(arrayOf(encoder.finish()))
       (stagingBuffer.mapAsync(1) as Promise<*>).await()
       val t = Int32Array(stagingBuffer.getMappedRange())
-        .asList().toIntArray().toList().also { stagingBuffer.unmap() }
+        .asList().toIntArray().toList().also { stagingBuffer.destroy() }
       println("Read ${indices.size}/${size.toInt()} bytes in ${t0.elapsedNow()}")
       return t
     }
@@ -743,8 +743,7 @@ class Shader(val src: String) {
         try {
           stagingBuffer.mapAsync(GPUBufferUsage.MAP_WRITE).await() // Standard API call
 
-          val mappedRange: ArrayBuffer = stagingBuffer.getMappedRange() // Map entire buffer
-          Int32Array(mappedRange).set(this, 0) // Copy this Int32Array into the mapped buffer view
+          Int32Array(stagingBuffer.getMappedRange()).set(this, 0) // Copy this Int32Array into the mapped buffer view
 
           stagingBuffer.unmap()
 
@@ -781,10 +780,7 @@ class Shader(val src: String) {
       // Consider if waiting for clear is necessary: gpu.queue.onSubmittedWorkDone().await()
 
       // --- 4. Create Uniform Buffer for Coefficients ---
-      val coeffsBuffer = GPUBuffer(8, GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
-
-      // Write rowCoeff and colCoeff into the uniform buffer
-      gpu.queue.writeBuffer(coeffsBuffer, 0.0, Int32Array<ArrayBuffer>(arrayOf(rowCoeff, colCoeff)))
+      val coeffsBuffer = intArrayOf(rowCoeff, colCoeff).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
 
       // --- 6. Dispatch Compute Shader ---
       val commandEncoder = gpu.createCommandEncoder()
@@ -860,6 +856,7 @@ class Shader(val src: String) {
       Int32Array<ArrayBuffer>(size).apply { set(this@toGPUBuffer.toTypedArray(), 0) }
         .let { GPUBuffer(sz = size * 4, us = usage, data = it) }
 
+    // TODO: figure out map/unmap lifetime
     fun GPUBuffer(sz: Number, us: Int, data: AllowSharedBufferSource? = null): GPUBuffer =
       gpu.createBuffer(GPUBufferDescriptor(size = sz.toDouble(), usage = us))
         .also { if (data != null) { gpu.queue.writeBuffer(it, 0.0, data) } }
@@ -873,12 +870,7 @@ class Shader(val src: String) {
 
       val outputBuf = GPUBuffer(inputBuf.size.toInt(), GPUBufferUsage.STCPSD)
       val blockSumsBuf = GPUBuffer(numGroups * 4, GPUBufferUsage.STCPSD)
-      val scannedBlockSumsBuf = GPUBuffer(numGroups * 4, GPUBufferUsage.STCPSD) // For exclusive scan results
-      val uniBuf = GPUBuffer(4, GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
-
-      val uniIntData = Int32Array<ArrayBuffer>(1)
-      uniIntData[0] = length
-      gpu.queue.writeBuffer(uniBuf, 0.0, uniIntData)
+      val uniBuf = intArrayOf(length).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
 
       fun Shader.invoke(numGroups: Int, vararg buffs: GPUBuffer) {
         val cmdEncoder = gpu.createCommandEncoder()
@@ -892,17 +884,8 @@ class Shader(val src: String) {
 
       prefix_sum_p1.invoke(numGroups = numGroups, inputBuf, outputBuf, blockSumsBuf, uniBuf)
 
-      val blockSumsCPU = blockSumsBuf.readInts()
-
-      val scannedBlockSumsCPU = IntArray(numGroups)
-      var accumulatedSum = 0L
-      for (i in 0 until numGroups) {
-        scannedBlockSumsCPU[i] = accumulatedSum.toInt()
-        accumulatedSum += blockSumsCPU[i].toUInt().toLong()
-      }
-
-      val scannedSumsData = Int32Array<ArrayBuffer>(scannedBlockSumsCPU.toTypedArray())
-      gpu.queue.writeBuffer(scannedBlockSumsBuf, 0.0, scannedSumsData)
+      val scannedBlockSumsBuf = blockSumsBuf.readInts().scan(0) { a, b -> a + b }
+        .dropLast(1).toIntArray().toGPUBuffer(GPUBufferUsage.STCPSD)
 
       prefix_sum_p2.invoke(numGroups = numGroups, outputBuf, scannedBlockSumsBuf, uniBuf)
 
@@ -926,15 +909,10 @@ class Shader(val src: String) {
       readCmd.copyBufferToBuffer(bpOffsetBuf, (lastIdx * 4).toDouble(), readBack, 0.0, 4.0)
       readCmd.copyBufferToBuffer(bpCountBuf,  (lastIdx * 4).toDouble(), readBack, 4.0, 4.0)
       gpu.queue.submit(arrayOf(readCmd.finish()))
-
       (readBack.mapAsync(1) as Promise<*>).await()
-      val readArray = Int32Array(readBack.getMappedRange()) // 2 elements
-      val offsetVal = readArray[0]
-      val countVal  = readArray[1]
-      val totalExpansions = offsetVal + countVal
 
-      val expansionsBufSize = totalExpansions * 2 * 4
-      val bpStorageBuf = GPUBuffer(expansionsBufSize, GPUBufferUsage.STCPSD)
+      val totalExpansions = Int32Array(readBack.getMappedRange()).let { it[0] + it[1] }
+      val bpStorageBuf = GPUBuffer(totalExpansions * 2 * 4, GPUBufferUsage.STCPSD)
 
       bp_write.invoke3d(numStates, numNonterminals, dpIn, bpOffsetBuf, bpStorageBuf, metaBuf)
       println("Writing expansions back to GPU...")
@@ -957,12 +935,11 @@ class Shader(val src: String) {
     val metaBuf = inputs[1].toGPUBuffer(usage = GPUBufferUsage.STORAGE + GPUBufferUsage.COPY_DST)
 
     val dpOut = GPUBuffer(dpIn.size.toInt(), dpIn.usage)
-    val changesBuf = GPUBuffer(sz = 4, us = GPUBufferUsage.STCPSD)
 
     var prevValue = -1
 
     repeat(numStates) { round ->
-      gpu.queue.writeBuffer(changesBuf, 0.0, data = Int32Array<ArrayBuffer>(1).apply { set(arrayOf(0), 0) })
+      val changesBuf = intArrayOf(0).toGPUBuffer(GPUBufferUsage.STCPSD)
       val (inBuf, outBuf) = if (round % 2 == 0) dpIn to dpOut else dpOut to dpIn
 
       invoke3d(numStates, numNonterminals, inBuf, outBuf, metaBuf, changesBuf)
