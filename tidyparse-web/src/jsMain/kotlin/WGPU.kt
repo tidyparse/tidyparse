@@ -2,9 +2,7 @@
 
 import Shader.Companion.GPUBuffer
 import Shader.Companion.readIndices
-import Shader.Companion.readInts
 import Shader.Companion.toGPUBuffer
-import Shader.Companion.toGPUBufferFast
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
@@ -32,7 +30,7 @@ external val navigator: dynamic
 fun tryBootstrapingGPU() = MainScope().async {
   checkWebGPUAvailability()
   if (gpuAvailable) {
-    listOf(WGSL_GEMX_ITERATE, sparse_load,
+    listOf(sparse_load,
       cfl_mul_upper, prefix_sum_p1, prefix_sum_p2,
       bp_count, bp_write, sample_words).forEach { it.bind() }
     benchmarkWGPURepair()
@@ -78,6 +76,7 @@ suspend fun benchmarkWGPURepair() {
 
   // Sparse index nonzero entries of the M_0 parse chart
   fun FSA.byteFormat(cfg: CFG): IntArray {
+    val t0 = TimeSource.Monotonic.markNow()
     val terminalLists = cfg.nonterminals.map { cfg.bimap.UNITS[it] ?: emptyList() }
     // 0 and 1 are reserved for (0) no parse exists and (1) parse exists, but an internal nonterminal node
     // Other byte values are used to denote the presence (+) or absence (-) of a leaf terminal
@@ -95,7 +94,9 @@ suspend fun benchmarkWGPURepair() {
       }
     }
 
-    return sparseChart.flatten().toIntArray()
+    val q = sparseChart.flatten().toIntArray()
+    println("Byte format took: ${t0.elapsedNow()}")
+    return q
   }
 
   /** Memory layout: [CFL_STRUCT] */
@@ -108,13 +109,13 @@ suspend fun benchmarkWGPURepair() {
   )
 
   val dpIn = levFSA.byteFormat(cfg)
-  println("Initial nonzeros: ${dpIn.count { it != 0 }}")
+//  println("Initial nonzeros: ${dpIn.count { it != 0 }}")
 
-  println("Preprocessing took ${t0.elapsedNow()}")
+  println("PREPROCESSING TOOK: ${t0.elapsedNow()}") // ~230ms
   val words = repairPipeline(cfg, levFSA, dpIn, metadata)
   println("Received: ${words.size} words")
   words.take(10).map { println(it.joinToString(" ")) }
-  println("Round trip repair: ${t0.elapsedNow()}")
+  println("Round trip repair: ${t0.elapsedNow()}") // ~500ms
 
   val (valid, invalid) = words.map { it.joinToString(" ") }.distinct().shuffled().take(10)
     .partition { it in cfg.language && levFSA.recognizes(it) }
@@ -126,8 +127,10 @@ suspend fun benchmarkWGPURepair() {
 }
 
 suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpIn: IntArray, metadata: IntArray): List<List<String>> {
+  val t0 = TimeSource.Monotonic.markNow()
   val (numStates, numNonterminals) = fsa.numStates to cfg.nonterminals.size
   val dpBuf = cfl_mul_upper.invokeCFLFixpoint(numStates, numNonterminals, dpIn, metadata)
+  println("TIME TO FILL PARSE CHART: ${t0.elapsedNow()}")
 
   val startNT     = cfg.bindex[START_SYMBOL]
   val finalStates = fsa.finalIdxs
@@ -141,9 +144,8 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpIn: IntArray, metadata: IntArra
   val metaBuf = metadata.toGPUBuffer(GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
   println("Time to copy metadata: ${t2.elapsedNow()}")
 
-  val (bpCountBuf, bpOffsetBuf, bpStorageBuf) =
-    Shader.buildBackpointers(numStates, numNonterminals, dpBuf, metaBuf)
-  println("Built backpointers!")
+  val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNonterminals, dpBuf, metaBuf)
+  println("Built backpointers in ${t2.elapsedNow()}")
 
 //  println("bpCountBuf: ${bpCountBuf.readInts().sum()}")
 //  println("bpOffsetBufSize: ${bpOffsetBuf.size}")
@@ -722,7 +724,7 @@ class Shader(val src: String) {
       (stagingBuffer.mapAsync(1) as Promise<*>).await()
       val t = Int32Array(stagingBuffer.getMappedRange())
         .asList().toIntArray().toList().also { stagingBuffer.destroy() }
-      println("Read ${indices.size}/${size.toInt()} bytes in ${t0.elapsedNow()}")
+//      println("Read ${indices.size}/${size.toInt()} bytes in ${t0.elapsedNow()}")
       return t
     }
 
@@ -800,58 +802,6 @@ class Shader(val src: String) {
       return outputBuffer
     }
 
-    suspend fun IntArray.toGPUBufferFast(usage: Int): GPUBuffer {
-      val dataSize = size
-      val byteSize = dataSize * Int32Array.BYTES_PER_ELEMENT.toLong() // Use Long for byteSize
-
-      // 1. Create the final destination buffer
-      val destinationBufferDescriptor = GPUBufferDescriptor(
-        size = byteSize.toDouble(),
-        usage = usage or GPUBufferUsage.COPY_DST
-      )
-      val destinationBuffer = gpu.createBuffer(destinationBufferDescriptor)
-
-      // 2. Create the temporary CPU-side staging buffer
-      val stagingBufferDescriptor = GPUBufferDescriptor(
-        size = byteSize.toDouble(),
-        usage = GPUBufferUsage.MAP_WRITE or GPUBufferUsage.COPY_SRC
-      )
-      val stagingBuffer = gpu.createBuffer(stagingBufferDescriptor)
-
-      try {
-        stagingBuffer.mapAsync(GPUBufferUsage.MAP_WRITE, 0.0, byteSize.toDouble()).await()
-
-        val mappedRange: ArrayBuffer = stagingBuffer.getMappedRange(0.0, byteSize.toDouble())
-        val bufferView = Int32Array(mappedRange)
-
-        // --- CRITICAL SECTION: Efficient Copy ---
-        // Direct loop is often the most straightforward in JS environments
-        // Need to Avoid creating intermediate Kotlin/JS collections here.
-        for (i in 0 until dataSize) bufferView[i] = this[i]
-        // -----------------------------------------
-
-        // 5. Unmap the staging buffer (gives data ownership back to GPU)
-        stagingBuffer.unmap()
-
-        // 6. Create command encoder and issue GPU-side copy
-        val commandEncoder = gpu.createCommandEncoder()
-        commandEncoder.copyBufferToBuffer(
-          source = stagingBuffer,
-          sourceOffset = 0.0,
-          destination = destinationBuffer,
-          destinationOffset = 0.0,
-          size = byteSize.toDouble()
-        )
-
-        // 7. Submit the command
-        val commandBuffer = commandEncoder.finish()
-        gpu.queue.submit(arrayOf(commandBuffer))
-
-      } finally { stagingBuffer.destroy() }
-
-      return destinationBuffer
-    }
-
     fun IntArray.toGPUBuffer(usage: Int): GPUBuffer =
       Int32Array<ArrayBuffer>(size).apply { set(this@toGPUBuffer.toTypedArray(), 0) }
         .let { GPUBuffer(sz = size * 4, us = usage, data = it) }
@@ -915,7 +865,6 @@ class Shader(val src: String) {
       val bpStorageBuf = GPUBuffer(totalExpansions * 2 * 4, GPUBufferUsage.STCPSD)
 
       bp_write.invoke3d(numStates, numNonterminals, dpIn, bpOffsetBuf, bpStorageBuf, metaBuf)
-      println("Writing expansions back to GPU...")
 
       return Triple(bpCountBuf, bpOffsetBuf, bpStorageBuf)
     }
@@ -930,7 +879,7 @@ class Shader(val src: String) {
     val rowCoeff = numStates * numNonterminals
     val colCoeff = numNonterminals
     val dpIn = inputs[0].toGPUBufferSparse(GPUBufferUsage.STCPSD, numStates * rowCoeff, rowCoeff, colCoeff)
-    println("Time to load buffer: ${t0.elapsedNow()} (${inputs[0].size * 4} bytes)")
+//    println("Time to load buffer: ${t0.elapsedNow()} (${inputs[0].size * 4} bytes)")
 
     val metaBuf = inputs[1].toGPUBuffer(usage = GPUBufferUsage.STORAGE + GPUBufferUsage.COPY_DST)
 
@@ -945,10 +894,10 @@ class Shader(val src: String) {
       invoke3d(numStates, numNonterminals, inBuf, outBuf, metaBuf, changesBuf)
 
       val changesThisRound = changesBuf.readInts()[0]
-
       if (changesThisRound == prevValue) return outBuf.also { println("Fixpoint reached at round=$round") }
       prevValue = changesThisRound
-      println("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
+//      println("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
+      t0 = TimeSource.Monotonic.markNow()
     }
 
     return (if (numStates % 2 == 0) dpIn else dpOut)
@@ -965,31 +914,28 @@ class Shader(val src: String) {
     gpu.queue.submit(arrayOf(cmdEnc.finish()))
   }
 
-  suspend operator fun invoke(vararg inputs: GPUBuffer, threads: Int, iterations: Int = 1): ArrayBuffer {
+  suspend fun invokeExp(vararg inputs: GPUBuffer, threads: Int, iterations: Int = 1): IntArray {
     val encoder: GPUCommandEncoder = gpu.createCommandEncoder()
-
-    val buf1 = inputs[0]
-
+    val buf1 = inputs[1]
     val buf2 = GPUBuffer(buf1.size.toInt(), buf1.usage)
 
     for (step in 1..iterations) {
+//      val t0 = TimeSource.Monotonic.markNow()
+//      val encoder: GPUCommandEncoder = gpu.createCommandEncoder()
       val (currentM, currentOut) = if (step % 2 == 1) buf1 to buf2 else buf2 to buf1
       encoder.beginComputePass().apply {
         setPipeline(pipeline)
-        setBindGroup(0, pipeline.bindBuffers(currentM, currentOut, inputs[1]))
+        setBindGroup(0, pipeline.bindBuffers(currentM, currentOut, inputs[0]))
         dispatchWorkgroups(threads, threads)
         end()
       }
+//      println("Read: ${inputs[0].readInts()}")
+//      gpu.queue.submit(arrayOf(encoder.finish()))
+//      println("Elapsed: ${t0.elapsedNow()}")
     }
 
-    val finalOut = if (iterations % 2 == 1) buf2 else buf1
-
-    val output = GPUBuffer(finalOut.size.toInt(), GPUBufferUsage.MAP_READ or GPUBufferUsage.COPY_DST)
-    encoder.copyBufferToBuffer(finalOut, 0.0, output, 0.0, output.size)
     gpu.queue.submit(arrayOf(encoder.finish()))
-
-    (output.mapAsync(1) as Promise<*>).await()
-    return output.getMappedRange()
+    return (if (iterations % 2 == 1) buf2 else buf1).readInts()
   }
 
   suspend operator fun invoke(vararg inputs: GPUBuffer, readFrom: GPUBuffer, threads: Int): IntArray {
@@ -1019,54 +965,48 @@ fun packStruct(constants: List<Int> = emptyList(), vararg arrays: IntArray): Int
   return (header + arrays.flatMap { it.asIterable() }).toIntArray()
 }
 
-suspend fun iterateGPU(input: Array<Int>, P: Int): Int {
-  val n = sqrt(input.size.toDouble()).toInt()
-  val s = input.size
-  val bytes = s * 4
-
-  val bufM = GPUBuffer(bytes, 140, Int32Array<ArrayBuffer>(s).apply { set(input, 0) })
-  val bufP = GPUBuffer(16, 72, Int32Array<ArrayBuffer>(4).apply { set(arrayOf(n), 0) })
-
-  val bufS = WGSL_GEMX_ITERATE.invoke(bufM, bufP, threads = n, iterations = P)
-
-  return Int32Array(bufS).asList().hashCode()
-}
-
 suspend fun benchmarkWGPU() {
-  val N = 302
-  val P = 5
+  val N = 300
+  val P = 20
   val M = IntArray(N * N) { i ->
     val r = i / N // Row index
     val c = i % N // Column index
     if (c > r) Random.nextInt(2, 10) else 0
   }
+
+  WGSL_GEMX_ITERATE.bind()
+  val t2 = performance.now()
+  val gSum = WGSL_GEMX_ITERATE.invokeExp(
+    intArrayOf(N).toGPUBuffer(GPUBufferUsage.STCPSD), M.toGPUBuffer(140),
+    threads = N, iterations = P
+  ).asList().hashCode()
+  val t3 = performance.now()
+  println("GPU hash=$gSum in ${t3 - t2} ms (N=$N, P=$P)")
+
   val t0 = performance.now()
+
+  suspend fun iterateCPU(a: IntArray, P: Int): Int {
+    val n = sqrt(a.size.toDouble()).toInt()
+    var current = a.copyOf()
+    for (step in 1..P) {
+      val next = IntArray(n * n)
+      for (r in 0 until n) {
+        for (c in 0 until n) {
+          var sum = 0
+          for (k in 0 until n) {
+            sum += current[r * n + k] * current[k * n + c]
+          }
+          next[r * n + c] = sum
+        }
+      }
+      current = next
+    }
+    return current.toList().hashCode()
+  }
+
   val cSum = iterateCPU(M, P)
   val t1 = performance.now()
   println("CPU hash=$cSum in ${t1 - t0} ms (N=$N, P=$P)")
-  val t2 = performance.now()
-  val gSum = iterateGPU(M.toTypedArray(), P)
-  val t3 = performance.now()
-  println("GPU hash=$gSum in ${t3 - t2} ms (N=$N, P=$P)")
-}
-
-suspend fun iterateCPU(a: IntArray, P: Int): Int {
-  val n = sqrt(a.size.toDouble()).toInt()
-  var current = a.copyOf()
-  for (step in 1..P) {
-    val next = IntArray(n * n)
-    for (r in 0 until n) {
-      for (c in 0 until n) {
-        var sum = 0
-        for (k in 0 until n) {
-          sum += current[r * n + k] * current[k * n + c]
-        }
-        next[r * n + c] = sum
-      }
-    }
-    current = next
-  }
-  return current.toList().hashCode()
 }
 
 //language=wgsl
@@ -1075,7 +1015,7 @@ struct Params { N: u32 };
 
 @group(0) @binding(0) var<storage, read>       M:   array<i32>;
 @group(0) @binding(1) var<storage, read_write> Out: array<i32>;
-@group(0) @binding(2) var<uniform>             param: Params;
+@group(0) @binding(2) var<storage, read_write> param: Params;
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let row = gid.y;
