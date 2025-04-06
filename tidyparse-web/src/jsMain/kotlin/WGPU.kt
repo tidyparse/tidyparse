@@ -244,17 +244,16 @@ else { pairOffsetNext = cs.mdptsSize; }"""
 val cfl_mul_upper by Shader(CFL_STRUCT + """
 struct AtomicChange { count: atomic<u32> };
 
-@group(0) @binding(0) var<storage, read>          dp_in : array<u32>;
-@group(0) @binding(1) var<storage, read_write>   dp_out : array<u32>;
-@group(0) @binding(2) var<storage, read>             cs : CFLStruct;
-@group(0) @binding(3) var<storage, read_write>  changes : AtomicChange;
+@group(0) @binding(0) var<storage, read_write>    dp_in : array<u32>;
+@group(0) @binding(1) var<storage, read>             cs : CFLStruct;
+@group(0) @binding(2) var<storage, read_write>  changes : AtomicChange;
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     $PREAMBLE
     
     let dpVal = dp_in[dpIdx];
     if (dpVal != 0) {
-        dp_out[dpIdx] = dpVal;
+        dp_in[dpIdx] = dpVal;
         atomicAdd(&changes.count, 1u);
         if ((dpVal & 0x01) != 0) { return; }
     }
@@ -267,7 +266,7 @@ struct AtomicChange { count: atomic<u32> };
             let idxMC = mdpt*snt + c*NT + C;
 
             if ((dp_in[idxBM] != 0) && (dp_in[idxMC] != 0)) {
-                dp_out[dpIdx] |= 0x01;
+                dp_in[dpIdx] |= 0x01;
                 atomicAdd(&changes.count, 1u);
                 return;
             }
@@ -735,7 +734,6 @@ class Shader(val src: String) {
       val sparseDataNumElements = this.size / 4
       val packedSparseData = Int32Array<ArrayBuffer>(this.size).also { dest -> for (i in this.indices) { dest[i] = this[i] } }
 
-      // Helper to upload Int32Array efficiently via staging
       suspend fun Int32Array<ArrayBuffer>.uploadInt32ArrayToGPUBuffer(usage: Int): GPUBuffer {
         val byteSize = this.byteLength.toLong()
         val destinationBuffer = GPUBuffer(byteSize, usage or GPUBufferUsage.COPY_DST)
@@ -766,25 +764,13 @@ class Shader(val src: String) {
         return destinationBuffer
       }
 
-      // --- 2. Upload Sparse Data List to GPU ---
-      // This buffer only needs STORAGE usage for the compute shader to read it.
-      // uploadInt32ArrayToGPUBuffer adds COPY_DST automatically.
       val sparseDataGpuBuffer = packedSparseData.uploadInt32ArrayToGPUBuffer(usage = GPUBufferUsage.STORAGE)
 
-      // --- 3. Create Final Destination Buffer ---
       val outputByteSize = totalSizeInInts.toLong() * Int32Array.BYTES_PER_ELEMENT.toLong()
-      // Ensure the destination buffer has STORAGE for shader write and COPY_DST
       val outputBuffer = GPUBuffer(outputByteSize, usage or GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
 
-      // Optional: Clear buffer if initial zeros needed?
-      // gpu.createCommandEncoder().apply { clearBuffer(outputBuffer, 0, outputByteSize) }
-      //    .let { gpu.queue.submit(arrayOf(it.finish())) }
-      // Consider if waiting for clear is necessary: gpu.queue.onSubmittedWorkDone().await()
-
-      // --- 4. Create Uniform Buffer for Coefficients ---
       val coeffsBuffer = intArrayOf(rowCoeff, colCoeff).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
 
-      // --- 6. Dispatch Compute Shader ---
       val commandEncoder = gpu.createCommandEncoder()
       val passEncoder = commandEncoder.beginComputePass()
 
@@ -883,24 +869,19 @@ class Shader(val src: String) {
 
     val metaBuf = inputs[1].toGPUBuffer(usage = GPUBufferUsage.STORAGE + GPUBufferUsage.COPY_DST)
 
-    val dpOut = GPUBuffer(dpIn.size.toInt(), dpIn.usage)
-
     var prevValue = -1
 
     repeat(numStates) { round ->
       val changesBuf = intArrayOf(0).toGPUBuffer(GPUBufferUsage.STCPSD)
-      val (inBuf, outBuf) = if (round % 2 == 0) dpIn to dpOut else dpOut to dpIn
-
-      invoke3d(numStates, numNonterminals, inBuf, outBuf, metaBuf, changesBuf)
-
+      invoke3d(numStates, numNonterminals, dpIn, metaBuf, changesBuf)
       val changesThisRound = changesBuf.readInts()[0]
-      if (changesThisRound == prevValue) return outBuf.also { println("Fixpoint reached at round=$round") }
+      if (changesThisRound == prevValue) return dpIn.also { println("Fixpoint reached at round=$round") }
       prevValue = changesThisRound
 //      println("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
       t0 = TimeSource.Monotonic.markNow()
     }
 
-    return (if (numStates % 2 == 0) dpIn else dpOut)
+    return dpIn
   }
 
   fun invoke3d(t1: Int, t2: Int, vararg inputs: GPUBuffer) {
