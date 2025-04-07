@@ -2,6 +2,7 @@
 
 import Shader.Companion.GPUBuffer
 import Shader.Companion.readIndices
+import Shader.Companion.readInts
 import Shader.Companion.toGPUBuffer
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
@@ -166,6 +167,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpIn: IntArray, metadata: IntArra
   val nt_tm_offsets = terminalLists.scan(0) { acc, list -> acc + list.size }.dropLast(1).toIntArray()
   val all_tm = terminalLists.flatMap { it }.toIntArray()
 
+  /** Memory layout: [TERM_STRUCT] */
   val terminals = packStruct(emptyList(), nt_tm_lens, nt_tm_offsets, all_tm)
     .toGPUBuffer(GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
 
@@ -419,7 +421,25 @@ const WORKGROUP_SIZE: u32 = 256u;
 }""")
 
 //language=wgsl
-val sample_words by Shader("""
+const val TERM_STRUCT = """
+struct Uniforms {
+    numStartIndices : u32,
+    numStates       : u32,
+    maxWordLen      : u32,
+    numNonterminals : u32,
+    startIndices    : array<u32>
+};
+
+struct Terminals {
+    nt_tm_lens_offset : u32,    nt_tm_lens_size : u32,
+       offsets_offset : u32,       offsets_size : u32,
+       all_tms_offset : u32,       all_tms_size : u32,
+       
+       payload : array<u32>
+}"""
+
+//language=wgsl
+val sample_words by Shader(TERM_STRUCT + """
 @group(0) @binding(0) var<storage, read>              dp_in : array<u32>;
 @group(0) @binding(1) var<storage, read>           bp_count : array<u32>;
 @group(0) @binding(2) var<storage, read>          bp_offset : array<u32>;
@@ -451,22 +471,6 @@ val sample_words by Shader("""
 
     let baseIdx = gid.x * uniforms.maxWordLen;
     for (var i = 0u; i < uniforms.maxWordLen; i++) { sampledWords[baseIdx + i] = localWord[i]; }
-}
-
-struct Uniforms {
-    numStartIndices : u32,
-    numStates       : u32,
-    maxWordLen      : u32,
-    numNonterminals : u32,
-    startIndices    : array<u32>
-};
-
-struct Terminals {
-    nt_tm_lens_offset : u32,    nt_tm_lens_size : u32,
-       offsets_offset : u32,       offsets_size : u32,
-       all_tms_offset : u32,       all_tms_size : u32,
-       
-       payload : array<u32>
 }
 
 fn get_nt_tm_lens(index: u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + index]; }
@@ -570,36 +574,22 @@ fn sampleTopDown(
                    let tmIndex = ntOffset + i;
                    // Check if this terminal index corresponds to the negated literal
                    if (i != (literal - 1u)) { // literal is 1-based index
-                       if (tmCount < 100u) { // Bounds check for possibleTms
-                           possibleTms[tmCount] = get_all_tms(tmIndex);
-                           tmCount++;
-                       } else { break; } // Stop if possibleTms is full
+                       if (tmCount < 100u) { possibleTms[tmCount] = get_all_tms(tmIndex); tmCount++; } 
+                       else { break; } // Stop if possibleTms is full
                    }
                 }
 
                 if (tmCount > 0u) { // Only choose if there are options
-                    let choiceIndex = lcg_randomRange(rngStateRef, tmCount);
-                    let tmChoice    = possibleTms[choiceIndex];
                     if (wordLen < 1024u) { // Bounds check for localWord write
-                       (*localWord)[wordLen] = tmChoice + 1u; // Add 1 like positive case
-                       wordLen++;
+                       let choiceIndex = lcg_randomRange(rngStateRef, tmCount);
+                       (*localWord)[wordLen] = possibleTms[choiceIndex] + 1u; wordLen++;
                     } else { break; } // Stop if localWord is full
                 } // else: No alternative terminals to sample, word remains unchanged?
             } else { // Positive literal
                 if (literal > 0u && literal <= numTms) { // Ensure literal is valid 1-based index
                    let tmIndex = ntOffset + literal - 1u;
-                   if (wordLen < 1024u) { // Bounds check
-                       let tmVal = get_all_tms(tmIndex);
-                       (*localWord)[wordLen] = tmVal + 1u; // Add 1 to make it non-zero
-                       wordLen++;
-                   } else { break; } // Stop if localWord is full
-                } else { // Invalid positive literal index (e.g., literal=0 or > numTms) or numTms=0
-                   // Error case? Metal used 99. Let's use 0xFFFFFFFF perhaps? Or stick to 99?
-                   if (wordLen < 1024u) {
-                       (*localWord)[wordLen] = 99u; // Default/error value
-                       wordLen++;
-                   } else { break; } // Stop if localWord is full
-                }
+                   if (wordLen < 1024u) { (*localWord)[wordLen] = get_all_tms(tmIndex) + 1u; wordLen++; } else { break; } // Stop if localWord is full
+                } else { if (wordLen < 1024u) { (*localWord)[wordLen] = 99u; wordLen++; } else { break; } }
             }
         // } else if (canRecurse) { // Original WGSL logic
         } else if (canRecurse && expCount > 0u) { // Use refined logic: ensure expansions exist
@@ -723,7 +713,7 @@ class Shader(val src: String) {
       (stagingBuffer.mapAsync(1) as Promise<*>).await()
       val t = Int32Array(stagingBuffer.getMappedRange())
         .asList().toIntArray().toList().also { stagingBuffer.destroy() }
-//      println("Read ${indices.size}/${size.toInt()} bytes in ${t0.elapsedNow()}")
+      println("Read ${indices.size}/${size.toInt()} bytes in ${t0.elapsedNow()}")
       return t
     }
 
@@ -838,16 +828,10 @@ class Shader(val src: String) {
 
       val bpOffsetBuf = prefixSumGPU(bpCountBuf, totalCells)
 
-      val lastIdx = totalCells - 1
-      val readCmd = gpu.createCommandEncoder()
-      val readLen = 2 * 4 // 2 integers
-      val readBack = GPUBuffer(readLen, GPUBufferUsage.MAP_READ or GPUBufferUsage.COPY_DST)
-      readCmd.copyBufferToBuffer(bpOffsetBuf, (lastIdx * 4).toDouble(), readBack, 0.0, 4.0)
-      readCmd.copyBufferToBuffer(bpCountBuf,  (lastIdx * 4).toDouble(), readBack, 4.0, 4.0)
-      gpu.queue.submit(arrayOf(readCmd.finish()))
-      (readBack.mapAsync(1) as Promise<*>).await()
+      val lastIdx = listOf(totalCells - 1)
+      val totalExpansions = bpOffsetBuf.readIndices(lastIdx)[0] + bpCountBuf.readIndices(lastIdx)[0]
+      println("Total expansions: $totalExpansions")
 
-      val totalExpansions = Int32Array(readBack.getMappedRange()).let { it[0] + it[1] }
       val bpStorageBuf = GPUBuffer(totalExpansions * 2 * 4, GPUBufferUsage.STCPSD)
 
       bp_write.invoke3d(numStates, numNonterminals, dpIn, bpOffsetBuf, bpStorageBuf, metaBuf)
@@ -884,16 +868,16 @@ class Shader(val src: String) {
     return dpIn
   }
 
-  fun invoke3d(t1: Int, t2: Int, vararg inputs: GPUBuffer) {
-    val cmdEnc = gpu.createCommandEncoder()
-    cmdEnc.beginComputePass().apply {
-      setPipeline(pipeline)
-      setBindGroup(0, pipeline.bindBuffers(*inputs))
-      dispatchWorkgroups(t1, t1, t2)
-      end()
+  fun invoke3d(t1: Int, t2: Int, vararg inputs: GPUBuffer) =
+    gpu.createCommandEncoder().run {
+      beginComputePass().apply {
+        setPipeline(pipeline)
+        setBindGroup(0, pipeline.bindBuffers(*inputs))
+        dispatchWorkgroups(t1, t1, t2)
+        end()
+      }
+      gpu.queue.submit(arrayOf(finish()))
     }
-    gpu.queue.submit(arrayOf(cmdEnc.finish()))
-  }
 
   suspend fun invokeExp(vararg inputs: GPUBuffer, threads: Int, iterations: Int = 1): IntArray {
     val encoder: GPUCommandEncoder = gpu.createCommandEncoder()
