@@ -53,7 +53,7 @@ fun main() {
   }
 
   if (window["PROGRAMMING_LANG"] == "python") pythonSetup() else defaultSetup()
-  tryBootstrapingGPU()
+  MainScope().async { tryBootstrappingGPU() }
 }
 
 fun defaultSetup() {
@@ -64,6 +64,7 @@ fun defaultSetup() {
     jsEditor.getLatestCFG()
     jsEditor.redecorateLines()
     LED_BUFFER = maxEdits.value.toInt()
+    TIMEOUT_MS = timeout.value.toInt()
   }
 
   inputField.addEventListener("input", { jsEditor.run { continuation { handleInput() } } })

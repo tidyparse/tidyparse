@@ -1,7 +1,12 @@
 import ai.hypergraph.kaliningraph.parsing.*
+import ai.hypergraph.kaliningraph.repair.LED_BUFFER
+import ai.hypergraph.kaliningraph.repair.TIMEOUT_MS
+import ai.hypergraph.kaliningraph.stripStub
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.tidyparse.*
 import kotlinx.browser.window
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.launch
 import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
 
@@ -42,6 +47,50 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
   override fun readDisplayText(): Σᐩ = output.textContent ?: ""
   override fun writeDisplayText(s: Σᐩ) { (outputField as HTMLDivElement).innerHTML = s }
   override fun writeDisplayText(s: (Σᐩ) -> Σᐩ) = writeDisplayText(s(readDisplayText()))
+
+  override fun handleInput() {
+    val caretInGrammar = caretInGrammar()
+    val context = getApplicableContext()
+    if (context.isEmpty()) return
+    println("Applicable context:\n$context")
+    val tokens = context.tokenizeByWhitespace()
+
+    val cfg =
+      if (caretInGrammar)
+        CFGCFG(names = tokens.filter { it !in setOf("->", "|") }.toSet())
+      else getLatestCFG()
+
+    if (cfg.isEmpty()) return
+
+    var hasHole = false
+    val abstractUnk = tokens.map { if (it in cfg.terminals) it else { hasHole = true; "_" } }
+
+    val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, minimize, ntStubs).hashCode()
+    val workHash = abstractUnk.hashCode() + cfg.hashCode() + settingsHash.hashCode()
+    if (workHash == currentWorkHash) return
+    currentWorkHash = workHash
+
+    if (workHash in cache) return writeDisplayText(cache[workHash]!!)
+
+    runningJob?.cancel()
+
+    if /* Stub completion */ (tokens.size == 1 && stubMatcher.matches(tokens[0])) {
+      cfg.enumNTSmall(tokens[0].stripStub()).enumerateInteractively(workHash, tokens)
+    } else /* Completion */ if (HOLE_MARKER in tokens) {
+      cfg.enumSeqSmart(tokens).enumerateInteractively(workHash, tokens)
+    } else /* Parseable */ if (!hasHole && tokens in cfg.language) {
+      val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
+      writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it })
+    } else /* Repair */ Unit.also {
+      runningJob = MainScope().launch {
+        (if (gpuAvailable) { repairCode(cfg, tokens, 3).asSequence()
+            .map { it.joinToString(" ") { it.replace("ε", "") }
+              .tokenizeByWhitespace().joinToString(" ") } }
+        else initiateSuspendableRepair(tokens, cfg))
+          .enumerateInteractively(workHash, tokens)
+      }
+    }
+  }
 
   var hashIter = 0
 

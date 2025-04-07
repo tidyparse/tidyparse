@@ -28,18 +28,7 @@ lateinit var gpu: GPUDevice
 var gpuAvailable = false
 external val navigator: dynamic
 
-fun tryBootstrapingGPU() = MainScope().async {
-  checkWebGPUAvailability()
-  if (gpuAvailable) {
-    listOf(sparse_load,
-      cfl_mul_upper, prefix_sum_p1, prefix_sum_p2,
-      bp_count, bp_write, sample_words).forEach { it.bind() }
-    benchmarkWGPURepair()
-    benchmarkWGPU()
-  }
-}
-
-suspend fun checkWebGPUAvailability() {
+suspend fun tryBootstrappingGPU() {
   print("Checking GPU availability... ")
   val tmpDev = (navigator.gpu as? GPU)?.requestAdapter()?.requestDevice()?.also { gpu = it }
   val gpuAvailDiv = document.getElementById("gpuAvail") as HTMLDivElement
@@ -53,23 +42,28 @@ suspend fun checkWebGPUAvailability() {
       setAttribute("height", "35")
     }
     gpuAvailDiv.appendChild(obj)
-    gpuAvailable = true
     gpu.addEventListener(EventType("uncapturederror"), { e: dynamic -> println("Uncaptured: ${e.error.message}") })
+    try {
+      listOf(sparse_load,
+        cfl_mul_upper, prefix_sum_p1, prefix_sum_p2,
+        bp_count, bp_write, sample_words).forEach { it.bind() }
+      benchmarkWGPU()
+      benchmarkWGPURepair()
+    } catch (e: Exception) { e.printStackTrace(); return }
+
+    gpuAvailable = true
   } else {
     println("not detected.")
     gpuAvailDiv.appendText("WebGPU is NOT available.")
   }
 }
 
-suspend fun benchmarkWGPURepair() {
-  val cfg = pythonStatementCNFAllProds
+suspend fun repairCode(cfg: CFG, code: List<String>, levRadius: Int): List<List<String>> {
   val grammarFlattened = cfg.vindex.map { it.toList() }.flatten().toIntArray()
   val grammarOffsets = cfg.vindex.map { it.size }.fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
 
   val t0 = TimeSource.Monotonic.markNow()
-  val pythonCode = "NAME = [ ( STRING , NAME ) , , ( NAME , NAME ) , ( NAME , NAME ) , ( NAME , NAME ) , , ( NAME , NAME ) ] NEWLINE".tokenizeByWhitespace()
-  val radius = 5
-  val levFSA = makeLevFSA(pythonCode, radius)
+  val levFSA = makeLevFSA(code, levRadius)
   println("Made levFSA in ${t0.elapsedNow()}")
 
   val (allFSAPairsFlattened, allFSAPairsOffsets) = levFSA.midpoints.prefixScan()
@@ -115,16 +109,22 @@ suspend fun benchmarkWGPURepair() {
   println("PREPROCESSING TOOK: ${t0.elapsedNow()}") // ~230ms
   val words = repairPipeline(cfg, levFSA, dpIn, metadata)
   println("Received: ${words.size} words")
-  words.take(10).map { println(it.joinToString(" ")) }
   println("Round trip repair: ${t0.elapsedNow()}") // ~500ms
 
-  val (valid, invalid) = words.map { it.joinToString(" ") }.distinct().shuffled().take(10)
-    .partition { it in cfg.language && levFSA.recognizes(it) }
+  return words
+}
 
-  println("\nValid samples:\n")
-  valid.take(10).forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
-  println("\nInvalid samples:\n")
-  invalid.take(10).forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
+suspend fun benchmarkWGPURepair() {
+  val cfg = pythonStatementCNFAllProds
+  val code = "NAME = [ ( STRING , NAME ) , , ( NAME , NAME ) ] NEWLINE".tokenizeByWhitespace()
+  val words = repairCode(cfg, code, 3)
+  words.take(10).forEachIndexed { i, it -> println("$i.) ${it.joinToString(" ")}") }
+
+//  val (valid, invalid) = words.map { it.joinToString(" ") }.distinct().shuffled().take(10).partition { it in cfg.language }
+//  println("\nValid samples:\n")
+//  valid.take(10).forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
+//  println("\nInvalid samples:\n")
+//  invalid.take(10).forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
 }
 
 suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpIn: IntArray, metadata: IntArray): List<List<String>> {
@@ -155,7 +155,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpIn: IntArray, metadata: IntArra
   val startIndicesBuf = startIdxs.toIntArray()
   val numStartIndices = startIdxs.size
 
-  val maxSamples = 1000
+  val maxSamples = 10000
   val maxWordLen = fsa.width + 10
 
   val outBuf = GPUBuffer(maxSamples * maxWordLen * 4, GPUBufferUsage.STCPSD)
@@ -173,10 +173,9 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpIn: IntArray, metadata: IntArra
 
   println("Invoking sampler...")
   val t3 = TimeSource.Monotonic.markNow()
-  val rawTokens: IntArray = sample_words.invoke(
-    dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, uniforms, terminals,
-    readFrom = outBuf, threads = (maxSamples + 63) / 64
-  )
+  val threads = (maxSamples + 63) / 64
+  sample_words.invoke1d(threads, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, uniforms, terminals)
+  val rawTokens: IntArray = outBuf.readInts()
   println("Sampled words in ${t3.elapsedNow()}")
 
   val t4 = TimeSource.Monotonic.markNow()
@@ -798,22 +797,12 @@ class Shader(val src: String) {
       val blockSumsBuf = GPUBuffer(numGroups * 4, GPUBufferUsage.STCPSD)
       val uniBuf = intArrayOf(length).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
 
-      fun Shader.invoke(numGroups: Int, vararg buffs: GPUBuffer) {
-        val cmdEncoder = gpu.createCommandEncoder()
-        val passEncoder = cmdEncoder.beginComputePass()
-        passEncoder.setPipeline(pipeline)
-        passEncoder.setBindGroup(0, pipeline.bindBuffers(*buffs))
-        passEncoder.dispatchWorkgroups(numGroups)
-        passEncoder.end()
-        gpu.queue.submit(arrayOf(cmdEncoder.finish()))
-      }
-
-      prefix_sum_p1.invoke(numGroups = numGroups, inputBuf, outputBuf, blockSumsBuf, uniBuf)
+      prefix_sum_p1.invoke1d(numGroups, inputBuf, outputBuf, blockSumsBuf, uniBuf)
 
       val scannedBlockSumsBuf = blockSumsBuf.readInts().scan(0) { a, b -> a + b }
         .dropLast(1).toIntArray().toGPUBuffer(GPUBufferUsage.STCPSD)
 
-      prefix_sum_p2.invoke(numGroups = numGroups, outputBuf, scannedBlockSumsBuf, uniBuf)
+      prefix_sum_p2.invoke1d(numGroups, outputBuf, scannedBlockSumsBuf, uniBuf)
 
       return outputBuf
     }
@@ -868,6 +857,17 @@ class Shader(val src: String) {
     return dpIn
   }
 
+  fun invoke1d(threads: Int, vararg inputs: GPUBuffer) =
+    gpu.createCommandEncoder().run {
+      beginComputePass().apply {
+        setPipeline(pipeline)
+        setBindGroup(0, pipeline.bindBuffers(*inputs))
+        dispatchWorkgroups(threads)
+        end()
+      }
+      gpu.queue.submit(arrayOf(finish()))
+    }
+
   fun invoke3d(t1: Int, t2: Int, vararg inputs: GPUBuffer) =
     gpu.createCommandEncoder().run {
       beginComputePass().apply {
@@ -901,21 +901,6 @@ class Shader(val src: String) {
 
     gpu.queue.submit(arrayOf(encoder.finish()))
     return (if (iterations % 2 == 1) buf2 else buf1).readInts()
-  }
-
-  suspend operator fun invoke(vararg inputs: GPUBuffer, readFrom: GPUBuffer, threads: Int): IntArray {
-    val encoder = gpu.createCommandEncoder()
-
-    encoder.beginComputePass().apply {
-      setPipeline(pipeline)
-      setBindGroup(0, pipeline.bindBuffers(*inputs))
-      dispatchWorkgroups(threads, 1, 1)
-      end()
-    }
-
-    gpu.queue.submit(arrayOf(encoder.finish()))
-
-    return readFrom.readInts()
   }
 }
 

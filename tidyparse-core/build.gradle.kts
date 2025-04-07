@@ -42,18 +42,15 @@ kotlin {
           exclude(group = "org.logicng")
         }
 
-        api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
+        api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
         api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
 
         api("com.strumenta:antlr-kotlin-runtime:1.0.2")
       }
       kotlin { srcDir(layout.buildDirectory.dir("generatedAntlr")) }
     }
-    commonTest {
-      dependencies {
-        implementation(kotlin("test"))
-      }
-    }
+
+    commonTest { dependencies { implementation(kotlin("test")) } }
   }
 }
 
@@ -66,9 +63,7 @@ val generateKotlinGrammarSource = tasks.register<AntlrKotlinTask>("generateKotli
   // ANTLR .g4 files are under {example-project}/antlr
   // Only include *.g4 files. This allows tools (e.g., IDE plugins)
   // to generate temporary files inside the base path
-  source = fileTree(layout.projectDirectory.dir("antlr")) {
-    include("**/*.g4")
-  }
+  source = fileTree(layout.projectDirectory.dir("antlr")) { include("**/*.g4") }
 
   // We want the generated source files to have this package name
   packageName = pkgName
@@ -79,7 +74,6 @@ val generateKotlinGrammarSource = tasks.register<AntlrKotlinTask>("generateKotli
 
   // Generated files are outputted inside build/generatedAntlr/{package-name}
   outputDirectory = layout.buildDirectory.dir(outDir).get().asFile
-
 }
 
 val modifyGeneratedAntlrSources = tasks.register("modifyGeneratedAntlrSources") {

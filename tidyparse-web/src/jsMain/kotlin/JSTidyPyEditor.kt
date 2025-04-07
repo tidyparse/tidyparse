@@ -110,7 +110,11 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
       writeDisplayText("✅ ${tokens.dropLast(1).joinToString(" ")}$compilerFeedback".also { cache[workHash] = it })
     } else /* Repair */ Unit.also {
       runningJob = MainScope().launch {
-        initiateSuspendableRepair(tokens, cfg, ngrams)
+        (if (gpuAvailable) {
+          repairCode(cfg, tokens, 5).asSequence()
+          .map { it.joinToString(" ").tokenizeByWhitespace().joinToString(" ") } }
+        else initiateSuspendableRepair(tokens, cfg))
+//        initiateSuspendableRepair(tokens, cfg, ngrams)
           // Drop NEWLINE (added by default to PyCodeSnippets)
           .map { it.substring(0, it.length - 8).replacePythonKeywords() }
           .filter { s ->
@@ -119,7 +123,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
               "SyntaxError", "TypeError" -> false
               "" -> true
               else -> false
-            }
+            }//.also { println("$s / $it") }
           }.enumerateInteractively(
             workHash = workHash,
             origTks = tokens.dropLast(1),
