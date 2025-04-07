@@ -1,5 +1,6 @@
 import com.strumenta.antlrkotlin.gradle.AntlrKotlinTask
 import org.jetbrains.kotlin.gradle.dsl.KotlinCompile
+import org.jetbrains.kotlin.gradle.tasks.BaseKotlinCompile
 
 fun property(key: String) = project.findProperty(key).toString()
 
@@ -87,13 +88,11 @@ val modifyGeneratedAntlrSources = tasks.register("modifyGeneratedAntlrSources") 
     val python3LexerFile = layout.buildDirectory.file("$outDir/Python3Lexer.kt").get().asFile
     if (python3LexerFile.exists()) {
       val original = python3LexerFile.readText()
-      val modified = original.replace("private ", "")
+      val modified = original.replace("private ", "") // Override default antlr-kt visibility
       python3LexerFile.writeText(modified)
       println("Modified ${python3LexerFile.name}")
     }
   }
 }
 
-tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
-  dependsOn(modifyGeneratedAntlrSources)
-}
+tasks.withType<BaseKotlinCompile> { dependsOn(modifyGeneratedAntlrSources) }
