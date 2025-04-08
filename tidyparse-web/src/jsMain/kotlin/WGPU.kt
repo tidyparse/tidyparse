@@ -131,7 +131,8 @@ suspend fun benchmarkWGPURepair() {
 suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metadata: IntArray): List<List<String>> {
   val t0 = TimeSource.Monotonic.markNow()
   val (numStates, numNonterminals) = fsa.numStates to cfg.nonterminals.size
-  val dpBuf = cfl_mul_upper.invokeCFLFixpoint(numStates, numNonterminals, dpInSparse, metadata)
+  val metaBuf = metadata.toGPUBuffer(GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
+  val dpBuf = cfl_mul_upper.invokeCFLFixpoint(numStates, numNonterminals, dpInSparse, metaBuf)
   println("TIME TO FILL PARSE CHART: ${t0.elapsedNow()}")
 
   val startNT     = cfg.bindex[START_SYMBOL]
@@ -144,7 +145,6 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metadata: I
   else { println("No valid parse found: dpComplete has no entries in final states!"); return emptyList() }
 
   val t2 = TimeSource.Monotonic.markNow()
-  val metaBuf = metadata.toGPUBuffer(GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
   println("Time to copy metadata: ${t2.elapsedNow()}")
 
   val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNonterminals, dpBuf, metaBuf)
@@ -164,6 +164,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metadata: I
   val uniforms = (intArrayOf(numStartIndices, numStates, maxWordLen, numNonterminals) + startIndicesBuf)
     .toGPUBuffer(GPUBufferUsage.STCPSD)
 
+  val packTime = TimeSource.Monotonic.markNow()
   val terminalLists = cfg.nonterminals.map { cfg.bimap.UNITS[it]?.map { cfg.tmMap[it]!! } ?: emptyList() }
   val nt_tm_lens = terminalLists.map { it.size }.toIntArray()
   val nt_tm_offsets = terminalLists.scan(0) { acc, list -> acc + list.size }.dropLast(1).toIntArray()
@@ -172,6 +173,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metadata: I
   /** Memory layout: [TERM_STRUCT] */
   val terminals = packStruct(emptyList(), nt_tm_lens, nt_tm_offsets, all_tm)
     .toGPUBuffer(GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
+  println("Packing time: ${packTime.elapsedNow()}")
 
   println("Invoking sampler...")
   val t3 = TimeSource.Monotonic.markNow()
@@ -183,6 +185,11 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metadata: I
   val t4 = TimeSource.Monotonic.markNow()
   val wordsPerSample = rawTokens.splitIntoWords(cfg, maxSamples, maxWordLen)
   println("Decoded tokens in ${t4.elapsedNow()}")
+
+  outBuf.destroy()
+  metaBuf.destroy()
+  dpBuf.destroy()
+  terminals.destroy()
 
   return wordsPerSample
 }
@@ -652,7 +659,8 @@ class Shader(val src: String) {
       cmd.copyBufferToBuffer(this, 0.0, readDst, 0.0, size)
       gpu.queue.submit(arrayOf(cmd.finish()))
       (readDst.mapAsync(1) as Promise<*>).await()
-      val t = Int32Array(readDst.getMappedRange()).asList().toIntArray().also { readDst.destroy() }
+      val t = Int32Array(readDst.getMappedRange()).asList().toIntArray()
+      readDst.destroy()
       println("Read ${size.toInt()} bytes in ${t0.elapsedNow()}")
       return t
     }
@@ -722,6 +730,9 @@ class Shader(val src: String) {
 
       prefix_sum_p2.invoke1d(numGroups, outputBuf, scannedBlockSumsBuf, uniBuf)
 
+      scannedBlockSumsBuf.destroy()
+      uniBuf.destroy()
+
       return outputBuf
     }
 
@@ -749,24 +760,22 @@ class Shader(val src: String) {
 
   // Invocation strategies: eliminates some of the ceremony of calling a GSL shader
 
-  suspend fun invokeCFLFixpoint(numStates: Int, numNonterminals: Int, vararg inputs: IntArray): GPUBuffer {
+  suspend fun invokeCFLFixpoint(numStates: Int, numNonterminals: Int, input: IntArray, metaBuf: GPUBuffer): GPUBuffer {
     var t0 = TimeSource.Monotonic.markNow()
-    require(inputs.size >= 2) { "Expected at least dpIn + metadata, got ${inputs.size} buffers." }
 
     val rowCoeff = numStates * numNonterminals
     val colCoeff = numNonterminals
-    val dpIn = inputs[0].toGPUBufferSparse(GPUBufferUsage.STCPSD, numStates * rowCoeff, rowCoeff, colCoeff)
-    println("Time to load buffer: ${t0.elapsedNow()} (${inputs[0].size * 4} bytes)")
-
-    val metaBuf = inputs[1].toGPUBuffer(usage = GPUBufferUsage.STORAGE + GPUBufferUsage.COPY_DST)
+    val dpIn = input.toGPUBufferSparse(GPUBufferUsage.STCPSD, numStates * rowCoeff, rowCoeff, colCoeff)
+    println("Time to load buffer: ${t0.elapsedNow()} (${input.size * 4} bytes)")
 
     var prevValue = -1
 
-    repeat(numStates) { round ->
+    for(round in 0 until numStates) {
       val changesBuf = intArrayOf(0).toGPUBuffer(GPUBufferUsage.STCPSD)
       invoke3d(numStates, numNonterminals, dpIn, metaBuf, changesBuf)
       val changesThisRound = changesBuf.readInts()[0]
-      if (changesThisRound == prevValue) return dpIn.also { println("Fixpoint reached at round=$round") }
+      changesBuf.destroy()
+      if (changesThisRound == prevValue) break
       prevValue = changesThisRound
 //      println("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
       t0 = TimeSource.Monotonic.markNow()
@@ -818,7 +827,10 @@ class Shader(val src: String) {
     }
 
     gpu.queue.submit(arrayOf(encoder.finish()))
-    return (if (iterations % 2 == 1) buf2 else buf1).readInts()
+    return (if (iterations % 2 == 1) buf2 else buf1).readInts().also {
+      buf1.destroy()
+      buf2.destroy()
+    }
   }
 }
 

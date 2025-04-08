@@ -115,7 +115,8 @@ fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
   postResults: (Σᐩ) -> Unit,
   finally: (Σᐩ) -> Unit = { postResults(it) },
   localContinuation: (() -> Unit) -> Any = { it() },
-  customDiff: (String) -> String
+  customDiff: (String) -> String,
+  postSummary: () -> String = { "." }
 ) {
   val results = mutableSetOf<Σᐩ>()
   val topNResults = mutableListOf<Pair<Σᐩ, Int>>()
@@ -135,7 +136,7 @@ fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
       else "~$throughput res/s"
       val moreResults = (results.size - topNResults.size)
         .let { if (it == 0) "\n\n" else "\n\n...$it more" }
-      val statistics = "$moreResults $summary."
+      val statistics = "$moreResults $summary${postSummary.invoke()}"
       return finally(topNResults.joinToString("\n", "", statistics) {
         val result = "<span style=\"color: gray\" class=\"noselect\">${i++.toString().padStart(2)}.) </span>${it.first}"
         if (i == 1) "<mark>$result</mark>" else result

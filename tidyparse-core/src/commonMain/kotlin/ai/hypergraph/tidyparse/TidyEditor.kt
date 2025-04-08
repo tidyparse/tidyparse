@@ -122,7 +122,8 @@ abstract class TidyEditor {
         (origTks.sumOf { it.length } - it.sumOf { it.length }).absoluteValue },
     shouldContinue: () -> Boolean = { currentWorkHash == workHash && timer.hasTimeLeft() },
     customDiff: (String) -> String = { levenshteinAlign(origTks.joinToString(" "), it).paintDiffs() },
-    recognizer: (String) -> Boolean = { it in cfg.language }
+    recognizer: (String) -> Boolean = { it in cfg.language },
+    postSummary: () -> String = { "." }
   ) = let {
     if (!minimize || "_" in origTks) it
     else it.flatMap { minimizeFix(origTks, it.tokenizeByWhitespace()) { recognizer(this) } }
@@ -136,7 +137,8 @@ abstract class TidyEditor {
         writeDisplayText("$invalidPrefix$it".also { cache[workHash] = it })
       println("Completed in ${timer.elapsedNow().inWholeMilliseconds}ms")
     },
-    customDiff = customDiff
+    customDiff = customDiff,
+    postSummary = postSummary
   )
 
   fun caretInGrammar(): Boolean =

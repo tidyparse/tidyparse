@@ -110,6 +110,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
       writeDisplayText("✅ ${tokens.dropLast(1).joinToString(" ")}$compilerFeedback".also { cache[workHash] = it })
     } else /* Repair */ Unit.also {
       runningJob = MainScope().launch {
+        var (rejected, total) = 0 to 0
         (if (gpuAvailable) {
           repairCode(cfg, tokens, 5).asSequence()
           .map { it.joinToString(" ").tokenizeByWhitespace().joinToString(" ") } }
@@ -117,13 +118,14 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 //        initiateSuspendableRepair(tokens, cfg, ngrams)
           // Drop NEWLINE (added by default to PyCodeSnippets)
           .map { it.substring(0, it.length - 8).replacePythonKeywords() }
+          .distinct()
           .filter { s ->
             val errorType = getOutput(s).getErrorType()
             when (errorType) {
               "SyntaxError", "TypeError" -> false
               "" -> true
               else -> false
-            }//.also { println("$s / $it") }
+            }.also { if (!it) rejected++; total++ }
           }.enumerateInteractively(
             workHash = workHash,
             origTks = tokens.dropLast(1),
@@ -133,7 +135,8 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
             customDiff = {
               val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())
               pcs.paintDiff(levAlign)
-            }
+            },
+            postSummary = { ", discarded $rejected/$total." },
           )
       }
     }
