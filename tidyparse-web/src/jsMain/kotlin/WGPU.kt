@@ -86,6 +86,7 @@ suspend fun repairCode(cfg: CFG, code: List<String>, levRadius: Int): List<List<
         val Aidx = cfg.bindex[A]
         // row, col, Aidx, terminal
         listOf(stateMap[q0]!!, stateMap[q1]!!, Aidx, sp.predByte(Aidx))
+//          .also { println("${it[0]}, ${it[1]}, ${it[2]}, ${it[3].toString(2)}") }
       }
     }
 
@@ -137,6 +138,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metadata: I
   val finalStates = fsa.finalIdxs
   val startIdxs   = finalStates.map { it * numNonterminals + startNT }
     .let { it.zip(dpBuf.readIndices(it)) }.filter { (_, v) -> v != 0 }.map { it.first }
+//    .onEach { println("STIDX: $it") }
 
   if (!startIdxs.isEmpty()) { println("Valid parse found: dpComplete has ${startIdxs.size} start indices") }
   else { println("No valid parse found: dpComplete has no entries in final states!"); return emptyList() }
@@ -148,14 +150,14 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metadata: I
   val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNonterminals, dpBuf, metaBuf)
   println("Built backpointers in ${t2.elapsedNow()}")
 
-//  println("bpCountBuf: ${bpCountBuf.readInts().sum()}")
-//  println("bpOffsetBufSize: ${bpOffsetBuf.size}")
+//  println("bpCountBufSum: ${bpCountBuf.readInts().sum()}")
+//  println("bpOffsetBufSum: ${bpOffsetBuf.readInts().sumOf { it.toLong() }}")
 //  println("bpStorageBufSize: ${bpStorageBuf.readInts().size}")
 
   val startIndicesBuf = startIdxs.toIntArray()
   val numStartIndices = startIdxs.size
 
-  val maxSamples = 10000
+  val maxSamples = 1000
   val maxWordLen = fsa.width + 10
 
   val outBuf = GPUBuffer(maxSamples * maxWordLen * 4, GPUBufferUsage.STCPSD)
@@ -254,7 +256,6 @@ struct AtomicChange { count: atomic<u32> };
     
     let dpVal = dp_in[dpIdx];
     if (dpVal != 0) {
-        dp_in[dpIdx] = dpVal;
         atomicAdd(&changes.count, 1u);
         if ((dpVal & 0x01) != 0) { return; }
     }
@@ -498,120 +499,81 @@ fn sampleTopDown(
     maxWordLen      : u32,
     nnt             : u32
 ) {
+    // A simple fixed-size stack
+    let MAX_STACK = 1024u;
     var stack: array<u32, 1024>;
-    var top     = 0;
+    var top = 0u;
     var wordLen = 0u;
+    stack[top] = startDPIdx;
+    top++;
 
-    if (top < 1024) { stack[top] = startDPIdx; top++; }
+    // Safety limit: "maxWordLen * 98" matches the Metal logic
+    let ITER_MAX = maxWordLen * 98u;
 
-    var iter = 0u; loop {
-        if (top <= 0 || wordLen >= maxWordLen || iter >= (maxWordLen * 98u)) { break; }
-        iter++; top--;
+    // Loop while we have items on the stack and haven't overflowed localWord
+    for (var iter = 0u; (iter < ITER_MAX) && (top > 0u) && (wordLen < (maxWordLen - 5u)); iter++) {
+        top -= 1u;
         let dpIdx = stack[top];
 
-        let expCount = bp_count_ptr[dpIdx];
-        let predicate = dp_in_ptr[dpIdx];
-        let canRecurse = (predicate & 0x01u) != 0u;
-        // Check if any literal bits are set (anything other than the recursion bit 0)
-        let hasLiteral = (predicate & ~0x01u) != 0u; // More robust check for any literal info
+        let expCount = (*bp_count_ptr)[dpIdx];
+        let dpVal    = (*dp_in_ptr)[dpIdx];
 
-        // Simplified random choice logic - Metal version uses expCount which might be more correct
-        // if expCount is the total number of *expansions* (recursive + literal).
-        // The current WGSL bp_count only counts recursive expansions.
-        // Let's assume for now the choice is between literal (if available) and recursion (if available).
-        // If both, pick randomly. If only one, pick that one.
-        // This needs careful comparison with how bp_count is truly intended to be used.
-        // Sticking closer to the Metal version's apparent logic for now:
-        let totalOptions = expCount + u32(hasLiteral); // Approx total choices
-        let rVal = lcg_randomRange(rngStateRef, totalOptions); // Use total options for range
+        // -- METAL equivalent condition --
+        // if ((dp_in[dpIdx] >> 1) && ( !(dp_in[dpIdx] & 0x01) || (lcg_randomRange(...) % 2 == 0) ))
+        //   => i.e. there's a "literal" in dpVal>>1, and
+        //      (LSB == 0) or randomly skip expansions half the time.
+        if (((dpVal >> 1) != 0u) && (((dpVal & 0x01u) == 0u) || ((lcg_randomRange(rngStateRef, expCount) % 2u) == 0u))) {
+            // The grammar's nonterminal index
+            let nonterminal       = dpIdx % nnt;
 
-        // Decision logic: prioritize literal if chosen randomly or if no recursion possible
-        // If hasLiteral and (!canRecurse or random choice favors literal)
-        // Metal used: if (hasLiteral && (!canRecurse || ((rVal % 2u) == 0u)))
-        // Let's refine the random choice based on totalOptions:
-        // If rVal < expCount, recurse (if possible). Otherwise, take literal (if possible).
-        let chooseLiteral = hasLiteral && (!canRecurse || rVal >= expCount);
+            // 30th bit (0x40000000) is the negation bit
+            let isNegativeLiteral = (dpVal & 0x40000000u) != 0u;
 
-        // if (hasLiteral && (!canRecurse || ((rVal % 2u) == 0u))) { // Original WGSL logic based on Metal snippet
-        if (chooseLiteral) { // Use refined logic
-            let nonterminal = dpIdx % nnt;
-            // Decode the u32 predicate from Kotlin
-            let isNegative  = (predicate & 0x40000000u) != 0u; // Check bit 30 (1 << 30)
-            // Mask out recursion (bit 0) and negative (bit 30) bits to get shifted literal
-            let literalShifted = predicate & 0x3FFFFFFEu;
-            let literal = literalShifted >> 1u; // Get the original 1-based index
+            // The actual literal is in bits [1..29] (discard the LSB and the negation bit)
+            let literal           = (dpVal >> 1) & 0x1FFFFFFFu;
 
-            // Check for wildcard case (Int.MAX_VALUE - 1 == 0x7FFFFFFE)
-            if (predicate == 0x7FFFFFFEu) {
-               // Handle wildcard ([.*]) - sample any terminal for this nonterminal?
-               // This case wasn't fully specified in the Metal snippet's handling.
-               // Let's add a placeholder or choose randomly if possible.
-               let numTms = get_nt_tm_lens(nonterminal);
-               let ntOffset = get_offsets(nonterminal);
-               if (numTms > 0u) {
-                   let choiceIndex = lcg_randomRange(rngStateRef, numTms);
-                   let tmIndex = ntOffset + choiceIndex;
-                   if (wordLen < 1024u) {
-                       (*localWord)[wordLen] = get_all_tms(tmIndex) + 1u; // Add 1 like others
-                       wordLen++;
-                   } else { break; }
-               } else { /* Cannot sample wildcard if nonterminal has no terminals */ }
-               continue; // Skip rest of literal logic
-            }
+            // Look up how many terminals exist for this nonterminal, etc.
+            let numTms    = get_nt_tm_lens(nonterminal);
+            let ntOffset  = get_offsets(nonterminal);
 
-            if (nonterminal >= nnt) { continue; } // Bounds check
-
-            let numTms   = get_nt_tm_lens(nonterminal);
-            let ntOffset = get_offsets(nonterminal);
-
-            if (isNegative) {
-                // choose from among all possible except “literal - 1”
-                var possibleTms: array<u32, 100>; // Max 100 terminals per NT assumed
+            // Negative literal: pick from all possible terminals except the chosen literal
+            if (isNegativeLiteral) {
+                var possibleTms: array<u32, 100>;
                 var tmCount = 0u;
-                // Iterate through terminals for this nonterminal
-                for (var i = 0u; i < min(numTms, 100u); i = i + 1u) {
-                   let tmIndex = ntOffset + i;
-                   // Check if this terminal index corresponds to the negated literal
-                   if (i != (literal - 1u)) { // literal is 1-based index
-                       if (tmCount < 100u) { possibleTms[tmCount] = get_all_tms(tmIndex); tmCount++; } 
-                       else { break; } // Stop if possibleTms is full
-                   }
+                // Collect up to 100 possible terminals (minus the 'literal' index)
+                let limit = select(100u, numTms, numTms < 100u);
+                for (var i = 0u; i < limit; i++) {
+                    if (i != (literal - 1u)) {
+                        possibleTms[tmCount] = get_all_tms(ntOffset + i);
+                        tmCount++;
+                    }
                 }
-
-                if (tmCount > 0u) { // Only choose if there are options
-                    if (wordLen < 1024u) { // Bounds check for localWord write
-                       let choiceIndex = lcg_randomRange(rngStateRef, tmCount);
-                       (*localWord)[wordLen] = possibleTms[choiceIndex] + 1u; wordLen++;
-                    } else { break; } // Stop if localWord is full
-                } // else: No alternative terminals to sample, word remains unchanged?
-            } else { // Positive literal
-                if (literal > 0u && literal <= numTms) { // Ensure literal is valid 1-based index
-                   let tmIndex = ntOffset + literal - 1u;
-                   if (wordLen < 1024u) { (*localWord)[wordLen] = get_all_tms(tmIndex) + 1u; wordLen++; } else { break; } // Stop if localWord is full
-                } else { if (wordLen < 1024u) { (*localWord)[wordLen] = 99u; wordLen++; } else { break; } }
+                // Randomly pick from the pruned terminal set
+                let tmChoice = possibleTms[lcg_randomRange(rngStateRef, tmCount)];
+                (*localWord)[wordLen] = tmChoice + 1u;
+                wordLen++;
+            } else {
+                // Positive literal: either pick it or fall back to 99 if no terminals exist
+                if (numTms != 0u) {
+                    let tmVal = get_all_tms(ntOffset + (literal - 1u));
+                    (*localWord)[wordLen] = tmVal + 1u; wordLen++;
+                } else {
+                    (*localWord)[wordLen] = 99u; wordLen++;
+                }
             }
-        // } else if (canRecurse) { // Original WGSL logic
-        } else if (canRecurse && expCount > 0u) { // Use refined logic: ensure expansions exist
-           // Check if there's room on the stack *before* calculating indices
-            if (top + 2 <= 1024) { // Check <= 1024 allows filling stack
-                // Select which specific expansion to follow using rVal
-                let expansionChoice = rVal; // Since rVal < expCount here
-                let bpBaseIndex = bp_offset_ptr[dpIdx] + expansionChoice;
 
-                // Bounds check for bp_storage access (IMPORTANT)
-                let randIdxTimes2 = bpBaseIndex * 2u;
-                // Need bp_storage size uniform or derived calculation if possible
-                // Assuming bp_storage is large enough for now, but this is risky
+        } else if ((top + 2u) < MAX_STACK) {
+            // We're dealing with a binary expansion
+            let randIdx = (*bp_offset_ptr)[dpIdx] + lcg_randomRange(rngStateRef, expCount);
 
-                let idxBM   = bp_storage_ptr[randIdxTimes2 + 0u];
-                let idxMC   = bp_storage_ptr[randIdxTimes2 + 1u];
+            // Two child DP indices in bp_storage
+            let idxBM = (*bp_storage_ptr)[2u * randIdx + 0u];
+            let idxMC = (*bp_storage_ptr)[2u * randIdx + 1u];
 
-                // Push onto stack (already checked bounds)
-                stack[top]  = idxMC; top++;
-                stack[top]  = idxBM; top++;
-            } // else: stack is full, cannot recurse further down this path
+            // Push them onto our stack
+            stack[top] = idxMC; top++;
+            stack[top] = idxBM; top++;
         }
-        // else: Neither literal nor recursion possible/chosen. Frame is dropped.
     }
 }""")
 
