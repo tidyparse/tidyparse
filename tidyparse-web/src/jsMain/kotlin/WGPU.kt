@@ -364,43 +364,46 @@ var<workgroup> tile: array<u32, WORKGROUP_SIZE>;
     let lid     = localId.x;
     let grpId   = groupId.x;
 
-    let tileIdx = lid;
-    if (gid < N) { tile[tileIdx] = inputBuf[gid]; } else { tile[tileIdx] = 0u; }
-
+    // 1) Load data from inputBuf into shared workgroup array `tile`.
+    if (gid < N) { tile[lid] = inputBuf[gid]; } else { tile[lid] = 0u; }
     workgroupBarrier();
 
+    // 2) Up-sweep: build partial sums in place.
+    //    Offsets go 1, 2, 4, 8, ...
     var offset = 1u;
     while (offset < WORKGROUP_SIZE) {
-        if (lid >= offset) { tile[tileIdx] += tile[tileIdx - offset]; }
-        offset = offset * 2u;
+        // index = (lid+1)*offset*2 - 1
+        let idx = ((lid + 1u) * offset * 2u) - 1u;
+        if (idx < WORKGROUP_SIZE) { tile[idx] = tile[idx] + tile[idx - offset]; }
         workgroupBarrier();
+        offset = offset * 2u;
     }
 
-    if (lid == WORKGROUP_SIZE - 1u) {
-        blockSums[grpId] = tile[tileIdx];
-        tile[tileIdx] = 0u;
+    // 3) The last element of `tile` now has the total sum of this block.
+    //    Save that to blockSums, then zero it out so this becomes an EXCLUSIVE scan.
+    if (lid == 0u) {
+        blockSums[grpId] = tile[WORKGROUP_SIZE - 1u];
+        tile[WORKGROUP_SIZE - 1u] = 0u;
     }
-
     workgroupBarrier();
 
+    // 4) Down-sweep: push each partial sum back down the tree to build the exclusive scan.
+    //    Offsets go (256 >> 1), (256 >> 2), ...
     offset = WORKGROUP_SIZE / 2u;
     while (offset > 0u) {
-        if (lid < offset) {
-            let leftChildIdx  = tileIdx + offset;
-            let rightChildIdx = tileIdx;
-
-            let leftVal = tile[leftChildIdx];
-            let rightVal = tile[rightChildIdx];
-
-            tile[rightChildIdx] = leftVal;
-            tile[leftChildIdx] = leftVal + rightVal;
+        let idx = ((lid + 1u) * offset * 2u) - 1u;
+        if (idx < WORKGROUP_SIZE) {
+            let tmp = tile[idx - offset];
+            tile[idx - offset] = tile[idx];
+            tile[idx] = tile[idx] + tmp;
         }
-        offset = offset / 2u;
         workgroupBarrier();
+        offset = offset / 2u;
     }
 
-    if (gid < N) { outputBuf[gid] = tile[tileIdx]; }
-}""")
+    // 5) Write the per-element results back out to outputBuf.
+    if (gid < N) { outputBuf[gid] = tile[lid]; }
+}""".trimIndent())
 
 //language=wgsl
 val prefix_sum_p2 by Shader("""
@@ -716,8 +719,7 @@ class Shader(val src: String) {
     const val PREFIX_SUM_WORKGROUP_SIZE = 256
 
     suspend fun prefixSumGPU(inputBuf: GPUBuffer, length: Int): GPUBuffer {
-      val tpg = PREFIX_SUM_WORKGROUP_SIZE
-      val numGroups = (length + tpg - 1) / tpg
+      val numGroups = (length + PREFIX_SUM_WORKGROUP_SIZE - 1) / PREFIX_SUM_WORKGROUP_SIZE
 
       val outputBuf = GPUBuffer(inputBuf.size.toInt(), GPUBufferUsage.STCPSD)
       val blockSumsBuf = GPUBuffer(numGroups * 4, GPUBufferUsage.STCPSD)
@@ -725,14 +727,14 @@ class Shader(val src: String) {
 
       prefix_sum_p1.invoke1d(numGroups, inputBuf, outputBuf, blockSumsBuf, uniBuf)
 
-      val scannedBlockSumsBuf = blockSumsBuf.readInts().scan(0) { a, b -> a + b }
-        .dropLast(1).toIntArray().toGPUBuffer(GPUBufferUsage.STCPSD)
+      if (numGroups > 1) {
+        val scannedBlockSumsBuf = blockSumsBuf.readInts()
+          .scan(0) { acc, it -> acc + it }.toIntArray().toGPUBuffer(GPUBufferUsage.STCPSD)
+        prefix_sum_p2.invoke1d(numGroups, outputBuf, scannedBlockSumsBuf, uniBuf)
+        scannedBlockSumsBuf.destroy()
+      }
 
-      prefix_sum_p2.invoke1d(numGroups, outputBuf, scannedBlockSumsBuf, uniBuf)
-
-      scannedBlockSumsBuf.destroy()
       uniBuf.destroy()
-
       return outputBuf
     }
 
