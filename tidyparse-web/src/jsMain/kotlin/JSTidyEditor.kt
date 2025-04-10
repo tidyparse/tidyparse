@@ -83,7 +83,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
       writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it })
     } else /* Repair */ Unit.also {
       runningJob = MainScope().launch {
-        (if (gpuAvailable) { repairCode(cfg, tokens, 3).asSequence()
+        (if (gpuAvailable) { repairCode(cfg, tokens, 5).asSequence()
             .map { it.joinToString(" ") { it.replace("ε", "") }
               .tokenizeByWhitespace().joinToString(" ") } }
         else initiateSuspendableRepair(tokens, cfg))
