@@ -1,6 +1,6 @@
 START -> STM+
 STM+ -> STM+ ; STM | STM
- STM -> ID = EXP ; | IFS | while ( BEXP ) { STM+ }
+ STM -> ID = EXP | IFS | while ( BEXP ) { STM+ } | STM ;
  IFS -> ID = if ( BEXP ) { EXP } else { EXP }
  IFS -> if ( BEXP ) { STM+ } else { STM+ } | if ( BEXP ) { STM+ }
  EXP -> ID | NUM | EXP + EXP | ( EXP ) | ID ( ARGS ) | BEXP

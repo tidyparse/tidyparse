@@ -72,7 +72,7 @@ suspend fun repairCode(cfg: CFG, code: List<String>, levRadius: Int): List<List<
   // Sparse index nonzero entries of the M_0 parse chart
   fun FSA.byteFormat(cfg: CFG): IntArray {
     val t0 = TimeSource.Monotonic.markNow()
-    val terminalLists = cfg.nonterminals.map { cfg.bimap.UNITS[it] ?: emptyList() }
+    val terminalLists = cfg.nonterminals.map { cfg.bimap.UNITS[it] ?: emptySet() }
     // 0 and 1 are reserved for (0) no parse exists and (1) parse exists, but an internal nonterminal node
     // Other byte values are used to denote the presence (+) or absence (-) of a leaf terminal
     fun StrPred.predByte(A: Int): Int = (
@@ -120,12 +120,11 @@ suspend fun benchmarkWGPURepair() {
   val code = "NAME = [ ( STRING , NAME ) , , ( NAME , NAME ) , ( NAME , NAME ) , ( NAME , NAME ) , , ( NAME , NAME ) ] NEWLINE".tokenizeByWhitespace()
   val words = repairCode(cfg, code, 5).distinct().map { it.joinToString(" ") }
   println("Distinct words: ${words.size}")
-//  words.take(10).forEachIndexed { i, it -> println("$i.) ${it.joinToString(" ")}") }
 
-  val (valid, invalid) = words.shuffled().take(10).partition { it in cfg.language }
-  println("\nValid samples:\n")
+  val (valid, invalid) = words.shuffled().take(100).partition { it in cfg.language }
+  println("\nValid samples (${valid.size})\n")
   valid.forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
-  println("\nInvalid samples:\n")
+  println("\nInvalid samples (${invalid.size})\n")
   invalid.forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
 }
 
@@ -161,7 +160,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metadata: I
   val numStartIndices = startIdxs.size
 
   val maxSamples = 1000
-  val maxWordLen = fsa.width + 10
+  val maxWordLen = fsa.width + fsa.height + 10
 
   val outBuf = GPUBuffer(maxSamples * maxWordLen * 4, GPUBufferUsage.STCPSD)
   val uniforms = (intArrayOf(numStartIndices, numStates, maxWordLen, numNonterminals) + startIndicesBuf)
@@ -416,21 +415,17 @@ struct PrefixSumUni { N: u32 };
 @group(0) @binding(1) var<storage, read>       scannedBlockSums : array<u32>;
 @group(0) @binding(2) var<uniform>                    prefixUni : PrefixSumUni;
 
-const WORKGROUP_SIZE: u32 = 256u;
-
-@compute @workgroup_size(WORKGROUP_SIZE) fn main(
-    @builtin(global_invocation_id) globalId : vec3<u32>,
+@compute @workgroup_size(256) fn main(
     @builtin(workgroup_id)         groupId  : vec3<u32>,
-    @builtin(local_invocation_id)  localId  : vec3<u32>
+    @builtin(global_invocation_id) globalId : vec3<u32>,
 ) {
-    let N     = prefixUni.N;
-    let gid   = globalId.x;
     let grpId = groupId.x;
+    let gid   = globalId.x;
+    let N     = prefixUni.N;
 
-    if (grpId > 0u) {
-        let blockOffsetVal = scannedBlockSums[grpId - 1u];
-        if (gid < N) { dataBuf[gid] = dataBuf[gid] + blockOffsetVal; }
-    }
+    // For each block `grpId`, the offset is scannedBlockSums[grpId].
+    let offsetVal = scannedBlockSums[grpId];
+    if (gid < N) { dataBuf[gid] = dataBuf[gid] + offsetVal; }
 }""")
 
 //language=wgsl
@@ -640,7 +635,7 @@ class Shader(val src: String) {
       (readDst.mapAsync(1) as Promise<*>).await()
       val t = Int32Array(readDst.getMappedRange()).asList().toIntArray()
       readDst.destroy()
-      println("Read ${size.toInt()} bytes in ${t0.elapsedNow()}")
+//      println("Read ${size.toInt()} bytes in ${t0.elapsedNow()}")
       return t
     }
 
@@ -722,6 +717,7 @@ class Shader(val src: String) {
       println("Total cells: $totalCells = $numStates^2 * $numNonterminals")
       bp_count.invoke3d(numStates, numNonterminals, dpIn, bpCountBuf, metaBuf)
 
+//      val bpOffsetBuf = bpCountBuf.readInts().scan(0) { acc, arr -> acc + arr }.dropLast(1).toIntArray().toGPUBuffer(GPUBufferUsage.STCPSD)
       val bpOffsetBuf = prefixSumGPU(bpCountBuf, totalCells)
 
       val lastIdx = listOf(totalCells - 1)

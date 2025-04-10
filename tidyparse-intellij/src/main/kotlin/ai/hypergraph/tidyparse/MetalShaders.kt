@@ -38,7 +38,7 @@ fun main() {
     .tokenizeByWhitespace()
   val radius = 5
   val levFSA = makeLevFSA(pythonCode, radius)
-  val maxWordLen = pythonCode.size + radius + 10
+  val maxWordLen = levFSA.width + levFSA.height + 10
 
   val numStates = levFSA.numStates
   val numNonterminals = cfg.nonterminals.size
@@ -59,7 +59,7 @@ fun main() {
   measureTimeMillis {
     fun FSA.byteFormat(cfg: CFG): UShortArray {
       val clock =  TimeSource.Monotonic.markNow()
-      val terminalLists = cfg.nonterminals.map { cfg.bimap.UNITS[it] ?: emptyList() }
+      val terminalLists = cfg.nonterminals.map { cfg.bimap.UNITS[it] ?: emptySet() }
       // 0 and 1 are reserved for (0) no parse exists and (1) parse exists, but an internal nonterminal node
       // Other byte values are used to denote the presence (+) or absence (-) of a leaf terminal
       fun StrPred.predByte(A: Int): UShort = (
@@ -258,12 +258,13 @@ inline void sampleTopDown(
     for (int iter = 0; iter < maxWordLen * 98 && top > 0 && wordLen < maxWordLen - 5; iter++) {
       int dpIdx = stack[--top];
       int expCount = bpCount[dpIdx];
+      int dpVal = dp_in[dpIdx];
       
          // If we are dealing with a leaf node (i.e., a unit nonterminal/terminal)
                                  // Or a leaf node that can also also be a binary expansion which is randomly sampled
-      if ((dp_in[dpIdx] >> 1) && (!(dp_in[dpIdx] & 0x01) || (int(lcg_randomRange(rngState, uint(expCount))) % 2 == 0))) {
+      if ((dpVal >> 1) && (!(dpVal & 0x01) || (lcg_randomRange(rngState, uint(expCount)) % 2u == 0u))) {
         int nonterminal = dpIdx % numNonterminals;
-        ushort predicate = dp_in[dpIdx];
+        ushort predicate = dpVal;
         bool isNegativeLiteral = predicate & 0x8000;
         ushort literal = (predicate >> 1) & 0x7FFF;
         int numTms = nt_tm_lens[nonterminal];
