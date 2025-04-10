@@ -73,7 +73,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
       from black import format_str, FileMode
       pretty_code = format_str("${pythonCode.replace("\\", "\\\\").replace("\"", "\\\"")}", mode=FileMode())
     """.trimIndent())
-    jsPyEditor.pyodide.globals.get("pretty_code").trim()
+    jsPyEditor.pyodide.globals.get("pretty_code").trim().replace("\n", "")
   } catch (error: dynamic) {
     // If there's any issue, log the error and return the original
     println("Error formatting Python code: $error")

@@ -118,17 +118,20 @@ suspend fun repairCode(cfg: CFG, code: List<String>, levRadius: Int): List<List<
 suspend fun benchmarkWGPURepair() {
   val cfg = pythonStatementCNFAllProds
   val code = "NAME = [ ( STRING , NAME ) , , ( NAME , NAME ) , ( NAME , NAME ) , ( NAME , NAME ) , , ( NAME , NAME ) ] NEWLINE".tokenizeByWhitespace()
-  val words = repairCode(cfg, code, 5)
+  val words = repairCode(cfg, code, 5).distinct().map { it.joinToString(" ") }
+  println("Distinct words: ${words.size}")
 //  words.take(10).forEachIndexed { i, it -> println("$i.) ${it.joinToString(" ")}") }
 
-  val (valid, invalid) = words.map { it.joinToString(" ") }.distinct().shuffled().take(10).partition { it in cfg.language }
+  val (valid, invalid) = words.shuffled().take(10).partition { it in cfg.language }
   println("\nValid samples:\n")
-  valid.take(10).forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
+  valid.forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
   println("\nInvalid samples:\n")
-  invalid.take(10).forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
+  invalid.forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
 }
 
 suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metadata: IntArray): List<List<String>> {
+//  println("FSA(|Q|=${fsa.numStates}, |δ|=${fsa.transit.size}), " +
+//      "CFG(|Σ|=${cfg.terminals.size}, |V|=${cfg.nonterminals.size}, |P|=${cfg.nonterminalProductions.size})")
   val t0 = TimeSource.Monotonic.markNow()
   val (numStates, numNonterminals) = fsa.numStates to cfg.nonterminals.size
   val metaBuf = metadata.toGPUBuffer(GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
@@ -403,7 +406,7 @@ var<workgroup> tile: array<u32, WORKGROUP_SIZE>;
 
     // 5) Write the per-element results back out to outputBuf.
     if (gid < N) { outputBuf[gid] = tile[lid]; }
-}""".trimIndent())
+}""")
 
 //language=wgsl
 val prefix_sum_p2 by Shader("""
@@ -465,7 +468,7 @@ val sample_words by Shader(TERM_STRUCT + """
     for (var i = 0u; i < uniforms.maxWordLen; i++) { localWord[i] = 0u; }
     let q = terminals.offsets_size;
 
-    let rIndex    = lcg_randomRange(&tid, uniforms.numStartIndices);
+    let rIndex    = lcg_rand(&tid, uniforms.numStartIndices);
     let dpIndex   = uniforms.startIndices[rIndex];
 
     let nnt       = uniforms.numNonterminals;
@@ -487,15 +490,10 @@ fn get_nt_tm_lens(index: u32) -> u32 { return terminals.payload[terminals.nt_tm_
 fn get_offsets(index: u32) -> u32 { return terminals.payload[terminals.offsets_offset + index]; }
 fn get_all_tms(index: u32) -> u32 { return terminals.payload[terminals.all_tms_offset + index]; }
 
-fn lcg_random(stateRef: ptr<function, u32>) -> u32 {
-    let newVal = (1664525u * (*stateRef)) + 1013904223u;
-    *stateRef = newVal;
-    return newVal;
-}
-
-fn lcg_randomRange(stateRef: ptr<function, u32>, range: u32) -> u32 {
-    if (range == 0u) { return 0u; }
-    return lcg_random(stateRef) % range;
+fn lcg_rand(stateRef: ptr<function, u32>, range: u32) -> u32 { 
+  let newVal = (1664525u * (*stateRef)) + 1013904223u;
+  *stateRef = newVal;
+  return select(newVal % range, 0u, range == 0u); 
 }
 
 fn sampleTopDown(
@@ -509,37 +507,25 @@ fn sampleTopDown(
     maxWordLen      : u32,
     nnt             : u32
 ) {
-    // A simple fixed-size stack
     let MAX_STACK = 1024u;
     var stack: array<u32, 1024>;
     var top = 0u;
     var wordLen = 0u;
-    stack[top] = startDPIdx;
-    top++;
+    stack[top] = startDPIdx; top++;
 
     // Safety limit: "maxWordLen * 98" matches the Metal logic
     let ITER_MAX = maxWordLen * 98u;
 
     // Loop while we have items on the stack and haven't overflowed localWord
     for (var iter = 0u; (iter < ITER_MAX) && (top > 0u) && (wordLen < (maxWordLen - 5u)); iter++) {
-        top -= 1u;
-        let dpIdx = stack[top];
+        top -= 1u; let dpIdx = stack[top];
 
         let expCount = (*bp_count_ptr)[dpIdx];
         let dpVal    = (*dp_in_ptr)[dpIdx];
 
-        // -- METAL equivalent condition --
-        // if ((dp_in[dpIdx] >> 1) && ( !(dp_in[dpIdx] & 0x01) || (lcg_randomRange(...) % 2 == 0) ))
-        //   => i.e. there's a "literal" in dpVal>>1, and
-        //      (LSB == 0) or randomly skip expansions half the time.
-        if (((dpVal >> 1) != 0u) && (((dpVal & 0x01u) == 0u) || ((lcg_randomRange(rngStateRef, expCount) % 2u) == 0u))) {
-            // The grammar's nonterminal index
+        if (((dpVal >> 1) != 0u) && (((dpVal & 0x01u) == 0u) || ((lcg_rand(rngStateRef, expCount) % 2u) == 0u))) {
             let nonterminal       = dpIdx % nnt;
-
-            // 30th bit (0x40000000) is the negation bit
             let isNegativeLiteral = (dpVal & 0x40000000u) != 0u;
-
-            // The actual literal is in bits [1..29] (discard the LSB and the negation bit)
             let literal           = (dpVal >> 1) & 0x1FFFFFFFu;
 
             // Look up how many terminals exist for this nonterminal, etc.
@@ -550,18 +536,12 @@ fn sampleTopDown(
             if (isNegativeLiteral) {
                 var possibleTms: array<u32, 100>;
                 var tmCount = 0u;
-                // Collect up to 100 possible terminals (minus the 'literal' index)
                 let limit = select(100u, numTms, numTms < 100u);
                 for (var i = 0u; i < limit; i++) {
-                    if (i != (literal - 1u)) {
-                        possibleTms[tmCount] = get_all_tms(ntOffset + i);
-                        tmCount++;
-                    }
+                    if (i != (literal - 1u)) { possibleTms[tmCount] = get_all_tms(ntOffset + i); tmCount++; }
                 }
-                // Randomly pick from the pruned terminal set
-                let tmChoice = possibleTms[lcg_randomRange(rngStateRef, tmCount)];
-                (*localWord)[wordLen] = tmChoice + 1u;
-                wordLen++;
+                let tmChoice = possibleTms[lcg_rand(rngStateRef, tmCount)];
+                (*localWord)[wordLen] = tmChoice + 1u; wordLen++;
             } else {
                 // Positive literal: either pick it or fall back to 99 if no terminals exist
                 if (numTms != 0u) {
@@ -571,16 +551,12 @@ fn sampleTopDown(
                     (*localWord)[wordLen] = 99u; wordLen++;
                 }
             }
-
         } else if ((top + 2u) < MAX_STACK) {
-            // We're dealing with a binary expansion
-            let randIdx = (*bp_offset_ptr)[dpIdx] + lcg_randomRange(rngStateRef, expCount);
+            let randIdx = (*bp_offset_ptr)[dpIdx] + lcg_rand(rngStateRef, expCount);
 
-            // Two child DP indices in bp_storage
             let idxBM = (*bp_storage_ptr)[2u * randIdx + 0u];
             let idxMC = (*bp_storage_ptr)[2u * randIdx + 1u];
 
-            // Push them onto our stack
             stack[top] = idxMC; top++;
             stack[top] = idxBM; top++;
         }
@@ -761,7 +737,6 @@ class Shader(val src: String) {
   }
 
   // Invocation strategies: eliminates some of the ceremony of calling a GSL shader
-
   suspend fun invokeCFLFixpoint(numStates: Int, numNonterminals: Int, input: IntArray, metaBuf: GPUBuffer): GPUBuffer {
     var t0 = TimeSource.Monotonic.markNow()
 
@@ -872,15 +847,8 @@ suspend fun benchmarkWGPU() {
     var current = a.copyOf()
     for (step in 1..P) {
       val next = IntArray(n * n)
-      for (r in 0 until n) {
-        for (c in 0 until n) {
-          var sum = 0
-          for (k in 0 until n) {
-            sum += current[r * n + k] * current[k * n + c]
-          }
-          next[r * n + c] = sum
-        }
-      }
+      for (r in 0 until n) for (c in 0 until n)
+        next[r * n + c] = (0 until n).sumOf { k -> current[r * n + k] * current[k * n + c] }
       current = next
     }
     return current.toList().hashCode()

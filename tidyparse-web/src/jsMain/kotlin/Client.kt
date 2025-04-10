@@ -95,6 +95,9 @@ fun pythonSetup() {
     jsPyEditor.minimize = true
     loadNgrams()
     initPyodide()
+
+    LED_BUFFER = maxEdits.value.toInt()
+    TIMEOUT_MS = 500
   }
   inputField.addEventListener("input", { jsPyEditor.redecorateLines() })
   inputField.addEventListener("keydown", { event -> jsPyEditor.navUpdate(event as KeyboardEvent) })
