@@ -3,10 +3,7 @@ package ai.hypergraph.tidyparse
 import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.kaliningraph.repair.LED_BUFFER
-import ai.hypergraph.kaliningraph.repair.MAX_REPAIR
-import ai.hypergraph.kaliningraph.repair.TIMEOUT_MS
-import ai.hypergraph.kaliningraph.repair.minimizeFix
+import ai.hypergraph.kaliningraph.repair.*
 import kotlinx.coroutines.*
 import kotlin.math.absoluteValue
 import kotlin.time.TimeSource
@@ -100,21 +97,21 @@ abstract class TidyEditor {
 
     runningJob?.cancel()
 
-    if /* Stub completion */ (tokens.size == 1 && stubMatcher.matches(tokens[0])) {
-      cfg.enumNTSmall(tokens[0].stripStub()).enumerateInteractively(workHash, tokens)
-    } else /* Completion */ if (HOLE_MARKER in tokens) {
-      cfg.enumSeqSmart(tokens).enumerateInteractively(workHash, tokens)
-    } else /* Parseable */ if (!hasHole && tokens in cfg.language) {
-      val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
-      writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it })
-    } else /* Repair */ Unit.also {
-      runningJob = MainScope().launch {
+    runningJob = MainScope().launch {
+      if /* Stub completion */ (tokens.size == 1 && stubMatcher.matches(tokens[0])) {
+        cfg.enumNTSmall(tokens[0].stripStub()).enumerateInteractively(workHash, tokens)
+      } else /* Completion */ if (HOLE_MARKER in tokens) {
+        cfg.enumSeqSmart(tokens).enumerateInteractively(workHash, tokens)
+      } else /* Parseable */ if (!hasHole && tokens in cfg.language) {
+        val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
+        writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it })
+      } else /* Repair */ Unit.also {
         initiateSuspendableRepair(tokens, cfg).enumerateInteractively(workHash, tokens)
       }
     }
   }
 
-  protected fun Sequence<String>.enumerateInteractively(
+  protected suspend fun Sequence<String>.enumerateInteractively(
     workHash: Int,
     origTks: List<String>,
     timer: TimeSource.Monotonic.ValueTimeMark = TimeSource.Monotonic.markNow(),
@@ -131,7 +128,6 @@ abstract class TidyEditor {
     metric = metric,
     shouldContinue = shouldContinue,
     postResults = { writeDisplayText("$invalidPrefix$it") },
-    localContinuation = ::continuation,
     finally = {
       if (currentWorkHash == workHash)
         writeDisplayText("$invalidPrefix$it".also { cache[workHash] = it })

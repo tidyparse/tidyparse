@@ -121,7 +121,7 @@ suspend fun benchmarkWGPURepair() {
   val words = repairCode(cfg, code, 5).distinct().map { it.joinToString(" ") }
   println("Distinct words: ${words.size}")
 
-  val (valid, invalid) = words.shuffled().take(10).partition { it in cfg.language }
+  val (valid, invalid) = words.shuffled().take(3).partition { it in cfg.language }
   println("\nValid samples (${valid.size})\n")
   valid.forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
   println("\nInvalid samples (${invalid.size})\n")

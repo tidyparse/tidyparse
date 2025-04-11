@@ -108,13 +108,12 @@ suspend fun CFG.maxParsableFragmentB(tokens: List<Σᐩ>, pad: Int = 3): Pair<In
 
 val MAX_DISP_RESULTS = 29
 
-fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
+suspend fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
   resultsToPost: Int = MAX_DISP_RESULTS,
   metric: (List<Σᐩ>) -> Int,
   shouldContinue: () -> Boolean,
   postResults: (Σᐩ) -> Unit,
   finally: (Σᐩ) -> Unit = { postResults(it) },
-  localContinuation: (() -> Unit) -> Any = { it() },
   customDiff: (String) -> String,
   postSummary: () -> String = { "." }
 ) {
@@ -124,7 +123,7 @@ fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
   val startTime = TimeSource.Monotonic.markNow()
   var totalResults = 0
 
-  fun findNextCompletion() {
+  suspend fun findNextCompletion() {
     var i = 0
     if (!iter.hasNext() || !shouldContinue()) {
       val throughput = (results.size /
@@ -161,7 +160,8 @@ fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
       }
     }
 
-    localContinuation(::findNextCompletion)
+    delay(0L)
+    findNextCompletion()
   }
 
   findNextCompletion()

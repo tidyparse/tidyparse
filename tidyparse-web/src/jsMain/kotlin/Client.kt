@@ -65,6 +65,8 @@ fun defaultSetup() {
     jsEditor.redecorateLines()
     LED_BUFFER = maxEdits.value.toInt()
     TIMEOUT_MS = timeout.value.toInt()
+    jsPyEditor.minimize = mincheck.checked
+    jsEditor.ntStubs = ntscheck.checked
   }
 
   inputField.addEventListener("input", { jsEditor.run { continuation { handleInput() } } })
@@ -92,7 +94,7 @@ fun pythonSetup() {
   window.onload = {
     jsPyEditor.redecorateLines()
 //    LED_BUFFER = maxEdits.value.toInt()
-    jsPyEditor.minimize = true
+    jsPyEditor.minimize = mincheck.checked
     loadNgrams()
     initPyodide()
 
