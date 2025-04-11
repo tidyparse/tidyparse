@@ -112,7 +112,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
       runningJob = MainScope().launch {
         var (rejected, total) = 0 to 0
         (if (gpuAvailable) {
-          repairCode(cfg, tokens, 5).asSequence()
+          repairCode(cfg, tokens, LED_BUFFER).asSequence()
           .map { it.joinToString(" ").tokenizeByWhitespace().joinToString(" ") } }
         else initiateSuspendableRepair(tokens, cfg))
 //        initiateSuspendableRepair(tokens, cfg, ngrams)

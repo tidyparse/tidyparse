@@ -58,16 +58,17 @@ suspend fun tryBootstrappingGPU() {
   }
 }
 
-suspend fun repairCode(cfg: CFG, code: List<String>, levRadius: Int): List<List<String>> {
+suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VALUE): List<List<String>> {
+  val t0 = TimeSource.Monotonic.markNow()
   val grammarFlattened = cfg.vindex.map { it.toList() }.flatten().toIntArray()
   val grammarOffsets = cfg.vindex.map { it.size }.fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
+  println("Encoded grammar in ${t0.elapsedNow()}")
 
-  val t0 = TimeSource.Monotonic.markNow()
-  val levFSA = makeLevFSA(code, levRadius)
+  val levFSA: FSA = makeLevFSA(code, 5)
   println("Made levFSA in ${t0.elapsedNow()}")
 
   val (allFSAPairsFlattened, allFSAPairsOffsets) = levFSA.midpoints.prefixScan()
-  println("Midpoints took ${t0.elapsedNow()}")
+  println("Midpoints took ${t0.elapsedNow()} / (${4 *(allFSAPairsFlattened.size + allFSAPairsOffsets.size)} bytes)")
 
   // Sparse index nonzero entries of the M_0 parse chart
   fun FSA.byteFormat(cfg: CFG): IntArray {
@@ -108,7 +109,7 @@ suspend fun repairCode(cfg: CFG, code: List<String>, levRadius: Int): List<List<
 //  println("Initial nonzeros: ${dpIn.count { it != 0 }}")
 
   println("PREPROCESSING TOOK: ${t0.elapsedNow()}") // ~230ms
-  val words = repairPipeline(cfg, levFSA, dpIn, metadata)
+  val words = repairPipeline(cfg, levFSA, dpIn, metadata, ledBuffer)
   println("Received: ${words.size} words")
   println("Round trip repair: ${t0.elapsedNow()}") // ~500ms
 
@@ -128,45 +129,40 @@ suspend fun benchmarkWGPURepair() {
   invalid.forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
 }
 
-suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metadata: IntArray): List<List<String>> {
+suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metadata: IntArray, ledBuffer: Int): List<List<String>> {
 //  println("FSA(|Q|=${fsa.numStates}, |δ|=${fsa.transit.size}), " +
 //      "CFG(|Σ|=${cfg.terminals.size}, |V|=${cfg.nonterminals.size}, |P|=${cfg.nonterminalProductions.size})")
   val t0 = TimeSource.Monotonic.markNow()
   val (numStates, numNonterminals) = fsa.numStates to cfg.nonterminals.size
   val metaBuf = metadata.toGPUBuffer(GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
   val dpBuf = cfl_mul_upper.invokeCFLFixpoint(numStates, numNonterminals, dpInSparse, metaBuf)
-  println("TIME TO FILL PARSE CHART: ${t0.elapsedNow()}")
+  println("Matrix closure reached in: ${t0.elapsedNow()}")
 
+  val t2 = TimeSource.Monotonic.markNow()
   val startNT     = cfg.bindex[START_SYMBOL]
   val finalStates = fsa.finalIdxs
   val startIdxs   = finalStates.map { it * numNonterminals + startNT }
     .let { it.zip(dpBuf.readIndices(it)) }.filter { (_, v) -> v != 0 }.map { it.first }
-//    .onEach { println("STIDX: $it") }
 
   if (!startIdxs.isEmpty()) { println("Valid parse found: dpComplete has ${startIdxs.size} start indices") }
   else { println("No valid parse found: dpComplete has no entries in final states!"); return emptyList() }
 
-  val t2 = TimeSource.Monotonic.markNow()
-  println("Time to copy metadata: ${t2.elapsedNow()}")
-
   val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNonterminals, dpBuf, metaBuf)
   println("Built backpointers in ${t2.elapsedNow()}")
 
-//  println("bpCountBufSum: ${bpCountBuf.readInts().sum()}")
-//  println("bpOffsetBufSum: ${bpOffsetBuf.readInts().sumOf { it.toLong() }}")
-//  println("bpStorageBufSize: ${bpStorageBuf.readInts().size}")
-
-  val startIndicesBuf = startIdxs.toIntArray()
-  val numStartIndices = startIdxs.size
+  val packTime = TimeSource.Monotonic.markNow()
+  val distToStates = startIdxs.map { it to fsa.idsToCoords[(it - startNT) / numNonterminals]!!.second }
+  val led = distToStates.minOf { it.second } // Language edit distance
+  val startIndicesBuf = distToStates.filter { it.second in led..(led + ledBuffer) }
+    .also { println("Start indices: $it") }.map { it.first }.toIntArray()
 
   val maxSamples = 1000
   val maxWordLen = fsa.width + fsa.height + 10
 
   val outBuf = GPUBuffer(maxSamples * maxWordLen * 4, GPUBufferUsage.STCPSD)
-  val uniforms = (intArrayOf(numStartIndices, numStates, maxWordLen, numNonterminals) + startIndicesBuf)
+  val uniforms = (intArrayOf(startIndicesBuf.size, numStates, maxWordLen, numNonterminals) + startIndicesBuf)
     .toGPUBuffer(GPUBufferUsage.STCPSD)
 
-  val packTime = TimeSource.Monotonic.markNow()
   val terminalLists = cfg.nonterminals.map { cfg.bimap.UNITS[it]?.map { cfg.tmMap[it]!! } ?: emptyList() }
   val nt_tm_lens = terminalLists.map { it.size }.toIntArray()
   val nt_tm_offsets = terminalLists.scan(0) { acc, list -> acc + list.size }.dropLast(1).toIntArray()

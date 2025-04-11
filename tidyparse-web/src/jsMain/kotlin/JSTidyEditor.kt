@@ -83,7 +83,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
         val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
         writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it })
       } else /* Repair */ Unit.also {
-          (if (gpuAvailable) { repairCode(cfg, tokens, 5).asSequence()
+          (if (gpuAvailable) { repairCode(cfg, tokens, LED_BUFFER).asSequence()
               .map { it.joinToString(" ") { it.replace("ε", "") }
                 .tokenizeByWhitespace().joinToString(" ") } }
           else initiateSuspendableRepair(tokens, cfg))
