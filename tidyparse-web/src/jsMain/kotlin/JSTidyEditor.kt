@@ -74,21 +74,20 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
     runningJob?.cancel()
 
-    runningJob = MainScope().launch {
+    runningJob = MainScope().launch { (
       if /* Stub completion */ (tokens.size == 1 && stubMatcher.matches(tokens[0])) {
-        cfg.enumNTSmall(tokens[0].stripStub()).enumerateInteractively(workHash, tokens)
+        cfg.enumNTSmall(tokens[0].stripStub())
       } else /* Completion */ if (HOLE_MARKER in tokens) {
-        cfg.enumSeqSmart(tokens).enumerateInteractively(workHash, tokens)
+        cfg.enumSeqSmart(tokens)
       } else /* Parseable */ if (!hasHole && tokens in cfg.language) {
         val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
-        writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it })
-      } else /* Repair */ Unit.also {
+        writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it }); null
+      } else /* Repair */ {
           (if (gpuAvailable) { repairCode(cfg, tokens, LED_BUFFER).asSequence()
               .map { it.joinToString(" ") { it.replace("ε", "") }
-                .tokenizeByWhitespace().joinToString(" ") } }
+              .tokenizeByWhitespace().joinToString(" ") } }
           else initiateSuspendableRepair(tokens, cfg))
-            .enumerateInteractively(workHash, tokens)
-      }
+      })?.enumerateInteractively(workHash, tokens)
     }
   }
 
