@@ -123,7 +123,7 @@ suspend fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
   val startTime = TimeSource.Monotonic.markNow()
   var totalResults = 0
 
-  suspend fun findNextCompletion() {
+  while (true) {
     var i = 0
     if (!iter.hasNext() || !shouldContinue()) {
       val throughput = (results.size /
@@ -159,12 +159,7 @@ suspend fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
         })
       }
     }
-
-    delay(0L)
-    findNextCompletion()
   }
-
-  findNextCompletion()
 }
 
 fun initiateSerialRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequence<Σᐩ> {

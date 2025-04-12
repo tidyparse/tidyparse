@@ -4,6 +4,7 @@ import Shader.Companion.GPUBuffer
 import Shader.Companion.readIndices
 import Shader.Companion.readInts
 import Shader.Companion.toGPUBuffer
+import Shader.Companion.toSquareMatrixSparse
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
@@ -44,11 +45,12 @@ suspend fun tryBootstrappingGPU() {
     gpuAvailDiv.appendChild(obj)
     gpu.addEventListener(EventType("uncapturederror"), { e: dynamic -> println("Uncaptured: ${e.error.message}") })
     try {
-      listOf(sparse_load,
+      listOf(sparse_load, dag_reach, sparse_mat_load,
         cfl_mul_upper, prefix_sum_p1, prefix_sum_p2,
         bp_count, bp_write, sample_words).forEach { it.bind() }
       benchmarkWGPU()
       benchmarkWGPURepair()
+      benchmarkReach()
     } catch (e: Exception) { e.printStackTrace(); return }
 
     gpuAvailable = true
@@ -68,6 +70,7 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
   println("Made levFSA in ${t0.elapsedNow()}")
 
   val (allFSAPairsFlattened, allFSAPairsOffsets) = levFSA.midpoints.prefixScan()
+//    dag_reach.invokeDAGFixpoint(levFSA.adjList).readInts().sparsifyReachabilityMatrix().prefixScan()
   println("Midpoints took ${t0.elapsedNow()} / (${4 *(allFSAPairsFlattened.size + allFSAPairsOffsets.size)} bytes)")
 
   // Sparse index nonzero entries of the M_0 parse chart
@@ -138,22 +141,21 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metadata: I
   val dpBuf = cfl_mul_upper.invokeCFLFixpoint(numStates, numNonterminals, dpInSparse, metaBuf)
   println("Matrix closure reached in: ${t0.elapsedNow()}")
 
-  val t2 = TimeSource.Monotonic.markNow()
+  val t1 = TimeSource.Monotonic.markNow()
   val startNT     = cfg.bindex[START_SYMBOL]
-  val finalStates = fsa.finalIdxs
-  val startIdxs   = finalStates.map { it * numNonterminals + startNT }
+  val allStartIds = fsa.finalIdxs.map { it * numNonterminals + startNT }
     .let { it.zip(dpBuf.readIndices(it)) }.filter { (_, v) -> v != 0 }.map { it.first }
 
-  if (!startIdxs.isEmpty()) { println("Valid parse found: dpComplete has ${startIdxs.size} start indices") }
+  if (!allStartIds.isEmpty()) { println("Valid parse found: dpComplete has ${allStartIds.size} start indices") }
   else { println("No valid parse found: dpComplete has no entries in final states!"); return emptyList() }
 
   val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNonterminals, dpBuf, metaBuf)
-  println("Built backpointers in ${t2.elapsedNow()}")
+  println("Built backpointers in ${t1.elapsedNow()}")
 
   val packTime = TimeSource.Monotonic.markNow()
-  val distToStates = startIdxs.map { it to fsa.idsToCoords[(it - startNT) / numNonterminals]!!.second }
+  val distToStates = allStartIds.map { it to fsa.idsToCoords[(it - startNT) / numNonterminals]!!.second }
   val led = distToStates.minOf { it.second } // Language edit distance
-  val startIndicesBuf = distToStates.filter { it.second in led..(led + ledBuffer) }
+  val startIndicesBuf = distToStates.filter { it.second in (led..(led + ledBuffer)) }
     .also { println("Start indices: $it") }.map { it.first }.toIntArray()
 
   val maxSamples = 1000
@@ -173,16 +175,15 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metadata: I
     .toGPUBuffer(GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
   println("Packing time: ${packTime.elapsedNow()}")
 
-  println("Invoking sampler...")
-  val t3 = TimeSource.Monotonic.markNow()
+  val t2 = TimeSource.Monotonic.markNow()
   val threads = (maxSamples + 63) / 64
   sample_words.invoke1d(threads, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, uniforms, terminals)
   val rawTokens: IntArray = outBuf.readInts()
-  println("Sampled words in ${t3.elapsedNow()}")
+  println("Sampled words in ${t2.elapsedNow()}")
 
-  val t4 = TimeSource.Monotonic.markNow()
+  val t3 = TimeSource.Monotonic.markNow()
   val wordsPerSample = rawTokens.splitIntoWords(cfg, maxSamples, maxWordLen)
-  println("Decoded tokens in ${t4.elapsedNow()}")
+  println("Decoded tokens in ${t3.elapsedNow()}")
 
   outBuf.destroy()
   metaBuf.destroy()
@@ -247,6 +248,29 @@ let pairOffset     = getMdptOffset(aoi - 1u);
 var pairOffsetNext: u32;
 if (aoi < cs.mdptsOffsetsSize) { pairOffsetNext = getMdptOffset(aoi); } 
 else { pairOffsetNext = cs.mdptsSize; }"""
+
+//language=wgsl
+val dag_reach by Shader("""
+struct AtomicChange { count: atomic<u32> };
+@group(0) @binding(0) var<storage, read_write>   input : array<u32>;
+@group(0) @binding(1) var<storage, read_write> changes : AtomicChange;
+
+@compute @workgroup_size(1,1,1)
+fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+    let x = gid.x;
+    let y = gid.y;
+    if (x >= y) { return; }
+    let width = u32(sqrt(f32(arrayLength(&input))));
+    if (input[x * width + y] == 1u) { atomicAdd(&changes.count, 1u); return; }
+
+    for (var k = 0u; k < width; k = k + 1u) {
+        if (input[x * width + k] == 1u && input[k * width + y] == 1u) {
+            input[x * width + y] = 1u;
+            atomicAdd(&changes.count, 1u);
+            return;
+        }
+    }
+}""")
 
 //language=wgsl
 val cfl_mul_upper by Shader(CFL_STRUCT + """
@@ -556,11 +580,11 @@ fn sampleTopDown(
 
 //language=wgsl
 val sparse_load by Shader("""
-struct SparseElement { r: u32, c: u32, v: u32, i: i32 };
-struct Coeffs { rowCoeff: u32, colCoeff: u32, };
+struct SparseElement { r: u32, c: u32, v: u32, i: u32 };
+struct Coeffs { rowCoeff: u32, colCoeff: u32 };
 
 @group(0) @binding(0) var<storage, read> sparse_elements: array<SparseElement>;
-@group(0) @binding(1) var<storage, read_write> output_buffer: array<i32>;
+@group(0) @binding(1) var<storage, read_write> output_buffer: array<u32>;
 @group(0) @binding(2) var<uniform> coeffs: Coeffs;
 
 // Define workgroup size (must match constant in Kotlin code)
@@ -574,6 +598,26 @@ const WORKGROUP_SIZE: u32 = ${SPARSE_WRITER_WORKGROUP_SIZE}u;
     let element = sparse_elements[index];
     let target_index = element.r * coeffs.rowCoeff + element.c * coeffs.colCoeff + element.v;
     if (target_index < output_size) { output_buffer[target_index] = element.i; }
+}""")
+
+//language=wgsl
+val sparse_mat_load by Shader("""
+struct SparseElement { r: u32, c: u32 };
+
+@group(0) @binding(0) var<storage, read> sparse_elements: array<SparseElement>;
+@group(0) @binding(1) var<storage, read_write> output_buffer: array<u32>;
+
+const WORKGROUP_SIZE: u32 = ${SPARSE_WRITER_WORKGROUP_SIZE}u;
+
+@compute @workgroup_size(WORKGROUP_SIZE) fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let index = global_id.x;
+    let num_elements = arrayLength(&sparse_elements);
+    let output_size = arrayLength(&output_buffer);
+    if (index >= num_elements) { return; }
+    let element = sparse_elements[index];
+    let width = u32(sqrt(f32(output_size)));
+    let target_index = element.r * width + element.c;
+    if (target_index < output_size) { output_buffer[target_index] = 1; }
 }""")
 
 const val SPARSE_WRITER_WORKGROUP_SIZE = 256
@@ -661,7 +705,7 @@ class Shader(val src: String) {
       require(totalSizeInInts > 0) { "totalSizeInInts must be positive." }
 
       val sparseDataGpuBuffer = toGPUBuffer(GPUBufferUsage.STCPSD)
-      val outputByteSize = totalSizeInInts.toLong() * Int32Array.BYTES_PER_ELEMENT.toLong()
+      val outputByteSize = totalSizeInInts.toLong() * Int32Array.BYTES_PER_ELEMENT
       val outputBuffer = GPUBuffer(outputByteSize, usage or GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
       val coeffsBuffer = intArrayOf(rowCoeff, colCoeff).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
       val numWorkgroups = ceil(size / 4.0 / SPARSE_WRITER_WORKGROUP_SIZE).toInt()
@@ -670,6 +714,15 @@ class Shader(val src: String) {
 
       sparseDataGpuBuffer.destroy()
       coeffsBuffer.destroy()
+      return outputBuffer
+    }
+
+    fun IntArray.toSquareMatrixSparse(size: Int): GPUBuffer {
+      val outputByteSize = size * size * Int32Array.BYTES_PER_ELEMENT
+      val outputBuffer = GPUBuffer(outputByteSize, GPUBufferUsage.STCPSD)
+      val sparseDataBuffer = toGPUBuffer(GPUBufferUsage.STCPSD)
+      val numWorkgroups = ceil(size / 2.0 / SPARSE_WRITER_WORKGROUP_SIZE).toInt()
+      sparse_mat_load.invoke1d(numWorkgroups, sparseDataBuffer, outputBuffer)
       return outputBuffer
     }
 
@@ -753,12 +806,43 @@ class Shader(val src: String) {
     return dpIn
   }
 
+  suspend fun invokeDAGFixpoint(adjList: IntArray): GPUBuffer {
+    val input = adjList.toSquareMatrixSparse(GPUBufferUsage.STCPSD)
+    var t0 = TimeSource.Monotonic.markNow()
+    var prevValue = -1
+
+    val width = sqrt(input.size.toFloat()).toInt()
+    for(round in 0 until width) {
+      val changesBuf = intArrayOf(0).toGPUBuffer(GPUBufferUsage.STCPSD)
+      invoke2d(width, input, changesBuf)
+      val changesThisRound = changesBuf.readInts()[0]
+      changesBuf.destroy()
+      if (changesThisRound == prevValue) break
+      prevValue = changesThisRound
+      println("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
+      t0 = TimeSource.Monotonic.markNow()
+    }
+
+    return input
+  }
+
   fun invoke1d(threads: Int, vararg inputs: GPUBuffer) =
     gpu.createCommandEncoder().run {
       beginComputePass().apply {
         setPipeline(pipeline)
         setBindGroup(0, pipeline.bindBuffers(*inputs))
         dispatchWorkgroups(threads)
+        end()
+      }
+      gpu.queue.submit(arrayOf(finish()))
+    }
+
+  fun invoke2d(t1: Int, vararg inputs: GPUBuffer) =
+    gpu.createCommandEncoder().run {
+      beginComputePass().apply {
+        setPipeline(pipeline)
+        setBindGroup(0, pipeline.bindBuffers(*inputs))
+        dispatchWorkgroups(t1, t1)
         end()
       }
       gpu.queue.submit(arrayOf(finish()))
@@ -877,7 +961,25 @@ struct Params { N: u32 };
     Out[rowOffset + col] = acc;
 }""")
 
-fun List<List<List<Int>>>.prefixScan(): Pair<IntArray, IntArray> = // TODO: move into shader kernel?
+suspend fun benchmarkReach() {
+  val code = "NAME = [ ( STRING , NAME ) , , ( NAME , NAME ) , ( NAME , NAME ) , ( NAME , NAME ) , , ( NAME , NAME ) ] NEWLINE"
+  val fsa = makeLevFSA(code, 5)
+
+  val t0 = TimeSource.Monotonic.markNow()
+  val (tdata, toffset) = fsa.midpoints.prefixScan()
+  println("Sparse CPU reachability took ${t0.elapsedNow()}")
+
+  val t1 = TimeSource.Monotonic.markNow()
+  val (data, offset) = dag_reach.invokeDAGFixpoint(fsa.adjList).readInts()
+    .also { println("Fixpoint reached in ${t1.elapsedNow()}") }
+    .sparsifyReachabilityMatrix().prefixScan()
+  println("Sparse GPU reachability took ${t1.elapsedNow()}")
+
+  println("Reference (${tdata.size}, ${toffset.size}) / Actual (${data.size}, ${offset.size})")
+}
+
+// TODO: move into shader kernel?
+fun List<List<List<Int>>>.prefixScan(): Pair<IntArray, IntArray> =
   measureTimedValue {
     fun IntArray.prefixSumSizes(): IntArray =
       IntArray(size + 1).also { prefix ->
@@ -894,3 +996,11 @@ fun List<List<List<Int>>>.prefixScan(): Pair<IntArray, IntArray> = // TODO: move
 
     flattened to offsets
   }.also { println("Completed prefix scan in: ${it.duration}") }.value
+
+fun IntArray.sparsifyReachabilityMatrix(n: Int = sqrt(size.toDouble()).toInt()): List<List<List<Int>>> =
+  List(n) { i ->
+    List(n) { j ->
+      if (j <= i || this[i*n + j] == 0) emptyList()
+      else (0 until n).filter { v -> this[i*n + v] == 1 && this[v*n + j] == 1 }
+    }
+  }
