@@ -136,7 +136,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
               val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())
               pcs.paintDiff(levAlign)
             },
-            postSummary = { ", discarded $rejected/$total." },
+            postCompletionSummary = { ", discarded $rejected/$total." },
           )
       }
     }

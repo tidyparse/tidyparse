@@ -97,17 +97,28 @@ abstract class TidyEditor {
 
     runningJob?.cancel()
 
-    runningJob = MainScope().launch { (
-        if /* Stub completion */ (tokens.size == 1 && stubMatcher.matches(tokens[0])) {
-          cfg.enumNTSmall(tokens[0].stripStub())
-        } else /* Completion */ if (HOLE_MARKER in tokens) {
-          cfg.enumSeqSmart(tokens)
-        } else /* Parseable */ if (!hasHole && tokens in cfg.language) {
+    val scenario = when {
+      tokens.size == 1 && stubMatcher.matches(tokens[0]) -> Scenario.STUB
+      HOLE_MARKER in tokens -> Scenario.COMPLETION
+      !hasHole && tokens in cfg.language -> Scenario.PARSEABLE
+      else -> Scenario.REPAIR
+    }
+
+    runningJob = MainScope().launch {
+      when(scenario) {
+        Scenario.STUB -> cfg.enumNTSmall(tokens[0].stripStub())
+        Scenario.COMPLETION -> cfg.enumSeqSmart(tokens)
+        Scenario.PARSEABLE -> {
           val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
           writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it }); null
-        } else /* Repair */ { initiateSuspendableRepair(tokens, cfg) }
-      )?.enumerateInteractively(workHash, tokens)
+        }
+        Scenario.REPAIR -> initiateSuspendableRepair(tokens, cfg)
+      }?.enumerateInteractively(workHash, tokens, reason = scenario.reason)
     }
+  }
+
+  enum class Scenario(val reason: String) {
+    STUB(stubGenPrefix), COMPLETION(holeGenPrefix), PARSEABLE(parsedPrefix), REPAIR(invalidPrefix)
   }
 
   protected suspend fun Sequence<String>.enumerateInteractively(
@@ -119,7 +130,8 @@ abstract class TidyEditor {
     shouldContinue: () -> Boolean = { currentWorkHash == workHash && timer.hasTimeLeft() },
     customDiff: (String) -> String = { levenshteinAlign(origTks.joinToString(" "), it).paintDiffs() },
     recognizer: (String) -> Boolean = { it in cfg.language },
-    postSummary: () -> String = { "." }
+    postCompletionSummary: () -> String = { "." },
+    reason: String = "Generic completions:\n\n"
   ) = let {
     if (!minimize || "_" in origTks) it
     else it.flatMap { minimizeFix(origTks, it.tokenizeByWhitespace()) { recognizer(this) } }
@@ -128,12 +140,11 @@ abstract class TidyEditor {
     shouldContinue = shouldContinue,
     postResults = { writeDisplayText("$invalidPrefix$it") },
     finally = {
-      if (currentWorkHash == workHash)
-        writeDisplayText("$invalidPrefix$it".also { cache[workHash] = it })
+      if (currentWorkHash == workHash) writeDisplayText("$reason$it".also { cache[workHash] = it })
       println("Completed in ${timer.elapsedNow().inWholeMilliseconds}ms")
     },
     customDiff = customDiff,
-    postSummary = postSummary
+    postCompletionSummary = postCompletionSummary
   )
 
   fun caretInGrammar(): Boolean =

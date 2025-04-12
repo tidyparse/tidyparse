@@ -115,7 +115,7 @@ suspend fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
   postResults: (Σᐩ) -> Unit,
   finally: (Σᐩ) -> Unit = { postResults(it) },
   customDiff: (String) -> String,
-  postSummary: () -> String = { "." }
+  postCompletionSummary: () -> String = { "." }
 ) {
   val results = mutableSetOf<Σᐩ>()
   val topNResults = mutableListOf<Pair<Σᐩ, Int>>()
@@ -135,7 +135,7 @@ suspend fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
       else "~$throughput res/s"
       val moreResults = (results.size - topNResults.size)
         .let { if (it == 0) "\n\n" else "\n\n...$it more" }
-      val statistics = "$moreResults $summary${postSummary.invoke()}"
+      val statistics = "$moreResults $summary${postCompletionSummary.invoke()}"
       return finally(topNResults.joinToString("\n", "", statistics) {
         val result = "<span style=\"color: gray\" class=\"noselect\">${i++.toString().padStart(2)}.) </span>${it.first}"
         if (i == 1) "<mark>$result</mark>" else result
@@ -539,6 +539,8 @@ fun Σᐩ.sanitized(terminals: Set<Σᐩ>): Σᐩ =
 
 const val parsedPrefix = "✅ Current line parses! Tree:\n\n"
 const val invalidPrefix = "❌ Current line invalid, possible fixes:\n\n"
+const val stubGenPrefix = "&lt;/&gt; Stub generation, possible completions:\n\n"
+const val holeGenPrefix = "___ Hole generation, possible completions:\n\n"
 const val ok = "<b>✅ Current line unambiguously parses! Parse tree:</b>\n"
 const val ambig = "<b>⚠️ Current line parses, but is ambiguous:</b>\n"
 const val no = "<b>❌ Current line invalid, possible fixes:</b>\n"

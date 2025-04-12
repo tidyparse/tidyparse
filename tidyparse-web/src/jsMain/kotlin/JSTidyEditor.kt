@@ -62,8 +62,8 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
     if (cfg.isEmpty()) return
 
-    var hasHole = false
-    val abstractUnk = tokens.map { if (it in cfg.terminals) it else { hasHole = true; "_" } }
+    var containsUnkTok = false
+    val abstractUnk = tokens.map { if (it in cfg.terminals) it else { containsUnkTok = true; "_" } }
 
     val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, minimize, ntStubs).hashCode()
     val workHash = abstractUnk.hashCode() + cfg.hashCode() + settingsHash.hashCode()
@@ -74,20 +74,27 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
     runningJob?.cancel()
 
-    runningJob = MainScope().launch { (
-      if /* Stub completion */ (tokens.size == 1 && stubMatcher.matches(tokens[0])) {
-        cfg.enumNTSmall(tokens[0].stripStub())
-      } else /* Completion */ if (HOLE_MARKER in tokens) {
-        cfg.enumSeqSmart(tokens)
-      } else /* Parseable */ if (!hasHole && tokens in cfg.language) {
-        val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
-        writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it }); null
-      } else /* Repair */ {
-          (if (gpuAvailable) { repairCode(cfg, tokens, LED_BUFFER).asSequence()
-              .map { it.joinToString(" ") { it.replace("ε", "") }
-              .tokenizeByWhitespace().joinToString(" ") } }
-          else initiateSuspendableRepair(tokens, cfg))
-      })?.enumerateInteractively(workHash, tokens)
+    val scenario = when {
+      tokens.size == 1 && stubMatcher.matches(tokens[0]) -> Scenario.STUB
+      HOLE_MARKER in tokens -> Scenario.COMPLETION
+      !containsUnkTok && tokens in cfg.language -> Scenario.PARSEABLE
+      else -> Scenario.REPAIR
+    }
+
+    runningJob = MainScope().launch {
+      when (scenario) {
+        Scenario.STUB -> cfg.enumNTSmall(tokens[0].stripStub()).take(100)
+        Scenario.COMPLETION -> cfg.enumSeqSmart(tokens)
+        Scenario.PARSEABLE -> {
+          val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
+          writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it }); null
+        }
+        Scenario.REPAIR -> if (gpuAvailable)
+          repairCode(cfg, tokens, LED_BUFFER).asSequence()
+          .map { it.joinToString(" ") { it.replace("ε", "") }
+            .tokenizeByWhitespace().joinToString(" ") }
+        else initiateSuspendableRepair(tokens, cfg)
+      }?.enumerateInteractively(workHash, tokens, reason = scenario.reason)
     }
   }
 
