@@ -4,7 +4,6 @@ import Shader.Companion.GPUBuffer
 import Shader.Companion.readIndices
 import Shader.Companion.readInts
 import Shader.Companion.toGPUBuffer
-import Shader.Companion.toSquareMatrixSparse
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
@@ -69,8 +68,8 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
   val levFSA: FSA = makeLevFSA(code, 5)
   println("Made levFSA in ${t0.elapsedNow()}")
 
-  val (allFSAPairsFlattened, allFSAPairsOffsets) = levFSA.midpoints.prefixScan()
-//    dag_reach.invokeDAGFixpoint(levFSA.adjList).readInts().sparsifyReachabilityMatrix().prefixScan()
+  val (allFSAPairsFlattened, allFSAPairsOffsets) = //levFSA.midpoints.prefixScan()
+    dag_reach.invokeDAGFixpoint(levFSA).readInts().sparsifyReachabilityMatrix().prefixScan()
   println("Midpoints took ${t0.elapsedNow()} / (${4 *(allFSAPairsFlattened.size + allFSAPairsOffsets.size)} bytes)")
 
   // Sparse index nonzero entries of the M_0 parse chart
@@ -195,9 +194,9 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metadata: I
 
 // TODO: kernelize?
 fun IntArray.splitIntoWords(cfg: CFG, maxSamples: Int, maxWordLen: Int) =
-  (0 until maxSamples).map { sampleIdx ->
+  (0..<maxSamples).map { sampleIdx ->
     val offset = sampleIdx * maxWordLen
-    slice(offset until offset + maxWordLen).map { it and 0xFF }
+    slice(offset..<(offset + maxWordLen)).map { it and 0xFF }
       .fold(mutableListOf<MutableList<Int>>()) { slices, token ->
         if (token == 0) {
           if (slices.lastOrNull()?.isNotEmpty() == true) slices.add(mutableListOf())
@@ -261,6 +260,7 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let y = gid.y;
     if (x >= y) { return; }
     let width = u32(sqrt(f32(arrayLength(&input))));
+//    if (x == y) { input[x * width + y] = 1u; atomicAdd(&changes.count, 1u); return; }
     if (input[x * width + y] == 1u) { atomicAdd(&changes.count, 1u); return; }
 
     for (var k = 0u; k < width; k = k + 1u) {
@@ -717,12 +717,13 @@ class Shader(val src: String) {
       return outputBuffer
     }
 
-    fun IntArray.toSquareMatrixSparse(size: Int): GPUBuffer {
-      val outputByteSize = size * size * Int32Array.BYTES_PER_ELEMENT
+    fun IntArray.toSquareMatrixSparse(n: Int): GPUBuffer {
+      val outputByteSize = n * n * Int32Array.BYTES_PER_ELEMENT
       val outputBuffer = GPUBuffer(outputByteSize, GPUBufferUsage.STCPSD)
       val sparseDataBuffer = toGPUBuffer(GPUBufferUsage.STCPSD)
-      val numWorkgroups = ceil(size / 2.0 / SPARSE_WRITER_WORKGROUP_SIZE).toInt()
+      val numWorkgroups = ceil((size / 2.0) / SPARSE_WRITER_WORKGROUP_SIZE).toInt()
       sparse_mat_load.invoke1d(numWorkgroups, sparseDataBuffer, outputBuffer)
+      sparseDataBuffer.destroy()
       return outputBuffer
     }
 
@@ -792,9 +793,9 @@ class Shader(val src: String) {
 
     var prevValue = -1
 
-    for(round in 0 until numStates) {
+    for(round in 0..<numStates) {
       val changesBuf = intArrayOf(0).toGPUBuffer(GPUBufferUsage.STCPSD)
-      invoke3d(numStates, numNonterminals, dpIn, metaBuf, changesBuf)
+      cfl_mul_upper.invoke3d(numStates, numNonterminals, dpIn, metaBuf, changesBuf)
       val changesThisRound = changesBuf.readInts()[0]
       changesBuf.destroy()
       if (changesThisRound == prevValue) break
@@ -806,15 +807,16 @@ class Shader(val src: String) {
     return dpIn
   }
 
-  suspend fun invokeDAGFixpoint(adjList: IntArray): GPUBuffer {
-    val input = adjList.toSquareMatrixSparse(GPUBufferUsage.STCPSD)
+  suspend fun invokeDAGFixpoint(fsa: FSA): GPUBuffer {
+    val adjList = fsa.adjList
+    val states = fsa.numStates
+    val input = adjList.toSquareMatrixSparse(states)
     var t0 = TimeSource.Monotonic.markNow()
     var prevValue = -1
 
-    val width = sqrt(input.size.toFloat()).toInt()
-    for(round in 0 until width) {
+    for (round in 0..<states) {
       val changesBuf = intArrayOf(0).toGPUBuffer(GPUBufferUsage.STCPSD)
-      invoke2d(width, input, changesBuf)
+      dag_reach.invoke2d(states, input, changesBuf)
       val changesThisRound = changesBuf.readInts()[0]
       changesBuf.destroy()
       if (changesThisRound == prevValue) break
@@ -923,8 +925,8 @@ suspend fun benchmarkWGPU() {
     var current = a.copyOf()
     for (step in 1..P) {
       val next = IntArray(n * n)
-      for (r in 0 until n) for (c in 0 until n)
-        next[r * n + c] = (0 until n).sumOf { k -> current[r * n + k] * current[k * n + c] }
+      for (r in 0..<n) for (c in 0..<n)
+        next[r * n + c] = (0..<n).sumOf { k -> current[r * n + k] * current[k * n + c] }
       current = next
     }
     return current.toList().hashCode()
@@ -966,14 +968,18 @@ suspend fun benchmarkReach() {
   val fsa = makeLevFSA(code, 5)
 
   val t0 = TimeSource.Monotonic.markNow()
-  val (tdata, toffset) = fsa.midpoints.prefixScan()
-  println("Sparse CPU reachability took ${t0.elapsedNow()}")
+  val midpoints = fsa.midpoints
+  val (tdata, toffset) = midpoints.prefixScan()
+  println("Sparse CPU reachability took ${t0.elapsedNow()} / sum: ${midpoints.flatten().size}")
 
   val t1 = TimeSource.Monotonic.markNow()
-  val (data, offset) = dag_reach.invokeDAGFixpoint(fsa.adjList).readInts()
-    .also { println("Fixpoint reached in ${t1.elapsedNow()}") }
-    .sparsifyReachabilityMatrix().prefixScan()
-  println("Sparse GPU reachability took ${t1.elapsedNow()}")
+  val (data, offset) = dag_reach.invokeDAGFixpoint(fsa).readInts()
+    .also { println("Fixpoint reached in ${t1.elapsedNow()} / sum: ${it.sum()}") }
+    .sparsifyReachabilityMatrix()
+    .also { println("Sparse GPU reachability in ${t1.elapsedNow()} / sum: ${it.flatten().size}") }
+    .prefixScan()
+
+  println("Full sparse GPU reachability took ${t1.elapsedNow()}")
 
   println("Reference (${tdata.size}, ${toffset.size}) / Actual (${data.size}, ${offset.size})")
 }
@@ -988,7 +994,7 @@ fun List<List<List<Int>>>.prefixScan(): Pair<IntArray, IntArray> =
       }
 
     val filtered = mapIndexed { p, outer ->
-      outer.mapIndexed { q, inner -> inner.filter { it in (p + 1) until q } }
+      outer.mapIndexed { q, inner -> inner.filter { it in (p + 1)..<q } }
     }.flatten()
 
     val flattened = filtered.flatten().toIntArray()
@@ -1001,6 +1007,6 @@ fun IntArray.sparsifyReachabilityMatrix(n: Int = sqrt(size.toDouble()).toInt()):
   List(n) { i ->
     List(n) { j ->
       if (j <= i || this[i*n + j] == 0) emptyList()
-      else (0 until n).filter { v -> this[i*n + v] == 1 && this[v*n + j] == 1 }
+      else (0..<n).filter { v -> this[i*n + v] == 1 && this[v*n + j] == 1 }
     }
   }

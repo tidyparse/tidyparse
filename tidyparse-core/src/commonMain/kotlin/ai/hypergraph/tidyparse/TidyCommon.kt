@@ -182,8 +182,8 @@ fun initiateSerialRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequence<Σᐩ> {
     var minRad: Int = Int.MAX_VALUE
 
     // For pairs (p,q) in topological order
-    for (dist: Int in 1 until dp.size) {
-      for (iP: Int in 0 until dp.size - dist) {
+    for (dist: Int in 1..<dp.size) {
+      for (iP: Int in 0..<dp.size - dist) {
         val p = iP
         val q = iP + dist
         if (ap[p][q] == null) continue
@@ -212,7 +212,7 @@ fun initiateSerialRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequence<Σᐩ> {
     return if (minRad == Int.MAX_VALUE) null else minRad
   }
 
-  val led = (3 until upperBound)
+  val led = (3..<upperBound)
     .firstNotNullOfOrNull { nonemptyLevInt(makeLevFSA(brokenStr, it)) } ?:
   upperBound.also { println("Hit upper bound") }
   val radius = led + LED_BUFFER
@@ -239,8 +239,8 @@ fun initiateSerialRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequence<Σᐩ> {
   var location = -1 to -1
 
   // 3) CYK + Floyd Warshall parsing
-  for (dist in 1 until nStates) {
-    for (p in 0 until (nStates - dist)) {
+  for (dist in 1..<nStates) {
+    for (p in 0..<(nStates - dist)) {
       val q = p + dist
       if (levFSA.allPairs[p][q] == null) continue
       val appq = levFSA.allPairs[p][q]!!
@@ -319,8 +319,8 @@ suspend fun initiateSuspendableRepair(
     var minRad: Int = Int.MAX_VALUE
 
     // For pairs (p,q) in topological order
-    for (dist: Int in 1 until dp.size) {
-      for (iP: Int in 0 until dp.size - dist) {
+    for (dist: Int in 1..<dp.size) {
+      for (iP: Int in 0..<dp.size - dist) {
         val p = iP
         val q = iP + dist
         if (ap[p][q] == null) continue
@@ -350,7 +350,7 @@ suspend fun initiateSuspendableRepair(
     return if (minRad == Int.MAX_VALUE) null else minRad
   }
 
-  val led = (3 until upperBound)
+  val led = (3..<upperBound)
     .firstNotNullOfOrNull { nonemptyLevInt(makeLevFSA(brokenStr, it)) } ?:
     upperBound.also { println("Hit upper bound") }
   val radius = led + LED_BUFFER
