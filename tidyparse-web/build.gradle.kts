@@ -35,7 +35,7 @@ kotlin {
     val jsMain by getting {
       dependencies {
         implementation(project(":tidyparse-core"))
-        implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2025.4.8")
+        implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2025.4.10")
       }
     }
   }

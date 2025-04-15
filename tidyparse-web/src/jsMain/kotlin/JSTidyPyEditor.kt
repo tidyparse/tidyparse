@@ -10,6 +10,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
   val ngrams: MutableMap<List<String>, Double> = mutableMapOf<List<String>, Double>()
   val order: Int by lazy { ngrams.keys.firstOrNull()!!.size }
   val normalizingConst by lazy { ngrams.values.sum() }
+  var allowCompilerErrors = true
 
   val PLACEHOLDERS = listOf("STRING", "NAME", "NUMBER")
   override val stubMatcher: Regex = Regex(PLACEHOLDERS.joinToString("|") { Regex.escape(it) })
@@ -118,20 +119,22 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 //        initiateSuspendableRepair(tokens, cfg, ngrams)
           // Drop NEWLINE (added by default to PyCodeSnippets)
           .map { it.substring(0, it.length - 8).replacePythonKeywords() }
-          .distinct()
-          .filter { s ->
-            val errorType = getOutput(s).getErrorType()
-            when (errorType) {
-              "SyntaxError", "TypeError" -> false
-              "" -> true
-              else -> false
-            }.also { if (!it) rejected++; total++ }
+          .distinct().let {
+            if (allowCompilerErrors) it
+            else it.filter { s ->
+              val errorType = getOutput(s).getErrorType()
+              when (errorType) {
+                "SyntaxError", "TypeError" -> false
+                "" -> true
+                else -> false
+              }.also { if (!it) rejected++; total++ }
+            }
           }.enumerateInteractively(
             workHash = workHash,
             origTks = tokens.dropLast(1),
             recognizer = { "$it NEWLINE".replace("|", "OR") in cfg.language },
 //            metric = { (score(it) * 1_000.0).toInt() }, // TODO: Is reordering really necessary if we are decoding GREs by ngram score?
-            metric = { (levenshtein(tokens.dropLast(1), it) * 10000 + score(it) * 1_000.0).toInt() },
+            metric = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() },
             customDiff = {
               val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())
               pcs.paintDiff(levAlign)
