@@ -29,6 +29,13 @@ lateinit var gpu: GPUDevice
 var gpuAvailable = false
 external val navigator: dynamic
 
+/*
+TODO:
+  (1) tree sampler for unique decoding
+  (2) rescore samples using Markov Chain
+  (3) parallelize byteFormat
+ */
+
 suspend fun tryBootstrappingGPU() {
   print("Checking GPU availability... ")
   val tmpDev = (navigator.gpu as? GPU)?.requestAdapter()?.requestDevice()?.also { gpu = it }
@@ -45,7 +52,8 @@ suspend fun tryBootstrappingGPU() {
     gpuAvailDiv.appendChild(obj)
     gpu.addEventListener(EventType("uncapturederror"), { e: dynamic -> println("Uncaptured: ${e.error.message}") })
     try {
-      listOf(sparse_load, dag_reach, sparse_mat_load,
+      listOf(sparse_load, sparse_mat_load,
+        dag_reach, mdpt_count, mdpt_write,
         cfl_mul_upper, prefix_sum_p1, prefix_sum_p2,
         bp_count, bp_write, sample_words).forEach { it.bind() }
       benchmarkWGPU()
@@ -234,8 +242,7 @@ struct AtomicChange { count: atomic<u32> };
 @group(0) @binding(0) var<storage, read_write>   input : array<u32>;
 @group(0) @binding(1) var<storage, read_write> changes : AtomicChange;
 
-@compute @workgroup_size(1,1,1)
-fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let x = gid.x;
     let y = gid.y;
     if (x >= y) { return; }
@@ -250,6 +257,46 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
             return;
         }
     }
+}""")
+
+//language=wgsl
+val mdpt_count by Shader("""
+struct Uni { N : u32 };
+
+@group(0) @binding(0) var<storage, read>       reach  : array<u32>;   // N×N upper‑tri (0/1)
+@group(0) @binding(1) var<storage, read_write> counts : array<u32>;   // N×N  (aoi‑1 → #midpts)
+@group(0) @binding(2) var<uniform>             uni    : Uni;
+
+@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid:vec3<u32>) {
+    let r = gid.y;  let c = gid.x;  let N = uni.N;
+    if (r >= N || c >= N || c <= r) { return; }
+
+    let idx = r*N + c;
+    if (reach[idx]==0u) { counts[idx]=0u; return; }
+
+    var cnt = 0u;
+    for (var v=0u; v<N; v++) { if (reach[r*N+v]==1u && reach[v*N+c]==1u) { cnt++; } }
+  counts[idx] = cnt;
+}""")
+
+//language=wgsl
+val mdpt_write by Shader("""
+struct Uni { N : u32 };
+
+@group(0) @binding(0) var<storage, read>       reach   : array<u32>;
+@group(0) @binding(1) var<storage, read>       offsets : array<u32>; // exclusive scan of counts
+@group(0) @binding(2) var<storage, read_write> flat_mp : array<u32>; // flattened mid‑points
+@group(0) @binding(3) var<uniform>             uni     : Uni;
+
+@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid:vec3<u32>) {
+    let r = gid.y;  let c = gid.x;  let N = uni.N;
+    if (r >= N || c >= N || c <= r) { return; }
+
+    let idx = r*N + c;
+    if (reach[idx]==0u) { return; }
+
+    var out = offsets[idx];
+    for (var v=0u; v<N; v++) { if (reach[r*N+v]==1u && reach[v*N+c]==1u) { flat_mp[out] = v; out++; } }
 }""")
 
 //language=wgsl
@@ -764,6 +811,10 @@ class Shader(val src: String) {
       return outputBuffer
     }
 
+    fun List<Int>.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer =
+      Int32Array<ArrayBuffer>(size).apply { set(this@toGPUBuffer.toTypedArray(), 0) }
+        .let { GPUBuffer(sz = size * 4, us = usage, data = it) }
+
     fun IntArray.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer =
       Int32Array<ArrayBuffer>(size).apply { set(this@toGPUBuffer.toTypedArray(), 0) }
         .let { GPUBuffer(sz = size * 4, us = usage, data = it) }
@@ -786,7 +837,7 @@ class Shader(val src: String) {
       prefix_sum_p1.invoke1d(numGroups, inputBuf, outputBuf, blockSumsBuf, uniBuf)
 
       if (numGroups > 1) {
-        val scannedBlockSumsBuf = blockSumsBuf.readInts().scan(0) { acc, it -> acc + it }.toIntArray().toGPUBuffer()
+        val scannedBlockSumsBuf = blockSumsBuf.readInts().scan(0) { acc, it -> acc + it }.toGPUBuffer()
         prefix_sum_p2.invoke1d(numGroups, outputBuf, scannedBlockSumsBuf, uniBuf)
         scannedBlockSumsBuf.destroy()
       }
@@ -797,31 +848,49 @@ class Shader(val src: String) {
 
     suspend fun packMetadata(cfg: CFG, fsa: FSA): GPUBuffer {
       val t0 = TimeSource.Monotonic.markNow()
-      val grammarFlattened = cfg.vindex.map { it.toList() }.flatten().toIntArray()
-      val grammarOffsets = cfg.vindex.map { it.size }.fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
+      val grammarFlattened = cfg.vindex.map { it.toList() }.flatten().toGPUBuffer()
+      val grammarOffsets = cfg.vindex.map { it.size }.fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toGPUBuffer()
       println("Encoded grammar in ${t0.elapsedNow()}")
 
       val (reachBuf: GPUBuffer, entries: Int) = dag_reach.invokeDAGFixpoint(fsa)
 
-      //  TODO: migrate to GPU shader pipeline
-      val (allFSAPairsFlattened, allFSAPairsOffsets) = //fsa.midpoints.prefixScan()
-        reachBuf.readInts().sparsifyReachabilityMatrix().prefixScan()
+      println("DAG fixpoint in ${t0.elapsedNow()}")
+//      val (allFSAPairsFlattened, allFSAPairsOffsets) = //fsa.midpoints.prefixScan()
+//        reachBuf.readInts().sparsifyReachabilityMatrix().prefixScan()
+      //  TODO: enforce exact equivalence?
+      val (allFSAPairsFlattened, allFSAPairsOffsets) = buildMidpointsGPU(fsa.numStates, reachBuf)
+      println("Flat midpoints in ${t0.elapsedNow()} : ${allFSAPairsFlattened.size} # ${allFSAPairsOffsets.size}")
 
       println("Sparse reachability took ${t0.elapsedNow()} / (${4 *(allFSAPairsFlattened.size + allFSAPairsOffsets.size)} bytes)")
 
       /** Memory layout: [CFL_STRUCT] */
-      val metadata: IntArray = packStruct(
+      val metaBuf = packStruct(
         constants = listOf(fsa.numStates, cfg.nonterminals.size),
         // FSA Encoding
-        allFSAPairsFlattened, allFSAPairsOffsets, fsa.finalIdxs.toIntArray(),
+        allFSAPairsFlattened, allFSAPairsOffsets, fsa.finalIdxs.toGPUBuffer(),
         // CFG Encoding
         grammarFlattened, grammarOffsets
       )
 
-      val metaBuf = metadata.toGPUBuffer()
-
       println("Packed metadata in ${t0.elapsedNow()}")
       return metaBuf
+    }
+
+    suspend fun buildMidpointsGPU(states: Int, reachBuf: GPUBuffer): Pair<GPUBuffer, GPUBuffer> {
+      val totalPairs = states * states
+      val cntBuf     = GPUBuffer(totalPairs * 4, GPUBufferUsage.STCPSD)
+      val uniBuf     = intArrayOf(states).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
+
+      mdpt_count.invoke2d(states, reachBuf, cntBuf, uniBuf)
+      val offBuf = prefixSumGPU(cntBuf, totalPairs)
+      val last   = listOf(totalPairs - 1)
+      val totalM = offBuf.readIndices(last)[0] + cntBuf.readIndices(last)[0]
+      val flatBuf = GPUBuffer(totalM * 4, GPUBufferUsage.STCPSD)
+      mdpt_write.invoke2d(states, reachBuf, offBuf, flatBuf, uniBuf)
+
+      uniBuf.destroy()
+      cntBuf.destroy()
+      return flatBuf to offBuf
     }
 
     suspend fun buildBackpointers(numStates: Int, numNonterminals: Int, dpIn: GPUBuffer, metaBuf: GPUBuffer): Triple<GPUBuffer, GPUBuffer, GPUBuffer> {
@@ -952,6 +1021,44 @@ class Shader(val src: String) {
       buf2.destroy()
     }
   }
+}
+
+// constants   = [c0,c1,…]
+// buffers[i]  = payload_i   (u32‑packed GPUBuffer)
+// result      =  [constants | (off0,len0) (off1,len1)… | payload_0 … payload_k ]
+//               ^ headerInts.size * 4  bytes
+fun packStruct(constants: List<Int> = emptyList(), vararg buffers: GPUBuffer): GPUBuffer {
+  if (buffers.isEmpty()) error("At least one payload buffer required")
+
+  // ── lengths & offsets (in *ints*, not bytes) ──────────────────────────────
+  val lens     = buffers.map { (it.size / 4).toInt() }
+  val offsets  = lens.runningFold(0) { acc, len -> acc + len }.dropLast(1)
+
+  // ── build header ints ─────────────────────────────────────────────────────
+  val headerInts = buildList {
+    addAll(constants)
+    for (i in lens.indices) { add(offsets[i]); add(lens[i]) }
+  }
+
+  val headerBytes  = headerInts.size * 4
+  val payloadBytes = lens.sum()      * 4
+  val totalBytes   = headerBytes + payloadBytes
+
+  // ── allocate destination buffer ───────────────────────────────────────────
+  val metaBuf = GPUBuffer(totalBytes, GPUBufferUsage.STCPSD)
+
+  // ── upload header (one writeBuffer) ───────────────────────────────────────
+  gpu.queue.writeBuffer(metaBuf, 0.0, Int32Array<ArrayBuffer>(headerInts.size).apply { set(headerInts.toTypedArray(), 0) })
+
+  // ── stitch payloads in place with a single CommandEncoder ────────────────
+  val enc = gpu.createCommandEncoder()
+  for (i in buffers.indices) {
+    val dstOffBytes = headerBytes + offsets[i] * 4
+    enc.copyBufferToBuffer(buffers[i], 0.0, metaBuf, dstOffBytes.toDouble(), buffers[i].size)
+  }
+  gpu.queue.submit(arrayOf(enc.finish()))
+
+  return metaBuf
 }
 
 fun packStruct(constants: List<Int> = emptyList(), vararg arrays: IntArray): IntArray {
