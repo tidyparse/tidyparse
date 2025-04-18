@@ -1,7 +1,6 @@
 @file:OptIn(ExperimentalUnsignedTypes::class)
 
 import Shader.Companion.GPUBuffer
-import Shader.Companion.buildCDF
 import Shader.Companion.buildLanguageSizeBuf
 import Shader.Companion.packMetadata
 import Shader.Companion.readIndices
@@ -56,9 +55,9 @@ suspend fun tryBootstrappingGPU() {
       listOf(sparse_load, sparse_mat_load,
         dag_reach, mdpt_count, mdpt_write,
         cfl_mul_upper, prefix_sum_p1, prefix_sum_p2,
-        bp_count, bp_write, ls_dense, sample_words).forEach { it.bind() }
-      benchmarkWGPU()
-//      benchmarkWGPURepair()
+        bp_count, bp_write, ls_dense, ls_cdf, sample_words).forEach { it.bind() }
+      benchmarkWGPU() // TODO: remove for deployment
+      benchmarkWGPURepair()
 //      benchmarkReach()
     } catch (e: Exception) { e.printStackTrace(); return }
 
@@ -145,6 +144,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNonterminals, dpBuf, metaBuf)
   println("Built backpointers in ${t1.elapsedNow()}")
 
+  val t2 = TimeSource.Monotonic.markNow()
   val packTime = TimeSource.Monotonic.markNow()
   val distToStates = allStartIds.map { it to fsa.idsToCoords[(it - startNT) / numNonterminals]!!.second }
   val led = distToStates.minOf { it.second } // Language edit distance
@@ -155,7 +155,6 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   val maxWordLen = fsa.width + fsa.height + 10
 
   val outBuf = GPUBuffer(maxSamples * maxWordLen * 4, GPUBufferUsage.STCPSD)
-  val uniforms = (intArrayOf(startIdxs.size, numStates, maxWordLen, numNonterminals) + startIdxs).toGPUBuffer()
 
   val terminalLists = cfg.nonterminals.map { cfg.bimap.UNITS[it]?.map { cfg.tmMap[it]!! } ?: emptyList() }
   val nt_tm_lens = terminalLists.map { it.size }.toIntArray()
@@ -168,12 +167,15 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
 
   /* Phase 1 – language size + CDF  */
   val lsDense   = buildLanguageSizeBuf(fsa.numStates, cfg.nonterminals.size, dpBuf, metaBuf, tmBuf)
-  val cdfBuf    = buildCDF(fsa.numStates, cfg.nonterminals.size,
-    dpBuf, bpOffsetBuf, bpStorageBuf, lsDense, metaBuf)
+  val totalExp = bpStorageBuf.size.toInt() / (2 * 4)
+  val cdfBuf   = GPUBuffer(totalExp * 4, GPUBufferUsage.STCPSD)
+
+  ls_cdf.invoke3d(fsa.numStates,cfg.nonterminals.size, dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)
 
   /* Phase 2 – prepare decoder uniforms */
-  val indexUniforms = intArrayOf(startIdxs[0] // TODO: sample via CDF
+  val indexUniforms = intArrayOf(startIdxs[1] // TODO: sample via CDF
     , 0, maxWordLen, cfg.nonterminals.size).toGPUBuffer()
+  println("Pairing function construction took : ${t2.elapsedNow()}")
 
   /* Phase 3 – launch |maxSamples| single‑thread workgroups */
   sample_words.invoke1d(
@@ -183,11 +185,9 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
     bpOffsetBuf,
     bpStorageBuf,
     outBuf,
-//    uniforms,
     tmBuf,
     indexUniforms,
-    cdfBuf,
-    lsDense
+    cdfBuf
   )
 
   val tokens = outBuf.readInts()
@@ -449,20 +449,32 @@ fn get_nt_tm_lens(index: u32) -> u32 { return terminals.payload[terminals.nt_tm_
 }""")
 
 //language=wgsl
-val ls_cdf by Shader(CFL_STRUCT + """
+val ls_cdf by Shader("$CFL_STRUCT\n$TERM_STRUCT" + """
 @group(0) @binding(0) var<storage, read>             dp_in : array<u32>;
 @group(0) @binding(1) var<storage, read>          ls_dense : array<u32>;
 @group(0) @binding(2) var<storage, read>         bp_offset : array<u32>;
 @group(0) @binding(3) var<storage, read_write>   ls_sparse : array<u32>;
 @group(0) @binding(4) var<storage, read>                cs : CFLStruct;
+@group(0) @binding(5) var<storage, read>         terminals : Terminals;
+
+fn get_nt_tm_lens(index: u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + index]; }
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     $PREAMBLE
 
-    if (dp_in[dpIdx] == 0u) { return; }
+    let val = dp_in[dpIdx];
+    if (val == 0u) { return; }
 
     var acc    : u32 = 0u;
     var outPos : u32 = bp_offset[dpIdx];
+    
+    let hasLiteral = ((val >> 1u) != 0u);           // bit‑packed literal present?
+    let negLit     = (val & 0x40000000u) != 0u;     // negative‑literal flag 
+    let litCount   = select(0u,
+                            select(1u,                               // positive literal ⇒ exactly 1
+                                    max(1u, get_nt_tm_lens(A) - 1u), // negative ⇒ |Σ_A|‑1
+                                    negLit),
+                            hasLiteral);
 
     for (var p = pairOffset; p < pairOffsetNext; p = p + 1u) {
         let m = getMdpt(p);
@@ -481,6 +493,8 @@ val ls_cdf by Shader(CFL_STRUCT + """
             }
         }
     }
+    
+    ls_sparse[outPos] = acc + litCount;
 }""")
 
 // language=wgsl
@@ -603,7 +617,6 @@ val sample_words by Shader(TERM_STRUCT + """
 @group(0) @binding(5) var<storage, read>          terminals : Terminals;
 @group(0) @binding(6) var<storage, read_write>      idx_uni : IndexUniforms;
 @group(0) @binding(7) var<storage, read>          ls_sparse : array<u32>;
-@group(0) @binding(8) var<storage, read>           ls_dense : array<u32>;
 
 fn binarySearchCDF(base: u32, len: u32, needle: u32) -> u32 {
     var lo: u32 = 0u;
@@ -671,7 +684,15 @@ fn decodeLiteral(
                    hasLit);
 
         // -------- local index inside this node's language -------------
-        var localIdx = globalIdx % ls_dense[dpIdx];
+        // compute the *total* language size of this node
+        let base     = bp_offset[dpIdx];
+        let expCnt   = bp_count[dpIdx];
+        let totSize  = select(litCnt,                        // no expansions? use litCnt
+                              ls_sparse[base + expCnt - 1u], // otherwise last CDF entry
+                              expCnt != 0u);
+
+        // turn the global counter into a local index
+        var localIdx = globalIdx % totSize;
 
         // --- literal branch?
         if (localIdx < litCnt) {
@@ -684,7 +705,6 @@ fn decodeLiteral(
         localIdx = localIdx - litCnt;       // shift into expansion domain
 
         // --- expansion branch (binary search the pre‑shifted CDF) ------
-        let base   = bp_offset[dpIdx];
         let choice = binarySearchCDF(base, bp_count[dpIdx], localIdx);
 
         let idxBM = bp_storage[2u*choice + 0u];
@@ -1037,19 +1057,6 @@ class Shader(val src: String) {
         gpu.queue.submit(arrayOf(pass.finish()))
       }
       return lsDenseBuf
-    }
-
-    fun buildCDF(nStates: Int, nNT: Int,
-                         dpIn: GPUBuffer,
-                         bpOffset: GPUBuffer,
-                         bpStorage: GPUBuffer,
-                         lsDense: GPUBuffer,
-                         metaBuf: GPUBuffer): GPUBuffer {
-      val totalExp = bpStorage.size.toInt() / (2 * 4)
-      val cdfBuf   = GPUBuffer(totalExp * 4, GPUBufferUsage.STCPSD)
-
-      ls_cdf.invoke3d(nStates, nNT, dpIn, lsDense, bpOffset, cdfBuf, metaBuf)
-      return cdfBuf
     }
   }
 
