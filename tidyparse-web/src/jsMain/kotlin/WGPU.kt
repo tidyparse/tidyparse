@@ -1,6 +1,8 @@
 @file:OptIn(ExperimentalUnsignedTypes::class)
 
 import Shader.Companion.GPUBuffer
+import Shader.Companion.buildCDF
+import Shader.Companion.buildLanguageSizeBuf
 import Shader.Companion.packMetadata
 import Shader.Companion.readIndices
 import Shader.Companion.readInts
@@ -31,9 +33,8 @@ external val navigator: dynamic
 
 /*
 TODO:
-  (1) tree sampler for unique decoding
-  (2) rescore samples using Markov Chain
-  (3) parallelize byteFormat
+  (1) rescore samples using Markov Chain
+  (2) parallelize makeLevFSA/byteFormat
  */
 
 suspend fun tryBootstrappingGPU() {
@@ -55,7 +56,7 @@ suspend fun tryBootstrappingGPU() {
       listOf(sparse_load, sparse_mat_load,
         dag_reach, mdpt_count, mdpt_write,
         cfl_mul_upper, prefix_sum_p1, prefix_sum_p2,
-        bp_count, bp_write, sample_words).forEach { it.bind() }
+        bp_count, bp_write, ls_dense, sample_words).forEach { it.bind() }
       benchmarkWGPU()
 //      benchmarkWGPURepair()
 //      benchmarkReach()
@@ -165,19 +166,33 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   val tmBuf = packStruct(emptyList(), nt_tm_lens, nt_tm_offsets, all_tm).toGPUBuffer()
   println("Packing time: ${packTime.elapsedNow()}")
 
-  val t2 = TimeSource.Monotonic.markNow()
-  val threads = (maxSamples + 63) / 64
-  sample_words.invoke1d(threads, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, uniforms, tmBuf)
-  val rawTokens: IntArray = outBuf.readInts()
-  println("Sampled words in ${t2.elapsedNow()}")
+  /* Phase 1 – language size + CDF  */
+  val lsDense   = buildLanguageSizeBuf(fsa.numStates, cfg.nonterminals.size, dpBuf, metaBuf, tmBuf)
+  val cdfBuf    = buildCDF(fsa.numStates, cfg.nonterminals.size,
+    dpBuf, bpOffsetBuf, bpStorageBuf, lsDense, metaBuf)
 
-  val t3 = TimeSource.Monotonic.markNow()
-  val wordsPerSample = rawTokens.splitIntoWords(cfg, maxSamples, maxWordLen)
-  println("Decoded tokens in ${t3.elapsedNow()}")
+  /* Phase 2 – prepare decoder uniforms */
+  val indexUniforms = intArrayOf(startIdxs[0] // TODO: sample via CDF
+    , 0, maxWordLen, cfg.nonterminals.size).toGPUBuffer()
 
+  /* Phase 3 – launch |maxSamples| single‑thread workgroups */
+  sample_words.invoke1d(
+    maxSamples,
+    dpBuf,
+    bpCountBuf,
+    bpOffsetBuf,
+    bpStorageBuf,
+    outBuf,
+//    uniforms,
+    tmBuf,
+    indexUniforms,
+    cdfBuf,
+    lsDense
+  )
+
+  val tokens = outBuf.readInts()
   listOf(outBuf, metaBuf, dpBuf, tmBuf).forEach { it.destroy() }
-
-  return wordsPerSample
+  return tokens.splitIntoWords(cfg, maxSamples, maxWordLen)
 }
 
 // TODO: kernelize?
@@ -391,57 +406,78 @@ val bp_write by Shader(CFL_STRUCT + """
 }""")
 
 //language=wgsl
-val ls_dense by Shader(CFL_STRUCT + """
-@group(0) @binding(0) var<storage, read>            dp_in : array<u32>;
-@group(0) @binding(1) var<storage, read_write>   ls_dense : array<u32>;
-@group(0) @binding(2) var<storage, read>               cs : CFLStruct;
+val ls_dense by Shader("$CFL_STRUCT\n$TERM_STRUCT" + """
+@group(0) @binding(0) var<storage, read>           dp_in : array<u32>;
+@group(0) @binding(1) var<storage, read_write>  ls_dense : array<u32>;
+@group(0) @binding(2) var<storage, read>              cs : CFLStruct;
+@group(0) @binding(3) var<storage, read>       terminals : Terminals;
 
-@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn get_nt_tm_lens(index: u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + index]; }
+
+@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     $PREAMBLE
-    
-    if (dp_in[dpIdx] == 0u) { return; }
-    if ((dp_in[dpIdx] & 0x01u) == 1u && ls_dense[dpIdx] == 0u) { ls_dense[dpIdx] = 1u; }
-    
-    for (var pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx = pairIdx + 1u) {
-        let mdpt = getMdpt(pairIdx); for (var g = startGC; g < endGC; g += 2u) {
+
+    let val = dp_in[dpIdx];
+    let hasLiteral = ((val >> 1u) != 0u);           // bit‑packed literal present?
+    let negLit     = (val & 0x40000000u) != 0u;     // negative‑literal flag
+    let litCount   =
+        select( 0u,
+            select( 1u,                               // positive literal ⇒ exactly 1
+                    max(1u, get_nt_tm_lens(A) - 1u),  // negative ⇒ |Σ_A|‑1
+                    negLit),
+            hasLiteral);
+
+    if ((val & 0x01u) == 0u) { ls_dense[dpIdx] = max(litCount, 1u); return; }
+
+    var total: u32 = litCount;
+
+    for (var p = pairOffset; p < pairOffsetNext; p = p + 1u) {
+        let m = getMdpt(p);
+
+        for (var g = startGC; g < endGC; g = g + 2u) {
             let B = getGrammarSymbol(g);
             let C = getGrammarSymbol(g + 1u);
 
-            let idxBM = r*snt + mdpt*NT + B;
-            let idxMC = mdpt*snt + c*NT + C;
+            let idxBM = r*snt + m*NT + B;
+            let idxMC = m*snt + c*NT + C;
 
-            ls_dense[dpIdx] += ls_dense[idxBM] * ls_dense[idxMC]; // TODO: double check this semiring
+            // only add if both children are present
+            if (dp_in[idxBM] != 0u && dp_in[idxMC] != 0u) { total += ls_dense[idxBM] * ls_dense[idxMC]; }
         }
     }
+    ls_dense[dpIdx] = max(total, 1u);  // total==0 should not happen, but guard anyway
 }""")
 
 //language=wgsl
 val ls_cdf by Shader(CFL_STRUCT + """
-@group(0) @binding(0) var<storage, read>            dp_in : array<u32>;
-@group(0) @binding(1) var<storage, read_write>   ls_dense : array<u32>;
-@group(0) @binding(1) var<storage, read_write>  ls_sparse : array<u32>;
-@group(0) @binding(2) var<storage, read>               cs : CFLStruct;
+@group(0) @binding(0) var<storage, read>             dp_in : array<u32>;
+@group(0) @binding(1) var<storage, read>          ls_dense : array<u32>;
+@group(0) @binding(2) var<storage, read>         bp_offset : array<u32>;
+@group(0) @binding(3) var<storage, read_write>   ls_sparse : array<u32>;
+@group(0) @binding(4) var<storage, read>                cs : CFLStruct;
 
-@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     $PREAMBLE
-    
-    if (dp_in[dpIdx] == 0u) { return; }
-    
-    var outPos = bp_offset[dpIdx];
-    var acc = 0u;
 
-    for (var pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx = pairIdx + 1u) {
-        let mdpt = getMdpt(pairIdx); for (var g = startGC; g < endGC; g += 2u) {
+    if (dp_in[dpIdx] == 0u) { return; }
+
+    var acc    : u32 = 0u;
+    var outPos : u32 = bp_offset[dpIdx];
+
+    for (var p = pairOffset; p < pairOffsetNext; p = p + 1u) {
+        let m = getMdpt(p);
+
+        for (var g = startGC; g < endGC; g = g + 2u) {
             let B = getGrammarSymbol(g);
             let C = getGrammarSymbol(g + 1u);
 
-            let idxBM = r*snt + mdpt*NT + B;
-            let idxMC = mdpt*snt + c*NT + C;
+            let idxBM = r*snt + m*NT + B;
+            let idxMC = m*snt + c*NT + C;
 
             if (dp_in[idxBM] != 0u && dp_in[idxMC] != 0u) {
-                acc += ls_dense[idxMC] * ls_dense[idxBM];
-                ls_sparse[outPos] = acc;
-                outPos++;
+                acc += ls_dense[idxBM] * ls_dense[idxMC];
+                ls_sparse[outPos] = acc + litCount;
+                outPos += 1u;
             }
         }
     }
@@ -548,7 +584,14 @@ struct Terminals {
        all_tms_offset : u32,       all_tms_size : u32,
        
        payload : array<u32>
-}"""
+};
+
+struct IndexUniforms {
+    startIdx         : u32,     // root DP index (START‑symbol, q₀,q_f)
+    targetCnt        : atomic<u32>,   // global counter (LFSR advances on host)
+    maxWordLen       : u32,
+    numNonterminals  : u32
+};"""
 
 //language=wgsl
 val sample_words by Shader(TERM_STRUCT + """
@@ -557,32 +600,20 @@ val sample_words by Shader(TERM_STRUCT + """
 @group(0) @binding(2) var<storage, read>          bp_offset : array<u32>;
 @group(0) @binding(3) var<storage, read>         bp_storage : array<u32>;
 @group(0) @binding(4) var<storage, read_write> sampledWords : array<u32>;
-@group(0) @binding(5) var<storage, read>           uniforms : Uniforms;
-@group(0) @binding(6) var<storage, read>          terminals : Terminals;
-  
-@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    var tid = gid.x;
+@group(0) @binding(5) var<storage, read>          terminals : Terminals;
+@group(0) @binding(6) var<storage, read_write>      idx_uni : IndexUniforms;
+@group(0) @binding(7) var<storage, read>          ls_sparse : array<u32>;
+@group(0) @binding(8) var<storage, read>           ls_dense : array<u32>;
 
-    var localWord: array<u32, 1024>;
-    for (var i = 0u; i < uniforms.maxWordLen; i++) { localWord[i] = 0u; }
-    let q = terminals.offsets_size;
-
-    let rIndex    = lcg_rand(&tid, uniforms.numStartIndices);
-    let dpIndex   = uniforms.startIndices[rIndex];
-
-    let nnt       = uniforms.numNonterminals;
-    let numStates = uniforms.numStates;
-    let A         = dpIndex % nnt;
-    let rowCol    = dpIndex / nnt;
-    let c         = rowCol % numStates;
-    let r         = rowCol / numStates;
-    let snt       = numStates * nnt;
-    let startIdx  = r * snt + c * nnt + A;
-
-    sampleTopDown(&dp_in, &bp_count, &bp_offset, &bp_storage, startIdx, &tid, &localWord, uniforms.maxWordLen, nnt);
-
-    let baseIdx = gid.x * uniforms.maxWordLen;
-    for (var i = 0u; i < uniforms.maxWordLen; i++) { sampledWords[baseIdx + i] = localWord[i]; }
+fn binarySearchCDF(base: u32, len: u32, needle: u32) -> u32 {
+    var lo: u32 = 0u;
+    var hi: u32 = len;
+    loop {
+        let mid = (lo+hi) >> 1u;
+        if (mid == hi || mid == lo) { return base + mid; }
+        let v = ls_sparse[base + mid];
+        if (needle < v) { hi = mid; } else { lo = mid; }
+    }
 }
 
 fn get_nt_tm_lens(index: u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + index]; }
@@ -593,6 +624,78 @@ fn lcg_rand(stateRef: ptr<function, u32>, range: u32) -> u32 {
   let newVal = (1664525u * (*stateRef)) + 1013904223u;
   *stateRef = newVal;
   return select(newVal % range, 0u, range == 0u); 
+}
+
+fn decodeLiteral(
+    nonterminal    : u32,
+    literalEncoded : u32,
+    isNegative     : bool,
+    variant        : u32,      // 0‑based selector inside literal domain
+    localWord      : ptr<function, array<u32, 1024>>,
+    wordLen        : ptr<function, u32>
+) {
+    let numTms  = get_nt_tm_lens(nonterminal);
+    let ntOff   = get_offsets(nonterminal);
+
+    if (isNegative) {                 // choose any terminal ≠ literalEncoded‑1
+        let excl = literalEncoded - 1u;
+        let idx  = select(variant, variant + 1u, variant >= excl);
+        (*localWord)[*wordLen] = get_all_tms(ntOff + idx) + 1u;
+    } else {                          // positive literal (only one variant)
+        (*localWord)[*wordLen] = get_all_tms(ntOff + (literalEncoded - 1u)) + 1u;
+    }
+    *wordLen = *wordLen + 1u;
+}
+
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+    let globalIdx = atomicAdd(&idx_uni.targetCnt, 1u);
+
+    var stack  : array<u32, 1024>;
+    var top    : u32 = 0u;
+    var word   : array<u32, 1024>;
+    var wLen   : u32 = 0u;
+
+    stack[top] = idx_uni.startIdx;     top++;
+
+    while (top > 0u) {
+        top -= 1u;
+        let dpIdx = stack[top];
+        let val   = dp_in[dpIdx];
+        let hasLit  = ((val >> 1u) != 0u);
+        let negLit  = (val & 0x40000000u) != 0u;
+        let litCnt  =
+            select(0u,
+                   select(1u,                     // positive
+                          max(1u, get_nt_tm_lens(dpIdx % idx_uni.numNonterminals) - 1u),
+                          negLit),
+                   hasLit);
+
+        // -------- local index inside this node's language -------------
+        var localIdx = globalIdx % ls_dense[dpIdx];
+
+        // --- literal branch?
+        if (localIdx < litCnt) {
+            decodeLiteral(dpIdx % idx_uni.numNonterminals,
+                          (val >> 1u) & 0x1fffffffu,
+                          negLit,
+                          localIdx, &word, &wLen);
+            continue;
+        }
+        localIdx = localIdx - litCnt;       // shift into expansion domain
+
+        // --- expansion branch (binary search the pre‑shifted CDF) ------
+        let base   = bp_offset[dpIdx];
+        let choice = binarySearchCDF(base, bp_count[dpIdx], localIdx);
+
+        let idxBM = bp_storage[2u*choice + 0u];
+        let idxMC = bp_storage[2u*choice + 1u];
+
+        stack[top] = idxMC;  top++;
+        stack[top] = idxBM;  top++;
+    }
+
+    let outBase = gid.x * idx_uni.maxWordLen;
+    for (var i=0u; i<wLen; i++) { sampledWords[outBase+i] = word[i]; }
 }
 
 fn sampleTopDown(
@@ -913,6 +1016,40 @@ class Shader(val src: String) {
       bp_write.invoke3d(numStates, numNonterminals, dpIn, bpOffsetBuf, bpStorageBuf, metaBuf)
 
       return Triple(bpCountBuf, bpOffsetBuf, bpStorageBuf)
+    }
+
+    suspend fun buildLanguageSizeBuf(nStates: Int, nNT: Int, dpIn: GPUBuffer, metaBuf: GPUBuffer, tmBuf: GPUBuffer): GPUBuffer {
+      val totalCells = nStates * nStates * nNT
+      val lsDenseBuf = GPUBuffer(totalCells * 4, GPUBufferUsage.STCPSD)
+
+      for (span in 1..<nStates) {
+        val pass = gpu.createCommandEncoder()
+        pass.beginComputePass().apply {
+          setPipeline(ls_dense.pipeline)
+          setBindGroup(0, ls_dense.pipeline.bindBuffers(dpIn, lsDenseBuf, metaBuf, tmBuf))
+          /*  (c,r,A) ==> 3‑D grid
+              rows  of this length start at 0 and end at n‑span‑1
+              cols  are (r+span)
+              that gives (n‑span)×nNT threads                           */
+          dispatchWorkgroups(nStates - span, 1, nNT)
+          end()
+        }
+        gpu.queue.submit(arrayOf(pass.finish()))
+      }
+      return lsDenseBuf
+    }
+
+    fun buildCDF(nStates: Int, nNT: Int,
+                         dpIn: GPUBuffer,
+                         bpOffset: GPUBuffer,
+                         bpStorage: GPUBuffer,
+                         lsDense: GPUBuffer,
+                         metaBuf: GPUBuffer): GPUBuffer {
+      val totalExp = bpStorage.size.toInt() / (2 * 4)
+      val cdfBuf   = GPUBuffer(totalExp * 4, GPUBufferUsage.STCPSD)
+
+      ls_cdf.invoke3d(nStates, nNT, dpIn, lsDense, bpOffset, cdfBuf, metaBuf)
+      return cdfBuf
     }
   }
 
