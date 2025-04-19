@@ -172,6 +172,16 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
 
   ls_cdf.invoke3d(fsa.numStates,cfg.nonterminals.size, dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)
 
+  val bpo = bpOffsetBuf.readInts()
+  val bpc = bpCountBuf.readInts()       // need the counts too
+  val lss = cdfBuf.readInts()
+
+  println("LangSizes: " +
+      startIdxs.joinToString { idx ->
+        val total = lss[bpo[idx] + bpc[idx]]
+        "$idx / $total"
+      })
+
   /* Phase 2 – prepare decoder uniforms */
   val indexUniforms = intArrayOf(startIdxs[1] // TODO: sample via CDF
     , 0, maxWordLen, cfg.nonterminals.size).toGPUBuffer()
