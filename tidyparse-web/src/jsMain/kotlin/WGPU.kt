@@ -150,22 +150,10 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
 
   ls_cdf.invoke3d(fsa.numStates,cfg.nonterminals.size, dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)
 
-  val bpo = bpOffsetBuf.readInts() // Backpointer offsets
-  val bpc = bpCountBuf.readInts() // Backpointer pair counts
-  val lss = cdfBuf.readInts() // Language sizes
-  println("LangSizes: " + startIdxs.joinToString { idx -> val total = lss[bpo[idx] + bpc[idx]]; "$idx / $total" })
-
-  val langSizes = startIdxs.map { idx -> lss[bpo[idx] + bpc[idx]] }   // |L(idx)|
-  val cdf       = langSizes.runningFold(0) { acc, v -> acc + v }.drop(1) // inclusive
-
   val header = intArrayOf(0, maxWordLen, cfg.nonterminals.size, startIdxs.size)
 
-  val payload = IntArray(startIdxs.size * 2).apply {
-    for (i in startIdxs.indices) this[i] = startIdxs[i]
-    for (i in cdf.indices)       this[startIdxs.size + i] = cdf[i]
-  }
-
-  val indexUniformsBuf = packStruct(constants = header.toList(), payload.toGPUBuffer())
+  /** [TERM_STRUCT] */
+  val indexUniformsBuf = packStruct(constants = header.toList(), startIdxs.toGPUBuffer())
   println("Pairing function construction took : ${t2.elapsedNow()}")
 
   /* Phase 3 – launch |maxSamples| single‑thread workgroups */
@@ -184,7 +172,7 @@ val CFG.termBuf by cache {
   val terminalLists = nonterminals.map { bimap.UNITS[it]?.map { tmMap[it]!! } ?: emptyList() }
   val nt_tm_lens = terminalLists.map { it.size }.toGPUBuffer()
   val nt_tm_offsets = terminalLists.scan(0) { acc, list -> acc + list.size }.dropLast(1).toGPUBuffer()
-  val all_tm = terminalLists.flatMap { it }.toGPUBuffer()
+  val all_tm = terminalLists.flatten().toGPUBuffer()
 
   /** Memory layout: [TERM_STRUCT] */
   packStruct(emptyList(), nt_tm_lens, nt_tm_offsets, all_tm)
@@ -193,14 +181,6 @@ val CFG.termBuf by cache {
 
 //language=wgsl
 const val TERM_STRUCT = """
-struct Uniforms { // Carries metadata about intersection instance
-    numStartIndices : u32,
-    numStates       : u32,
-    maxWordLen      : u32,
-    numNonterminals : u32,
-    startIndices    : array<u32>
-};
-
 struct Terminals { // Mappings from nonterminals to terminals in CFG
     nt_tm_lens_offset : u32,    nt_tm_lens_size : u32,
        offsets_offset : u32,       offsets_size : u32,
@@ -623,7 +603,6 @@ fn binarySearchCDF(base: u32, len: u32, needle: u32) -> u32 {
 }
 
 fn getStartIdx(i : u32) -> u32 { return idx_uni.payload[i]; }
-fn getCdf(i : u32) -> u32 { return idx_uni.payload[idx_uni.numStartIndices + i]; }
 
 fn get_nt_tm_lens(index: u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + index]; }
 fn get_offsets(index: u32) -> u32 { return terminals.payload[terminals.offsets_offset + index]; }
@@ -878,7 +857,7 @@ class Shader constructor(val src: String) {
     fun GPUComputePipeline.bindBuffers(vararg buffers: GPUBuffer): GPUBindGroup {
       inline fun <T> jsObject(init: dynamic.() -> Unit): T { val o = js("{}"); init(o); return o as T }
       val ent = buffers.mapIndexed { index, buf ->
-        GPUBindGroupEntry(binding = index, resource = jsObject<GPUBindingResource> { buffer = buf })
+        GPUBindGroupEntry(binding = index, resource = jsObject { buffer = buf })
       }.toTypedArray()
       return gpu.createBindGroup(GPUBindGroupDescriptor(layout = getBindGroupLayout(0), entries = ent))
     }

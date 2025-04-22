@@ -133,23 +133,21 @@ fun loadNgrams(file: String = "python_4grams.txt") = MainScope().launch {
 }
 
 fun initPyodide() = MainScope().launch {
-  jsPyEditor.pyodide = window.asDynamic()
-    .loadPyodide(js("{ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.27.2/full/' }"))
-    .unsafeCast<Promise<*>>().await()
+  val scriptTag = (document.querySelector("script[src*='pyodide.js']") as HTMLScriptElement)
+    .getAttribute("src")!!.substringBefore("pyodide.js")
 
+  val config = js("{}")
+  config.indexURL = scriptTag
+  jsPyEditor.pyodide = window.asDynamic().loadPyodide(config).unsafeCast<Promise<*>>().await()
   jsPyEditor.pyodide.loadPackage("micropip").unsafeCast<Promise<*>>().await()
 
   val micropip = jsPyEditor.pyodide.pyimport("micropip")
   micropip.install("black").unsafeCast<Promise<*>>().await()
 
-  val runPromise = jsPyEditor.pyodide.runPythonAsync(
-    """
-    from black import format_str, FileMode
-    format_str("1+1", mode=FileMode())
-    """.trimIndent()
-  ).unsafeCast<Promise<String>>()
+  val testStr = "1+1"
+  val fmtCode = "from black import format_str, FileMode; format_str(\"$testStr\", mode=FileMode())"
+  val beautified = jsPyEditor.pyodide.runPythonAsync(fmtCode).unsafeCast<Promise<String>>().await()
 
-  val beautified = runPromise.await()
   println("Black test => $beautified")
   println(jsPyEditor.getOutput("1+"))
 }
