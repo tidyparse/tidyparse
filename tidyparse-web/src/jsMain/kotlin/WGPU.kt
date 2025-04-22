@@ -8,8 +8,6 @@ import Shader.Companion.readInts
 import Shader.Companion.toGPUBuffer
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
-import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.kaliningraph.types.cache
 import js.array.asList
 import js.buffer.*
@@ -113,19 +111,6 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
   return words
 }
 
-suspend fun benchmarkWGPURepair() {
-  val cfg = pythonStatementCNFAllProds
-  val code = "NAME = [ ( STRING , NAME ) , , ( NAME , NAME ) , ( NAME , NAME ) , ( NAME , NAME ) , , ( NAME , NAME ) ] NEWLINE".tokenizeByWhitespace()
-  val words = repairCode(cfg, code, 5).distinct().map { it.joinToString(" ") }
-  println("Distinct words: ${words.size}")
-
-  val (valid, invalid) = words.shuffled().take(3).partition { it in cfg.language }
-  println("\nValid samples (${valid.size})\n")
-  valid.forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
-  println("\nInvalid samples (${invalid.size})\n")
-  invalid.forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
-}
-
 suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GPUBuffer, ledBuffer: Int): List<List<String>> {
 //  println("FSA(|Q|=${fsa.numStates}, |δ|=${fsa.transit.size}), " +
 //      "CFG(|Σ|=${cfg.terminals.size}, |V|=${cfg.nonterminals.size}, |P|=${cfg.nonterminalProductions.size})")
@@ -168,22 +153,29 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   val bpo = bpOffsetBuf.readInts() // Backpointer offsets
   val bpc = bpCountBuf.readInts() // Backpointer pair counts
   val lss = cdfBuf.readInts() // Language sizes
-
   println("LangSizes: " + startIdxs.joinToString { idx -> val total = lss[bpo[idx] + bpc[idx]]; "$idx / $total" })
 
-  /* Phase 2 – prepare decoder uniforms */
-  val indexUniforms = intArrayOf(startIdxs[1] // TODO: sample via CDF
-    , 0, maxWordLen, cfg.nonterminals.size).toGPUBuffer()
+  val langSizes = startIdxs.map { idx -> lss[bpo[idx] + bpc[idx]] }   // |L(idx)|
+  val cdf       = langSizes.runningFold(0) { acc, v -> acc + v }.drop(1) // inclusive
+
+  val header = intArrayOf(0, maxWordLen, cfg.nonterminals.size, startIdxs.size)
+
+  val payload = IntArray(startIdxs.size * 2).apply {
+    for (i in startIdxs.indices) this[i] = startIdxs[i]
+    for (i in cdf.indices)       this[startIdxs.size + i] = cdf[i]
+  }
+
+  val indexUniformsBuf = packStruct(constants = header.toList(), payload.toGPUBuffer())
   println("Pairing function construction took : ${t2.elapsedNow()}")
 
   /* Phase 3 – launch |maxSamples| single‑thread workgroups */
   sample_words.invoke1d(
     maxSamples,
-    dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, indexUniforms, cdfBuf
+    dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, indexUniformsBuf, cdfBuf
   )
 
   val tokens = outBuf.readInts()
-  listOf(outBuf, metaBuf, dpBuf, tmBuf).forEach { it.destroy() }
+  listOf(outBuf, metaBuf, dpBuf, indexUniformsBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf).forEach { it.destroy() }
   return tokens.splitIntoWords(cfg, maxSamples, maxWordLen)
 }
 
@@ -217,11 +209,12 @@ struct Terminals { // Mappings from nonterminals to terminals in CFG
        payload : array<u32>
 };
 
-struct IndexUniforms { // Indices of all accepting states in the parse chart
-    startIdx         : u32,           // root DP index (START‑symbol, q₀,q_f)
-    targetCnt        : atomic<u32>,   // global counter (LFSR advances on host)
-    maxWordLen       : u32,
-    numNonterminals  : u32
+struct IndexUniforms {  // Indices of all accepting states in the parse chart
+    targetCnt       : atomic<u32>,  // global counter (LFSR advances on host)
+    maxWordLen      : u32,
+    numNonterminals : u32,
+    numStartIndices : u32,
+    payload         : array<u32>
 };"""
 
 //language=wgsl
@@ -243,12 +236,7 @@ fn getGrammarSymbol(index: u32) -> u32 { return cs.payload[cs.grammarFlattenedOf
 fn getGrammarOffset(index: u32) -> u32 { return cs.payload[cs.grammarOffsetsOffset + index]; }"""
 
 //language=text
-const val PREAMBLE = """
-let r = gid.x;
-let c = gid.y;
-if (c <= r) { return; }
-let A = gid.z;
-
+const val SHORT_PREAMBLE = """
 let N  = cs.numStates;
 let NT = cs.numNonterminals;
 
@@ -262,6 +250,14 @@ let pairOffset     = getMdptOffset(aoi - 1u);
 var pairOffsetNext: u32;
 if (aoi < cs.mdptsOffsetsSize) { pairOffsetNext = getMdptOffset(aoi); } 
 else { pairOffsetNext = cs.mdptsSize; }"""
+
+//language=text
+const val PREAMBLE = """
+let r = gid.x;
+let c = gid.y;
+if (c <= r) { return; }
+let A = gid.z;
+$SHORT_PREAMBLE"""
 
 //language=wgsl
 val dag_reach by Shader("""
@@ -419,17 +415,27 @@ val bp_write by Shader(CFL_STRUCT + """
 
 //language=wgsl
 val ls_dense by Shader("$CFL_STRUCT\n$TERM_STRUCT" + """
+struct SpanUni { span : u32 };
+
 @group(0) @binding(0) var<storage, read>           dp_in : array<u32>;
 @group(0) @binding(1) var<storage, read_write>  ls_dense : array<u32>;
 @group(0) @binding(2) var<storage, read>              cs : CFLStruct;
 @group(0) @binding(3) var<storage, read>       terminals : Terminals;
+@group(0) @binding(4) var<uniform>                    su : SpanUni;
 
 fn get_nt_tm_lens(index: u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + index]; }
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-    $PREAMBLE
-
+    let r = gid.x;
+    let c = r + su.span;
+    if (c >= cs.numStates) { return; }
+    let A = gid.z;
+    
+    $SHORT_PREAMBLE
+    
     let val = dp_in[dpIdx];
+    if (val == 0u) { return; }
+
     let hasLiteral = ((val >> 1u) != 0u);           // bit‑packed literal present?
     let negLit     = (val & 0x40000000u) != 0u;     // negative‑literal flag
     let litCount   =
@@ -616,6 +622,9 @@ fn binarySearchCDF(base: u32, len: u32, needle: u32) -> u32 {
     }
 }
 
+fn getStartIdx(i : u32) -> u32 { return idx_uni.payload[i]; }
+fn getCdf(i : u32) -> u32 { return idx_uni.payload[idx_uni.numStartIndices + i]; }
+
 fn get_nt_tm_lens(index: u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + index]; }
 fn get_offsets(index: u32) -> u32 { return terminals.payload[terminals.offsets_offset + index]; }
 fn get_all_tms(index: u32) -> u32 { return terminals.payload[terminals.all_tms_offset + index]; }
@@ -648,14 +657,31 @@ fn decodeLiteral(
 }
 
 @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-    let globalIdx = atomicAdd(&idx_uni.targetCnt, 1u);
+    let globalIdx   = atomicAdd(&idx_uni.targetCnt, 1u);
+//  let totLangSize  = getCdf(idx_uni.numStartIndices - 1u);
+//  var localRank    = globalIdx % totLangSize;
+//
+//  /* binary search the inclusive CDF */
+//  var lo : u32 = 0u;
+//  var hi : u32 = idx_uni.numStartIndices;
+//  loop {
+//      let mid = (lo + hi) >> 1u;
+//      if (mid == hi || mid == lo) { break; }
+//      if (localRank < getCdf(mid)) { hi = mid; } else { lo = mid; }
+//  }
+//
+//  let rootIdx   = getStartIdx(lo);
+//  let prevCdf   = select(0u, getCdf(lo - 1u), lo != 0u);
+//  localRank     = localRank - prevCdf;       // 0‑based rank **inside** that root
+
+    let rootIdx = getStartIdx(globalIdx % idx_uni.numStartIndices);
 
     var stack  : array<u32, 1024>;
     var top    : u32 = 0u;
     var word   : array<u32, 1024>;
     var wLen   : u32 = 0u;
 
-    stack[top] = idx_uni.startIdx;     top++;
+    stack[top] = rootIdx;      top++;
 
     while (top > 0u) {
         top -= 1u;
@@ -1027,14 +1053,12 @@ class Shader constructor(val src: String) {
       val lsDenseBuf = GPUBuffer(totalCells * 4, GPUBufferUsage.STCPSD)
 
       for (span in 1..<nStates) {
+        val spanBuf = intArrayOf(span).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
+
         val pass = gpu.createCommandEncoder()
         pass.beginComputePass().apply {
           setPipeline(ls_dense.pipeline)
-          setBindGroup(0, ls_dense.pipeline.bindBuffers(dpIn, lsDenseBuf, metaBuf, tmBuf))
-          /*  (c,r,A) ==> 3‑D grid
-              rows  of this length start at 0 and end at n‑span‑1
-              cols  are (r+span)
-              that gives (n‑span)×nNT threads                           */
+          setBindGroup(0, ls_dense.pipeline.bindBuffers(dpIn, lsDenseBuf, metaBuf, tmBuf, spanBuf))
           dispatchWorkgroups(nStates - span, 1, nNT)
           end()
         }

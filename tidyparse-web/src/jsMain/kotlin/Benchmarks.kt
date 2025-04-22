@@ -2,7 +2,11 @@ import Shader.Companion.GPUBuffer
 import Shader.Companion.bindBuffers
 import Shader.Companion.readInts
 import Shader.Companion.toGPUBuffer
+import ai.hypergraph.kaliningraph.parsing.contains
+import ai.hypergraph.kaliningraph.parsing.language
 import ai.hypergraph.kaliningraph.parsing.makeLevFSA
+import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
+import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import web.gpu.GPUBuffer
 import web.gpu.GPUCommandEncoder
 import web.performance.performance
@@ -59,6 +63,19 @@ fun IntArray.sparsifyReachabilityMatrix(n: Int = sqrt(size.toDouble()).toInt()):
       else (0..<n).filter { v -> this[i*n + v] == 1 && this[v*n + j] == 1 }
     }
   }
+
+suspend fun benchmarkWGPURepair() {
+  val cfg = pythonStatementCNFAllProds
+  val code = "NAME = [ ( STRING , NAME ) , , ( NAME , NAME ) , ( NAME , NAME ) , ( NAME , NAME ) , , ( NAME , NAME ) ] NEWLINE".tokenizeByWhitespace()
+  val words = repairCode(cfg, code, 5).distinct().map { it.joinToString(" ") }
+  println("Distinct words: ${words.size}")
+
+  val (valid, invalid) = words.shuffled().take(3).partition { it in cfg.language }
+  println("\nValid samples (${valid.size})\n")
+  valid.forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
+  println("\nInvalid samples (${invalid.size})\n")
+  invalid.forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
+}
 
 suspend fun benchmarkWGPU() {
   val N = 300
