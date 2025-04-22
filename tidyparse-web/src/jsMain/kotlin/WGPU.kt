@@ -303,7 +303,7 @@ struct Uni { N : u32 };
 }""")
 
 //language=wgsl
-val cfl_mul_upper by Shader(CFL_STRUCT + """
+val cfl_mul_upper by Shader("""$CFL_STRUCT
 struct AtomicChange { count: atomic<u32> };
 
 @group(0) @binding(0) var<storage, read_write>    dp_in : array<u32>;
@@ -336,7 +336,7 @@ struct AtomicChange { count: atomic<u32> };
 }""")
 
 //language=wgsl
-val bp_count by Shader(CFL_STRUCT + """
+val bp_count by Shader("""$CFL_STRUCT
 @group(0) @binding(0) var<storage, read>           dp_in : array<u32>;
 @group(0) @binding(1) var<storage, read_write>  bp_count : array<u32>;
 @group(0) @binding(2) var<storage, read>              cs : CFLStruct;
@@ -363,7 +363,7 @@ val bp_count by Shader(CFL_STRUCT + """
 }""")
 
 //language=wgsl
-val bp_write by Shader(CFL_STRUCT + """
+val bp_write by Shader("""$CFL_STRUCT
 @group(0) @binding(0) var<storage, read>             dp_in : array<u32>;
 @group(0) @binding(1) var<storage, read_write>   bp_offset : array<u32>;
 @group(0) @binding(2) var<storage, read_write>  bp_storage : array<u32>;
@@ -394,9 +394,8 @@ val bp_write by Shader(CFL_STRUCT + """
 }""")
 
 //language=wgsl
-val ls_dense by Shader("$CFL_STRUCT\n$TERM_STRUCT" + """
+val ls_dense by Shader("""$CFL_STRUCT $TERM_STRUCT
 struct SpanUni { span : u32 };
-
 @group(0) @binding(0) var<storage, read>           dp_in : array<u32>;
 @group(0) @binding(1) var<storage, read_write>  ls_dense : array<u32>;
 @group(0) @binding(2) var<storage, read>              cs : CFLStruct;
@@ -419,8 +418,8 @@ fn get_nt_tm_lens(index: u32) -> u32 { return terminals.payload[terminals.nt_tm_
     let hasLiteral = ((val >> 1u) != 0u);           // bit‑packed literal present?
     let negLit     = (val & 0x40000000u) != 0u;     // negative‑literal flag
     let litCount   =
-        select( 0u,
-            select( 1u,                               // positive literal ⇒ exactly 1
+        select(0u,
+            select(1u,                                // positive literal ⇒ exactly 1
                     max(1u, get_nt_tm_lens(A) - 1u),  // negative ⇒ |Σ_A|‑1
                     negLit),
             hasLiteral);
@@ -447,7 +446,7 @@ fn get_nt_tm_lens(index: u32) -> u32 { return terminals.payload[terminals.nt_tm_
 }""")
 
 //language=wgsl
-val ls_cdf by Shader("$CFL_STRUCT\n$TERM_STRUCT" + """
+val ls_cdf by Shader("""$CFL_STRUCT $TERM_STRUCT
 @group(0) @binding(0) var<storage, read>             dp_in : array<u32>;
 @group(0) @binding(1) var<storage, read>          ls_dense : array<u32>;
 @group(0) @binding(2) var<storage, read>         bp_offset : array<u32>;
@@ -581,7 +580,7 @@ struct PrefixSumUni { N: u32 };
 }""")
 
 //language=wgsl
-val sample_words by Shader(TERM_STRUCT + """
+val sample_words by Shader("""$TERM_STRUCT
 @group(0) @binding(0) var<storage, read>              dp_in : array<u32>;
 @group(0) @binding(1) var<storage, read>           bp_count : array<u32>;
 @group(0) @binding(2) var<storage, read>          bp_offset : array<u32>;
@@ -779,9 +778,9 @@ val sparse_load by Shader("""
 struct SparseElement { r: u32, c: u32, v: u32, i: u32 };
 struct Coeffs { rowCoeff: u32, colCoeff: u32 };
 
-@group(0) @binding(0) var<storage, read> sparse_elements: array<SparseElement>;
-@group(0) @binding(1) var<storage, read_write> output_buffer: array<u32>;
-@group(0) @binding(2) var<uniform> coeffs: Coeffs;
+@group(0) @binding(0) var<storage, read>     sparse_elements : array<SparseElement>;
+@group(0) @binding(1) var<storage, read_write> output_buffer : array<u32>;
+@group(0) @binding(2) var<uniform>                    coeffs : Coeffs;
 
 // Define workgroup size (must match constant in Kotlin code)
 const WORKGROUP_SIZE: u32 = ${SPARSE_WRITER_WORKGROUP_SIZE}u;
@@ -800,8 +799,8 @@ const WORKGROUP_SIZE: u32 = ${SPARSE_WRITER_WORKGROUP_SIZE}u;
 val sparse_mat_load by Shader("""
 struct SparseElement { r: u32, c: u32 };
 
-@group(0) @binding(0) var<storage, read> sparse_elements: array<SparseElement>;
-@group(0) @binding(1) var<storage, read_write> output_buffer: array<u32>;
+@group(0) @binding(0) var<storage, read>     sparse_elements : array<SparseElement>;
+@group(0) @binding(1) var<storage, read_write> output_buffer : array<u32>;
 
 const WORKGROUP_SIZE: u32 = ${SPARSE_WRITER_WORKGROUP_SIZE}u;
 
