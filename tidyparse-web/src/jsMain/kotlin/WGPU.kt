@@ -134,6 +134,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   val t2 = TimeSource.Monotonic.markNow()
   val distToStates = allStartIds.map { it to fsa.idsToCoords[(it - startNT) / numNonterminals]!!.second }
   val led = distToStates.minOf { it.second } // Language edit distance
+
   val startIdxs = distToStates.filter { it.second in (led..(led + ledBuffer)) }
     .also { println("Start indices: $it") }.map { it.first }.toIntArray()
 
@@ -153,7 +154,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
 
   lsDense.destroy()
 
-  val header = intArrayOf(0, maxWordLen, cfg.nonterminals.size, startIdxs.size, numStates)
+  val header = intArrayOf(0, maxWordLen, cfg.nonterminals.size, numStates)
 
   /** [TERM_STRUCT] */
   val indexUniformsBuf = packStruct(constants = header.toList(), startIdxs.toGPUBuffer())
@@ -201,9 +202,10 @@ struct IndexUniforms {  // Indices of all accepting states in the parse chart
     targetCnt       : atomic<u32>,  // global counter (LFSR advances on host)
     maxWordLen      : u32,
     numNonterminals : u32,
-    numStartIndices : u32,
     numStates       : u32,
-    payload         : array<u32>
+    
+    startIdxOffset  : u32, numStartIndices : u32,
+    startIndices    : array<u32>
 };"""
 
 //language=wgsl
@@ -599,7 +601,7 @@ val sample_words_wor by Shader("""$TERM_STRUCT
 @group(0) @binding(7) var<storage, read>          ls_sparse : array<u32>;
 
 /* ----------------------------- helpers ------------------------------------------ */
-fn getStartIdx(i : u32) -> u32 { return idx_uni.payload[i]; }
+fn getStartIdx(i : u32) -> u32 { return idx_uni.startIndices[i]; }
 fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + nt]; } // |Σ_A|
 fn get_offsets(nt : u32) -> u32 { return terminals.payload[terminals.offsets_offset + nt]; } // offset of Σ_A
 fn get_all_tms(i : u32) -> u32 { return terminals.payload[terminals.all_tms_offset + i]; }   // σ → TM‑id
@@ -835,7 +837,7 @@ val sample_words_wr by Shader("""$TERM_STRUCT
     let q = terminals.offsets_size;
 
     let rIndex    = lcg_rand(&tid, uniforms.numStartIndices);
-    let dpIndex   = uniforms.payload[rIndex];
+    let dpIndex   = uniforms.startIndices[rIndex];
 
     let nnt       = uniforms.numNonterminals;
     let numStates = uniforms.numStates;
@@ -1080,15 +1082,15 @@ class Shader constructor(val src: String) {
 
     fun List<Int>.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer =
       Int32Array<ArrayBuffer>(size).apply { set(this@toGPUBuffer.toTypedArray(), 0) }
-        .let { GPUBuffer(sz = size * 4, us = usage, data = it) }
+        .let { GPUBuffer(byteSize = size * 4, us = usage, data = it) }
 
     fun IntArray.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer =
       Int32Array<ArrayBuffer>(size).apply { set(this@toGPUBuffer.toTypedArray(), 0) }
-        .let { GPUBuffer(sz = size * 4, us = usage, data = it) }
+        .let { GPUBuffer(byteSize = size * 4, us = usage, data = it) }
 
     // TODO: figure out map/unmap lifetime
-    fun GPUBuffer(sz: Number, us: Int, data: AllowSharedBufferSource? = null): GPUBuffer =
-      gpu.createBuffer(descriptor = GPUBufferDescriptor(size = sz.toDouble(), usage = us))
+    fun GPUBuffer(byteSize: Number, us: Int, data: AllowSharedBufferSource? = null): GPUBuffer =
+      gpu.createBuffer(descriptor = GPUBufferDescriptor(size = byteSize.toDouble(), usage = us))
         .also { if (data != null) { gpu.queue.writeBuffer(it, 0.0, data) } }
 
     // Define the workgroup size consistently (must match WGSL)

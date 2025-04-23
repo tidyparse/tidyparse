@@ -7,7 +7,7 @@ import org.w3c.dom.*
 import kotlin.math.ln
 
 class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val output: Node) : JSTidyEditor(editor, output) {
-  val ngrams: MutableMap<List<String>, Double> = mutableMapOf<List<String>, Double>()
+  val ngrams: MutableMap<List<String>, Double> = mutableMapOf()
   val order: Int by lazy { ngrams.keys.firstOrNull()!!.size }
   val normalizingConst by lazy { ngrams.values.sum() }
   var allowCompilerErrors = true
@@ -69,16 +69,16 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
   private fun String.getErrorMessage(): String = substringAfter(": ")
 
-  override fun formatCode(pythonCode: String): String = try {
+  override fun formatCode(code: String): String = try {
     jsPyEditor.pyodide.runPython("""
       from black import format_str, FileMode
-      pretty_code = format_str("${pythonCode.replace("\\", "\\\\").replace("\"", "\\\"")}", mode=FileMode())
+      pretty_code = format_str("${code.replace("\\", "\\\\").replace("\"", "\\\"")}", mode=FileMode())
     """.trimIndent())
     jsPyEditor.pyodide.globals.get("pretty_code").trim().replace("\n", "")
   } catch (error: dynamic) {
     // If there's any issue, log the error and return the original
     println("Error formatting Python code: $error")
-    pythonCode
+    code
   }
 
   fun String.replacePythonKeywords() =
