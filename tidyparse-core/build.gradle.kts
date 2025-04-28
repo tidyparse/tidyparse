@@ -7,7 +7,7 @@ fun property(key: String) = project.findProperty(key).toString()
 plugins {
   kotlin("plugin.serialization")
   kotlin("multiplatform")
-  id("com.strumenta.antlr-kotlin") version "1.0.3"
+  id("com.strumenta.antlr-kotlin") version "1.0.2"
 }
 
 group = property("pluginGroup")
@@ -45,7 +45,7 @@ kotlin {
         api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
         api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
 
-        api("com.strumenta:antlr-kotlin-runtime:1.0.3")
+        api("com.strumenta:antlr-kotlin-runtime:1.0.2")
       }
       kotlin { srcDir(layout.buildDirectory.dir("generatedAntlr")) }
     }
