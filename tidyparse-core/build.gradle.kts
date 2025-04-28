@@ -1,5 +1,5 @@
 import com.strumenta.antlrkotlin.gradle.AntlrKotlinTask
-import org.jetbrains.kotlin.gradle.dsl.KotlinCompile
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.BaseKotlinCompile
 
 fun property(key: String) = project.findProperty(key).toString()
@@ -7,15 +7,15 @@ fun property(key: String) = project.findProperty(key).toString()
 plugins {
   kotlin("plugin.serialization")
   kotlin("multiplatform")
-  id("com.strumenta.antlr-kotlin") version "1.0.2"
+  id("com.strumenta.antlr-kotlin") version "1.0.3"
 }
 
-group = property("pluginGroup")!!
-version = property("pluginVersion")!!
+group = property("pluginGroup")
+version = property("pluginVersion")
 
 kotlin {
   jvm {
-    compilations.all { kotlinOptions.jvmTarget = property("javaVersion") as String }
+    compilerOptions { jvmTarget = JvmTarget.JVM_21 }
     testRuns["test"].executionTask.configure {
       useJUnitPlatform()
     }
@@ -45,7 +45,7 @@ kotlin {
         api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
         api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
 
-        api("com.strumenta:antlr-kotlin-runtime:1.0.2")
+        api("com.strumenta:antlr-kotlin-runtime:1.0.3")
       }
       kotlin { srcDir(layout.buildDirectory.dir("generatedAntlr")) }
     }
