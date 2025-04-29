@@ -1,15 +1,12 @@
-import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig
-import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.*
+import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.DEVELOPMENT
 import org.jetbrains.kotlin.gradle.targets.js.webpack.WebpackDevtool
 
 plugins {
   kotlin("multiplatform")
 }
 
-fun properties(key: String) = project.findProperty(key).toString()
-
-group = properties("pluginGroup")
-version = properties("pluginVersion")
+group = "ai.hypergraph"
+version = "0.23.0"
 
 kotlin {
   js(IR) {

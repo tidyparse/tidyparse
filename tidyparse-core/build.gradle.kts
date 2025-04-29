@@ -2,16 +2,14 @@ import com.strumenta.antlrkotlin.gradle.AntlrKotlinTask
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.BaseKotlinCompile
 
-fun property(key: String) = project.findProperty(key).toString()
-
 plugins {
   kotlin("plugin.serialization")
   kotlin("multiplatform")
   id("com.strumenta.antlr-kotlin") version "1.0.2"
 }
 
-group = property("pluginGroup")
-version = property("pluginVersion")
+group = providers.gradleProperty("pluginGroup")
+version = providers.gradleProperty("pluginVersion")
 
 kotlin {
   jvm {

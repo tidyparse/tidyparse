@@ -16,15 +16,13 @@ repositories {
   intellijPlatform.defaultRepositories()
 }
 
-fun properties(key: String) = project.findProperty(key).toString()
-
-group = properties("pluginGroup")
-version = properties("pluginVersion")
+group = providers.gradleProperty("pluginGroup")
+version = providers.gradleProperty("pluginVersion")
 
 // Configure Gradle IntelliJ Plugin - read more: https://github.com/JetBrains/gradle-intellij-plugin
 intellijPlatform {
   pluginConfiguration {
-    version = properties("pluginVersion")
+    version = providers.gradleProperty("pluginVersion")
     name = "TidyParse"
   }
 
@@ -33,7 +31,7 @@ intellijPlatform {
 
 // Configure Gradle Changelog Plugin - read more: https://github.com/JetBrains/gradle-changelog-plugin
 changelog {
-  version = properties("pluginVersion")
+  version = providers.gradleProperty("pluginVersion")
   groups = emptyList()
 }
 
@@ -67,7 +65,8 @@ dependencies {
 //  }
 //}
 
-val javaVersion = properties("javaVersion")
+val javaVersion = providers.gradleProperty("javaVersion").get()
+
 kotlin {
   compilerOptions {
     jvmTarget = JvmTarget.fromTarget(javaVersion)
@@ -102,9 +101,9 @@ tasks {
   }
 
   patchPluginXml {
-    version = properties("pluginVersion")
-    sinceBuild = properties("pluginSinceBuild")
-//    untilBuild = properties("pluginUntilBuild")
+    version = providers.gradleProperty("pluginVersion")
+    sinceBuild = providers.gradleProperty("pluginSinceBuild")
+//    untilBuild = providers.gradleProperty("pluginUntilBuild")
 
   pluginDescription =
     projectDir.parentFile.resolve("README.md").readText().lines().run {
