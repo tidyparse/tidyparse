@@ -162,11 +162,11 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
 
   /* Phase 2 – launch |maxSamples| single‑thread workgroups */
   val t3 = TimeSource.Monotonic.markNow()
-//  sample_words_wor.invoke1d(
-//    maxSamples,
-//    dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, indexUniformsBuf, cdfBuf
-//  )
-  sample_words_wr.invoke1d(maxSamples, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, indexUniformsBuf, tmBuf)
+  sample_words_wor.invoke1d(
+    maxSamples,
+    dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, indexUniformsBuf, cdfBuf
+  )
+//  sample_words_wr.invoke1d(maxSamples, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, indexUniformsBuf, tmBuf)
 
   val tokens = outBuf.readInts()
 
@@ -176,7 +176,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   return t
 }
 
-val CFG.termBuf by cache {
+val CFG.termBuf: GPUBuffer by cache {
 //  val packTime = TimeSource.Monotonic.markNow()
   val terminalLists = nonterminals.map { bimap.UNITS[it]?.map { tmMap[it]!! } ?: emptyList() }
   val nt_tm_lens = terminalLists.map { it.size }.toGPUBuffer()
@@ -589,6 +589,7 @@ struct PrefixSumUni { N: u32 };
     if (gid < N) { dataBuf[gid] = dataBuf[gid] + offsetVal; }
 }""")
 
+/** See [PTree.sampleStrWithoutReplacement] for CPU version. */
 //language=wgsl
 val sample_words_wor by Shader("""$TERM_STRUCT
 @group(0) @binding(0) var<storage, read>              dp_in : array<u32>;
@@ -610,9 +611,9 @@ fn binarySearchCDF(base: u32, len: u32, needle: u32) -> u32 {
     var lo: u32 = 0u;
     var hi: u32 = len;
     loop {
+        if (lo >= hi) { return base + lo; }
         let mid = (lo + hi) >> 1u;
-        if (mid == hi || mid == lo) { return base + mid; }
-        if (needle < ls_sparse[base + mid]) { hi = mid; } else { lo = mid; }
+        if (needle < ls_sparse[base + mid]) { hi = mid; } else { lo = mid + 1u; }
     }
 }
 
