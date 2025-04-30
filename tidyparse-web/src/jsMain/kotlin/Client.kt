@@ -1,19 +1,11 @@
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.types.PlatformVars
-import ai.hypergraph.tidyparse.TidyEditor
 import kotlinx.browser.*
 import kotlinx.coroutines.*
-import kotlinx.dom.appendText
 import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
-import web.events.EventType
-import web.events.addEventListener
-import web.gpu.GPU
-import web.gpu.GPUAdapter
-import web.gpu.GPUDevice
 import kotlin.js.Promise
-import kotlin.time.measureTime
 
 /**
 TODO (soon):
@@ -131,6 +123,8 @@ fun loadNgrams(file: String = "python_4grams.txt") = MainScope().launch {
       jsPyEditor.ngrams[ngram.split(" ").also { n = it.size }] = count.toDouble()
       numNgrams++
     }
+
+    println("Loaded ${jsPyEditor.intGrams.size} $n-grams from $file")
   }
 }
 

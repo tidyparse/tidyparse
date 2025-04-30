@@ -5,10 +5,11 @@ import ai.hypergraph.tidyparse.initiateSuspendableRepair
 import kotlinx.coroutines.*
 import org.w3c.dom.*
 import kotlin.math.ln
-import kotlin.time.measureTimedValue
 
 class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val output: Node) : JSTidyEditor(editor, output) {
   val ngrams: MutableMap<List<String>, Double> = mutableMapOf()
+  fun tmToInt(tm: String): Int = cfg.tmMap[tm] ?: -if (tm == "BOS") 1 else 2
+  val intGrams: Map<List<Int>, Double> by lazy { ngrams.map { (k, v) -> k.map { tmToInt(it) } to v }.toMap() }
   val order: Int by lazy { ngrams.keys.firstOrNull()!!.size }
   val normalizingConst by lazy { ngrams.values.sum() }
   var allowCompilerErrors = true
@@ -41,6 +42,12 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
   fun score(text: List<String>): Double =
     -(prefix + text + suffix).windowed(order, 1).sumOf { ngram -> ln((ngrams[ngram] ?: 1.0) / normalizingConst) }
+
+  val pfxInt by lazy { prefix.map { tmToInt(it) } }
+  val sufInt by lazy { suffix.map { tmToInt(it) } }
+
+  fun score(text: List<Int>): Double =
+    -(pfxInt + text + sufInt).windowed(order, 1).sumOf { ngram -> ln((intGrams[ngram] ?: 1.0) / normalizingConst) }
 
   var pyodide: dynamic? = null
 
@@ -113,19 +120,24 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     } else /* Repair */ Unit.also {
       runningJob = MainScope().launch {
         var (rejected, total) = 0 to 0
+//      val metric: (List<String>) -> Int = { (score(it) * 1_000.0).toInt() }, // TODO: Is reordering really necessary if we are decoding GREs by ngram score?
+//      val metric: (List<String>) -> Int = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() },
+        var metric: (List<String>) -> Int = { -1 }
+
         (if (gpuAvailable) {
           println("Repairing on GPU...")
-          repairCode(cfg, tokens, LED_BUFFER).asSequence()
+          repairCode(cfg, tokens, LED_BUFFER, score = ::score).asSequence()
           .map { it.joinToString(" ").tokenizeByWhitespace().joinToString(" ") }
         } else {
           println("Repairing on CPU...")
+          metric = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() }
           initiateSuspendableRepair(tokens, cfg)
         })
 //        initiateSuspendableRepair(tokens, cfg, ngrams)
           // Drop NEWLINE (added by default to PyCodeSnippets)
           .map { it.substring(0, it.length - 8).replacePythonKeywords() }
           .distinct().let {
-            if (allowCompilerErrors) it
+            if (allowCompilerErrors) it.onEach { total++ }
             else it.filter { s ->
               val errorType = getOutput(s).getErrorType()
               when (errorType) {
@@ -138,9 +150,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
             workHash = workHash,
             origTks = tokens.dropLast(1),
             recognizer = { "$it NEWLINE".replace("|", "OR") in cfg.language },
-//            metric = { (score(it) * 1_000.0).toInt() }, // TODO: Is reordering really necessary if we are decoding GREs by ngram score?
-//            metric = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() },
-            metric = { 1 },
+            metric = metric,
             customDiff = {
               val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())
               pcs.paintDiff(levAlign)

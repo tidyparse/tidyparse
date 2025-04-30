@@ -108,7 +108,7 @@ suspend fun CFG.maxParsableFragmentB(tokens: List<Σᐩ>, pad: Int = 3): Pair<In
 
 val MAX_DISP_RESULTS = 29
 
-suspend fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
+fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
   resultsToPost: Int = MAX_DISP_RESULTS,
   metric: (List<Σᐩ>) -> Int,
   shouldContinue: () -> Boolean,
@@ -123,9 +123,17 @@ suspend fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
   val startTime = TimeSource.Monotonic.markNow()
   var totalResults = 0
 
+  val postImmediately = iter.hasNext() && metric(iter.next().tokenizeByWhitespace()) == -1
+  if (postImmediately) {
+    val htmlLst = take(resultsToPost).toList().map { customDiff(it) }
+    results.addAll(toList())
+    topNResults.addAll(htmlLst.map { it to -1 })
+    totalResults = 10
+  }
+
   while (true) {
     var i = 0
-    if (!iter.hasNext() || !shouldContinue()) {
+    if (!iter.hasNext() || !shouldContinue() || postImmediately) {
       val throughput = (results.size /
           (startTime.elapsedNow().toDouble(SECONDS) + 0.001)).round(3)
       val throughputTot = (totalResults /
@@ -135,7 +143,7 @@ suspend fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
       else "~$throughput res/s"
       val moreResults = (results.size - topNResults.size)
         .let { if (it == 0) "\n\n" else "\n\n...$it more" }
-      val statistics = "$moreResults $summary${postCompletionSummary.invoke()}"
+      val statistics = "$moreResults, $summary${postCompletionSummary.invoke()}"
       return finally(topNResults.joinToString("\n", "", statistics) {
         val result = "<span style=\"color: gray\" class=\"noselect\">${i++.toString().padStart(2)}.) </span>${it.first}"
         if (i == 1) "<mark>$result</mark>" else result

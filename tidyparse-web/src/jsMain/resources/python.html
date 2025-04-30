@@ -42,19 +42,21 @@ gen_exp2 = ((x for u in range(4) for x in (u*2, u*10, u*u))
 (,) + (1, 'a') + (2, 'b') + (3, 'c')
 () + (1, 'a') + (2, 'b') + (3, 'c')
 </textarea>
-    <div id="tidyparse-output" class="panel">
+<div id="tidyparse-output" class="panel">
     Usage Tips:
 
-    • To trigger an update, modify the editor to the left.
+    • To trigger an update, try modifying the editor to the left.
 
-    • Use the ↑/↓ keys to scroll completions, then ↵ to apply.
+    • Invalid lines of code are marked with <u>a squiggly underline</u>.
 
-    • Invalid snippets are marked with <u>a squiggly underline</u>.
+    • Use the ↑/↓ keys to scroll completions, then ↵ to select one.
 
-    • Use the [Tab] key to fill in NAME, NUMBER and STRING stubs.
+    • Press the [Tab] key to fill in NAME, NUMBER and STRING stubs.
 
-    • In case of slow repairs, try enabling WebGPU in your browser
-    </div>
+    • Repairs are scoped to a single line (based on caret position).
+
+    • In case of slow repairs, try enabling WebGPU in your browser.
+</div>
 </div>
 <div title="Minimizes total edits per repair." id="confrow1">
     <label>Max edit distance: <a href="https://en.wikipedia.org/wiki/Edit_distance#Language_edit_distance">LED</a> + <input id="max-edits" type="number" value="2" min="0" max="3" step="1" style="margin-right: 4.2em"></label>
