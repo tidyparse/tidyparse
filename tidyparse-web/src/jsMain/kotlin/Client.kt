@@ -1,6 +1,7 @@
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.types.PlatformVars
+import ai.hypergraph.tidyparse.TidyEditor
 import kotlinx.browser.*
 import kotlinx.coroutines.*
 import kotlinx.dom.appendText
@@ -12,6 +13,7 @@ import web.gpu.GPU
 import web.gpu.GPUAdapter
 import web.gpu.GPUDevice
 import kotlin.js.Promise
+import kotlin.time.measureTime
 
 /**
 TODO (soon):
@@ -65,7 +67,7 @@ fun defaultSetup() {
     jsEditor.redecorateLines()
     LED_BUFFER = maxEdits.value.toInt()
     TIMEOUT_MS = timeout.value.toInt()
-    jsPyEditor.minimize = mincheck.checked
+    jsEditor.minimize = mincheck.checked
     jsEditor.ntStubs = ntscheck.checked
   }
 

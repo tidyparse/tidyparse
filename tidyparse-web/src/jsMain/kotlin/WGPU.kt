@@ -57,7 +57,7 @@ suspend fun tryBootstrappingGPU() {
         sample_words_wr, sample_words_wor
       ).forEach { it.bind() }
 //      benchmarkWGPU() // TODO: remove for deployment
-      benchmarkWGPURepair()
+//      benchmarkWGPURepair()
 //      benchmarkReach()
     } catch (e: Exception) { e.printStackTrace(); return }
 
@@ -107,6 +107,8 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
   println("PREPROCESSING TOOK: ${t0.elapsedNow()}") // ~230ms
   val words = repairPipeline(cfg, levFSA, dpIn, metadata, ledBuffer)
   println("Received: ${words.size} words")
+  val distinctWords = words.distinct()
+  println("Distinct: ${distinctWords.size} words")
   println("Round trip repair: ${t0.elapsedNow()}") // ~500ms
 
   return words
