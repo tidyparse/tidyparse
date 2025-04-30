@@ -616,8 +616,8 @@ val sample_words_wor by Shader("""$TERM_STRUCT
 @group(0) @binding(7) var<storage, read>          ls_sparse : array<u32>;
 
 /* ----------------------------- helpers ------------------------------------------ */
-fn getStartIdx(i : u32) -> u32 { return idx_uni.startIndices[i * 2]; }
-fn getEditDist(i : u32) -> u32 { return idx_uni.startIndices[i * 2 + 1]; }
+fn getStartIdx(i : u32) -> u32 { return idx_uni.startIndices[i * $PKT_HDR_LEN]; }
+fn getEditDist(i : u32) -> u32 { return idx_uni.startIndices[i * $PKT_HDR_LEN + 1]; }
 fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + nt]; } // |Σ_A|
 fn get_offsets(nt : u32) -> u32 { return terminals.payload[terminals.offsets_offset + nt]; } // offset of Σ_A
 fn get_all_tms(i : u32) -> u32 { return terminals.payload[terminals.all_tms_offset + i]; }   // σ → TM‑id
@@ -692,7 +692,7 @@ fn lcg_rand(stateRef: ptr<function, u32>, range: u32) -> u32 {
     let seqId : u32 = atomicAdd(&idx_uni.targetCnt, 1u);
     let gRank : u32 = lcg_permute(seqId + 0x9E3779B9u * gid.x);
 
-    let numStartIdxs = idx_uni.numStartIndices / 2;
+    let numStartIdxs = idx_uni.numStartIndices / $PKT_HDR_LEN;
     /* ---- total language size over all accepting states ------------------------- */
     var total : u32 = 0u;
     for (var i = 0u; i < numStartIdxs; i = i + 1u) { total = total + langSize(getStartIdx(i)); }
