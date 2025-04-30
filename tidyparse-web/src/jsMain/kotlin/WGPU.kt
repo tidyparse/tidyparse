@@ -36,17 +36,8 @@ TODO:
 suspend fun tryBootstrappingGPU() {
   print("Checking GPU availability... ")
   val tmpDev = (navigator.gpu as? GPU)?.requestAdapter()?.requestDevice()?.also { gpu = it }
-  val gpuAvailDiv = document.getElementById("gpuAvail") as HTMLDivElement
 
   if (tmpDev != null) {
-    println("detected.")
-    val obj = document.createElement("object").apply {
-      setAttribute("type", "image/svg+xml")
-      setAttribute("data", "/webgpu.svg")
-      setAttribute("width", "35")
-      setAttribute("height", "35")
-    }
-    gpuAvailDiv.appendChild(obj)
     gpu.addEventListener(EventType("uncapturederror"), { e: dynamic -> println("Uncaptured: ${e.error.message}") })
     try {
       listOf(
@@ -62,10 +53,16 @@ suspend fun tryBootstrappingGPU() {
     } catch (e: Exception) { e.printStackTrace(); return }
 
     gpuAvailable = true
-  } else {
-    println("not detected.")
-    gpuAvailDiv.appendText("WebGPU is NOT available.")
-  }
+    val obj = document.createElement("object").apply {
+      setAttribute("type", "image/svg+xml")
+      setAttribute("data", "/webgpu.svg")
+      setAttribute("width", "35")
+      setAttribute("height", "35")
+    }
+
+    (document.getElementById("gpuAvail") as HTMLDivElement).appendChild(obj)
+    println("detected.")
+  } else { println("not detected.") }
 }
 
 suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VALUE): List<List<String>> {
@@ -107,8 +104,8 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
   println("PREPROCESSING TOOK: ${t0.elapsedNow()}") // ~230ms
   val words = repairPipeline(cfg, levFSA, dpIn, metadata, ledBuffer)
   println("Received: ${words.size} words")
-  val distinctWords = words.distinct()
-  println("Distinct: ${distinctWords.size} words")
+//  val distinctWords = words.distinct()
+//  println("Distinct: ${distinctWords.size} words")
   println("Round trip repair: ${t0.elapsedNow()}") // ~500ms
 
   return words
@@ -140,7 +137,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   val startIdxs = distToStates.filter { it.second in (led..(led + ledBuffer)) }
     .also { println("Start indices: $it") }.map { it.first }.toIntArray()
 
-  val maxSamples = 1000
+  val maxSamples = 65534
   val maxWordLen = fsa.width + fsa.height + 10
 
   val outBuf = GPUBuffer(maxSamples * maxWordLen * 4, GPUBufferUsage.STCPSD)
@@ -591,6 +588,8 @@ struct PrefixSumUni { N: u32 };
     if (gid < N) { dataBuf[gid] = dataBuf[gid] + offsetVal; }
 }""")
 
+const val MAX_WORD_LEN = 512
+
 /** See [PTree.sampleStrWithoutReplacement] for CPU version. */
 //language=wgsl
 val sample_words_wor by Shader("""$TERM_STRUCT
@@ -647,7 +646,7 @@ fn decodeLiteral(
     litEnc      : u32,   // encoded literal (1‑based)
     negLit      : bool,  // negative‑literal flag
     variant     : u32,   // rank inside the literal domain
-    word        : ptr<function, array<u32,1024>>,
+    word        : ptr<function, array<u32, $MAX_WORD_LEN>>,
     wordLen     : ptr<function, u32>
 ) {
     let numTms = get_nt_tm_lens(nt);
@@ -677,7 +676,6 @@ fn lcg_rand(stateRef: ptr<function, u32>, range: u32) -> u32 {
 @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     /* ---- unique global rank ---------------------------------------------------- */
     let seqId : u32 = atomicAdd(&idx_uni.targetCnt, 1u);
-//    let gRank : u32 = lcg_permute(seqId);          // one unique seed per thread
     let gRank : u32 = lcg_permute(seqId + 0x9E3779B9u * gid.x);
 
     /* ---- total language size over all accepting states ------------------------- */
@@ -694,11 +692,11 @@ fn lcg_rand(stateRef: ptr<function, u32>, range: u32) -> u32 {
     }
 
     /* ---- DFS stack ------------------------------------------------------------- */
-    var stack : array<Frame, 1024>;
+    var stack : array<Frame, $MAX_WORD_LEN>;
     var top   : u32 = 0u;
     stack[top] = Frame(rootIdx, rank);   top++;
 
-    var word  : array<u32, 1024>;
+    var word  : array<u32, $MAX_WORD_LEN>;
     var wLen  : u32 = 0u;
 
     /* ---------------- depth‑first enumeration without replacement --------------- */
@@ -768,7 +766,7 @@ val sample_words_wr by Shader("""$TERM_STRUCT
 @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var tid = gid.x;
 
-    var localWord: array<u32, 1024>;
+    var localWord: array<u32, $MAX_WORD_LEN>;
     for (var i = 0u; i < uniforms.maxWordLen; i++) { localWord[i] = 0u; }
     let q = terminals.offsets_size;
 
@@ -807,12 +805,12 @@ fn sampleTopDown(
     bp_storage_ptr  : ptr<storage, array<u32>, read>,
     startDPIdx      : u32,
     rngStateRef     : ptr<function, u32>,
-    localWord       : ptr<function, array<u32, 1024>>,
+    localWord       : ptr<function, array<u32, $MAX_WORD_LEN>>,
     maxWordLen      : u32,
     nnt             : u32
 ) {
-    let MAX_STACK = 1024u;
-    var stack: array<u32, 1024>;
+    let MAX_STACK = ${MAX_WORD_LEN}u;
+    var stack: array<u32, $MAX_WORD_LEN>;
     var top = 0u;
     var wordLen = 0u;
     stack[top] = startDPIdx; top++;

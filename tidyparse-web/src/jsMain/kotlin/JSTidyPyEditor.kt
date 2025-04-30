@@ -113,9 +113,13 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
       runningJob = MainScope().launch {
         var (rejected, total) = 0 to 0
         (if (gpuAvailable) {
+          println("Repairing on GPU...")
           repairCode(cfg, tokens, LED_BUFFER).asSequence()
-          .map { it.joinToString(" ").tokenizeByWhitespace().joinToString(" ") } }
-        else initiateSuspendableRepair(tokens, cfg))
+          .map { it.joinToString(" ").tokenizeByWhitespace().joinToString(" ") }
+        } else {
+          println("Repairing on CPU...")
+          initiateSuspendableRepair(tokens, cfg)
+        })
 //        initiateSuspendableRepair(tokens, cfg, ngrams)
           // Drop NEWLINE (added by default to PyCodeSnippets)
           .map { it.substring(0, it.length - 8).replacePythonKeywords() }
@@ -133,9 +137,9 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
             workHash = workHash,
             origTks = tokens.dropLast(1),
             recognizer = { "$it NEWLINE".replace("|", "OR") in cfg.language },
-//            metric = { (score(it) * 1_000.0).toInt() }, // TODO: Is reordering really necessary if we are decoding GREs by ngram score?
+            metric = { (score(it) * 1_000.0).toInt() }, // TODO: Is reordering really necessary if we are decoding GREs by ngram score?
 //            metric = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() },
-            metric = { 1 },
+//            metric = { 1 },
             customDiff = {
               val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())
               pcs.paintDiff(levAlign)

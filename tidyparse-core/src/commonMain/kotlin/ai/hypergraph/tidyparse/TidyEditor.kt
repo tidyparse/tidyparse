@@ -141,7 +141,7 @@ abstract class TidyEditor {
     postResults = { writeDisplayText("$invalidPrefix$it") },
     finally = {
       if (currentWorkHash == workHash) writeDisplayText("$reason$it".also { cache[workHash] = it })
-      println("Completed in ${timer.elapsedNow().inWholeMilliseconds}ms")
+      println("Enumeration completed in ${timer.elapsedNow().inWholeMilliseconds}ms")
     },
     customDiff = customDiff,
     postCompletionSummary = postCompletionSummary
