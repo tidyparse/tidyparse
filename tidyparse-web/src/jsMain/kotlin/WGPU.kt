@@ -14,7 +14,6 @@ import js.buffer.*
 import js.typedarrays.Int32Array
 import kotlinx.browser.document
 import kotlinx.coroutines.await
-import kotlinx.dom.appendText
 import org.w3c.dom.HTMLDivElement
 import web.events.*
 import web.gpu.*
@@ -29,9 +28,11 @@ external val navigator: dynamic
 
 /*
 TODO:
-  (1) rescore samples using Markov Chain
-  (2) parallelize makeLevFSA/byteFormat
- */
+  (1) WGSL levAlign / repair minimization
+  (2) rescore samples using Markov Chain
+  (3) sort repairs by probability on WGPU
+  (4) parallelize makeLevFSA/byteFormat
+*/
 
 suspend fun tryBootstrappingGPU() {
   print("Checking GPU availability... ")
@@ -137,10 +138,14 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   val startIdxs = distToStates.filter { it.second in (led..(led + ledBuffer)) }
     .also { println("Start indices: $it") }.map { it.first }.toIntArray()
 
-  val maxSamples = 65534
-  val maxWordLen = fsa.width + fsa.height + 10
+  val maxRepairLen = fsa.width + fsa.height + 10
 
-  val outBuf = GPUBuffer(maxSamples * maxWordLen * 4, GPUBufferUsage.STCPSD)
+  if (MAX_WORD_LEN < maxRepairLen) {
+    println("Max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)")
+    return emptyList()
+  }
+
+  val outBuf = GPUBuffer(MAX_SAMPLES * maxRepairLen * 4, GPUBufferUsage.STCPSD)
 
   val tmBuf = cfg.termBuf
 
@@ -153,7 +158,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
 
   lsDense.destroy()
 
-  val header = intArrayOf(0, maxWordLen, cfg.nonterminals.size, numStates)
+  val header = intArrayOf(0, maxRepairLen, cfg.nonterminals.size, numStates)
 
   /** [TERM_STRUCT] */
   val indexUniformsBuf = packStruct(constants = header.toList(), startIdxs.toGPUBuffer())
@@ -162,7 +167,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   /* Phase 2 – launch |maxSamples| single‑thread workgroups */
   val t3 = TimeSource.Monotonic.markNow()
   sample_words_wor.invoke1d(
-    maxSamples,
+    MAX_SAMPLES,
     dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, indexUniformsBuf, cdfBuf
   )
 //  sample_words_wr.invoke1d(maxSamples, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, indexUniformsBuf, tmBuf)
@@ -170,7 +175,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   val tokens = outBuf.readInts()
 
   listOf(outBuf, metaBuf, dpBuf, indexUniformsBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf).forEach { it.destroy() }
-  val t = tokens.splitIntoWords(cfg, maxSamples, maxWordLen)
+  val t = tokens.splitIntoWords(cfg, MAX_SAMPLES, maxRepairLen)
   println("Sampling took ${t3.elapsedNow()}")
   return t
 }
@@ -589,6 +594,7 @@ struct PrefixSumUni { N: u32 };
 }""")
 
 const val MAX_WORD_LEN = 512
+const val MAX_SAMPLES = 65534
 
 /** See [PTree.sampleStrWithoutReplacement] for CPU version. */
 //language=wgsl
