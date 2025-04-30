@@ -5,6 +5,7 @@ import ai.hypergraph.tidyparse.initiateSuspendableRepair
 import kotlinx.coroutines.*
 import org.w3c.dom.*
 import kotlin.math.ln
+import kotlin.time.measureTimedValue
 
 class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val output: Node) : JSTidyEditor(editor, output) {
   val ngrams: MutableMap<List<String>, Double> = mutableMapOf()
@@ -137,9 +138,9 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
             workHash = workHash,
             origTks = tokens.dropLast(1),
             recognizer = { "$it NEWLINE".replace("|", "OR") in cfg.language },
-            metric = { (score(it) * 1_000.0).toInt() }, // TODO: Is reordering really necessary if we are decoding GREs by ngram score?
+//            metric = { (score(it) * 1_000.0).toInt() }, // TODO: Is reordering really necessary if we are decoding GREs by ngram score?
 //            metric = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() },
-//            metric = { 1 },
+            metric = { 1 },
             customDiff = {
               val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())
               pcs.paintDiff(levAlign)

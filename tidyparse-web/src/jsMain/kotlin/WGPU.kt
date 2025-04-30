@@ -9,6 +9,7 @@ import Shader.Companion.toGPUBuffer
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.types.cache
+import ai.hypergraph.tidyparse.MAX_DISP_RESULTS
 import js.array.asList
 import js.buffer.*
 import js.typedarrays.Int32Array
@@ -21,6 +22,7 @@ import kotlin.js.Promise
 import kotlin.math.ceil
 import kotlin.reflect.KProperty
 import kotlin.time.TimeSource
+import kotlin.time.measureTimedValue
 
 lateinit var gpu: GPUDevice
 var gpuAvailable = false
@@ -28,7 +30,7 @@ external val navigator: dynamic
 
 /*
 TODO:
-  (1) WGSL levAlign / repair minimization
+  (1) Split words on WGPU
   (2) rescore samples using Markov Chain
   (3) sort repairs by probability on WGPU
   (4) parallelize makeLevFSA/byteFormat
@@ -45,8 +47,7 @@ suspend fun tryBootstrappingGPU() {
         sparse_load, sparse_mat_load,
         dag_reach, mdpt_count, mdpt_write,
         cfl_mul_upper, prefix_sum_p1, prefix_sum_p2,
-        bp_count, bp_write, ls_dense, ls_cdf,
-        sample_words_wr, sample_words_wor
+        bp_count, bp_write, ls_dense, ls_cdf, sample_words_wor
       ).forEach { it.bind() }
 //      benchmarkWGPU() // TODO: remove for deployment
 //      benchmarkWGPURepair()
@@ -113,10 +114,10 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
 }
 
 suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GPUBuffer, ledBuffer: Int): List<List<String>> {
-//  println("FSA(|Q|=${fsa.numStates}, |δ|=${fsa.transit.size}), " +
-//      "CFG(|Σ|=${cfg.terminals.size}, |V|=${cfg.nonterminals.size}, |P|=${cfg.nonterminalProductions.size})")
   val t0 = TimeSource.Monotonic.markNow()
   val (numStates, numNonterminals) = fsa.numStates to cfg.nonterminals.size
+//  println("FSA(|Q|=${numStates}, |δ|=${fsa.transit.size}), " +
+//      "CFG(|Σ|=${cfg.terminals.size}, |V|=${numNonterminals}, |P|=${cfg.nonterminalProductions.size})")
   val dpBuf = cfl_mul_upper.invokeCFLFixpoint(numStates, numNonterminals, dpInSparse, metaBuf)
   println("Matrix closure reached in: ${t0.elapsedNow()}")
 
@@ -132,11 +133,11 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   println("Built backpointers in ${t1.elapsedNow()}")
 
   val t2 = TimeSource.Monotonic.markNow()
-  val distToStates = allStartIds.map { it to fsa.idsToCoords[(it - startNT) / numNonterminals]!!.second }
-  val led = distToStates.minOf { it.second } // Language edit distance
+  val statesToDist = allStartIds.map { it to fsa.idsToCoords[(it - startNT) / numNonterminals]!!.second }
+  val led = statesToDist.minOf { it.second } // Language edit distance
 
-  val startIdxs = distToStates.filter { it.second in (led..(led + ledBuffer)) }
-    .also { println("Start indices: $it") }.map { it.first }.toIntArray()
+  val startIdxs = statesToDist.filter { it.second in (led..(led + ledBuffer)) }
+    .map { listOf(it.first, it.second) }.sortedBy { it[1] }.also { println("Start indices: $it") }.flatten()
 
   val maxRepairLen = fsa.width + fsa.height + 10
 
@@ -150,19 +151,19 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   val tmBuf = cfg.termBuf
 
   /* Phase 1 – language size + CDF  */
-  val lsDense  = buildLanguageSizeBuf(fsa.numStates, cfg.nonterminals.size, dpBuf, metaBuf, tmBuf)
+  val lsDense  = buildLanguageSizeBuf(numStates, numNonterminals, dpBuf, metaBuf, tmBuf)
   val totalExp = bpStorageBuf.size.toInt() / (2 * 4)
   val cdfBuf   = GPUBuffer(totalExp * 4, GPUBufferUsage.STCPSD)
 
-  ls_cdf.invoke3d(fsa.numStates,cfg.nonterminals.size, dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)
+  ls_cdf.invoke3d(numStates,numNonterminals, dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)
 
   lsDense.destroy()
 
-  val header = intArrayOf(0, maxRepairLen, cfg.nonterminals.size, numStates)
+  val header = intArrayOf(0, maxRepairLen, numNonterminals, numStates)
 
   /** [TERM_STRUCT] */
   val indexUniformsBuf = packStruct(constants = header.toList(), startIdxs.toGPUBuffer())
-  println("Pairing function construction took : ${t2.elapsedNow()}")
+  println("Pairing function construction took: ${t2.elapsedNow()}")
 
   /* Phase 2 – launch |maxSamples| single‑thread workgroups */
   val t3 = TimeSource.Monotonic.markNow()
@@ -170,12 +171,14 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
     MAX_SAMPLES,
     dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, indexUniformsBuf, cdfBuf
   )
-//  sample_words_wr.invoke1d(maxSamples, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, indexUniformsBuf, tmBuf)
 
   val tokens = outBuf.readInts()
 
   listOf(outBuf, metaBuf, dpBuf, indexUniformsBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf).forEach { it.destroy() }
-  val t = tokens.splitIntoWords(cfg, MAX_SAMPLES, maxRepairLen)
+  val t = measureTimedValue {
+    tokens.splitIntoWordsFast(cfg.tmLst, MAX_SAMPLES, maxRepairLen)
+  }.also { println("Word split took: ${it.duration}") }.value
+
   println("Sampling took ${t3.elapsedNow()}")
   return t
 }
@@ -209,7 +212,7 @@ struct IndexUniforms {  // Indices of all accepting states in the parse chart
     numStates       : u32,
     
     startIdxOffset  : u32, numStartIndices : u32,
-    startIndices    : array<u32>
+    startIndices    : array<u32> // Contains alternating (1) start index and (2) edit distance
 };"""
 
 //language=wgsl
@@ -593,8 +596,12 @@ struct PrefixSumUni { N: u32 };
     if (gid < N) { dataBuf[gid] = dataBuf[gid] + offsetVal; }
 }""")
 
+// Longest word WGSL can handle. If ~2^9<MAX_WORD_LEN, pipeline breaks some on architectures
 const val MAX_WORD_LEN = 512
-const val MAX_SAMPLES = 65534
+// Maximum threads WGSL allows in a single dispatch. If ~2^16<MAX_SAMPLES, this always fails
+const val MAX_SAMPLES = 65_535
+// Length of the packet header in each repair buffer
+const val PKT_HDR_LEN = 2 // [levenshtein distance, Markov probability]
 
 /** See [PTree.sampleStrWithoutReplacement] for CPU version. */
 //language=wgsl
@@ -609,7 +616,8 @@ val sample_words_wor by Shader("""$TERM_STRUCT
 @group(0) @binding(7) var<storage, read>          ls_sparse : array<u32>;
 
 /* ----------------------------- helpers ------------------------------------------ */
-fn getStartIdx(i : u32) -> u32 { return idx_uni.startIndices[i]; }
+fn getStartIdx(i : u32) -> u32 { return idx_uni.startIndices[i * 2]; }
+fn getEditDist(i : u32) -> u32 { return idx_uni.startIndices[i * 2 + 1]; }
 fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + nt]; } // |Σ_A|
 fn get_offsets(nt : u32) -> u32 { return terminals.payload[terminals.offsets_offset + nt]; } // offset of Σ_A
 fn get_all_tms(i : u32) -> u32 { return terminals.payload[terminals.all_tms_offset + i]; }   // σ → TM‑id
@@ -684,19 +692,21 @@ fn lcg_rand(stateRef: ptr<function, u32>, range: u32) -> u32 {
     let seqId : u32 = atomicAdd(&idx_uni.targetCnt, 1u);
     let gRank : u32 = lcg_permute(seqId + 0x9E3779B9u * gid.x);
 
+    let numStartIdxs = idx_uni.numStartIndices / 2;
     /* ---- total language size over all accepting states ------------------------- */
     var total : u32 = 0u;
-    for (var i = 0u; i < idx_uni.numStartIndices; i = i + 1u) { total = total + langSize(getStartIdx(i)); }
+    for (var i = 0u; i < numStartIdxs; i = i + 1u) { total = total + langSize(getStartIdx(i)); }
     var rank  : u32 = gRank % total;
 
     /* ---- pick a root in proportion to its language size ------------------------ */
     var rootIdx : u32 = 0u;
-    for (var i = 0u; i < idx_uni.numStartIndices; i = i + 1u) {
+    var levDist : u32 = 0u;
+    for (var i = 0u; i < numStartIdxs; i = i + 1u) {
         let sz = langSize(getStartIdx(i));
-        if (rank < sz) { rootIdx = getStartIdx(i); break; }
+        if (rank < sz) { rootIdx = getStartIdx(i); levDist = getEditDist(i); break; }
         rank = rank - sz;
     }
-
+    
     /* ---- DFS stack ------------------------------------------------------------- */
     var stack : array<Frame, $MAX_WORD_LEN>;
     var top   : u32 = 0u;
@@ -756,119 +766,8 @@ fn lcg_rand(stateRef: ptr<function, u32>, range: u32) -> u32 {
 
     /* ---- write the resulting word to the output buffer ------------------------- */
     let outBase = gid.x * idx_uni.maxWordLen;
-    for (var i = 0u; i < wLen; i++) { sampledWords[outBase + i] = word[i]; }
-}""")
-
-//language=wgsl
-val sample_words_wr by Shader("""$TERM_STRUCT
-@group(0) @binding(0) var<storage, read>              dp_in : array<u32>;
-@group(0) @binding(1) var<storage, read>           bp_count : array<u32>;
-@group(0) @binding(2) var<storage, read>          bp_offset : array<u32>;
-@group(0) @binding(3) var<storage, read>         bp_storage : array<u32>;
-@group(0) @binding(4) var<storage, read_write> sampledWords : array<u32>;
-@group(0) @binding(5) var<storage, read_write>     uniforms : IndexUniforms;
-@group(0) @binding(6) var<storage, read>          terminals : Terminals;
-  
-@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    var tid = gid.x;
-
-    var localWord: array<u32, $MAX_WORD_LEN>;
-    for (var i = 0u; i < uniforms.maxWordLen; i++) { localWord[i] = 0u; }
-    let q = terminals.offsets_size;
-
-    let rIndex    = lcg_rand(&tid, uniforms.numStartIndices);
-    let dpIndex   = uniforms.startIndices[rIndex];
-
-    let nnt       = uniforms.numNonterminals;
-    let numStates = uniforms.numStates;
-    let A         = dpIndex % nnt;
-    let rowCol    = dpIndex / nnt;
-    let c         = rowCol % numStates;
-    let r         = rowCol / numStates;
-    let snt       = numStates * nnt;
-    let startIdx  = r * snt + c * nnt + A;
-
-    sampleTopDown(&dp_in, &bp_count, &bp_offset, &bp_storage, startIdx, &tid, &localWord, uniforms.maxWordLen, nnt);
-
-    let baseIdx = gid.x * uniforms.maxWordLen;
-    for (var i = 0u; i < uniforms.maxWordLen; i++) { sampledWords[baseIdx + i] = localWord[i]; }
-}
-
-fn get_nt_tm_lens(index: u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + index]; }
-fn get_offsets(index: u32) -> u32 { return terminals.payload[terminals.offsets_offset + index]; }
-fn get_all_tms(index: u32) -> u32 { return terminals.payload[terminals.all_tms_offset + index]; }
-
-fn lcg_rand(stateRef: ptr<function, u32>, range: u32) -> u32 { 
-  let newVal = (1664525u * (*stateRef)) + 1013904223u;
-  *stateRef = newVal;
-  return select(newVal % range, 0u, range == 0u); 
-}
-
-fn sampleTopDown(
-    dp_in_ptr       : ptr<storage, array<u32>, read>,
-    bp_count_ptr    : ptr<storage, array<u32>, read>,
-    bp_offset_ptr   : ptr<storage, array<u32>, read>,
-    bp_storage_ptr  : ptr<storage, array<u32>, read>,
-    startDPIdx      : u32,
-    rngStateRef     : ptr<function, u32>,
-    localWord       : ptr<function, array<u32, $MAX_WORD_LEN>>,
-    maxWordLen      : u32,
-    nnt             : u32
-) {
-    let MAX_STACK = ${MAX_WORD_LEN}u;
-    var stack: array<u32, $MAX_WORD_LEN>;
-    var top = 0u;
-    var wordLen = 0u;
-    stack[top] = startDPIdx; top++;
-
-    // Safety limit: "maxWordLen * 98" matches the Metal logic
-    let ITER_MAX = maxWordLen * 98u;
-
-    // Loop while we have items on the stack and haven't overflowed localWord
-    for (var iter = 0u; (iter < ITER_MAX) && (top > 0u) && (wordLen < (maxWordLen - 5u)); iter++) {
-        top -= 1u; let dpIdx = stack[top];
-
-        let expCount = (*bp_count_ptr)[dpIdx];
-        let dpVal    = (*dp_in_ptr)[dpIdx];
-
-        if (((dpVal >> 1) != 0u) && (((dpVal & 0x01u) == 0u) || ((lcg_rand(rngStateRef, expCount) % 2u) == 0u))) {
-            let nonterminal       = dpIdx % nnt;
-            let isNegativeLiteral = (dpVal & 0x40000000u) != 0u;
-            let literal           = (dpVal >> 1) & 0x1FFFFFFFu;
-
-            // Look up how many terminals exist for this nonterminal, etc.
-            let numTms    = get_nt_tm_lens(nonterminal);
-            let ntOffset  = get_offsets(nonterminal);
-
-            // Negative literal: pick from all possible terminals except the chosen literal
-            if (isNegativeLiteral) {
-                var possibleTms: array<u32, 100>;
-                var tmCount = 0u;
-                let limit = select(100u, numTms, numTms < 100u);
-                for (var i = 0u; i < limit; i++) {
-                    if (i != (literal - 1u)) { possibleTms[tmCount] = get_all_tms(ntOffset + i); tmCount++; }
-                }
-                let tmChoice = possibleTms[lcg_rand(rngStateRef, tmCount)];
-                (*localWord)[wordLen] = tmChoice + 1u; wordLen++;
-            } else {
-                // Positive literal: either pick it or fall back to 99 if no terminals exist
-                if (numTms != 0u) {
-                    let tmVal = get_all_tms(ntOffset + (literal - 1u));
-                    (*localWord)[wordLen] = tmVal + 1u; wordLen++;
-                } else {
-                    (*localWord)[wordLen] = 99u; wordLen++;
-                }
-            }
-        } else if ((top + 2u) < MAX_STACK) {
-            let randIdx = (*bp_offset_ptr)[dpIdx] + lcg_rand(rngStateRef, expCount);
-
-            let idxBM = (*bp_storage_ptr)[2u * randIdx + 0u];
-            let idxMC = (*bp_storage_ptr)[2u * randIdx + 1u];
-
-            stack[top] = idxMC; top++;
-            stack[top] = idxBM; top++;
-        }
-    }
+    sampledWords[outBase] = levDist;
+    for (var i = 0u; i < wLen; i++) { sampledWords[outBase + i + ${PKT_HDR_LEN}u] = word[i]; }
 }""")
 
 //language=wgsl
@@ -1265,18 +1164,76 @@ fun packStruct(constants: List<Int> = emptyList(), vararg buffers: GPUBuffer): G
 }
 
 // TODO: kernelize?
-fun IntArray.splitIntoWords(cfg: CFG, maxSamples: Int, maxWordLen: Int) =
-  (0..<maxSamples).map { sampleIdx ->
-    val offset = sampleIdx * maxWordLen
-    slice(offset..<(offset + maxWordLen)).map { it and 0xFF }
-      .fold(mutableListOf<MutableList<Int>>()) { slices, token ->
-        if (token == 0) {
-          if (slices.lastOrNull()?.isNotEmpty() == true) slices.add(mutableListOf())
-        } else {
-          if (slices.isEmpty() || slices.last().isEmpty()) slices.add(mutableListOf())
-          slices.last().add(token)
-        }
-        slices
-      }.filter { it.isNotEmpty() }
-      .map { slice -> slice.joinToString(" ") { c -> if (c == 0) "0" else cfg.tmLst[c - 1] } }
-  }.filter { it.isNotEmpty() }
+//fun IntArray.splitIntoWords(tmLst: List<String>, maxSamples: Int, maxWordLen: Int): List<List<String>> =
+//  (0..<maxSamples).map { sampleIdx ->
+//    val headOffset = sampleIdx * maxWordLen
+//    val wordOffset = headOffset + PKT_HDR_LEN
+//    this[headOffset] to slice(wordOffset..<(wordOffset + maxWordLen)).map { it and 0xFF }
+//      .fold(mutableListOf<MutableList<Int>>()) { slices, token ->
+//        if (token == 0) {
+//          if (slices.lastOrNull()?.isNotEmpty() == true) slices.add(mutableListOf())
+//        } else {
+//          if (slices.isEmpty() || slices.last().isEmpty()) slices.add(mutableListOf())
+//          slices.last().add(token)
+//        }
+//        slices
+//      }.filter { it.isNotEmpty() }
+//      .map { slice -> slice.joinToString(" ") { c -> if (c == 0) "0" else tmLst[c - 1] } }
+//  }.sortedBy { it.first }.take(MAX_DISP_RESULTS).map { it.second }
+
+private fun topKIndicesByHeader(buf: IntArray, samples: Int, wordLen: Int, k: Int): IntArray {
+  val bestIdx  = IntArray(k) { -1 }          // indices of the top-K packets
+  val bestHead = IntArray(k) { Int.MAX_VALUE } // their header values
+  var filled = 0                             // how many slots are in use
+
+  for (i in 0 until samples) {
+    val hdr = buf[i * wordLen]             // header = score/key
+    if (filled < k) {                      // grow until full
+      var p = filled++
+      while (p > 0 && hdr < bestHead[p - 1]) {   // insertion sort
+        bestHead[p] = bestHead[p - 1]
+        bestIdx [p] = bestIdx [p - 1]
+        p--
+      }
+      bestHead[p] = hdr
+      bestIdx [p] = i
+    } else if (hdr < bestHead[k - 1]) {     // replace the current worst
+      var p = k - 1
+      while (p > 0 && hdr < bestHead[p - 1]) {
+        bestHead[p] = bestHead[p - 1]
+        bestIdx [p] = bestIdx [p - 1]
+        p--
+      }
+      bestHead[p] = hdr
+      bestIdx [p] = i
+    }
+  }
+  return bestIdx.copyOf(filled)   // may be < k if samples < k
+}
+
+private fun IntArray.decodePacket(sampleIdx: Int, tm: List<String>, wordLen: Int): List<String> {
+  val words = mutableListOf<StringBuilder>()
+  var cur: StringBuilder? = null
+  val base = sampleIdx * wordLen + PKT_HDR_LEN          // skip header
+
+  for (j in 0 until wordLen - PKT_HDR_LEN) {
+    val tok = this[base + j] and 0xFF
+    if (tok == 0) {
+      if (cur != null && cur.isNotEmpty()) { words += cur; cur = null }
+    } else {
+      if (cur == null) cur = StringBuilder()
+      if (cur.isNotEmpty()) cur.append(' ')
+      cur.append(tm[tok - 1])
+    }
+  }
+  if (cur != null && cur.isNotEmpty()) words += cur
+  return words.map(StringBuilder::toString)
+}
+
+fun IntArray.splitIntoWordsFast(tm: List<String>, maxSamples: Int, maxWordLen: Int): List<List<String>> {
+  val winners = topKIndicesByHeader(this, maxSamples, maxWordLen, MAX_DISP_RESULTS)
+  val (minScore, maxScore) = winners.asSequence().map { this[it * maxWordLen] }
+    .fold(Int.MAX_VALUE to Int.MIN_VALUE) { (mn, mx), s -> minOf(mn, s) to maxOf(mx, s) }
+  println("Header scores: [$minScore, $maxScore]")
+  return winners.map { idx -> decodePacket(idx, tm, maxWordLen) }
+}
