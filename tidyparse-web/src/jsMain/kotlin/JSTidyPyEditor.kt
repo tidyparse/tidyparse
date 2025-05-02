@@ -2,14 +2,18 @@ import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.tidyparse.initiateSuspendableRepair
+import ai.hypergraph.tidyparse.invalidPrefix
 import kotlinx.coroutines.*
 import org.w3c.dom.*
 import kotlin.math.ln
 
 class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val output: Node) : JSTidyEditor(editor, output) {
   val ngrams: MutableMap<List<String>, Double> = mutableMapOf()
-  fun tmToInt(tm: String): Int = cfg.tmMap[tm] ?: -if (tm == "BOS") 1 else 2
-  val intGrams: Map<List<Int>, Double> by lazy { ngrams.map { (k, v) -> k.map { tmToInt(it) } to v }.toMap() }
+  fun tmToInt(tm: String): Int = cfg.tmMap[tm]?.let { it + 1 } ?: -if (tm == "BOS") 1 else if (tm == "EOS") 2 else 3
+  val intGrams: Map<List<Int>, Double> by lazy {
+    ngrams.map { (k, v) -> k.map { tmToInt(it) } to v }.toMap()
+      .also { it.toList().take(10).forEach { (a, b) -> println("$a -> $b") } }
+  }
   val order: Int by lazy { ngrams.keys.firstOrNull()!!.size }
   val normalizingConst by lazy { ngrams.values.sum() }
   var allowCompilerErrors = true
@@ -156,6 +160,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
               pcs.paintDiff(levAlign)
             },
             postCompletionSummary = { ", discarded $rejected/$total." },
+            reason = invalidPrefix
           )
       }
     }

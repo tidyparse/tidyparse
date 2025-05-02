@@ -13,6 +13,7 @@ import ai.hypergraph.tidyparse.MAX_DISP_RESULTS
 import js.array.asList
 import js.buffer.*
 import js.typedarrays.Int32Array
+import js.typedarrays.Uint32Array
 import kotlinx.browser.document
 import kotlinx.coroutines.await
 import org.w3c.dom.HTMLDivElement
@@ -22,6 +23,7 @@ import kotlin.collections.component1
 import kotlin.collections.component2
 import kotlin.js.Promise
 import kotlin.math.ceil
+import kotlin.math.roundToInt
 import kotlin.reflect.KProperty
 import kotlin.time.TimeSource
 import kotlin.time.measureTimedValue
@@ -48,7 +50,7 @@ suspend fun tryBootstrappingGPU() {
         sparse_load, sparse_mat_load,
         dag_reach, mdpt_count, mdpt_write,
         cfl_mul_upper, prefix_sum_p1, prefix_sum_p2,
-        bp_count, bp_write, ls_dense, ls_cdf, sample_words_wor
+        bp_count, bp_write, ls_dense, ls_cdf, sample_words_wor, markov_score
       ).forEach { it.bind() }
 //      benchmarkWGPU() // TODO: remove for deployment
 //      benchmarkWGPURepair()
@@ -859,12 +861,66 @@ fn min_u32(a: u32, b: u32) -> u32 { return select(a, b, a > b); }
     for (var i = 0u; i < wLen; i++) { sampledWords[outBase + i + ${PKT_HDR_LEN}u] = word[i]; }
 }""")
 
+//language=wgsl
 val markov_score by Shader("""
-@group(0) @binding(1) var<storage, read_write> sampled_words : array<u32>;
-@group(0) @binding(2) var<storage, read_write> markov_tensor : array<u32>;
+@group(0) @binding(0) var<storage, read>       ngram : array<u32>;      // hash table
+@group(0) @binding(1) var<storage, read_write> packets : array<u32>;    // sampledWords/outBuf
 
-@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-  //...
+const PKT_HDR_LEN  : u32 = ${PKT_HDR_LEN}u;
+const MAX_WORD_LEN : u32 = ${MAX_WORD_LEN}u;
+const SENTINEL_KEY : u32 = 0xFFFF_FFFFu;
+const HASH_MUL     : u32 = 0x1e35a7bdu;      // same multiplier as CPU side
+
+fn packGram(a:u32,b:u32,c:u32,d:u32) -> u32 { return (a<<21u)|(b<<14u)|(c<<7u)|d; }
+
+fn hash32(x:u32, pow:u32) -> u32 { return (x * HASH_MUL) >> (32u - pow); }
+
+fn lookupScore(key:u32) -> u32 {
+    let pow   : u32 = ngram[0];
+    let mask  : u32 = (1u << pow) - 1u;
+    var slot  : u32 = hash32(key, pow) & mask;
+
+    loop {                                       // ≤ 8 probes when load ≤ 0.75
+        let idx      = 1u + slot * 2u;           // 1-word header → slot*2
+        let stored   = ngram[idx];
+        if (stored == key)        { return ngram[idx + 1u]; }  // hit
+        if (stored == SENTINEL_KEY) { return 0u; }              // empty
+        slot = (slot + 1u) & mask;                              // linear probe
+    }
+}
+
+@compute @workgroup_size(1)
+fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+    let sid   = gid.x;
+    let base  = sid * MAX_WORD_LEN;
+
+    /* --- gather first three tokens (need 4 for the first gram) ----------- */
+    var t0 = packets[base + PKT_HDR_LEN];
+    var t1 = packets[base + PKT_HDR_LEN + 1u];
+    var t2 = packets[base + PKT_HDR_LEN + 2u];
+
+    if (t2 == 0u) { packets[base + 1u] = 0u; return; }   // shorter than 3 ⇒ score 0
+
+    t0 = t0 - 1u;  t1 = t1 - 1u;  t2 = t2 - 1u;          // zero-base
+
+    var pos   : u32 = 3u;
+    var score : u32 = 0u;
+
+    loop {
+        if (pos >= MAX_WORD_LEN - PKT_HDR_LEN) { break; }
+        let tok = packets[base + PKT_HDR_LEN + pos];
+        if (tok == 0u) { break; }                        // end of word
+
+        let key = packGram(t0, t1, t2, tok - 1u);
+        score   = score + lookupScore(key);
+
+        /* slide the 4-gram window */
+        t0 = t1;  t1 = t2;  t2 = tok - 1u;
+        pos = pos + 1u;
+    }
+
+    /* write result into the *second* header cell */
+    packets[base + 1u] = score;
 }""")
 
 //language=wgsl
@@ -1018,6 +1074,10 @@ class Shader constructor(val src: String) {
 
     fun List<Int>.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer =
       Int32Array<ArrayBuffer>(size).apply { set(this@toGPUBuffer.toTypedArray(), 0) }
+        .let { GPUBuffer(byteSize = size * 4, us = usage, data = it) }
+
+    fun List<UInt>.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer =
+      Uint32Array<ArrayBuffer>(size).apply { set(this@toGPUBuffer.map { it.toInt() }.toTypedArray(), 0) }
         .let { GPUBuffer(byteSize = size * 4, us = usage, data = it) }
 
     fun IntArray.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer =
@@ -1260,13 +1320,43 @@ fun packStruct(constants: List<Int> = emptyList(), vararg buffers: GPUBuffer): G
   return metaBuf
 }
 
-fun Map<List<UInt>, UInt>.loadToGPUBuffer(): GPUBuffer { return TODO() }
-
 val JSTidyPyEditor.ngramTensor: GPUBuffer by cache {
-  val sparseIntGrams: Map<List<UInt>, UInt> = cfg.tmMap.let { tmm ->
-    ngrams.map { (k, v) -> k.map { tmm[it]!!.toUInt() } to (v * 10_000).toUInt() }.toMap()
+  val SENTINEL = 0xFFFF_FFFFu
+  val HASH_MUL = 0x1e35a7bdu
+
+  fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer {
+    require(all { it.key.size == 4 }) { "Only 4-grams are supported" }
+
+    /** Compresses a 4-gram (tokens are 1-based) into one u32: 4 × 7-bit fields. */
+    fun packGram(g: List<UInt>): UInt = (g[0] - 1u shl 21) or (g[1] - 1u shl 14) or (g[2] - 1u shl 7) or (g[3] - 1u)
+
+    val nEntries     = size
+    var pow          = 1
+    while ((1 shl pow) < (nEntries / loadFactor).roundToInt()) pow++
+    val slots        = 1u shl pow
+    val mask         = slots - 1u
+
+    val table        = UIntArray(slots.toInt() * 2) { SENTINEL }
+
+    for ((gram, score) in this) {
+      val key     = packGram(gram)
+      var slot    = ((key * HASH_MUL) shr (32 - pow)) and mask
+
+      val idx = (slot * 2u).toInt()
+      while (table[idx] != SENTINEL) { slot = (slot + 1u) and mask }
+      table[idx]     = key
+      table[idx + 1] = score
+    }
+
+    val flat = UIntArray(1 + table.size)
+    flat[0]  = pow.toUInt()
+    table.copyInto(flat, 1)
+
+    return flat.asList().toGPUBuffer()
   }
-  TODO()
+
+  val grams = ngrams.map { (k,v) -> k.map { cfg.tmMap[it]!!.toUInt() } to (v * 10_000).toUInt() }.toMap()
+  grams.loadToGPUBuffer()
 }
 
 // TODO: kernelize?
@@ -1287,11 +1377,10 @@ val JSTidyPyEditor.ngramTensor: GPUBuffer by cache {
 //      .map { slice -> slice.joinToString(" ") { c -> if (c == 0) "0" else tmLst[c - 1] } }
 //  }.sortedBy { it.first }.take(MAX_DISP_RESULTS).map { it.second }
 
-
 private fun IntArray.decodePacket(sampleIdx: Int, tm: List<String>, wordLen: Int): List<String> {
   val words = mutableListOf<StringBuilder>()
   var cur: StringBuilder? = null
-  val base = sampleIdx * wordLen + PKT_HDR_LEN          // skip header
+  val base = sampleIdx * wordLen + PKT_HDR_LEN   // skip BOTH header cells
 
   for (j in 0 until wordLen - PKT_HDR_LEN) {
     val tok = this[base + j] and 0xFF
@@ -1308,42 +1397,46 @@ private fun IntArray.decodePacket(sampleIdx: Int, tm: List<String>, wordLen: Int
 }
 
 fun IntArray.rerankAndRender(tm: List<String>, maxSamples: Int, maxWordLen: Int, score: (List<Int>) -> Double): List<List<String>> {
-  fun topKIndicesByHeader(buf: IntArray, samples: Int, wordLen: Int, k: Int, score: (List<Int>) -> Double): IntArray {
-    fun sc(levDist: Int, wd: List<Int>) = levDist.toDouble() - 100 * score(wd)
-//    fun sc(levDist: Int, wd: List<Int>) = levDist.toDouble()
-//    fun sc(levDist: Int, wd: List<Int>) = -score(wd)
-    val bestIdx  = IntArray(k) { -1 }      // indices of the top-K packets
-    val bestScr = DoubleArray(k) { 0.0 }   // their header values
-    var filled = 0                               // how many slots are in use
+  fun IntArray.topKByEval(samples: Int, wordLen: Int, k: Int): IntArray {
+    fun evalSample(idx: Int): Double {
+      val lev  = this[idx * wordLen]
+      val wOff = idx * wordLen + PKT_HDR_LEN
+      val word = slice(wOff until wOff + wordLen - PKT_HDR_LEN).map { it and 0xFF }
+
+      return (lev * 10000 + score(word) * 1000)
+    }
+
+    val bestIdx = IntArray(k) { -1 }
+    val bestScr = DoubleArray(k) { Double.POSITIVE_INFINITY }
+    var filled  = 0
 
     for (i in 0 until samples) {
-      val hdr = buf[i * wordLen]                 // header = score/key
-      if (filled < k) {                          // grow until full
+      val scr = evalSample(i)
+      if (filled < k) {
         var p = filled++
-        while (p > 0 && hdr < bestScr[p - 1]) {  // insertion sort
-          bestScr[p] = bestScr[p - 1]
-          bestIdx[p] = bestIdx[p - 1]
-          p--
-        }
-        bestScr[p] = sc(hdr, buf.slice(p + 2 until p + wordLen))
-        bestIdx[p] = i
-      } else if (hdr < bestScr[k - 1]) {         // replace the current worst
+        while (p > 0 && scr < bestScr[p - 1]) { bestScr[p] = bestScr[p - 1]; bestIdx[p] = bestIdx[p - 1]; p-- }
+        bestScr[p] = scr; bestIdx[p] = i
+      } else if (scr < bestScr[k - 1]) {
         var p = k - 1
-        while (p > 0 && hdr < bestScr[p - 1]) {
-          bestScr[p] = bestScr[p - 1]
-          bestIdx[p] = bestIdx[p - 1]
-          p--
-        }
-        bestScr[p] = sc(hdr, buf.slice(p + 2 until p + wordLen))
-        bestIdx[p] = i
+        while (p > 0 && scr < bestScr[p - 1]) { bestScr[p] = bestScr[p - 1]; bestIdx[p] = bestIdx[p - 1]; p-- }
+        bestScr[p] = scr; bestIdx[p] = i
       }
     }
-    return bestIdx.copyOf(filled)     // may be < k if samples < k
+    return bestIdx.copyOf(filled)
   }
 
-  val winners = topKIndicesByHeader(this, maxSamples, maxWordLen, 10*MAX_DISP_RESULTS, score).distinct()
-  val (minScore, maxScore) = winners.asSequence().map { this[it * maxWordLen] }
+  var timer = TimeSource.Monotonic.markNow()
+  val winners = topKByEval(maxSamples, maxWordLen, 10 * MAX_DISP_RESULTS).distinct()
+
+  val (minS, maxS) = winners.asSequence().map { this[it * maxWordLen] }
     .fold(Int.MAX_VALUE to Int.MIN_VALUE) { (mn, mx), s -> minOf(mn, s) to maxOf(mx, s) }
-  println("Header scores: [$minScore, $maxScore]")
-  return winners.map { idx -> decodePacket(idx, tm, maxWordLen) }
+  println("Header scores: [$minS, $maxS]")
+
+  println("Eval took: ${timer.elapsedNow()}")
+  timer = TimeSource.Monotonic.markNow()
+
+  val decoded = winners.map { decodePacket(it, tm, maxWordLen) }
+
+  println("Decode took: ${timer.elapsedNow()}")
+  return decoded
 }
