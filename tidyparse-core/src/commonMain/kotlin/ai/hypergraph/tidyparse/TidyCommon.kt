@@ -142,8 +142,8 @@ fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
         "~$throughput unique res/s, ~$throughputTot total res/s"
       else "~$throughput res/s"
       val moreResults = (results.size - topNResults.size)
-        .let { if (it == 0) "\n\n" else "\n\n...$it more" }
-      val statistics = "$moreResults, $summary${postCompletionSummary.invoke()}"
+        .let { if (it == 0) "\n\n" else "\n\n...$it more, " }
+      val statistics = "$moreResults$summary${postCompletionSummary.invoke()}"
       return finally(topNResults.joinToString("\n", "", statistics) {
         val result = "<span style=\"color: gray\" class=\"noselect\">${i++.toString().padStart(2)}.) </span>${it.first}"
         if (i == 1) "<mark>$result</mark>" else result

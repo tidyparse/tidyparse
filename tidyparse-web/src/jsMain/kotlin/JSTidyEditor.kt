@@ -9,6 +9,7 @@ import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
 import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
+import kotlin.time.TimeSource
 
 /** Compare with [ai.hypergraph.tidyparse.IJTidyEditor] */
 open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: Node): TidyEditor() {
@@ -49,6 +50,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
   override fun writeDisplayText(s: (Σᐩ) -> Σᐩ) = writeDisplayText(s(readDisplayText()))
 
   override fun handleInput() {
+    val t0 = TimeSource.Monotonic.markNow()
     val caretInGrammar = caretInGrammar()
     val context = getApplicableContext()
     if (context.isEmpty()) return
@@ -94,7 +96,8 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
           .map { it.joinToString(" ") { it.replace("ε", "") }
             .tokenizeByWhitespace().joinToString(" ") }
         else initiateSuspendableRepair(tokens, cfg)
-      }?.enumerateInteractively(workHash, tokens, reason = scenario.reason)
+      }?.enumerateInteractively(workHash, tokens,
+        reason = scenario.reason, postCompletionSummary = { ", ${t0.elapsedNow()} latency." })
     }
   }
 

@@ -1,12 +1,17 @@
+import Shader.Companion.toGPUBuffer
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
+import ai.hypergraph.kaliningraph.types.cache
 import ai.hypergraph.tidyparse.initiateSuspendableRepair
 import ai.hypergraph.tidyparse.invalidPrefix
 import kotlinx.coroutines.*
 import org.w3c.dom.*
+import web.gpu.GPUBuffer
 import kotlin.math.ln
+import kotlin.math.roundToInt
 
+@ExperimentalUnsignedTypes
 class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val output: Node) : JSTidyEditor(editor, output) {
   val ngrams: MutableMap<List<String>, Double> = mutableMapOf()
   fun tmToInt(tm: String): Int = cfg.tmMap[tm]?.let { it + 1 } ?: -if (tm == "BOS") 1 else if (tm == "EOS") 2 else 3
@@ -17,6 +22,44 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
   val order: Int by lazy { ngrams.keys.firstOrNull()!!.size }
   val normalizingConst by lazy { ngrams.values.sum() }
   var allowCompilerErrors = true
+
+  val ngramTensor: GPUBuffer by cache {
+    fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer {
+      require(all { it.key.size == 4 }) { "Only 4-grams are supported" }
+
+      /** Compresses a 4-gram (tokens are 1-based) into one u32: 4 × 7-bit fields. */
+      fun packGram(g: List<UInt>): UInt = (g[0] - 1u shl 21) or (g[1] - 1u shl 14) or (g[2] - 1u shl 7) or (g[3] - 1u)
+
+      val nEntries = size
+      var pow = 1
+      while ((1 shl pow) < (nEntries / loadFactor).roundToInt()) pow++
+      val slots = 1u shl pow
+      val mask = slots - 1u
+
+      val table = UIntArray(slots.toInt() * 2) { SENTINEL }
+
+      for ((gram, score) in this) {
+        val key = packGram(gram)
+        var slot = ((key * HASH_MUL) shr (32 - pow)) and mask
+
+        val idx = (slot * 2u).toInt()
+        while (table[idx] != SENTINEL) {
+          slot = (slot + 1u) and mask
+        }
+        table[idx] = key
+        table[idx + 1] = score
+      }
+
+      val flat = UIntArray(1 + table.size)
+      flat[0] = pow.toUInt()
+      table.copyInto(flat, 1)
+
+      return flat.asList().toGPUBuffer()
+    }
+
+    val grams = ngrams.map { (k, v) -> k.map { cfg.tmMap[it]!!.toUInt() } to (v * 10_000).toUInt() }.toMap()
+    grams.loadToGPUBuffer()
+  }
 
   val PLACEHOLDERS = listOf("STRING", "NAME", "NUMBER")
   override val stubMatcher: Regex = Regex(PLACEHOLDERS.joinToString("|") { Regex.escape(it) })

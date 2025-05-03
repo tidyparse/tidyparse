@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalUnsignedTypes::class)
+@file:OptIn(ExperimentalUnsignedTypes::class, ExperimentalStdlibApi::class)
 
 import Shader.Companion.GPUBuffer
 import Shader.Companion.buildLanguageSizeBuf
@@ -13,20 +13,15 @@ import ai.hypergraph.tidyparse.MAX_DISP_RESULTS
 import js.array.asList
 import js.buffer.*
 import js.typedarrays.Int32Array
-import js.typedarrays.Uint32Array
 import kotlinx.browser.document
 import kotlinx.coroutines.await
 import org.w3c.dom.HTMLDivElement
 import web.events.*
 import web.gpu.*
-import kotlin.collections.component1
-import kotlin.collections.component2
 import kotlin.js.Promise
-import kotlin.math.ceil
-import kotlin.math.roundToInt
+import kotlin.math.*
 import kotlin.reflect.KProperty
-import kotlin.time.TimeSource
-import kotlin.time.measureTimedValue
+import kotlin.time.*
 
 lateinit var gpu: GPUDevice
 var gpuAvailable = false
@@ -47,10 +42,13 @@ suspend fun tryBootstrappingGPU() {
     gpu.addEventListener(EventType("uncapturederror"), { e: dynamic -> println("Uncaptured: ${e.error.message}") })
     try {
       listOf(
-        sparse_load, sparse_mat_load,
-        dag_reach, mdpt_count, mdpt_write,
-        cfl_mul_upper, prefix_sum_p1, prefix_sum_p2,
-        bp_count, bp_write, ls_dense, ls_cdf, sample_words_wor, markov_score
+        prefix_sum_p1, prefix_sum_p2,      // ADT storage utils
+        sparse_load, sparse_mat_load,      // Matrix loading utils
+        dag_reach, mdpt_count, mdpt_write, // Graph reachability
+        cfl_mul_upper,                     // Matrix exponentiation
+        bp_count, bp_write,                // Backpointer addressing
+        ls_dense, ls_cdf,                  // Language size estimation
+        sample_words_wor, markov_score     // Enumeration and reranking
       ).forEach { it.bind() }
 //      benchmarkWGPU() // TODO: remove for deployment
 //      benchmarkWGPURepair()
@@ -69,12 +67,18 @@ suspend fun tryBootstrappingGPU() {
   } else { println("not detected.") }
 }
 
-suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VALUE, score: (List<Int>) -> Double = { 0.0 }): List<List<String>> {
+suspend fun repairCode(
+  cfg: CFG,
+  code: List<String>,
+  ledBuffer: Int = Int.MAX_VALUE,
+  ngramTensor: GPUBuffer? = null,
+  score: (List<Int>) -> Double = { 0.0 }
+): List<List<String>> {
   val t0 = TimeSource.Monotonic.markNow()
-  val levFSA: FSA = makeLevFSA(code, 5)
+  val fsa: FSA = makeLevFSA(code, 5)
   println("Made levFSA in ${t0.elapsedNow()}")
 
-  val metadata = packMetadata(cfg, levFSA)
+  val metaBuf = packMetadata(cfg, fsa)
 
   // Sparse index nonzero entries of the M_0 parse chart
   fun FSA.byteFormat(cfg: CFG): IntArray { // TODO: kernelize
@@ -102,11 +106,11 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
     return q
   }
 
-  val dpIn = levFSA.byteFormat(cfg)
+  val dpInSparse = fsa.byteFormat(cfg)
 //  println("Initial nonzeros: ${dpIn.count { it != 0 }}")
 
   println("PREPROCESSING TOOK: ${t0.elapsedNow()}") // ~230ms
-  val words = repairPipeline(cfg, levFSA, dpIn, metadata, ledBuffer, score)
+  val words = repairPipeline(cfg, fsa, dpInSparse, metaBuf, ledBuffer, ngramTensor, score)
   println("Received: ${words.size} words")
 //  val distinctWords = words.distinct()
 //  println("Distinct: ${distinctWords.size} words")
@@ -115,27 +119,35 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
   return words
 }
 
-suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GPUBuffer, ledBuffer: Int, score: (List<Int>) -> Double): List<List<String>> {
+suspend fun repairPipeline(
+  cfg: CFG,
+  fsa: FSA,
+  dpInSparse: IntArray,
+  metaBuf: GPUBuffer,
+  ledBuffer: Int,
+  ngramTensor: GPUBuffer?,
+  score: (List<Int>) -> Double
+): List<List<String>> {
   val t0 = TimeSource.Monotonic.markNow()
-  val (numStates, numNonterminals) = fsa.numStates to cfg.nonterminals.size
+  val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   println("FSA(|Q|=${numStates}, |δ|=${fsa.transit.size}), " +
-      "CFG(|Σ|=${cfg.terminals.size}, |V|=${numNonterminals}, |P|=${cfg.nonterminalProductions.size})")
-  val dpBuf = cfl_mul_upper.invokeCFLFixpoint(numStates, numNonterminals, dpInSparse, metaBuf)
+      "CFG(|Σ|=${cfg.terminals.size}, |V|=${numNTs}, |P|=${cfg.nonterminalProductions.size})")
+  val dpBuf = cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpInSparse, metaBuf)
   println("Matrix closure reached in: ${t0.elapsedNow()}")
 
   val t1 = TimeSource.Monotonic.markNow()
   val startNT     = cfg.bindex[START_SYMBOL]
-  val allStartIds = fsa.finalIdxs.map { it * numNonterminals + startNT }
+  val allStartIds = fsa.finalIdxs.map { it * numNTs + startNT }
     .let { it.zip(dpBuf.readIndices(it)) }.filter { (_, v) -> v != 0 }.map { it.first }
 
   if (!allStartIds.isEmpty()) // { println("Valid parse found: dpComplete has ${allStartIds.size} start indices") }
   else { println("No valid parse found: dpComplete has no entries in final states!"); return emptyList() }
 
-  val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNonterminals, dpBuf, metaBuf)
+  val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNTs, dpBuf, metaBuf)
   println("Built backpointers in ${t1.elapsedNow()}")
 
   val t2 = TimeSource.Monotonic.markNow()
-  val statesToDist = allStartIds.map { it to fsa.idsToCoords[(it - startNT) / numNonterminals]!!.second }
+  val statesToDist = allStartIds.map { it to fsa.idsToCoords[(it - startNT) / numNTs]!!.second }
   val led = statesToDist.minOf { it.second } // Language edit distance
 
   val startIdxs = statesToDist.filter { it.second in (led..(led + ledBuffer)) }
@@ -153,26 +165,24 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   val tmBuf = cfg.termBuf
 
   /* Phase 1 – language size + CDF  */
-  val lsDense  = buildLanguageSizeBuf(numStates, numNonterminals, dpBuf, metaBuf, tmBuf)
+  val lsDense  = buildLanguageSizeBuf(numStates, numNTs, dpBuf, metaBuf, tmBuf)
   val totalExp = bpStorageBuf.size.toInt() / (2 * 4)
   val cdfBuf   = GPUBuffer(totalExp * 4, GPUBufferUsage.STCPSD)
 
-  ls_cdf.invoke3d(numStates,numNonterminals, dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)
+  ls_cdf(dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
 
   lsDense.destroy()
 
-  val header = intArrayOf(0, maxRepairLen, numNonterminals, numStates)
+  val header = intArrayOf(0, maxRepairLen, numNTs, numStates)
 
-  /** [TERM_STRUCT] */
-  val indexUniformsBuf = packStruct(constants = header.toList(), startIdxs.toGPUBuffer())
+  /** [TERM_STRUCT] */ val indexUniformsBuf = packStruct(constants = header.toList(), startIdxs.toGPUBuffer())
   println("Pairing function construction took: ${t2.elapsedNow()}")
 
   /* Phase 2 – launch |maxSamples| single‑thread workgroups */
   val t3 = TimeSource.Monotonic.markNow()
-  sample_words_wor.invoke1d(
-    MAX_SAMPLES,
-    dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, indexUniformsBuf, cdfBuf
-  )
+  sample_words_wor(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, indexUniformsBuf, cdfBuf)(MAX_SAMPLES)
+
+//  if (ngramTensor != null) markov_score(ngramTensor, outBuf)(MAX_SAMPLES)
 
   val tokens = outBuf.readInts()
 
@@ -185,6 +195,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   return t
 }
 
+// Maps NTs to terminals for sampling
 val CFG.termBuf: GPUBuffer by cache {
 //  val packTime = TimeSource.Monotonic.markNow()
   val terminalLists = nonterminals.map { bimap.UNITS[it]?.map { tmMap[it]!! } ?: emptyList() }
@@ -192,8 +203,7 @@ val CFG.termBuf: GPUBuffer by cache {
   val nt_tm_offsets = terminalLists.scan(0) { acc, list -> acc + list.size }.dropLast(1).toGPUBuffer()
   val all_tm = terminalLists.flatten().toGPUBuffer()
 
-  /** Memory layout: [TERM_STRUCT] */
-  packStruct(emptyList(), nt_tm_lens, nt_tm_offsets, all_tm)
+  /** Memory layout: [TERM_STRUCT] */ packStruct(emptyList(), nt_tm_lens, nt_tm_offsets, all_tm)
 //    .also { println("Packing time: ${packTime.elapsedNow()}") }
 }
 
@@ -284,14 +294,14 @@ struct AtomicChange { count: atomic<u32> };
 
 //language=wgsl
 val mdpt_count by Shader("""
-struct Uni { N : u32 };
+struct Uni { n : u32 };
 
 @group(0) @binding(0) var<storage, read>       reach  : array<u32>;   // N×N upper‑tri (0/1)
 @group(0) @binding(1) var<storage, read_write> counts : array<u32>;   // N×N  (aoi‑1 → #midpts)
 @group(0) @binding(2) var<uniform>             uni    : Uni;
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid:vec3<u32>) {
-    let r = gid.y;  let c = gid.x;  let N = uni.N;
+    let r = gid.y;  let c = gid.x;  let N = uni.n;
     if (r >= N || c >= N || c <= r) { return; }
 
     let idx = r*N + c;
@@ -304,7 +314,7 @@ struct Uni { N : u32 };
 
 //language=wgsl
 val mdpt_write by Shader("""
-struct Uni { N : u32 };
+struct Uni { n : u32 };
 
 @group(0) @binding(0) var<storage, read>       reach   : array<u32>;
 @group(0) @binding(1) var<storage, read>       offsets : array<u32>; // exclusive scan of counts
@@ -312,7 +322,7 @@ struct Uni { N : u32 };
 @group(0) @binding(3) var<uniform>             uni     : Uni;
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid:vec3<u32>) {
-    let r = gid.y;  let c = gid.x;  let N = uni.N;
+    let r = gid.y;  let c = gid.x;  let N = uni.n;
     if (r >= N || c >= N || c <= r) { return; }
 
     let idx = r*N + c;
@@ -515,7 +525,7 @@ fn get_nt_tm_lens(index: u32) -> u32 { return terminals.payload[terminals.nt_tm_
 
 // language=wgsl
 val prefix_sum_p1 by Shader("""
-struct PrefixSumUni { N: u32 };
+struct PrefixSumUni { n : u32 };
 
 @group(0) @binding(0) var<storage, read>         inputBuf : array<u32>;
 @group(0) @binding(1) var<storage, read_write>  outputBuf : array<u32>;
@@ -531,7 +541,7 @@ var<workgroup> tile: array<u32, WORKGROUP_SIZE>;
     @builtin(workgroup_id)          groupId : vec3<u32>,
     @builtin(local_invocation_id)   localId : vec3<u32>
 ) {
-    let N       = prefixUni.N;
+    let N       = prefixUni.n;
     let gid     = globalId.x;
     let lid     = localId.x;
     let grpId   = groupId.x;
@@ -579,7 +589,7 @@ var<workgroup> tile: array<u32, WORKGROUP_SIZE>;
 
 //language=wgsl
 val prefix_sum_p2 by Shader("""
-struct PrefixSumUni { N: u32 };
+struct PrefixSumUni { n: u32 };
 
 @group(0) @binding(0) var<storage, read_write>          dataBuf : array<u32>;
 @group(0) @binding(1) var<storage, read>       scannedBlockSums : array<u32>;
@@ -591,7 +601,7 @@ struct PrefixSumUni { N: u32 };
 ) {
     let grpId = groupId.x;
     let gid   = globalId.x;
-    let N     = prefixUni.N;
+    let N     = prefixUni.n;
 
     // For each block `grpId`, the offset is scannedBlockSums[grpId].
     let offsetVal = scannedBlockSums[grpId];
@@ -605,6 +615,8 @@ const val MAX_SAMPLES = 65_535
 // Length of the packet header in each repair buffer
 const val PKT_HDR_LEN = 2 // [levenshtein distance, Markov probability]
 const val MAX_SAMPLES_PER_DIST = 30_000
+val SENTINEL = 0xFFFF_FFFFu
+val HASH_MUL = 0x1e35a7bdu
 
 /** See [PTree.sampleStrWithoutReplacement] for CPU version. */
 //language=wgsl
@@ -863,19 +875,19 @@ fn min_u32(a: u32, b: u32) -> u32 { return select(a, b, a > b); }
 
 //language=wgsl
 val markov_score by Shader("""
-@group(0) @binding(0) var<storage, read>       ngram : array<u32>;      // hash table
-@group(0) @binding(1) var<storage, read_write> packets : array<u32>;    // sampledWords/outBuf
+@group(0) @binding(0) var<storage, read>         ngram : array<u32>; // hash table
+@group(0) @binding(1) var<storage, read_write> packets : array<u32>; // sampledWords/outBuf
 
 const PKT_HDR_LEN  : u32 = ${PKT_HDR_LEN}u;
 const MAX_WORD_LEN : u32 = ${MAX_WORD_LEN}u;
-const SENTINEL_KEY : u32 = 0xFFFF_FFFFu;
-const HASH_MUL     : u32 = 0x1e35a7bdu;      // same multiplier as CPU side
+const SENTINEL_KEY : u32 = 0x${SENTINEL.toHexString()}u;
+const HASH_MUL     : u32 = 0x${HASH_MUL.toHexString()}u;      // same multiplier as CPU side
 
-fn packGram(a:u32,b:u32,c:u32,d:u32) -> u32 { return (a<<21u)|(b<<14u)|(c<<7u)|d; }
+fn packGram(a : u32, b : u32, c : u32,d : u32) -> u32 { return (a<<21u)|(b<<14u)|(c<<7u)|d; }
 
-fn hash32(x:u32, pow:u32) -> u32 { return (x * HASH_MUL) >> (32u - pow); }
+fn hash32(x : u32, pow : u32) -> u32 { return (x * HASH_MUL) >> (32u - pow); }
 
-fn lookupScore(key:u32) -> u32 {
+fn lookupScore(key: u32) -> u32 {
     let pow   : u32 = ngram[0];
     let mask  : u32 = (1u << pow) - 1u;
     var slot  : u32 = hash32(key, pow) & mask;
@@ -883,7 +895,7 @@ fn lookupScore(key:u32) -> u32 {
     loop {                                       // ≤ 8 probes when load ≤ 0.75
         let idx      = 1u + slot * 2u;           // 1-word header → slot*2
         let stored   = ngram[idx];
-        if (stored == key)        { return ngram[idx + 1u]; }  // hit
+        if (stored == key)          { return ngram[idx + 1u]; } // hit
         if (stored == SENTINEL_KEY) { return 0u; }              // empty
         slot = (slot + 1u) & mask;                              // linear probe
     }
@@ -891,8 +903,8 @@ fn lookupScore(key:u32) -> u32 {
 
 @compute @workgroup_size(1)
 fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-    let sid   = gid.x;
-    let base  = sid * MAX_WORD_LEN;
+    let sid  = gid.x;
+    let base = sid * MAX_WORD_LEN;
 
     /* --- gather first three tokens (need 4 for the first gram) ----------- */
     var t0 = packets[base + PKT_HDR_LEN];
@@ -1055,7 +1067,7 @@ class Shader constructor(val src: String) {
       val coeffsBuffer = intArrayOf(rowCoeff, colCoeff).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
       val numWorkgroups = ceil(size / 4.0 / SPARSE_WRITER_WORKGROUP_SIZE).toInt()
 
-      sparse_load.invoke1d(numWorkgroups, sparseDataGpuBuffer, outputBuffer, coeffsBuffer)
+      sparse_load(sparseDataGpuBuffer, outputBuffer, coeffsBuffer)(numWorkgroups)
 
       sparseDataGpuBuffer.destroy()
       coeffsBuffer.destroy()
@@ -1067,24 +1079,20 @@ class Shader constructor(val src: String) {
       val outputBuffer = GPUBuffer(outputByteSize, GPUBufferUsage.STCPSD)
       val sparseDataBuffer = toGPUBuffer()
       val numWorkgroups = ceil((size / 2.0) / SPARSE_WRITER_WORKGROUP_SIZE).toInt()
-      sparse_mat_load.invoke1d(numWorkgroups, sparseDataBuffer, outputBuffer)
+      sparse_mat_load(sparseDataBuffer, outputBuffer)(numWorkgroups)
       sparseDataBuffer.destroy()
       return outputBuffer
     }
 
-    fun List<Int>.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer =
-      Int32Array<ArrayBuffer>(size).apply { set(this@toGPUBuffer.toTypedArray(), 0) }
+    fun List<Int>.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer = toTypedArray().toGPUBuffer(usage)
+    fun List<UInt>.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer = map { it.toInt() }.toTypedArray().toGPUBuffer(usage)
+    fun IntArray.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer = toTypedArray().toGPUBuffer(usage)
+    fun Int.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer = intArrayOf(this).toGPUBuffer(usage)
+    fun Array<Int>.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer =
+      Int32Array<ArrayBuffer>(size).apply { set(this@toGPUBuffer, 0) }
         .let { GPUBuffer(byteSize = size * 4, us = usage, data = it) }
 
-    fun List<UInt>.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer =
-      Uint32Array<ArrayBuffer>(size).apply { set(this@toGPUBuffer.map { it.toInt() }.toTypedArray(), 0) }
-        .let { GPUBuffer(byteSize = size * 4, us = usage, data = it) }
-
-    fun IntArray.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer =
-      Int32Array<ArrayBuffer>(size).apply { set(this@toGPUBuffer.toTypedArray(), 0) }
-        .let { GPUBuffer(byteSize = size * 4, us = usage, data = it) }
-
-    // TODO: figure out map/unmap lifetime
+    // TODO: figure out map/unmap lifetime?
     fun GPUBuffer(byteSize: Number, us: Int, data: AllowSharedBufferSource? = null): GPUBuffer =
       gpu.createBuffer(descriptor = GPUBufferDescriptor(size = byteSize.toDouble(), usage = us))
         .also { if (data != null) { gpu.queue.writeBuffer(it, 0.0, data) } }
@@ -1099,11 +1107,11 @@ class Shader constructor(val src: String) {
       val blockSumsBuf = GPUBuffer(numGroups * 4, GPUBufferUsage.STCPSD)
       val uniBuf = intArrayOf(length).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
 
-      prefix_sum_p1.invoke1d(numGroups, inputBuf, outputBuf, blockSumsBuf, uniBuf)
+      prefix_sum_p1(inputBuf, outputBuf, blockSumsBuf, uniBuf)(numGroups)
 
       if (numGroups > 1) {
         val scannedBlockSumsBuf = blockSumsBuf.readInts().scan(0) { acc, it -> acc + it }.toGPUBuffer()
-        prefix_sum_p2.invoke1d(numGroups, outputBuf, scannedBlockSumsBuf, uniBuf)
+        prefix_sum_p2(outputBuf, scannedBlockSumsBuf, uniBuf)(numGroups)
         scannedBlockSumsBuf.destroy()
       }
 
@@ -1120,7 +1128,7 @@ class Shader constructor(val src: String) {
       val (reachBuf: GPUBuffer, entries: Int) = dag_reach.invokeDAGFixpoint(fsa)
 
       println("DAG fixpoint in ${t0.elapsedNow()}")
-//      val (allFSAPairsFlattened, allFSAPairsOffsets) = //fsa.midpoints.prefixScan()
+//    val (allFSAPairsFlattened, allFSAPairsOffsets) = //fsa.midpoints.prefixScan()
 //        reachBuf.readInts().sparsifyReachabilityMatrix().prefixScan()
       //  TODO: enforce exact equivalence?
       val (allFSAPairsFlattened, allFSAPairsOffsets) = buildMidpointsGPU(fsa.numStates, reachBuf)
@@ -1128,8 +1136,7 @@ class Shader constructor(val src: String) {
 
       println("Sparse reachability took ${t0.elapsedNow()} / (${4 *(allFSAPairsFlattened.size + allFSAPairsOffsets.size)} bytes)")
 
-      /** Memory layout: [CFL_STRUCT] */
-      val metaBuf = packStruct(
+      /** Memory layout: [CFL_STRUCT] */ val metaBuf = packStruct(
         constants = listOf(fsa.numStates, cfg.nonterminals.size),
         // FSA Encoding
         allFSAPairsFlattened, allFSAPairsOffsets, fsa.finalIdxs.toGPUBuffer(),
@@ -1144,14 +1151,14 @@ class Shader constructor(val src: String) {
     suspend fun buildMidpointsGPU(states: Int, reachBuf: GPUBuffer): Pair<GPUBuffer, GPUBuffer> {
       val totalPairs = states * states
       val cntBuf     = GPUBuffer(totalPairs * 4, GPUBufferUsage.STCPSD)
-      val uniBuf     = intArrayOf(states).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
+      val uniBuf     = states.toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
 
-      mdpt_count.invoke2d(states, reachBuf, cntBuf, uniBuf)
+      mdpt_count(reachBuf, cntBuf, uniBuf)(states, states)
       val offBuf = prefixSumGPU(cntBuf, totalPairs)
       val last   = listOf(totalPairs - 1)
       val totalM = offBuf.readIndices(last)[0] + cntBuf.readIndices(last)[0]
       val flatBuf = GPUBuffer(totalM * 4, GPUBufferUsage.STCPSD)
-      mdpt_write.invoke2d(states, reachBuf, offBuf, flatBuf, uniBuf)
+      mdpt_write(reachBuf, offBuf, flatBuf, uniBuf)(states, states)
 
       uniBuf.destroy()
       cntBuf.destroy()
@@ -1164,9 +1171,9 @@ class Shader constructor(val src: String) {
       val bpCountBuf = GPUBuffer(totalCells * 4, GPUBufferUsage.STCPSD)
 
       println("Total cells: $totalCells = $numStates^2 * $numNTs")
-      bp_count.invoke3d(numStates, numNTs, dpIn, bpCountBuf, metaBuf)
+      bp_count(dpIn, bpCountBuf, metaBuf)(numStates, numStates, numNTs)
 
-//      val bpOffsetBuf = bpCountBuf.readInts().scan(0) { acc, arr -> acc + arr }.dropLast(1).toIntArray().toGPUBuffer(GPUBufferUsage.STCPSD)
+//    val bpOffsetBuf = bpCountBuf.readInts().scan(0) { acc, arr -> acc + arr }.dropLast(1).toIntArray().toGPUBuffer(GPUBufferUsage.STCPSD)
       val bpOffsetBuf = prefixSumGPU(bpCountBuf, totalCells)
 
       val lastIdx = listOf(totalCells - 1)
@@ -1175,7 +1182,7 @@ class Shader constructor(val src: String) {
 
       val bpStorageBuf = GPUBuffer(totalExpansions * 2 * 4, GPUBufferUsage.STCPSD)
 
-      bp_write.invoke3d(numStates, numNTs, dpIn, bpOffsetBuf, bpStorageBuf, metaBuf)
+      bp_write(dpIn, bpOffsetBuf, bpStorageBuf, metaBuf)(numStates, numStates, numNTs)
 
       return Triple(bpCountBuf, bpOffsetBuf, bpStorageBuf)
     }
@@ -1185,35 +1192,28 @@ class Shader constructor(val src: String) {
       val lsDenseBuf = GPUBuffer(totalCells * 4, GPUBufferUsage.STCPSD)
 
       for (span in 1..<nStates) {
-        val spanBuf = intArrayOf(span).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
+        val spanBuf = span.toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
 
-        val pass = gpu.createCommandEncoder()
-        pass.beginComputePass().apply {
-          setPipeline(ls_dense.pipeline)
-          setBindGroup(0, ls_dense.pipeline.bindBuffers(dpIn, lsDenseBuf, metaBuf, tmBuf, spanBuf))
-          dispatchWorkgroups(nStates - span, 1, nNT)
-          end()
-        }
-        gpu.queue.submit(arrayOf(pass.finish()))
+        ls_dense(dpIn, lsDenseBuf, metaBuf, tmBuf, spanBuf)(nStates - span, 1, nNT)
       }
       return lsDenseBuf
     }
   }
 
   // Invocation strategies: eliminates some of the ceremony of calling a GSL shader
-  suspend fun invokeCFLFixpoint(numStates: Int, numNonterminals: Int, input: IntArray, metaBuf: GPUBuffer): GPUBuffer {
+  suspend fun invokeCFLFixpoint(numStates: Int, numNTs: Int, input: IntArray, metaBuf: GPUBuffer): GPUBuffer {
 //    var t0 = TimeSource.Monotonic.markNow()
 
-    val rowCoeff = numStates * numNonterminals
-    val colCoeff = numNonterminals
+    val rowCoeff = numStates * numNTs
+    val colCoeff = numNTs
     val dpIn = input.toGPUBufferSparse(GPUBufferUsage.STCPSD, numStates * rowCoeff, rowCoeff, colCoeff)
 //    println("Time to load buffer: ${t0.elapsedNow()} (${input.size * 4} bytes)")
 
     var prevValue = -1
 
     for (round in 0..<numStates) {
-      val changesBuf = intArrayOf(0).toGPUBuffer()
-      cfl_mul_upper.invoke3d(numStates, numNonterminals, dpIn, metaBuf, changesBuf)
+      val changesBuf = 0.toGPUBuffer()
+      cfl_mul_upper(dpIn, metaBuf, changesBuf)(numStates, numStates, numNTs)
       val changesThisRound = changesBuf.readInts()[0]
       changesBuf.destroy()
       if (changesThisRound == prevValue) break
@@ -1233,8 +1233,8 @@ class Shader constructor(val src: String) {
     var prevValue = -1
 
     for (round in 0..<states) {
-      val changesBuf = intArrayOf(0).toGPUBuffer()
-      dag_reach.invoke2d(states, input, changesBuf)
+      val changesBuf = 0.toGPUBuffer()
+      dag_reach(input, changesBuf)(states, states)
       val changesThisRound = changesBuf.readInts()[0]
       changesBuf.destroy()
       if (changesThisRound == prevValue) break
@@ -1246,44 +1246,28 @@ class Shader constructor(val src: String) {
     return input to prevValue
   }
 
-  fun invoke1d(threads: Int, vararg inputs: GPUBuffer) =
-    gpu.createCommandEncoder().run {
-      beginComputePass().apply {
-        setPipeline(pipeline)
-        setBindGroup(0, pipeline.bindBuffers(*inputs))
-        dispatchWorkgroups(threads)
-        end()
-      }
-      gpu.queue.submit(arrayOf(finish()))
+  class DispatchStrategy(val gce: GPUCommandEncoder, val gcpe: GPUComputePassEncoder) {
+    operator fun invoke(x: Int, y: Int = 1, z: Int = 1) {
+      gcpe.dispatchWorkgroups(x, y, z)
+      gcpe.end()
+      gpu.queue.submit(arrayOf(gce.finish()))
     }
+  }
 
-  fun invoke2d(t1: Int, vararg inputs: GPUBuffer) =
-    gpu.createCommandEncoder().run {
-      beginComputePass().apply {
-        setPipeline(pipeline)
-        setBindGroup(0, pipeline.bindBuffers(*inputs))
-        dispatchWorkgroups(t1, t1)
-        end()
+  operator fun invoke(vararg inputs: GPUBuffer): DispatchStrategy =
+    gpu.createCommandEncoder().let { gce ->
+      gce.beginComputePass().let { gcpe ->
+        gcpe.setPipeline(pipeline)
+        gcpe.setBindGroup(0, pipeline.bindBuffers(*inputs))
+        return DispatchStrategy(gce, gcpe)
       }
-      gpu.queue.submit(arrayOf(finish()))
-    }
-
-  fun invoke3d(t1: Int, t2: Int, vararg inputs: GPUBuffer) =
-    gpu.createCommandEncoder().run {
-      beginComputePass().apply {
-        setPipeline(pipeline)
-        setBindGroup(0, pipeline.bindBuffers(*inputs))
-        dispatchWorkgroups(t1, t1, t2)
-        end()
-      }
-      gpu.queue.submit(arrayOf(finish()))
     }
 }
 
 // constants   = [c0,c1,…]
 // buffers[i]  = payload_i   (u32‑packed GPUBuffer)
-// result      =  [constants | (off0,len0) (off1,len1)… | payload_0 … payload_k ]
-//               ^ headerInts.size * 4  bytes
+// result      = [constants | (off0,len0) (off1,len1)… | payload_0 … payload_k ]
+//                ^ headerInts.size * 4  bytes
 fun packStruct(constants: List<Int> = emptyList(), vararg buffers: GPUBuffer): GPUBuffer {
   if (buffers.isEmpty()) error("At least one payload buffer required")
 
@@ -1321,9 +1305,6 @@ fun packStruct(constants: List<Int> = emptyList(), vararg buffers: GPUBuffer): G
 }
 
 val JSTidyPyEditor.ngramTensor: GPUBuffer by cache {
-  val SENTINEL = 0xFFFF_FFFFu
-  val HASH_MUL = 0x1e35a7bdu
-
   fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer {
     require(all { it.key.size == 4 }) { "Only 4-grams are supported" }
 
