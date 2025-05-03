@@ -77,7 +77,9 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
   // Sparse index nonzero entries of the M_0 parse chart
   fun FSA.byteFormat(cfg: CFG): IntArray { // TODO: kernelize
     val t0 = TimeSource.Monotonic.markNow()
-    val terminalLists = cfg.nonterminals.map { cfg.bimap.UNITS[it] ?: emptySet() }
+    val bindex = cfg.bindex
+    val terminalLists = cfg.terminalLists
+
     // 0 and 1 are reserved for (0) no parse exists and (1) parse exists, but an internal nonterminal node
     // Other byte values are used to denote the presence (+) or absence (-) of a leaf terminal
     fun StrPred.predByte(A: Int): Int = (
@@ -86,18 +88,29 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
       else (terminalLists[A].indexOf(arg) + 1).shl(1)
     )
 
-    val sparseChart = cfg.unitProductions.flatMap { (A, σ) ->
-      nominalForm.flattenedTriples.filter { arc -> arc.second(σ) }.map { (q0, sp, q1) ->
-        val Aidx = cfg.bindex[A]
-        // row, col, Aidx, terminal
-        listOf(stateMap[q0]!!, stateMap[q1]!!, Aidx, sp.predByte(Aidx))
-//          .also { println("${it[0]}, ${it[1]}, ${it[2]}, ${it[3].toString(2)}") }
+    fun buildSparseChart(cfg: CFG, nominalForm: NOM, stateMap: Map<String, Int>, bindex: Bindex<String>): IntArray {
+      val rowCount = cfg.unitProductions.sumOf { (_, σ) -> nominalForm.flattenedTriples.count { arc -> arc.second(σ) } }
+
+      val out = IntArray(rowCount * 4)
+
+      var p = 0
+      for ((A, σ) in cfg.unitProductions) {
+        val Aidx = bindex[A]
+        for ((q0, sp, q1) in nominalForm.flattenedTriples) {
+          if (!sp(σ)) continue
+
+          out[p++] = stateMap[q0]!!          // q0
+          out[p++] = stateMap[q1]!!          // q1
+          out[p++] = Aidx                    // non‑terminal
+          out[p++] = sp.predByte(Aidx)   // terminal byte
+        }
       }
+      return out
     }
 
-    val q = sparseChart.flatten().toIntArray()
+    val sparseChart = buildSparseChart(cfg, nominalForm, stateMap, bindex)
     println("Byte format took: ${t0.elapsedNow()}")
-    return q
+    return sparseChart
   }
 
   val dpInSparse = fsa.byteFormat(cfg)
