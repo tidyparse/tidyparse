@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalUnsignedTypes::class)
+
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.types.PlatformVars
@@ -46,8 +48,8 @@ fun main() {
     PlatformVars.PLATFORM_CALLER_STACKTRACE_DEPTH = 4
   }
 
-  if (window["PROGRAMMING_LANG"] == "python") pythonSetup() else defaultSetup()
   MainScope().async { tryBootstrappingGPU() }
+  if (window["PROGRAMMING_LANG"] == "python") pythonSetup() else defaultSetup()
 }
 
 fun defaultSetup() {
@@ -124,7 +126,8 @@ fun loadNgrams(file: String = "python_4grams.txt") = MainScope().launch {
       numNgrams++
     }
 
-    println("Loaded ${jsPyEditor.intGrams.size} $n-grams from $file")
+    val message = "Loaded ${jsPyEditor.ngrams.size} $n-grams from $file"
+    println(if (!gpuAvailable) message else "$message into ${jsPyEditor.ngramTensor.size / 1000000}mb flat buffer")
   }
 }
 

@@ -10,55 +10,40 @@ import org.w3c.dom.*
 import web.gpu.GPUBuffer
 import kotlin.math.ln
 import kotlin.math.roundToInt
+import kotlin.time.TimeSource
 
+const val NEWLINE_ID = 1
+const val BOS_ID     = 2
+const val EOS_ID     = 3
+const val FIRST_TID  = 4
 @ExperimentalUnsignedTypes
 class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val output: Node) : JSTidyEditor(editor, output) {
   val ngrams: MutableMap<List<String>, Double> = mutableMapOf()
-  fun tmToInt(tm: String): Int = cfg.tmMap[tm]?.let { it + 1 } ?: -if (tm == "BOS") 1 else if (tm == "EOS") 2 else 3
-  val intGrams: Map<List<Int>, Double> by lazy {
-    ngrams.map { (k, v) -> k.map { tmToInt(it) } to v }.toMap()
-      .also { it.toList().take(10).forEach { (a, b) -> println("$a -> $b") } }
+
+  fun tmToInt(tm: String): Int = when (tm) {
+    "NEWLINE" -> NEWLINE_ID
+    "BOS"     -> BOS_ID
+    "EOS"     -> EOS_ID
+    else      -> cfg.tmMap[tm]!! + FIRST_TID
   }
+
   val order: Int by lazy { ngrams.keys.firstOrNull()!!.size }
   val normalizingConst by lazy { ngrams.values.sum() }
   var allowCompilerErrors = true
 
-  val ngramTensor: GPUBuffer by cache {
-    fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer {
-      require(all { it.key.size == 4 }) { "Only 4-grams are supported" }
+  private val SCALE = 10_000.0
+  val ngramTensor: GPUBuffer by lazy {
 
-      /** Compresses a 4-gram (tokens are 1-based) into one u32: 4 × 7-bit fields. */
-      fun packGram(g: List<UInt>): UInt = (g[0] - 1u shl 21) or (g[1] - 1u shl 14) or (g[2] - 1u shl 7) or (g[3] - 1u)
+    fun Map<List<String>, Double>.toGpuHash(): Map<List<UInt>, UInt> {
+      val norm = values.sum()
 
-      val nEntries = size
-      var pow = 1
-      while ((1 shl pow) < (nEntries / loadFactor).roundToInt()) pow++
-      val slots = 1u shl pow
-      val mask = slots - 1u
-
-      val table = UIntArray(slots.toInt() * 2) { SENTINEL }
-
-      for ((gram, score) in this) {
-        val key = packGram(gram)
-        var slot = ((key * HASH_MUL) shr (32 - pow)) and mask
-
-        val idx = (slot * 2u).toInt()
-        while (table[idx] != SENTINEL) {
-          slot = (slot + 1u) and mask
-        }
-        table[idx] = key
-        table[idx + 1] = score
-      }
-
-      val flat = UIntArray(1 + table.size)
-      flat[0] = pow.toUInt()
-      table.copyInto(flat, 1)
-
-      return flat.asList().toGPUBuffer()
+      return mapValues { (_, p) ->
+        val penalty = -ln(p / norm) * SCALE
+        penalty.roundToInt().coerceAtLeast(0).toUInt()
+      }.mapKeys { (gram, _) -> gram.map { (tmToInt(it) - 1).toUInt() } }
     }
 
-    val grams = ngrams.map { (k, v) -> k.map { cfg.tmMap[it]!!.toUInt() } to (v * 10_000).toUInt() }.toMap()
-    grams.loadToGPUBuffer()
+    ngrams.toGpuHash().loadToGPUBuffer()
   }
 
   val PLACEHOLDERS = listOf("STRING", "NAME", "NUMBER")
@@ -89,12 +74,6 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
   fun score(text: List<String>): Double =
     -(prefix + text + suffix).windowed(order, 1).sumOf { ngram -> ln((ngrams[ngram] ?: 1.0) / normalizingConst) }
-
-  val pfxInt by lazy { prefix.map { tmToInt(it) } }
-  val sufInt by lazy { suffix.map { tmToInt(it) } }
-
-  fun score(text: List<Int>): Double =
-    -(pfxInt + text + sufInt).windowed(order, 1).sumOf { ngram -> ln((intGrams[ngram] ?: 1.0) / normalizingConst) }
 
   var pyodide: dynamic? = null
 
@@ -140,6 +119,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     replace("OR", "|").replace("not_in", "not in").replace("is_not", "is not")
 
   override fun handleInput() {
+    val t0 = TimeSource.Monotonic.markNow()
     val currentLine = currentLine().also { println("Current line is: $it") }
     if (currentLine.isBlank()) return
     val pcs = PyCodeSnippet(currentLine)
@@ -173,7 +153,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
         (if (gpuAvailable) {
           println("Repairing on GPU...")
-          repairCode(cfg, tokens, LED_BUFFER, score = ::score).asSequence()
+          repairCode(cfg, tokens, LED_BUFFER, ngramTensor).asSequence()
           .map { it.joinToString(" ").tokenizeByWhitespace().joinToString(" ") }
         } else {
           println("Repairing on CPU...")
@@ -202,7 +182,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
               val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())
               pcs.paintDiff(levAlign)
             },
-            postCompletionSummary = { ", discarded $rejected/$total." },
+            postCompletionSummary = { ", discarded $rejected/$total, ${t0.elapsedNow()} latency." },
             reason = invalidPrefix
           )
       }

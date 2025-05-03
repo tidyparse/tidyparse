@@ -67,13 +67,7 @@ suspend fun tryBootstrappingGPU() {
   } else { println("not detected.") }
 }
 
-suspend fun repairCode(
-  cfg: CFG,
-  code: List<String>,
-  ledBuffer: Int = Int.MAX_VALUE,
-  ngramTensor: GPUBuffer? = null,
-  score: (List<Int>) -> Double = { 0.0 }
-): List<List<String>> {
+suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VALUE, ngramTensor: GPUBuffer? = null): List<List<String>> {
   val t0 = TimeSource.Monotonic.markNow()
   val fsa: FSA = makeLevFSA(code, 5)
   println("Made levFSA in ${t0.elapsedNow()}")
@@ -110,7 +104,7 @@ suspend fun repairCode(
 //  println("Initial nonzeros: ${dpIn.count { it != 0 }}")
 
   println("PREPROCESSING TOOK: ${t0.elapsedNow()}") // ~230ms
-  val words = repairPipeline(cfg, fsa, dpInSparse, metaBuf, ledBuffer, ngramTensor, score)
+  val words = repairPipeline(cfg, fsa, dpInSparse, metaBuf, ledBuffer, ngramTensor)
   println("Received: ${words.size} words")
 //  val distinctWords = words.distinct()
 //  println("Distinct: ${distinctWords.size} words")
@@ -119,15 +113,7 @@ suspend fun repairCode(
   return words
 }
 
-suspend fun repairPipeline(
-  cfg: CFG,
-  fsa: FSA,
-  dpInSparse: IntArray,
-  metaBuf: GPUBuffer,
-  ledBuffer: Int,
-  ngramTensor: GPUBuffer?,
-  score: (List<Int>) -> Double
-): List<List<String>> {
+suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GPUBuffer, ledBuffer: Int, ngramTensor: GPUBuffer?): List<List<String>> {
   val t0 = TimeSource.Monotonic.markNow()
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   println("FSA(|Q|=${numStates}, |δ|=${fsa.transit.size}), " +
@@ -182,13 +168,13 @@ suspend fun repairPipeline(
   val t3 = TimeSource.Monotonic.markNow()
   sample_words_wor(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, indexUniformsBuf, cdfBuf)(MAX_SAMPLES)
 
-//  if (ngramTensor != null) markov_score(ngramTensor, outBuf)(MAX_SAMPLES)
+  if (ngramTensor != null) markov_score(outBuf, ngramTensor, indexUniformsBuf)(MAX_SAMPLES)
 
   val tokens = outBuf.readInts()
 
   listOf(outBuf, metaBuf, dpBuf, indexUniformsBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf).forEach { it.destroy() }
   val t = measureTimedValue {
-    tokens.rerankAndRender(cfg.tmLst, MAX_SAMPLES, maxRepairLen, score)
+    tokens.rerankAndRender(cfg.tmLst, MAX_SAMPLES, maxRepairLen)
   }.also { println("Rerank and render took: ${it.duration}") }.value
 
   println("Sampling took ${t3.elapsedNow()}")
@@ -874,14 +860,17 @@ fn min_u32(a: u32, b: u32) -> u32 { return select(a, b, a > b); }
 }""")
 
 //language=wgsl
-val markov_score by Shader("""
-@group(0) @binding(0) var<storage, read>         ngram : array<u32>; // hash table
-@group(0) @binding(1) var<storage, read_write> packets : array<u32>; // sampledWords/outBuf
+val markov_score by Shader("""$TERM_STRUCT
+@group(0) @binding(0) var<storage, read_write>  packets : array<u32>; // sampledWords/outBuf
+@group(0) @binding(1) var<storage, read>          ngram : array<u32>; // hash table
+@group(0) @binding(2) var<storage, read_write>  idx_uni : IndexUniforms;
 
 const PKT_HDR_LEN  : u32 = ${PKT_HDR_LEN}u;
-const MAX_WORD_LEN : u32 = ${MAX_WORD_LEN}u;
 const SENTINEL_KEY : u32 = 0x${SENTINEL.toHexString()}u;
 const HASH_MUL     : u32 = 0x${HASH_MUL.toHexString()}u;      // same multiplier as CPU side
+const BOS_ID       : u32 = ${BOS_ID}u;
+const NEWLINE_ID   : u32 = ${NEWLINE_ID}u;
+const EOS_ID       : u32 = ${EOS_ID}u;
 
 fn packGram(a : u32, b : u32, c : u32,d : u32) -> u32 { return (a<<21u)|(b<<14u)|(c<<7u)|d; }
 
@@ -901,38 +890,41 @@ fn lookupScore(key: u32) -> u32 {
     }
 }
 
-@compute @workgroup_size(1)
-fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-    let sid  = gid.x;
-    let base = sid * MAX_WORD_LEN;
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+    let sid     : u32 = gid.x;
+    let stride  : u32 = idx_uni.maxWordLen;     // real packet length
+    let base    : u32 = sid * stride;
 
-    /* --- gather first three tokens (need 4 for the first gram) ----------- */
-    var t0 = packets[base + PKT_HDR_LEN];
-    var t1 = packets[base + PKT_HDR_LEN + 1u];
-    var t2 = packets[base + PKT_HDR_LEN + 2u];
+    // prefix window <BOS><NEWLINE><BOS>  (order = 4 → need 3 prefixes)
+    var t0 = BOS_ID - 1u;
+    var t1 = NEWLINE_ID - 1u;
+    var t2 = BOS_ID - 1u;
 
-    if (t2 == 0u) { packets[base + 1u] = 0u; return; }   // shorter than 3 ⇒ score 0
-
-    t0 = t0 - 1u;  t1 = t1 - 1u;  t2 = t2 - 1u;          // zero-base
-
-    var pos   : u32 = 3u;
+    var pos   : u32 = 0u;
     var score : u32 = 0u;
+    var doneSuffix : u32 = 0u;
 
     loop {
-        if (pos >= MAX_WORD_LEN - PKT_HDR_LEN) { break; }
-        let tok = packets[base + PKT_HDR_LEN + pos];
-        if (tok == 0u) { break; }                        // end of word
+        // ---------- fetch next token or synthesize suffix ----------------
+        var tok : u32;
+        if (pos < stride - PKT_HDR_LEN && packets[base + PKT_HDR_LEN + pos] != 0u) {
+            tok = packets[base + PKT_HDR_LEN + pos];
+            pos += 1u;
+        } else {
+            // two‑token suffix: NEWLINE , EOS
+            tok = select(EOS_ID, NEWLINE_ID, doneSuffix == 0u);
+            doneSuffix += 1u;
+            if (doneSuffix > 2u) { break; }        // finished the suffix
+        }
 
+        // ---------- accumulate penalty -----------------------------------
         let key = packGram(t0, t1, t2, tok - 1u);
-        score   = score + lookupScore(key);
+        score  += lookupScore(key);
 
-        /* slide the 4-gram window */
         t0 = t1;  t1 = t2;  t2 = tok - 1u;
-        pos = pos + 1u;
     }
 
-    /* write result into the *second* header cell */
-    packets[base + 1u] = score;
+    packets[base + 1u] = score*100 + packets[base + 1u] * 1000;
 }""")
 
 //language=wgsl
@@ -1304,40 +1296,44 @@ fun packStruct(constants: List<Int> = emptyList(), vararg buffers: GPUBuffer): G
   return metaBuf
 }
 
-val JSTidyPyEditor.ngramTensor: GPUBuffer by cache {
-  fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer {
-    require(all { it.key.size == 4 }) { "Only 4-grams are supported" }
+fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer {
+  require(all { it.key.size == 4 }) { "Only 4-grams are supported" }
 
-    /** Compresses a 4-gram (tokens are 1-based) into one u32: 4 × 7-bit fields. */
-    fun packGram(g: List<UInt>): UInt = (g[0] - 1u shl 21) or (g[1] - 1u shl 14) or (g[2] - 1u shl 7) or (g[3] - 1u)
+  /** Compresses a 4‑gram (tokens are 1‑based) into one u32: 4 × 7‑bit fields. */
+  fun packGram(g: List<UInt>): UInt =
+    ((g[0] - 1u) shl 21) or ((g[1] - 1u) shl 14) or
+        ((g[2] - 1u) shl 7)  or  (g[3] - 1u)
 
-    val nEntries     = size
-    var pow          = 1
-    while ((1 shl pow) < (nEntries / loadFactor).roundToInt()) pow++
-    val slots        = 1u shl pow
-    val mask         = slots - 1u
+  /* ── pick a power‑of‑two table size ─────────────────────────────────── */
+  val nEntries = size.coerceAtLeast(1)
+  var pow = 1
+  while ((1 shl pow) < (nEntries / loadFactor).roundToInt()) pow++
+  val slots = 1u shl pow
+  val mask  = slots - 1u
 
-    val table        = UIntArray(slots.toInt() * 2) { SENTINEL }
+  val table = UIntArray(slots.toInt() * 2) { SENTINEL }
 
-    for ((gram, score) in this) {
-      val key     = packGram(gram)
-      var slot    = ((key * HASH_MUL) shr (32 - pow)) and mask
+  /* ── insert with linear probing ─────────────────────────────────────── */
+  for ((gram, score) in this) {
+    val key  = packGram(gram)
+    var slot = ((key * HASH_MUL) shr (32 - pow)) and mask
 
-      val idx = (slot * 2u).toInt()
-      while (table[idx] != SENTINEL) { slot = (slot + 1u) and mask }
-      table[idx]     = key
-      table[idx + 1] = score
+    while (table[(slot * 2u).toInt()] != SENTINEL) {
+      slot = (slot + 1u) and mask            // advance probe
     }
-
-    val flat = UIntArray(1 + table.size)
-    flat[0]  = pow.toUInt()
-    table.copyInto(flat, 1)
-
-    return flat.asList().toGPUBuffer()
+    val idx = (slot * 2u).toInt()            // correct slot found
+    table[idx]     = key
+    table[idx + 1] = score
   }
 
-  val grams = ngrams.map { (k,v) -> k.map { cfg.tmMap[it]!!.toUInt() } to (v * 10_000).toUInt() }.toMap()
-  grams.loadToGPUBuffer()
+  /* ── prepend header (pow) and upload ─────────────────────────────────── */
+  val flat = UIntArray(1 + table.size)
+  flat[0] = pow.toUInt()
+  table.copyInto(flat, 1)
+
+  println("Done")
+
+  return flat.asList().toGPUBuffer()         // unchanged helper
 }
 
 // TODO: kernelize?
@@ -1377,22 +1373,15 @@ private fun IntArray.decodePacket(sampleIdx: Int, tm: List<String>, wordLen: Int
   return words.map(StringBuilder::toString)
 }
 
-fun IntArray.rerankAndRender(tm: List<String>, maxSamples: Int, maxWordLen: Int, score: (List<Int>) -> Double): List<List<String>> {
+fun IntArray.rerankAndRender(tm: List<String>, maxSamples: Int, maxWordLen: Int): List<List<String>> {
   fun IntArray.topKByEval(samples: Int, wordLen: Int, k: Int): IntArray {
-    fun evalSample(idx: Int): Double {
-      val lev  = this[idx * wordLen]
-      val wOff = idx * wordLen + PKT_HDR_LEN
-      val word = slice(wOff until wOff + wordLen - PKT_HDR_LEN).map { it and 0xFF }
-
-      return (lev * 10000 + score(word) * 1000)
-    }
-
     val bestIdx = IntArray(k) { -1 }
-    val bestScr = DoubleArray(k) { Double.POSITIVE_INFINITY }
+    val bestScr = IntArray(k) { Int.Companion.MAX_VALUE }
     var filled  = 0
 
     for (i in 0 until samples) {
-      val scr = evalSample(i)
+      val scr = this[i * wordLen + 1]
+
       if (filled < k) {
         var p = filled++
         while (p > 0 && scr < bestScr[p - 1]) { bestScr[p] = bestScr[p - 1]; bestIdx[p] = bestIdx[p - 1]; p-- }
