@@ -33,7 +33,6 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
   private val SCALE = 10_000.0
   val ngramTensor: GPUBuffer by lazy {
-
     fun Map<List<String>, Double>.toGpuHash(): Map<List<UInt>, UInt> {
       val norm = values.sum()
 

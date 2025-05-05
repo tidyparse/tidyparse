@@ -47,27 +47,23 @@ fun main() {
   if (window.navigator.userAgent.indexOf("hrome") != -1) {
     PlatformVars.PLATFORM_CALLER_STACKTRACE_DEPTH = 4
   }
-
-  MainScope().async { tryBootstrappingGPU() }
-  if (window["PROGRAMMING_LANG"] == "python") pythonSetup() else defaultSetup()
+  MainScope().async { if (window["PROGRAMMING_LANG"] == "python") pythonSetup() else defaultSetup() }
 }
 
-fun defaultSetup() {
+suspend fun defaultSetup() {
   println("Starting Tidyparse/CFG")
 
-  window.onload = {
-    fetchSelectedExample()
-    jsEditor.getLatestCFG()
-    jsEditor.redecorateLines()
-    LED_BUFFER = maxEdits.value.toInt()
-    TIMEOUT_MS = timeout.value.toInt()
-    jsEditor.minimize = mincheck.checked
-    jsEditor.ntStubs = ntscheck.checked
-  }
+  fetchSelectedExample()
+  jsEditor.getLatestCFG()
+  jsEditor.redecorateLines()
+  LED_BUFFER = ledBuffSel.value.toInt()
+  TIMEOUT_MS = timeout.value.toInt()
+  jsEditor.minimize = mincheck.checked
+  jsEditor.ntStubs = ntscheck.checked
 
   inputField.addEventListener("input", { jsEditor.run { continuation { handleInput() } } })
   inputField.addEventListener("input", { jsEditor.redecorateLines() })
-  exSelector.addEventListener("change", { fetchSelectedExample() })
+  exSelector.addEventListener(type = "change", callback = { MainScope().async { fetchSelectedExample() } })
 
   inputField.addEventListener("keydown", { event -> jsEditor.navUpdate(event as KeyboardEvent) })
   mincheck.addEventListener("change", { jsEditor.minimize = mincheck.checked })
@@ -79,29 +75,31 @@ fun defaultSetup() {
     } catch (_: Exception) {}
     jsEditor.redecorateLines()
   })
-  maxEdits.addEventListener("change", { LED_BUFFER = maxEdits.value.toInt() })
+  ledBuffSel.addEventListener("change", { LED_BUFFER = ledBuffSel.value.toInt() })
   timeout.addEventListener("change", { TIMEOUT_MS = timeout.value.toInt() })
+
+  tryBootstrappingGPU()
 }
 
-fun pythonSetup() {
+suspend fun pythonSetup() {
   println("Starting TidyPython")
-  inputField.addEventListener("input", { jsPyEditor.run { continuation { handleInput() } } })
 
-  window.onload = {
-    jsPyEditor.redecorateLines()
+  jsPyEditor.redecorateLines()
 //    LED_BUFFER = maxEdits.value.toInt()
-    jsPyEditor.minimize = mincheck.checked
-    loadNgrams()
-    initPyodide()
+  tryBootstrappingGPU()
+  loadNgrams()
+  initPyodide()
 
-    LED_BUFFER = maxEdits.value.toInt()
-    TIMEOUT_MS = 1000
-  }
+  TIMEOUT_MS = 1000
+
+  inputField.addEventListener("input", { jsPyEditor.run { continuation { handleInput() } } })
   inputField.addEventListener("input", { jsPyEditor.redecorateLines() })
   inputField.addEventListener("keydown", { event -> jsPyEditor.navUpdate(event as KeyboardEvent) })
 
+  jsPyEditor.minimize = mincheck.checked
   mincheck.addEventListener("change", { jsPyEditor.minimize = mincheck.checked })
-  maxEdits.addEventListener("change", { LED_BUFFER = maxEdits.value.toInt() })
+  LED_BUFFER = ledBuffSel.value.toInt()
+  ledBuffSel.addEventListener("change", { LED_BUFFER = ledBuffSel.value.toInt() })
 }
 
 val exSelector by lazy { document.getElementById("ex-selector") as HTMLSelectElement }
@@ -113,9 +111,9 @@ val outputField by lazy { document.getElementById("tidyparse-output") as Node }
 val mincheck by lazy { document.getElementById("minimize-checkbox") as HTMLInputElement }
 val ntscheck by lazy { document.getElementById("ntstubs-checkbox") as HTMLInputElement }
 val timeout by lazy { document.getElementById("timeout") as HTMLInputElement }
-val maxEdits by lazy { document.getElementById("max-edits") as HTMLInputElement }
+val ledBuffSel by lazy { document.getElementById("led-buffer") as HTMLInputElement }
 
-fun loadNgrams(file: String = "python_4grams.txt") = MainScope().launch {
+suspend fun loadNgrams(file: String = "python_4grams.txt") {
   val response = window.fetch(file).await()
   if (response.ok) {
     var numNgrams = 0
@@ -131,7 +129,7 @@ fun loadNgrams(file: String = "python_4grams.txt") = MainScope().launch {
   }
 }
 
-fun initPyodide() = MainScope().launch {
+suspend fun initPyodide() {
   val scriptTag = (document.querySelector("script[src*='pyodide.js']") as HTMLScriptElement)
     .getAttribute("src")!!.substringBefore("pyodide.js")
 
@@ -151,7 +149,7 @@ fun initPyodide() = MainScope().launch {
   println(jsPyEditor.getOutput("1+"))
 }
 
-fun fetchSelectedExample() = MainScope().launch {
+suspend fun fetchSelectedExample() {
   val response = window.fetch(exSelector.value).await()
   if (response.ok) {
     val text = response.text().await()
