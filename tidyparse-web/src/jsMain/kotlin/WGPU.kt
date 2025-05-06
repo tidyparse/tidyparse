@@ -48,7 +48,8 @@ suspend fun tryBootstrappingGPU() {
         cfl_mul_upper,                     // Matrix exponentiation
         bp_count, bp_write,                // Backpointer addressing
         ls_dense, ls_cdf,                  // Language size estimation
-        sample_words_wor, markov_score     // Enumeration and reranking
+        sample_words_wor, markov_score,    // Enumeration and reranking
+        select_top_k, gather_top_k         // Top-k selection
       ).forEach { it.bind() }
 //      benchmarkWGPU() // TODO: remove for deployment
 //      benchmarkWGPURepair()
@@ -181,17 +182,68 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   val t3 = TimeSource.Monotonic.markNow()
   sample_words_wor(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, indexUniformsBuf, cdfBuf)(MAX_SAMPLES)
 
-  if (ngramTensor != null) markov_score(outBuf, ngramTensor, indexUniformsBuf)(MAX_SAMPLES)
+  if (ngramTensor != null) {
+    val t4 = TimeSource.Monotonic.markNow()
+    val k = 10 * MAX_DISP_RESULTS
+    val winnerTokens = scoreSelectGather(
+      packets          = outBuf,
+      ngramTensor      = ngramTensor,
+      indexUniformsBuf = indexUniformsBuf,
+      maxSamples       = MAX_SAMPLES,
+      stride           = maxRepairLen,
+      k                = k
+    )
 
-  val tokens = outBuf.readInts()
+    listOf(outBuf, metaBuf, dpBuf, indexUniformsBuf, cdfBuf,
+      bpCountBuf, bpOffsetBuf, bpStorageBuf).forEach(GPUBuffer::destroy)
 
-  listOf(outBuf, metaBuf, dpBuf, indexUniformsBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf).forEach { it.destroy() }
-  val t = measureTimedValue {
-    tokens.rerankAndRender(cfg.tmLst, MAX_SAMPLES, maxRepairLen)
-  }.also { println("Rerank and render took: ${it.duration}") }.value
+    val result = (0 until k).map { i ->
+      winnerTokens.decodePacket(i, cfg.tmLst, maxRepairLen)
+    }
 
-  println("Sampling took ${t3.elapsedNow()}")
-  return t
+    println("Decoded ${result.distinct().size} unique words out of ${result.size}")
+    println("Score-select-gather-decode took: ${t4.elapsedNow()}")
+    println("Sampling took ${t3.elapsedNow()}")
+    return result
+  } else {
+    val tokens = measureTimedValue { outBuf.readInts() }.also { println("Read tokens in ${it.duration}") }.value
+
+    val t = measureTimedValue {
+      listOf(outBuf, metaBuf, dpBuf, indexUniformsBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf).forEach { it.destroy() }
+      tokens.rerankAndRender(cfg.tmLst, MAX_SAMPLES, maxRepairLen)
+    }.also { println("Rerank and render took: ${it.duration}") }.value
+
+    println("Sampling took ${t3.elapsedNow()}")
+    return t
+  }
+}
+
+suspend fun scoreSelectGather(
+  packets          : GPUBuffer,
+  ngramTensor      : GPUBuffer,
+  indexUniformsBuf : GPUBuffer,
+  maxSamples       : Int,
+  stride           : Int,
+  k                : Int
+): IntArray {
+  markov_score(packets, ngramTensor, indexUniformsBuf)(maxSamples)
+
+  val prmBuf   = intArrayOf(maxSamples, k, stride).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
+  val idxBuf   = IntArray(k) { Int.Companion.MAX_VALUE }.toGPUBuffer(GPUBufferUsage.STCPSD)
+  val scrBuf   = IntArray(k) { Int.Companion.MAX_VALUE }.toGPUBuffer(GPUBufferUsage.STCPSD)
+
+  val groups   = (maxSamples + 255) / 256
+  select_top_k(prmBuf, packets, idxBuf, scrBuf)(groups)
+
+  val gatherPrm = intArrayOf(stride, k).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
+  val bestBuf   = GPUBuffer(k * stride * 4, GPUBufferUsage.STCPSD)
+
+  gather_top_k(gatherPrm, packets, idxBuf, bestBuf)(k)
+
+  val topK   = bestBuf.readInts()
+
+  listOf(prmBuf, idxBuf, scrBuf, gatherPrm, bestBuf).forEach(GPUBuffer::destroy)
+  return topK
 }
 
 // Maps NTs to terminals for sampling
@@ -514,7 +566,6 @@ fn get_nt_tm_lens(index: u32) -> u32 { return terminals.payload[terminals.nt_tm_
 
             if (dp_in[idxBM] != 0u && dp_in[idxMC] != 0u) {
                 acc += ls_dense[idxBM] * ls_dense[idxMC];
-//                ls_sparse[outPos] = acc;
                 ls_sparse[outPos] = acc + litCount;
                 outPos += 1u;
             }
@@ -680,11 +731,11 @@ fn decodeLiteral(
     let numTms = get_nt_tm_lens(nt);
     let ntOff  = get_offsets(nt);
 
-    if (negLit) {                          // choose any terminal ≠ (litEnc‑1)
+    if (negLit) { // choose any terminal ≠ (litEnc‑1)
         let excl = litEnc - 1u;
         let idx  = select(variant, variant + 1u, variant >= excl);
         (*word)[*wordLen] = get_all_tms(ntOff + idx) + 1u;
-    } else {                               // positive literal → single choice
+    } else {      // positive literal → single choice
         (*word)[*wordLen] = get_all_tms(ntOff + (litEnc - 1u)) + 1u;
     }
     *wordLen = *wordLen + 1u;
@@ -938,6 +989,67 @@ fn lookupScore(key: u32) -> u32 {
     }
 
     packets[base + 1u] = score*100 + packets[base + 1u] * 1000;
+}""")
+
+//language=wgsl
+val select_top_k by Shader("""
+struct Params { n: u32, k: u32, stride: u32 };
+
+@group(0) @binding(0) var<uniform>                  prm : Params;
+@group(0) @binding(1) var<storage, read>        packets : array<u32>;
+@group(0) @binding(2) var<storage, read_write>   topIdx : array<atomic<u32>>;
+@group(0) @binding(3) var<storage, read_write> topScore : array<atomic<u32>>;
+
+const UINT_MAX : u32 = 0xFFFFFFFFu;
+
+@compute @workgroup_size(256) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+    let i = gid.x;
+    if (i >= prm.n || prm.k == 0u) { return; }
+
+    // ----- score of packet i (lower = better) ----------------------------
+    let score : u32 = packets[i * prm.stride + 1u];
+
+    // ----- find the current *worst* entry among the k best ---------------
+    var worstVal : u32 = atomicLoad(&topScore[0]);
+    var worstPos : u32 = 0u;
+    for (var j: u32 = 1u; j < prm.k; j = j + 1u) {
+        let v = atomicLoad(&topScore[j]);
+        if (v > worstVal) { worstVal = v; worstPos = j; }
+    }
+
+    // ----- if our score is better, try to insert it ----------------------
+    if (score < worstVal) {
+      var observed : u32 = worstVal;
+      loop {
+          let r = atomicCompareExchangeWeak(&topScore[worstPos], observed, score);
+          if (r.exchanged) { atomicStore(&topIdx[worstPos], i); break; }
+          observed = r.old_value;
+          if (score >= observed) { break; }
+      }
+    }
+}""")
+
+//language=wgsl
+val gather_top_k by Shader("""
+struct Gather { stride: u32, k: u32 };
+
+@group(0) @binding(0) var<uniform>                  g : Gather;
+@group(0) @binding(1) var<storage, read>      packets : array<u32>;  // full outBuf
+@group(0) @binding(2) var<storage, read>       topIdx : array<u32>;  // k indices
+@group(0) @binding(3) var<storage, read_write> bestPk : array<u32>;  // compacted result
+
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+    let j : u32 = gid.x;
+    if (j >= g.k) { return; }
+
+    let srcIdx : u32 = topIdx[j];
+    if (srcIdx == 0xFFFFFFFFu) { return; } 
+
+    let stride : u32 = g.stride;
+    let srcOff : u32 = srcIdx * stride;
+    let dstOff : u32 = j      * stride;
+
+    for (var t: u32 = 0u; t < stride; t = t + 1u) { bestPk[dstOff + t] = packets[srcOff + t]; }
 }""")
 
 //language=wgsl
@@ -1331,9 +1443,7 @@ fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer 
     val key  = packGram(gram)
     var slot = ((key * HASH_MUL) shr (32 - pow)) and mask
 
-    while (table[(slot * 2u).toInt()] != SENTINEL) {
-      slot = (slot + 1u) and mask            // advance probe
-    }
+    while (table[(slot * 2u).toInt()] != SENTINEL) { slot = (slot + 1u) and mask }
     val idx = (slot * 2u).toInt()            // correct slot found
     table[idx]     = key
     table[idx + 1] = score

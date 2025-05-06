@@ -14,8 +14,6 @@ TODO (soon):
  - Look into constrained inference with llama.cpp / BERT
  - Rank results by more sensible metric
  - Improve support for incrementalization
- - Configurable settings, e.g., timeout, max repairs, minimization
- - Add "real world" demo for Python/Java
  *//*
 TODO (maybe):
  - Add Ctrl+Space code completion popup
