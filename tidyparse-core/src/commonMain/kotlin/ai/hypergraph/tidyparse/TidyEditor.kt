@@ -105,7 +105,7 @@ abstract class TidyEditor {
     }
 
     runningJob = MainScope().launch {
-      when(scenario) {
+      when (scenario) {
         Scenario.STUB -> cfg.enumNTSmall(tokens[0].stripStub())
         Scenario.COMPLETION -> cfg.enumSeqSmart(tokens)
         Scenario.PARSEABLE -> {
@@ -121,7 +121,7 @@ abstract class TidyEditor {
     STUB(stubGenPrefix), COMPLETION(holeGenPrefix), PARSEABLE(parsedPrefix), REPAIR(invalidPrefix)
   }
 
-  protected suspend fun Sequence<String>.enumerateInteractively(
+  protected fun Sequence<String>.enumerateInteractively(
     workHash: Int,
     origTks: List<String>,
     timer: TimeSource.Monotonic.ValueTimeMark = TimeSource.Monotonic.markNow(),
@@ -134,7 +134,7 @@ abstract class TidyEditor {
     reason: String = "Generic completions:\n\n"
   ) = let {
     if (!minimize || "_" in origTks) it
-    else it.flatMap { minimizeFix(origTks, it.tokenizeByWhitespace()) { recognizer(this) } }
+    else it.flatMap { minimizeFix(origTks, it.tokenizeByWhitespace()) { recognizer(this) } }.distinct()
   }.enumerateCompletionsInteractively(
     metric = metric,
     shouldContinue = shouldContinue,

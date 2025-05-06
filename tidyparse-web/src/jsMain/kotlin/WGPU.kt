@@ -164,7 +164,6 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
 
   val tmBuf = cfg.termBuf
 
-  /* Phase 1 – language size + CDF  */
   val lsDense  = buildLanguageSizeBuf(numStates, numNTs, dpBuf, metaBuf, tmBuf)
   val totalExp = bpStorageBuf.size.toInt() / (2 * 4)
   val cdfBuf   = GPUBuffer(totalExp * 4, GPUBufferUsage.STCPSD)
@@ -178,12 +177,10 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   /** [TERM_STRUCT] */ val indexUniformsBuf = packStruct(constants = header.toList(), startIdxs.toGPUBuffer())
   println("Pairing function construction took: ${t2.elapsedNow()}")
 
-  /* Phase 2 – launch |maxSamples| single‑thread workgroups */
   val t3 = TimeSource.Monotonic.markNow()
   sample_words_wor(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, indexUniformsBuf, cdfBuf)(MAX_SAMPLES)
 
   if (ngramTensor != null) {
-    val t4 = TimeSource.Monotonic.markNow()
     val k = 10 * MAX_DISP_RESULTS
     val winnerTokens = scoreSelectGather(
       packets          = outBuf,
@@ -197,12 +194,12 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
     listOf(outBuf, metaBuf, dpBuf, indexUniformsBuf, cdfBuf,
       bpCountBuf, bpOffsetBuf, bpStorageBuf).forEach(GPUBuffer::destroy)
 
+    val t4 = TimeSource.Monotonic.markNow()
     val result = (0 until k).map { i ->
       winnerTokens.decodePacket(i, cfg.tmLst, maxRepairLen)
     }
 
-    println("Decoded ${result.distinct().size} unique words out of ${result.size}")
-    println("Score-select-gather-decode took: ${t4.elapsedNow()}")
+    println("Decoded ${result.distinct().size} unique words out of ${result.size} in ${t4.elapsedNow()}")
     println("Sampling took ${t3.elapsedNow()}")
     return result
   } else {
@@ -226,21 +223,32 @@ suspend fun scoreSelectGather(
   stride           : Int,
   k                : Int
 ): IntArray {
+  var t0 = TimeSource.Monotonic.markNow()
   markov_score(packets, ngramTensor, indexUniformsBuf)(maxSamples)
+  println("Score in ${t0.elapsedNow()}")
 
+//  println(packets.readInts().toList().windowed(stride, stride)
+//    .take(10).joinToString("\n") { it.joinToString(" ")})
+
+  t0 = TimeSource.Monotonic.markNow()
   val prmBuf   = intArrayOf(maxSamples, k, stride).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
   val idxBuf   = IntArray(k) { Int.Companion.MAX_VALUE }.toGPUBuffer(GPUBufferUsage.STCPSD)
   val scrBuf   = IntArray(k) { Int.Companion.MAX_VALUE }.toGPUBuffer(GPUBufferUsage.STCPSD)
 
   val groups   = (maxSamples + 255) / 256
   select_top_k(prmBuf, packets, idxBuf, scrBuf)(groups)
+  println("Select in ${t0.elapsedNow()}")
 
+  t0 = TimeSource.Monotonic.markNow()
   val gatherPrm = intArrayOf(stride, k).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
   val bestBuf   = GPUBuffer(k * stride * 4, GPUBufferUsage.STCPSD)
 
   gather_top_k(gatherPrm, packets, idxBuf, bestBuf)(k)
+  println("Gather in ${t0.elapsedNow()}")
 
+  t0 = TimeSource.Monotonic.markNow()
   val topK   = bestBuf.readInts()
+  println("Read ${topK.size} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
 
   listOf(prmBuf, idxBuf, scrBuf, gatherPrm, bestBuf).forEach(GPUBuffer::destroy)
   return topK
@@ -949,7 +957,7 @@ fn lookupScore(key: u32) -> u32 {
         let idx      = 1u + slot * 2u;           // 1-word header → slot*2
         let stored   = ngram[idx];
         if (stored == key)          { return ngram[idx + 1u]; } // hit
-        if (stored == SENTINEL_KEY) { return 0u; }              // empty
+        if (stored == SENTINEL_KEY) { return 1u; }              // empty
         slot = (slot + 1u) & mask;                              // linear probe
     }
 }
@@ -988,7 +996,7 @@ fn lookupScore(key: u32) -> u32 {
         t0 = t1;  t1 = t2;  t2 = tok - 1u;
     }
 
-    packets[base + 1u] = score*100 + packets[base + 1u] * 1000;
+    packets[base + 1u] = score * 100 + packets[base] * 1000;
 }""")
 
 //language=wgsl
@@ -1006,26 +1014,19 @@ const UINT_MAX : u32 = 0xFFFFFFFFu;
     let i = gid.x;
     if (i >= prm.n || prm.k == 0u) { return; }
 
-    // ----- score of packet i (lower = better) ----------------------------
     let score : u32 = packets[i * prm.stride + 1u];
 
-    // ----- find the current *worst* entry among the k best ---------------
-    var worstVal : u32 = atomicLoad(&topScore[0]);
-    var worstPos : u32 = 0u;
-    for (var j: u32 = 1u; j < prm.k; j = j + 1u) {
-        let v = atomicLoad(&topScore[j]);
-        if (v > worstVal) { worstVal = v; worstPos = j; }
-    }
+    loop {
+        var worstPos : u32 = 0u;
+        var worstVal : u32 = atomicLoad(&topScore[0]);
+        for (var j : u32 = 1u; j < prm.k; j = j + 1u) {
+            let v = atomicLoad(&topScore[j]);
+            if (v > worstVal) { worstVal = v; worstPos = j; }
+        }
 
-    // ----- if our score is better, try to insert it ----------------------
-    if (score < worstVal) {
-      var observed : u32 = worstVal;
-      loop {
-          let r = atomicCompareExchangeWeak(&topScore[worstPos], observed, score);
-          if (r.exchanged) { atomicStore(&topIdx[worstPos], i); break; }
-          observed = r.old_value;
-          if (score >= observed) { break; }
-      }
+        if (score >= worstVal) { break; }
+        let old = atomicCompareExchangeWeak(&topScore[worstPos], worstVal, score);
+        if (old.exchanged) { atomicStore(&topIdx[worstPos], i); break; }
     }
 }""")
 
@@ -1114,24 +1115,23 @@ class Shader constructor(val src: String) {
   lateinit var name: String
   lateinit var pipeline: GPUComputePipeline
 
-  suspend fun bind() { pipeline = makePipeline(src) }
+  suspend fun bind() {
+    pipeline = try {
+      gpu.createComputePipelineAsync(
+        GPUComputePipelineDescriptor(
+          layout = "auto",
+          compute = GPUProgrammableStage(
+            module = gpu.createShaderModule(GPUShaderModuleDescriptor(code = src)),
+            entryPoint = "main"
+          )
+        )
+      ).await()
+    } catch (e: Throwable) { e.printStackTrace(); throw e }
+  }
 
   operator fun getValue(tr: Any?, property: KProperty<*>): Shader = this.also { name = property.name }
 
   companion object {
-    private suspend fun makePipeline(wgsl: String, entryPoint: String = "main"): GPUComputePipeline =
-      try {
-        gpu.createComputePipelineAsync(
-          GPUComputePipelineDescriptor(
-            layout = "auto",
-            compute = GPUProgrammableStage(
-              module = gpu.createShaderModule(GPUShaderModuleDescriptor(code = wgsl)),
-              entryPoint = entryPoint
-            )
-          )
-        ).await()
-      } catch (e: Throwable) { e.printStackTrace(); throw e }
-
     fun GPUComputePipeline.bindBuffers(vararg buffers: GPUBuffer): GPUBindGroup {
       inline fun <T> jsObject(init: dynamic.() -> Unit): T { val o = js("{}"); init(o); return o as T }
       val ent = buffers.mapIndexed { index, buf ->
