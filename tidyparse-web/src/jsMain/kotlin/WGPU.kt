@@ -21,7 +21,7 @@ import web.gpu.*
 import kotlin.js.Promise
 import kotlin.math.*
 import kotlin.reflect.KProperty
-import kotlin.time.*
+import kotlin.time.TimeSource
 
 lateinit var gpu: GPUDevice
 var gpuAvailable = false
@@ -85,7 +85,7 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
     // Other byte values are used to denote the presence (+) or absence (-) of a leaf terminal
     fun StrPred.predByte(A: Int): Int = (
       if (arg == "[.*]" || (arg.startsWith("[!=]") && arg.drop(4) !in terminalLists[A])) Int.MAX_VALUE - 1 // All possible terminals
-      else if (arg.startsWith("[!=]")) (1.shl(30) + (terminalLists[A].indexOf(arg.drop(4)) + 1).shl(1)) // Represent negation using sign bit
+      else if (arg.startsWith("[!=]")) (NEG_LITERAL.toInt() + (terminalLists[A].indexOf(arg.drop(4)) + 1).shl(1)) // Represent negation using sign bit
       else (terminalLists[A].indexOf(arg) + 1).shl(1)
     )
 
@@ -166,7 +166,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
 
   val lsDense  = buildLanguageSizeBuf(numStates, numNTs, dpBuf, metaBuf, tmBuf)
   val totalExp = bpStorageBuf.size.toInt() / (2 * 4)
-  val cdfBuf   = GPUBuffer(totalExp * 4, GPUBufferUsage.STCPSD)
+  val cdfBuf = GPUBuffer(totalExp * 4, GPUBufferUsage.STCPSD)
 
   ls_cdf(dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
 
@@ -180,39 +180,25 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   val t3 = TimeSource.Monotonic.markNow()
   sample_words_wor(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, indexUniformsBuf, cdfBuf)(MAX_SAMPLES)
 
-  if (ngramTensor != null) {
-    val k = 10 * MAX_DISP_RESULTS
-    val winnerTokens = scoreSelectGather(
-      packets          = outBuf,
-      ngramTensor      = ngramTensor,
-      indexUniformsBuf = indexUniformsBuf,
-      maxSamples       = MAX_SAMPLES,
-      stride           = maxRepairLen,
-      k                = k
-    )
+  val k = 10 * MAX_DISP_RESULTS
+  val winnerTokens = scoreSelectGather(
+    packets          = outBuf,
+    ngramTensor      = ngramTensor ?: emptyMap<List<UInt>, UInt>().loadToGPUBuffer(),
+    indexUniformsBuf = indexUniformsBuf,
+    maxSamples       = MAX_SAMPLES,
+    stride           = maxRepairLen,
+    k                = k
+  )
 
-    listOf(outBuf, metaBuf, dpBuf, indexUniformsBuf, cdfBuf,
-      bpCountBuf, bpOffsetBuf, bpStorageBuf).forEach(GPUBuffer::destroy)
+  listOf(outBuf, metaBuf, dpBuf, indexUniformsBuf, cdfBuf,
+    bpCountBuf, bpOffsetBuf, bpStorageBuf).forEach(GPUBuffer::destroy)
 
-    val t4 = TimeSource.Monotonic.markNow()
-    val result = (0 until k).map { i ->
-      winnerTokens.decodePacket(i, cfg.tmLst, maxRepairLen)
-    }
+  val t4 = TimeSource.Monotonic.markNow()
+  val result = (0 until k).map { i -> winnerTokens.decodePacket(i, cfg.tmLst, maxRepairLen) }
 
-    println("Decoded ${result.distinct().size} unique words out of ${result.size} in ${t4.elapsedNow()}")
-    println("Sampling took ${t3.elapsedNow()}")
-    return result
-  } else {
-    val tokens = measureTimedValue { outBuf.readInts() }.also { println("Read tokens in ${it.duration}") }.value
-
-    val t = measureTimedValue {
-      listOf(outBuf, metaBuf, dpBuf, indexUniformsBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf).forEach { it.destroy() }
-      tokens.rerankAndRender(cfg.tmLst, MAX_SAMPLES, maxRepairLen)
-    }.also { println("Rerank and render took: ${it.duration}") }.value
-
-    println("Sampling took ${t3.elapsedNow()}")
-    return t
-  }
+  println("Decoded ${result.distinct().size} unique words out of ${result.size} in ${t4.elapsedNow()}")
+  println("Sampling took ${t3.elapsedNow()}")
+  return result
 }
 
 suspend fun scoreSelectGather(
@@ -247,7 +233,7 @@ suspend fun scoreSelectGather(
   println("Gather in ${t0.elapsedNow()}")
 
   t0 = TimeSource.Monotonic.markNow()
-  val topK   = bestBuf.readInts()
+  val topK = bestBuf.readInts()
   println("Read ${topK.size} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
 
   listOf(prmBuf, idxBuf, scrBuf, gatherPrm, bestBuf).forEach(GPUBuffer::destroy)
@@ -505,7 +491,7 @@ fn get_nt_tm_lens(index: u32) -> u32 { return terminals.payload[terminals.nt_tm_
     if (val == 0u) { return; }
 
     let hasLiteral = ((val >> 1u) != 0u);           // bit‑packed literal present?
-    let negLit     = (val & 0x40000000u) != 0u;     // negative‑literal flag
+    let negLit     = (val & ${NEG_LITERAL}u) != 0u;     // negative‑literal flag
     let litCount   =
         select(0u,
             select(1u,                                // positive literal ⇒ exactly 1
@@ -555,7 +541,7 @@ fn get_nt_tm_lens(index: u32) -> u32 { return terminals.payload[terminals.nt_tm_
     var outPos : u32 = bp_offset[dpIdx];
     
     let hasLiteral = ((val >> 1u) != 0u);           // bit‑packed literal present?
-    let negLit     = (val & 0x40000000u) != 0u;     // negative‑literal flag 
+    let negLit     = (val & ${NEG_LITERAL}u) != 0u;     // negative‑literal flag 
     let litCount   = select(0u,
                             select(1u,                               // positive literal ⇒ exactly 1
                                     max(1u, get_nt_tm_lens(A) - 1u), // negative ⇒ |Σ_A|‑1
@@ -670,6 +656,7 @@ struct PrefixSumUni { n: u32 };
 const val MAX_WORD_LEN = 512
 // Maximum threads WGSL allows in a single dispatch. If ~2^16<MAX_SAMPLES, this always fails
 const val MAX_SAMPLES = 65_535
+const val NEG_LITERAL = 0x40000000u //=1.shl(30)
 // Length of the packet header in each repair buffer
 const val PKT_HDR_LEN = 2 // [levenshtein distance, Markov probability]
 const val MAX_SAMPLES_PER_DIST = 30_000
@@ -710,7 +697,7 @@ fn langSize(dpIdx : u32) -> u32 {
     /* literal domain */
     let val    = dp_in[dpIdx];
     let hasLit = ((val >> 1u) != 0u);
-    let negLit = (val & 0x40000000u) != 0u;
+    let negLit = (val & ${NEG_LITERAL}u) != 0u;
     let litCnt =
         select(0u,
                select(1u,
@@ -887,7 +874,7 @@ fn min_u32(a: u32, b: u32) -> u32 { return select(a, b, a > b); }
         /* --- literal vs expansion ---------------------------------------------- */
         let val      = dp_in[dpIdx];
         let hasLit   = ((val >> 1u) != 0u);
-        let negLit   = (val & 0x40000000u) != 0u;
+        let negLit   = (val & ${NEG_LITERAL}u) != 0u;
         let litCnt   =
             select(0u,
                    select(1u,                     // positive
@@ -1459,24 +1446,6 @@ fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer 
   return flat.asList().toGPUBuffer()         // unchanged helper
 }
 
-// TODO: kernelize?
-//fun IntArray.splitIntoWords(tmLst: List<String>, maxSamples: Int, maxWordLen: Int): List<List<String>> =
-//  (0..<maxSamples).map { sampleIdx ->
-//    val headOffset = sampleIdx * maxWordLen
-//    val wordOffset = headOffset + PKT_HDR_LEN
-//    this[headOffset] to slice(wordOffset..<(wordOffset + maxWordLen)).map { it and 0xFF }
-//      .fold(mutableListOf<MutableList<Int>>()) { slices, token ->
-//        if (token == 0) {
-//          if (slices.lastOrNull()?.isNotEmpty() == true) slices.add(mutableListOf())
-//        } else {
-//          if (slices.isEmpty() || slices.last().isEmpty()) slices.add(mutableListOf())
-//          slices.last().add(token)
-//        }
-//        slices
-//      }.filter { it.isNotEmpty() }
-//      .map { slice -> slice.joinToString(" ") { c -> if (c == 0) "0" else tmLst[c - 1] } }
-//  }.sortedBy { it.first }.take(MAX_DISP_RESULTS).map { it.second }
-
 private fun IntArray.decodePacket(sampleIdx: Int, tm: List<String>, wordLen: Int): List<String> {
   val words = mutableListOf<StringBuilder>()
   var cur: StringBuilder? = null
@@ -1494,42 +1463,4 @@ private fun IntArray.decodePacket(sampleIdx: Int, tm: List<String>, wordLen: Int
   }
   if (cur != null && cur.isNotEmpty()) words += cur
   return words.map(StringBuilder::toString)
-}
-
-fun IntArray.rerankAndRender(tm: List<String>, maxSamples: Int, maxWordLen: Int): List<List<String>> {
-  fun IntArray.topKByEval(samples: Int, wordLen: Int, k: Int): IntArray {
-    val bestIdx = IntArray(k) { -1 }
-    val bestScr = IntArray(k) { Int.Companion.MAX_VALUE }
-    var filled  = 0
-
-    for (i in 0 until samples) {
-      val scr = this[i * wordLen + 1]
-
-      if (filled < k) {
-        var p = filled++
-        while (p > 0 && scr < bestScr[p - 1]) { bestScr[p] = bestScr[p - 1]; bestIdx[p] = bestIdx[p - 1]; p-- }
-        bestScr[p] = scr; bestIdx[p] = i
-      } else if (scr < bestScr[k - 1]) {
-        var p = k - 1
-        while (p > 0 && scr < bestScr[p - 1]) { bestScr[p] = bestScr[p - 1]; bestIdx[p] = bestIdx[p - 1]; p-- }
-        bestScr[p] = scr; bestIdx[p] = i
-      }
-    }
-    return bestIdx.copyOf(filled)
-  }
-
-  var timer = TimeSource.Monotonic.markNow()
-  val winners = topKByEval(maxSamples, maxWordLen, 10 * MAX_DISP_RESULTS).distinct()
-
-  val (minS, maxS) = winners.asSequence().map { this[it * maxWordLen] }
-    .fold(Int.MAX_VALUE to Int.MIN_VALUE) { (mn, mx), s -> minOf(mn, s) to maxOf(mx, s) }
-  println("Header scores: [$minS, $maxS]")
-
-  println("Eval took: ${timer.elapsedNow()}")
-  timer = TimeSource.Monotonic.markNow()
-
-  val decoded = winners.map { decodePacket(it, tm, maxWordLen) }
-
-  println("Decode took: ${timer.elapsedNow()}")
-  return decoded
 }

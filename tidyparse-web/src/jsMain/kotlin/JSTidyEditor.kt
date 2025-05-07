@@ -92,7 +92,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
           writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it }); null
         }
         Scenario.REPAIR -> if (gpuAvailable)
-          repairCode(cfg, tokens, LED_BUFFER).asSequence()
+          repairCode(cfg, tokens, LED_BUFFER, emptyMap<List<UInt>, UInt>().loadToGPUBuffer()).asSequence()
           .map { it.joinToString(" ") { it.replace("ε", "") }
             .tokenizeByWhitespace().joinToString(" ") }
         else initiateSuspendableRepair(tokens, cfg)
