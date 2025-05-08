@@ -91,11 +91,12 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
           val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
           writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it }); null
         }
-        Scenario.REPAIR -> if (gpuAvailable)
-          repairCode(cfg, tokens, LED_BUFFER, emptyMap<List<UInt>, UInt>().loadToGPUBuffer()).asSequence()
-          .map { it.joinToString(" ") { it.replace("ε", "") }
-            .tokenizeByWhitespace().joinToString(" ") }
-        else initiateSuspendableRepair(tokens, cfg)
+        Scenario.REPAIR ->
+//          if (gpuAvailable)
+//          repairCode(cfg, tokens, LED_BUFFER, emptyMap<List<UInt>, UInt>().loadToGPUBuffer()).asSequence()
+//          .map { it.joinToString(" ") { it.replace("ε", "") }
+//            .tokenizeByWhitespace().joinToString(" ") } else
+          initiateSuspendableRepair(tokens, cfg)
       }?.enumerateInteractively(workHash, tokens,
         reason = scenario.reason, postCompletionSummary = { ", ${t0.elapsedNow()} latency." })
     }
@@ -142,8 +143,8 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
         return
       }
-      SelectorAction.ARROW_DOWN -> selIdx = ModInt(currentIdx, minOf(MAX_DISP_RESULTS, lines.size - 4)) + 1
-      SelectorAction.ARROW_UP -> selIdx = ModInt(currentIdx, minOf(MAX_DISP_RESULTS, lines.size - 4)) + -1
+      SelectorAction.ARROW_DOWN -> selIdx = ModInt(currentIdx, lines.size - 4) + 1
+      SelectorAction.ARROW_UP -> selIdx = ModInt(currentIdx, lines.size - 4) + -1
       SelectorAction.TAB -> {}
     }
     writeDisplayText(lines.mapIndexed { i, line ->

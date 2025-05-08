@@ -179,6 +179,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
 
   val t3 = TimeSource.Monotonic.markNow()
   sample_words_wor(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, indexUniformsBuf, cdfBuf)(MAX_SAMPLES)
+//  println("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
 
   val k = 10 * MAX_DISP_RESULTS
   val winnerTokens = scoreSelectGather(
@@ -214,7 +215,8 @@ suspend fun scoreSelectGather(
   println("Score in ${t0.elapsedNow()}")
 
 //  println(packets.readInts().toList().windowed(stride, stride)
-//    .take(10).joinToString("\n") { it.joinToString(" ")})
+//    .map { it[1] }.groupingBy { it }.eachCount().entries
+//    .sortedBy { it.key }.joinToString("\n") { (a, b) -> "$a => $b" })
 
   t0 = TimeSource.Monotonic.markNow()
   val prmBuf   = intArrayOf(maxSamples, k, stride).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
@@ -750,109 +752,23 @@ fn lcg_rand(stateRef: ptr<function, u32>, range: u32) -> u32 {
 fn min_u32(a: u32, b: u32) -> u32 { return select(a, b, a > b); }
 
 @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-//    /* ---- unique global rank ---------------------------------------------------- */
+    /* ---- unique global rank ---------------------------------------------------- */
 //    let seqId : u32 = atomicAdd(&idx_uni.targetCnt, 1u);
-//    let gRank : u32 = lcg_permute(seqId + 0x9E3779B9u * gid.x);
-//
-//    let numStartIdxs = idx_uni.numStartIndices / 2u;
-//    /* ---- total language size over all accepting states ------------------------- */
-//    var total : u32 = 0u;
-//    for (var i = 0u; i < numStartIdxs; i = i + 1u) { total = total + langSize(getStartIdx(i)); }
-//    var rank  : u32 = gRank % total;
-//
-//    /* ---- pick a root in proportion to its language size ------------------------ */
-//    var rootIdx : u32 = 0u;
-//    var levDist : u32 = 0u;
-//    for (var i = 0u; i < numStartIdxs; i = i + 1u) {
-//        let sz = langSize(getStartIdx(i));
-//        if (rank < sz) { rootIdx = getStartIdx(i); levDist = getEditDist(i); break; }
-//        rank = rank - sz;
-//    }
+    let gRank : u32 = gid.x; //lcg_permute(seqId + 0x9E3779B9u * gid.x);
 
-    /* ------------------------------------------------------------------ */
-    /* 1. pre-scan to compute the *total* cross-bucket budget             */
-    /*    (we need it to wrap gid.x when there are more threads than      */
-    /*     total allowed samples).                                        */
+    let numStartIdxs = idx_uni.numStartIndices / 2u;
+    /* ---- total language size over all accepting states ------------------------- */
+    var total : u32 = 0u;
+    for (var i = 0u; i < numStartIdxs; i = i + 1u) { total = total + langSize(getStartIdx(i)); }
+    var rank : u32 = gRank % total;
 
-    let numRoots = idx_uni.numStartIndices / 2u;
-
-    var totalBudget : u32 = 0u;
-    var cursor      : u32 = 0u;
-    loop {
-        if (cursor >= numRoots) { break; }
-
-        let dist  = getEditDist(cursor);
-
-        /* accumulate Σ|L(root)| for this distance bucket */
-        var langSum : u32 = 0u;
-        var j       : u32 = cursor;
-        loop {
-            langSum = langSum + langSize(getStartIdx(j));
-            j       = j + 1u;
-            if (j >= numRoots || getEditDist(j) != dist) { break; }
-        }
-
-        totalBudget = totalBudget + min_u32(langSum, ${MAX_SAMPLES_PER_DIST}u);
-        cursor      = j;
-    }
-
-    /* If we launched more work-items than the global budget,              */
-    /* just wrap around deterministically.                                 */
-    let sampleId : u32 = gid.x % totalBudget;
-
-    /* ------------------------------------------------------------------ */
-    /* 2. second pass – locate the distance bucket that owns sampleId     */
-
-    var prefix : u32 = 0u;       // sum of budgets of previous buckets
-    var pos    : u32 = 0u;       // iterator over startIndices
-
+    /* ---- pick a root in proportion to its language size ------------------------ */
     var rootIdx : u32 = 0u;
-    var levDist : u32 = 0u;      // chosen edit distance
-    var rank    : u32 = 0u;      // rank inside the chosen root’s language
-
-    loop {
-        /* ----- gather statistics for the current bucket ---------------- */
-        let curDist = getEditDist(pos);
-
-        var langSum  : u32 = 0u;
-        var bucketEnd: u32 = pos;
-        loop {  // walk until distance changes or we run out of roots
-            langSum   = langSum + langSize(getStartIdx(bucketEnd));
-            bucketEnd = bucketEnd + 1u;
-            if (bucketEnd >= numRoots || getEditDist(bucketEnd) != curDist) { break; }
-        }
-
-        let bucketBudget : u32 = min_u32(langSum, ${MAX_SAMPLES_PER_DIST}u);
-
-        /* ----- does sampleId fall into this bucket? -------------------- */
-        if (sampleId < prefix + bucketBudget) {
-            /* local index inside the current bucket                       */
-            var localId : u32 = sampleId - prefix;          // 0 ≤ localId < bucketBudget
-
-            /* map localId → rank ∈ [0 , langSum) without 64-bit math      */
-            var rngState : u32 = lcg_permute(localId ^ curDist);
-            var bucketRank : u32 = rngState % langSum;
-
-            /* walk roots of this distance until we hit bucketRank         */
-            var acc   : u32 = 0u;
-            var p     : u32 = pos;
-            loop {
-                let sizeR = langSize(getStartIdx(p));
-                if (bucketRank < acc + sizeR) {
-                    rootIdx = getStartIdx(p);
-                    levDist = curDist;
-                    rank    = bucketRank - acc;
-                    break;
-                }
-                acc = acc + sizeR;
-                p   = p + 1u;
-            }
-            break;          // we’re done – exit outer loop
-        }
-
-        /* otherwise skip this bucket and continue                         */
-        prefix = prefix + bucketBudget;
-        pos    = bucketEnd;
+    var levDist : u32 = 0u;
+    for (var i = 0u; i < numStartIdxs; i = i + 1u) {
+        let sz = langSize(getStartIdx(i));
+        if (rank < sz) { rootIdx = getStartIdx(i); levDist = getEditDist(i); break; }
+        rank = rank - sz;
     }
     
     /* ---- DFS stack ------------------------------------------------------------- */
@@ -978,12 +894,12 @@ fn lookupScore(key: u32) -> u32 {
 
         // ---------- accumulate penalty -----------------------------------
         let key = packGram(t0, t1, t2, tok - 1u);
-        score  += lookupScore(key);
+        score += lookupScore(key);
 
         t0 = t1;  t1 = t2;  t2 = tok - 1u;
     }
 
-    packets[base + 1u] = score * 100 + packets[base] * 1000;
+    packets[base + 1u] = score + (packets[base] + 1) * 10000000;
 }""")
 
 //language=wgsl
@@ -1411,10 +1327,12 @@ fun packStruct(constants: List<Int> = emptyList(), vararg buffers: GPUBuffer): G
 fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer {
   require(all { it.key.size == 4 }) { "Only 4-grams are supported" }
 
+  val offset = FIRST_TID.toUInt()
+
   /** Compresses a 4‑gram (tokens are 1‑based) into one u32: 4 × 7‑bit fields. */
   fun packGram(g: List<UInt>): UInt =
-    ((g[0] - 1u) shl 21) or ((g[1] - 1u) shl 14) or
-        ((g[2] - 1u) shl 7)  or  (g[3] - 1u)
+    ((g[0] - offset) shl 21) or ((g[1] - offset) shl 14) or
+        ((g[2] - offset) shl 7)  or  (g[3] - offset)
 
   /* ── pick a power‑of‑two table size ─────────────────────────────────── */
   val nEntries = size.coerceAtLeast(1)

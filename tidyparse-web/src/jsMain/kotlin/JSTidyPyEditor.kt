@@ -33,14 +33,9 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
   private val SCALE = 10_000.0
   val ngramTensor: GPUBuffer by lazy {
-    fun Map<List<String>, Double>.toGpuHash(): Map<List<UInt>, UInt> {
-      val norm = values.sum()
-
-      return mapValues { (_, p) ->
-        val penalty = -ln(p / norm) * SCALE
-        penalty.roundToInt().coerceAtLeast(0).toUInt()
-      }.mapKeys { (gram, _) -> gram.map { (tmToInt(it) - 1).toUInt() } }
-    }
+    fun Map<List<String>, Double>.toGpuHash(norm: Double = values.sum()): Map<List<UInt>, UInt> =
+      mapValues { (_, p) -> (-ln(p / norm) * SCALE).roundToInt().coerceAtLeast(0).toUInt() }
+        .mapKeys { (gram, _) -> gram.map { tmToInt(it).toUInt() } }
 
     ngrams.toGpuHash().loadToGPUBuffer()
   }

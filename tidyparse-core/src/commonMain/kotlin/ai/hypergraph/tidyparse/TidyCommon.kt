@@ -125,7 +125,7 @@ fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
 
   val postImmediately = iter.hasNext() && metric(iter.next().tokenizeByWhitespace()) == -1
   if (postImmediately) {
-    val htmlLst = take(resultsToPost).toList().map { customDiff(it) }
+    val htmlLst = /*take(resultsToPost).*/toList().map { customDiff(it) }
     results.addAll(toList())
     topNResults.addAll(htmlLst.map { it to -1 })
     totalResults = 10
@@ -297,10 +297,7 @@ fun initiateSerialRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequence<Σᐩ> {
 }
 
 // Same as serial repair, but with strategic pauses to prevent stuttering on single-threaded runtimes
-suspend fun initiateSuspendableRepair(
-  brokenStr: List<Σᐩ>, cfg: CFG,
-  ngrams: MutableMap<List<String>, Double>? = null
-): Sequence<Σᐩ> {
+suspend fun initiateSuspendableRepair(brokenStr: List<Σᐩ>, cfg: CFG): Sequence<Σᐩ> {
   var i = 0
   val upperBound = MAX_RADIUS * 3
 //  val monoEditBounds = cfg.maxParsableFragmentB(brokenStr, pad = upperBound)

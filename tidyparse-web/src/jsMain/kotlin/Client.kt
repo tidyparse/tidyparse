@@ -84,9 +84,8 @@ suspend fun pythonSetup() {
 
   jsPyEditor.redecorateLines()
 //    LED_BUFFER = maxEdits.value.toInt()
-  tryBootstrappingGPU()
-  loadNgrams()
-  initPyodide()
+  MainScope().async { tryBootstrappingGPU(); loadNgrams() }
+  MainScope().async { initPyodide() }
 
   TIMEOUT_MS = 1000
 
