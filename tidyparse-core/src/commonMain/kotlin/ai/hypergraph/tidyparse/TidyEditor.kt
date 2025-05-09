@@ -3,7 +3,9 @@ package ai.hypergraph.tidyparse
 import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.kaliningraph.repair.*
+import ai.hypergraph.kaliningraph.repair.LED_BUFFER
+import ai.hypergraph.kaliningraph.repair.TIMEOUT_MS
+import ai.hypergraph.kaliningraph.repair.minimizeFix
 import kotlinx.coroutines.*
 import kotlin.math.absoluteValue
 import kotlin.time.TimeSource
@@ -118,10 +120,11 @@ abstract class TidyEditor {
   }
 
   enum class Scenario(val reason: String) {
-    STUB(stubGenPrefix), COMPLETION(holeGenPrefix), PARSEABLE(parsedPrefix), REPAIR(invalidPrefix)
+    STUB(stubGenPrefix), COMPLETION(holeGenPrefix),
+    PARSEABLE(parsedPrefix), REPAIR(invalidPrefix)
   }
 
-  protected fun Sequence<String>.enumerateInteractively(
+  protected suspend fun Sequence<String>.enumerateInteractively(
     workHash: Int,
     origTks: List<String>,
     timer: TimeSource.Monotonic.ValueTimeMark = TimeSource.Monotonic.markNow(),
@@ -134,7 +137,7 @@ abstract class TidyEditor {
     reason: String = "Generic completions:\n\n"
   ) = let {
     if (!minimize || "_" in origTks) it
-    else it.flatMap { minimizeFix(origTks, it.tokenizeByWhitespace()) { recognizer(this) } }.distinct()
+    else it.flatMap { minimizeFix(origTks, it.tokenizeByWhitespace()) { recognizer(this) } }
   }.enumerateCompletionsInteractively(
     metric = metric,
     shouldContinue = shouldContinue,

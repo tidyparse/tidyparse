@@ -182,7 +182,9 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   sample_words_wor(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, indexUniformsBuf, cdfBuf)(MAX_SAMPLES)
 //  println("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
 
-  val k = 10 * MAX_DISP_RESULTS
+  // TODO: WGSL kernel for repair minimization here?
+
+  val k = 20 * MAX_DISP_RESULTS
   val winnerTokens = scoreSelectGather(
     packets          = outBuf,
     ngramTensor      = ngramTensor ?: emptyMap<List<UInt>, UInt>().loadToGPUBuffer(),

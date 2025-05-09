@@ -108,7 +108,10 @@ suspend fun CFG.maxParsableFragmentB(tokens: List<Σᐩ>, pad: Int = 3): Pair<In
 
 val MAX_DISP_RESULTS = 29
 
-fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
+var i = 0
+suspend fun pause(freq: Int = 300_000) { if (i++ % freq == 0) { delay(50.nanoseconds) } }
+
+suspend fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
   resultsToPost: Int = MAX_DISP_RESULTS,
   metric: (List<Σᐩ>) -> Int,
   shouldContinue: () -> Boolean,
@@ -132,6 +135,7 @@ fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
   }
 
   while (true) {
+    pause()
     var i = 0
     if (!iter.hasNext() || !shouldContinue() || postImmediately) {
       val throughput = (results.size /

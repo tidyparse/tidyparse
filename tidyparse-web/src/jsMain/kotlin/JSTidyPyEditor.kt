@@ -1,15 +1,11 @@
-import Shader.Companion.toGPUBuffer
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
-import ai.hypergraph.kaliningraph.types.cache
-import ai.hypergraph.tidyparse.initiateSuspendableRepair
-import ai.hypergraph.tidyparse.invalidPrefix
+import ai.hypergraph.tidyparse.*
 import kotlinx.coroutines.*
 import org.w3c.dom.*
 import web.gpu.GPUBuffer
-import kotlin.math.ln
-import kotlin.math.roundToInt
+import kotlin.math.*
 import kotlin.time.TimeSource
 
 const val NEWLINE_ID = 1
@@ -141,9 +137,9 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     } else /* Repair */ Unit.also {
       runningJob = MainScope().launch {
         var (rejected, total) = 0 to 0
-//      val metric: (List<String>) -> Int = { (score(it) * 1_000.0).toInt() }, // TODO: Is reordering really necessary if we are decoding GREs by ngram score?
-//      val metric: (List<String>) -> Int = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() },
-        var metric: (List<String>) -> Int = { -1 }
+//      var metric: (List<String>) -> Int = { (score(it) * 1_000.0).toInt() } // TODO: Is reordering really necessary if we are decoding GREs by ngram score?
+        var metric: (List<String>) -> Int = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() }
+//        var metric: (List<String>) -> Int = { -1 }
 
         (if (gpuAvailable) {
           println("Repairing on GPU...")
