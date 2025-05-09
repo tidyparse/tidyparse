@@ -19,6 +19,7 @@ import org.w3c.dom.HTMLDivElement
 import web.events.*
 import web.gpu.*
 import kotlin.js.Promise
+import kotlin.js.unsafeCast
 import kotlin.math.*
 import kotlin.reflect.KProperty
 import kotlin.time.TimeSource
@@ -1106,7 +1107,8 @@ class Shader constructor(val src: String) {
 
     fun List<Int>.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer = toTypedArray().toGPUBuffer(usage)
     fun List<UInt>.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer = map { it.toInt() }.toTypedArray().toGPUBuffer(usage)
-    fun IntArray.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer = toTypedArray().toGPUBuffer(usage)
+    fun IntArray.toGPUBuffer(usage: Int = GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST): GPUBuffer =
+      GPUBuffer(size * 4, usage, unsafeCast<Int32Array<ArrayBuffer>>())
     fun Int.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer = intArrayOf(this).toGPUBuffer(usage)
     fun Array<Int>.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer =
       Int32Array<ArrayBuffer>(size).apply { set(this@toGPUBuffer, 0) }

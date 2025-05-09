@@ -3,7 +3,7 @@ STM+ -> STM+ ; STM | STM
  STM -> ID = EXP | IFS | while ( BEXP ) { STM+ } | STM ; | EXP ;
  IFS -> ID = if ( BEXP ) { EXP } else { EXP }
  IFS -> if ( BEXP ) { STM+ } else { STM+ } | if ( BEXP ) { STM+ }
- EXP -> ID | NUM | EXP + EXP | ( EXP ) | ID ( ARGS ) | BEXP
+ EXP -> ID | NUM | EXP + EXP | ( EXP ) | ID ( ) | ID ( ARGS ) | BEXP
 ARGS -> EXP | EXP , ARGS
 BEXP -> EXP == EXP | EXP < EXP | ( BEXP ) | LIT | ! BEXP
  LIT -> true | false
