@@ -79,7 +79,7 @@ suspend fun defaultSetup() {
   tryBootstrappingGPU()
 }
 
-suspend fun pythonSetup() {
+fun pythonSetup() {
   println("Starting TidyPython")
 
   jsPyEditor.redecorateLines()
@@ -93,8 +93,8 @@ suspend fun pythonSetup() {
   inputField.addEventListener("input", { jsPyEditor.redecorateLines() })
   inputField.addEventListener("keydown", { event -> jsPyEditor.navUpdate(event as KeyboardEvent) })
 
-  jsPyEditor.minimize = mincheck.checked
-  mincheck.addEventListener("change", { jsPyEditor.minimize = mincheck.checked })
+//  jsPyEditor.minimize = mincheck.checked
+//  mincheck.addEventListener("change", { jsPyEditor.minimize = mincheck.checked })
   LED_BUFFER = ledBuffSel.value.toInt()
   ledBuffSel.addEventListener("change", { LED_BUFFER = ledBuffSel.value.toInt() })
 }

@@ -13,14 +13,10 @@
 <div id="content">
     <textarea id="tidyparse-input" class="ldt" spellcheck="false">
 x = 1 -
-
 x = 1 + 1
 
-x * * 2
-
-[ i for i in j ]
-
 [ i for i in j ] ]
+[ i for i in j ]
 
 [ i + j for i, j in zip(*[iter(data)] * 2)
 
@@ -33,11 +29,19 @@ newlist = [word for word in words if len(word) == 9]
 [v for i, v in enumerate(arr, 1) if (i & (i - 1)]
 
 Keys = [x for x in d if d[x] == 'a')]
+Keys = [x for x in d if d[x] == 'a']
 
-gen_exp2 = ((x for u in range(4) for x in (u*2, u*10, u*u))
+gen_fun = lambda num: ((x for u in range(num) for x in (u*2, u*10, u*u))
+gen_fun = lambda num: (x for u in range(num) for x in (u*2, u*10, u*u))
 
 [2 * x if x > 2 else **add_nothing_to_list** for x in some_list]
 [2 * x if x > 2 else add_nothing_to_list for x in some_list]
+
+lines = [[float(x) for x in line] for line in in csv.reader(f)]
+lines = [[float(x) for x in line] for line in csv.reader(f)]
+
+filtered = [x if x in words for x in common]
+filtered = [x for x in common if x in words]
 
 (,) + (1, 'a') + (2, 'b') + (3, 'c')
 () + (1, 'a') + (2, 'b') + (3, 'c')
@@ -59,9 +63,7 @@ gen_exp2 = ((x for u in range(4) for x in (u*2, u*10, u*u))
 </div>
 </div>
 <div title="Minimizes total edits per repair." id="confrow1">
-    <label>Max edit distance: <a href="https://en.wikipedia.org/wiki/Edit_distance#Language_edit_distance">LED</a> + <input id="led-buffer" type="number" value="2" min="0" max="3" step="1" style="margin-right: 4.2em"></label>
-    <label for="minimize-checkbox">Minimize repairs&nbsp;</label>
-    <input type="checkbox" id="minimize-checkbox">
+    <label>Max edit distance: <a href="https://en.wikipedia.org/wiki/Edit_distance#Language_edit_distance">LED</a> + <input id="led-buffer" type="number" value="2" min="0" max="3" step="1" style="margin-right: 1.2em"></label>
 </div>
 <div title="Adds nonterminal stubs to CFG." id="confrow2">
     <div id="gpuAvail" style="margin-right: 770px; margin-top:-50px"></div>
