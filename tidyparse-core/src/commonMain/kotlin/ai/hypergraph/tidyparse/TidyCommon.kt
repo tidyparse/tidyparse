@@ -126,18 +126,19 @@ suspend fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
   val startTime = TimeSource.Monotonic.markNow()
   var totalResults = 0
 
-  val postImmediately = iter.hasNext() && metric(iter.next().tokenizeByWhitespace()) == -1
-  if (postImmediately) {
-    val htmlLst = /*take(resultsToPost).*/toList().map { customDiff(it) }
-    results.addAll(toList())
-    topNResults.addAll(htmlLst.map { it to -1 })
-    totalResults = 10
-  }
+//  val postImmediately = iter.hasNext() && metric(iter.next().tokenizeByWhitespace()) == -1
+//  if (postImmediately) {
+//    val htmlLst = /*take(resultsToPost).*/toList().map { customDiff(it) }
+//    results.addAll(toList())
+//    topNResults.addAll(htmlLst.map { it to -1 })
+//    totalResults = 10
+//  }
 
   while (true) {
     pause()
     var i = 0
-    if (!iter.hasNext() || !shouldContinue() || postImmediately) {
+    if (!iter.hasNext() || !shouldContinue()) {
+//      if (!iter.hasNext() || !shouldContinue() || postImmediately) {
       val throughput = (results.size /
           (startTime.elapsedNow().toDouble(SECONDS) + 0.001)).round(3)
       val summary = "~$throughput res/s"

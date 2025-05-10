@@ -57,21 +57,15 @@ abstract class TidyEditor {
     val lineIdx = getLineBounds().first
     val line = currentLine()
     var firstPlaceholder = stubMatcher.find(line, (getCaretPosition().first - lineIdx + 1).coerceAtMost(line.length))
-    if (firstPlaceholder == null) firstPlaceholder = stubMatcher.find(line, 0)
-    if (firstPlaceholder == null) {
-      setCaretPosition((lineIdx + line.length).let { it..it })
-      return
-    }
+    if (firstPlaceholder == null) { firstPlaceholder = stubMatcher.find(line, 0) }
+    if (firstPlaceholder == null) { setCaretPosition((lineIdx + line.length).let { it..it }); return }
 
     setCaretPosition((lineIdx + firstPlaceholder.range.first)..(lineIdx + firstPlaceholder.range.last + 1))
     handleInput() // This will update the completions view
   }
 
   open fun getApplicableContext(): Σᐩ =
-    getSelection().let {
-      if (it.isNotEmpty() && stubMatcher.matches(it)) it
-      else currentLine()
-    }
+    getSelection().let { if (it.isNotEmpty() && stubMatcher.matches(it)) it else currentLine() }
 
   open fun handleInput() {
     val caretInGrammar = caretInGrammar()
@@ -80,10 +74,7 @@ abstract class TidyEditor {
     println("Applicable context:\n$context")
     val tokens = context.tokenizeByWhitespace()
 
-    val cfg =
-      if (caretInGrammar)
-        CFGCFG(names = tokens.filter { it !in setOf("->", "|") }.toSet())
-      else getLatestCFG()
+    val cfg = if (caretInGrammar) CFGCFG(names = tokens.filter { it !in setOf("->", "|") }.toSet()) else getLatestCFG()
 
     if (cfg.isEmpty()) return
 
@@ -163,8 +154,7 @@ abstract class TidyEditor {
   fun getGrammarText(): Σᐩ = readEditorText().substringBefore("---")
   fun getExampleText(): Σᐩ = readEditorText().substringAfter("---")
 
-  fun currentGrammar(): CFG =
-    try { readEditorText().parseCFG() } catch (e: Exception) { setOf() }
+  fun currentGrammar(): CFG = try { readEditorText().parseCFG() } catch (e: Exception) { setOf() }
 
   fun currentGrammarIsValid(): Boolean = currentGrammar().isNotEmpty()
 }
