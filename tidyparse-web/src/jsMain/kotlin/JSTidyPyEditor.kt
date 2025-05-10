@@ -25,7 +25,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
   val order: Int by lazy { ngrams.keys.firstOrNull()!!.size }
   val normalizingConst by lazy { ngrams.values.sum() }
-  var allowCompilerErrors = true
+  var allowCompilerErrors = false
 
   private val SCALE = 10_000.0
   val ngramTensor: GPUBuffer by lazy {
