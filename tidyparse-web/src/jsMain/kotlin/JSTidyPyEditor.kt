@@ -144,15 +144,13 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
         (if (gpuAvailable) {
           println("Repairing on GPU...")
           repairCode(cfg, tokens, LED_BUFFER, ngramTensor).asSequence()
-          .map { it.joinToString(" ").tokenizeByWhitespace().joinToString(" ") }
         } else {
           println("Repairing on CPU...")
           metric = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() }
           initiateSuspendableRepair(tokens, cfg)
         })
-//        initiateSuspendableRepair(tokens, cfg, ngrams)
           // Drop NEWLINE (added by default to PyCodeSnippets)
-          .map { it.substring(0, it.length - 8).replacePythonKeywords() }
+          .map { it.dropLast(8).replacePythonKeywords() }
           .distinct().let {
             if (allowCompilerErrors) it.onEach { total++ }
             else it.filter { s ->

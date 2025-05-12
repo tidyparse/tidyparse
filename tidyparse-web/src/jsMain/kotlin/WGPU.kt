@@ -69,7 +69,7 @@ suspend fun tryBootstrappingGPU() {
   } else { println("not detected.") }
 }
 
-suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VALUE, ngramTensor: GPUBuffer? = null): List<List<String>> {
+suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VALUE, ngrams: GPUBuffer? = null): List<String> {
   val t0 = TimeSource.Monotonic.markNow()
   val fsa: FSA = makeLevFSA(code, 5)
   println("Made levFSA in ${t0.elapsedNow()}")
@@ -119,7 +119,7 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
 //  println("Initial nonzeros: ${dpIn.count { it != 0 }}")
 
   println("PREPROCESSING TOOK: ${t0.elapsedNow()}") // ~230ms
-  val words = repairPipeline(cfg, fsa, dpInSparse, metaBuf, ledBuffer, ngramTensor)
+  val words = repairPipeline(cfg, fsa, dpInSparse, metaBuf, ledBuffer, ngrams)
   println("Received: ${words.size} words")
 //  val distinctWords = words.distinct()
 //  println("Distinct: ${distinctWords.size} words")
@@ -128,7 +128,7 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
   return words
 }
 
-suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GPUBuffer, ledBuffer: Int, ngramTensor: GPUBuffer?): List<List<String>> {
+suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GPUBuffer, ledBuffer: Int, ngrams: GPUBuffer?): List<String> {
   val t0 = TimeSource.Monotonic.markNow()
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   println("FSA(|Q|=${numStates}, |δ|=${fsa.transit.size}), " +
@@ -142,7 +142,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
     .let { it.zip(dpBuf.readIndices(it)) }.filter { (_, v) -> v != 0 }.map { it.first }
 
   if (!allStartIds.isEmpty()) // { println("Valid parse found: dpComplete has ${allStartIds.size} start indices") }
-  else { println("No valid parse found: dpComplete has no entries in final states!"); return emptyList() }
+  else return emptyList<String>().also { println("No valid parse found: dpComplete has no entries in final states!"); }
 
   val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNTs, dpBuf, metaBuf)
   println("Built backpointers in ${t1.elapsedNow()}")
@@ -156,10 +156,8 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
 
   val maxRepairLen = fsa.width + fsa.height + 10
 
-  if (MAX_WORD_LEN < maxRepairLen) {
-    println("Max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)")
-    return emptyList()
-  }
+  if (MAX_WORD_LEN < maxRepairLen) return emptyList<String>()
+    .also { println("Max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)") }
 
   val outBuf = GPUBuffer(MAX_SAMPLES * maxRepairLen * 4, GPUBufferUsage.STCPSD)
 
@@ -175,69 +173,88 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
 
   val header = intArrayOf(0, maxRepairLen, numNTs, numStates)
 
-  /** [TERM_STRUCT] */ val indexUniformsBuf = packStruct(constants = header.toList(), startIdxs.toGPUBuffer())
+  /** [TERM_STRUCT] */ val idxUniBuf = packStruct(constants = header.toList(), startIdxs.toGPUBuffer())
   println("Pairing function construction took: ${t2.elapsedNow()}")
 
   val t3 = TimeSource.Monotonic.markNow()
-  sample_words_wor(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, indexUniformsBuf, cdfBuf)(MAX_SAMPLES)
+  sample_words_wor(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, idxUniBuf, cdfBuf)(MAX_SAMPLES)
 //  println("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
 
   // TODO: WGSL kernel for repair minimization here?
 
   val k = 20 * MAX_DISP_RESULTS
-  val winnerTokens = scoreSelectGather(
+  val topK = scoreSelectGather(
     packets          = outBuf,
-    ngramTensor      = ngramTensor ?: emptyMap<List<UInt>, UInt>().loadToGPUBuffer(),
-    indexUniformsBuf = indexUniformsBuf,
+    ngrams           = ngrams ?: emptyMap<List<UInt>, UInt>().loadToGPUBuffer(),
+    indexUniformsBuf = idxUniBuf,
     maxSamples       = MAX_SAMPLES,
     stride           = maxRepairLen,
     k                = k
   )
 
-  listOf(outBuf, metaBuf, dpBuf, indexUniformsBuf, cdfBuf,
+  listOf(outBuf, metaBuf, dpBuf, idxUniBuf, cdfBuf,
     bpCountBuf, bpOffsetBuf, bpStorageBuf).forEach(GPUBuffer::destroy)
 
   val t4 = TimeSource.Monotonic.markNow()
-  val result = (0 until k).map { i -> winnerTokens.decodePacket(i, cfg.tmLst, maxRepairLen) }
+
+  val result = mutableListOf<String>()
+
+  for (i in 0 until k) result.add(topK.decodePacket(i, cfg.tmLst, maxRepairLen) ?: break)
 
   println("Decoded ${result.distinct().size} unique words out of ${result.size} in ${t4.elapsedNow()}")
   println("Sampling took ${t3.elapsedNow()}")
   return result
 }
 
+fun IntArray.decodePacket(idx: Int, tm: List<String>, pktLen: Int): String? {
+  var cur: StringBuilder? = null
+  val base = idx * pktLen + PKT_HDR_LEN // skip header cells
+
+  for (j in 0 until pktLen - PKT_HDR_LEN) {
+    val tok = this[base + j] and 0xFF
+    if (tok != 0) {
+      if (cur == null) cur = StringBuilder()
+      if (cur.isNotEmpty()) cur.append(' ')
+      cur.append(tm[tok - 1])
+    } else break
+  }
+
+  return if (cur != null && cur.isNotEmpty()) cur.toString() else null
+}
+
 suspend fun scoreSelectGather(
   packets          : GPUBuffer,
-  ngramTensor      : GPUBuffer,
+  ngrams           : GPUBuffer,
   indexUniformsBuf : GPUBuffer,
   maxSamples       : Int,
   stride           : Int,
   k                : Int
 ): IntArray {
-  var t0 = TimeSource.Monotonic.markNow()
-  markov_score(packets, ngramTensor, indexUniformsBuf)(maxSamples)
-  println("Score in ${t0.elapsedNow()}")
+  val t0 = TimeSource.Monotonic.markNow()
+  markov_score(packets, ngrams, indexUniformsBuf)(maxSamples)
+//  println("Score in ${t0.elapsedNow()}")
 
 //  println(packets.readInts().toList().windowed(stride, stride)
 //    .map { it[1] }.groupingBy { it }.eachCount().entries
 //    .sortedBy { it.key }.joinToString("\n") { (a, b) -> "$a => $b" })
 
-  t0 = TimeSource.Monotonic.markNow()
+//  t0 = TimeSource.Monotonic.markNow()
   val prmBuf   = intArrayOf(maxSamples, k, stride).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
   val idxBuf   = IntArray(k) { Int.Companion.MAX_VALUE }.toGPUBuffer(GPUBufferUsage.STCPSD)
   val scrBuf   = IntArray(k) { Int.Companion.MAX_VALUE }.toGPUBuffer(GPUBufferUsage.STCPSD)
 
   val groups   = (maxSamples + 255) / 256
   select_top_k(prmBuf, packets, idxBuf, scrBuf)(groups)
-  println("Select in ${t0.elapsedNow()}")
+//  println("Select in ${t0.elapsedNow()}")
 
-  t0 = TimeSource.Monotonic.markNow()
+//  t0 = TimeSource.Monotonic.markNow()
   val gatherPrm = intArrayOf(stride, k).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
   val bestBuf   = GPUBuffer(k * stride * 4, GPUBufferUsage.STCPSD)
 
   gather_top_k(gatherPrm, packets, idxBuf, bestBuf)(k)
-  println("Gather in ${t0.elapsedNow()}")
+//  println("Gather in ${t0.elapsedNow()}")
 
-  t0 = TimeSource.Monotonic.markNow()
+//  t0 = TimeSource.Monotonic.markNow()
   val topK = bestBuf.readInts()
   println("Read ${topK.size} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
 
@@ -1366,23 +1383,4 @@ fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer 
   println("Done")
 
   return flat.asList().toGPUBuffer()         // unchanged helper
-}
-
-private fun IntArray.decodePacket(sampleIdx: Int, tm: List<String>, wordLen: Int): List<String> {
-  val words = mutableListOf<StringBuilder>()
-  var cur: StringBuilder? = null
-  val base = sampleIdx * wordLen + PKT_HDR_LEN   // skip BOTH header cells
-
-  for (j in 0 until wordLen - PKT_HDR_LEN) {
-    val tok = this[base + j] and 0xFF
-    if (tok == 0) {
-      if (cur != null && cur.isNotEmpty()) { words += cur; cur = null }
-    } else {
-      if (cur == null) cur = StringBuilder()
-      if (cur.isNotEmpty()) cur.append(' ')
-      cur.append(tm[tok - 1])
-    }
-  }
-  if (cur != null && cur.isNotEmpty()) words += cur
-  return words.map(StringBuilder::toString)
 }

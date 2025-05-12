@@ -94,9 +94,8 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
         Scenario.REPAIR ->
           if (gpuAvailable)
             repairCode(cfg, tokens, LED_BUFFER, emptyMap<List<UInt>, UInt>().loadToGPUBuffer()).asSequence()
-            .map { it.joinToString(" ") { it.replace("ε", "") }
-              .tokenizeByWhitespace().joinToString(" ") } else
-          initiateSuspendableRepair(tokens, cfg)
+              .map { it.replace("ε", "").tokenizeByWhitespace().joinToString(" ") }
+          else initiateSuspendableRepair(tokens, cfg)
       }?.enumerateInteractively(workHash, tokens,
         reason = scenario.reason, postCompletionSummary = { ", ${t0.elapsedNow()} latency." })
     }

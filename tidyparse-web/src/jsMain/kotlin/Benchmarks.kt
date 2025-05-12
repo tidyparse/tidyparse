@@ -67,7 +67,7 @@ fun IntArray.sparsifyReachabilityMatrix(n: Int = sqrt(size.toDouble()).toInt()):
 suspend fun benchmarkWGPURepair() {
   val cfg = pythonStatementCNFAllProds
   val code = "NAME = [ ( STRING , NAME ) , , ( NAME , NAME ) , ( NAME , NAME ) , ( NAME , NAME ) , , ( NAME , NAME ) ] NEWLINE".tokenizeByWhitespace()
-  val words = repairCode(cfg, code, 5).distinct().map { it.joinToString(" ") }
+  val words = repairCode(cfg, code, 5).distinct()
   println("Distinct words: ${words.size}")
 
   val (valid, invalid) = words.shuffled().take(3).partition { it in cfg.language }
