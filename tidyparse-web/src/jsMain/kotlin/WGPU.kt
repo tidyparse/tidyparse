@@ -43,6 +43,7 @@ suspend fun tryBootstrappingGPU() {
     gpu.addEventListener(EventType("uncapturederror"), { e: dynamic -> println("Uncaptured: ${e.error.message}") })
     try {
       listOf(
+//        init_chart,
         prefix_sum_p1, prefix_sum_p2,      // ADT storage utils
         sparse_load, sparse_mat_load,      // Matrix loading utils
         dag_reach, mdpt_count, mdpt_write, // Graph reachability
@@ -335,6 +336,52 @@ let c = gid.y;
 if (c <= r) { return; }
 let A = gid.z;
 $SHORT_PREAMBLE"""
+
+//language=wgsl
+val init_chart by Shader("""
+fn pack_rc(row: u32, col: u32) -> u32 { return (row << 16u) | (col & 0xffffu); }
+fn unpack_row(packed: u32) -> u32 { return packed >> 16u; }
+fn unpack_col(packed: u32) -> u32 { return packed & 0xffffu; }
+fn tpl(x: i32) -> i32 { let y: i32 = max(x, 0); return (y * (y + 1)) / 2; }
+fn prefix(s: i32, r: i32, c: i32) -> i32 { return tpl(s) - tpl(s - r) - tpl(s - c) + tpl(s - r - c); }
+fn rank(row: u32, col: u32, rm: u32, cm: u32) -> u32 {
+    let r: i32 = i32(row);
+    let c: i32 = i32(col);
+    let s: i32 = r + c;
+    let off: i32 = r - max(0, s - (i32(cm) - 1));
+    return u32(prefix(s, i32(rm), i32(cm)) + off);
+}
+
+fn find_level(k: u32, r: u32, c: u32) -> i32 {
+    var s: i32 = 0;
+    var step: i32 = 1 << 17;
+    loop {
+        if (step == 0) { break; }
+        let cand: i32 = s | step;
+        let ok: bool = (cand < i32(r + c)) && (prefix(cand, i32(r), i32(c)) <= i32(k));
+        s = select(s, cand, ok);
+        step = step >> 1;
+    }
+    return s;
+}
+
+fn unrank(idx: u32, rm: u32, cm: u32) -> u32 {
+    let s: i32 = find_level(idx, rm, cm);
+    let within: i32 = i32(idx) - prefix(s, i32(rm), i32(cm));
+    let base_r: i32 = max(0, s - (i32(cm) - 1));
+    let r: u32 = u32(base_r + within);
+    let c: u32 = u32(s) - r;
+    return pack_rc(r, c);
+}
+
+@group(0) @binding(0) var<storage, read_write>    dp_in : array<u32>;
+@group(0) @binding(1) var<storage, read>             cs : CFLStruct;
+
+@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+    $PREAMBLE
+    
+    // TODO...
+}""")
 
 //language=wgsl
 val dag_reach by Shader("""
