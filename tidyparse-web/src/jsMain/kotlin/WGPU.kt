@@ -31,9 +31,7 @@ external val navigator: dynamic
 /*
 TODO:
   (1) Split words on WGPU
-  (2) rescore samples using Markov Chain
-  (3) sort repairs by probability on WGPU
-  (4) parallelize makeLevFSA/byteFormat
+  (2) Parallelize makeLevFSA/byteFormat
 */
 
 suspend fun tryBootstrappingGPU() {
@@ -133,7 +131,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   val t0 = TimeSource.Monotonic.markNow()
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   println("FSA(|Q|=${numStates}, |δ|=${fsa.transit.size}), " +
-      "CFG(|Σ|=${cfg.terminals.size}, |V|=${numNTs}, |P|=${cfg.nonterminalProductions.size})")
+          "CFG(|Σ|=${cfg.terminals.size}, |V|=${numNTs}, |P|=${cfg.nonterminalProductions.size})")
   val dpBuf = cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpInSparse, metaBuf)
   println("Matrix closure reached in: ${t0.elapsedNow()}")
 
@@ -285,6 +283,13 @@ struct Terminals { // Mappings from nonterminals to terminals in CFG
        payload : array<u32>
 };
 
+// Let Σ_A denote the subset of Σ s.t. for all a ∈ Σ_A ⊢ (A -> a) ∈ P
+fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + nt]; } // |Σ_A|
+// Offsets of the nonterminal in the following Map<...> structure
+fn get_offsets(nt : u32) -> u32    { return terminals.payload[terminals.offsets_offset + nt];    } // offset of Σ_A
+// Flattened index of Map<NT, List<TM-id>> values
+fn get_all_tms(i : u32) -> u32     { return terminals.payload[terminals.all_tms_offset + i];     } // σ → TM‑id
+
 struct IndexUniforms {  // Indices of all accepting states in the parse chart
     targetCnt       : atomic<u32>,  // global counter (LFSR advances on host)
     maxWordLen      : u32,
@@ -338,7 +343,7 @@ let A = gid.z;
 $SHORT_PREAMBLE"""
 
 //language=wgsl
-val init_chart by Shader("""
+val init_chart by Shader("""$CFL_STRUCT $TERM_STRUCT
 fn pack_rc(row: u32, col: u32) -> u32 { return (row << 16u) | (col & 0xffffu); }
 fn unpack_row(packed: u32) -> u32 { return packed >> 16u; }
 fn unpack_col(packed: u32) -> u32 { return packed & 0xffffu; }
@@ -374,13 +379,40 @@ fn unrank(idx: u32, rm: u32, cm: u32) -> u32 {
     return pack_rc(r, c);
 }
 
-@group(0) @binding(0) var<storage, read_write>    dp_in : array<u32>;
-@group(0) @binding(1) var<storage, read>             cs : CFLStruct;
+const MAX_LEV_RAD : u32 = ${PKT_HDR_LEN}u;
+
+@group(0) @binding(0) var<storage, read_write> dp_in : array<u32>;
+@group(0) @binding(1) var<storage, read>        word : array<u32>;
+@group(0) @binding(2) var<storage, read>          cs : CFLStruct;
+@group(0) @binding(3) var<storage, read>   terminals : Terminals;
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     $PREAMBLE
     
-    // TODO...
+    let wd_len = arrayLength(&word);
+    
+    let q1 = unrank(r, MAX_LEV_RAD, wd_len); // Arc origin
+    let q1r = unpack_row(q1);
+    let q1c = unpack_col(q1);
+    
+    let q2 = unrank(c, MAX_LEV_RAD, wd_len); // Arc destination
+    let q2r = unpack_row(q2);
+    let q2c = unpack_col(q2);
+    
+    var arc : uint = 0u;
+    
+    // TODO: check does the arc exist in the Lev(word, MAX_LEV_RAD) automata, if so encode arc predicate
+    
+    // If not, then return
+    if (arc == 0u) { return; }
+    
+    // Otherwise, write the appropriate value to the parse chart
+    var value = 0u;
+    let ntOff  = get_offsets(nt);
+    // TODO: iterate through get_all_tms(ntOff + i) to check if any terminals match the arc predicate, if so then set value
+    
+    if (value == 0u) { return; }
+    dp_in[dpIdx] = value;
 }""")
 
 //language=wgsl
@@ -411,7 +443,7 @@ val mdpt_count by Shader("""
 struct Uni { n : u32 };
 
 @group(0) @binding(0) var<storage, read>       reach  : array<u32>;   // N×N upper‑tri (0/1)
-@group(0) @binding(1) var<storage, read_write> counts : array<u32>;   // N×N  (aoi‑1 → #midpts)
+@group(0) @binding(1) var<storage, read_write> counts : array<u32>;   // N×N (aoi‑1 → #midpts)
 @group(0) @binding(2) var<uniform>             uni    : Uni;
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid:vec3<u32>) {
@@ -546,8 +578,6 @@ struct SpanUni { span : u32 };
 @group(0) @binding(3) var<storage, read>       terminals : Terminals;
 @group(0) @binding(4) var<uniform>                    su : SpanUni;
 
-fn get_nt_tm_lens(index: u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + index]; }
-
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let r = gid.x;
     let c = r + su.span;
@@ -597,8 +627,6 @@ val ls_cdf by Shader("""$CFL_STRUCT $TERM_STRUCT
 @group(0) @binding(3) var<storage, read_write>   ls_sparse : array<u32>;
 @group(0) @binding(4) var<storage, read>                cs : CFLStruct;
 @group(0) @binding(5) var<storage, read>         terminals : Terminals;
-
-fn get_nt_tm_lens(index: u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + index]; }
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     $PREAMBLE
@@ -723,6 +751,7 @@ struct PrefixSumUni { n: u32 };
 
 // Longest word WGSL can handle. If ~2^9<MAX_WORD_LEN, pipeline breaks some on architectures
 const val MAX_WORD_LEN = 512
+const val MAX_LEV_RAD = 5
 // Maximum threads WGSL allows in a single dispatch. If ~2^16<MAX_SAMPLES, this always fails
 const val MAX_SAMPLES = 65_535
 const val NEG_LITERAL = 0x40000000u //=1.shl(30)
@@ -747,9 +776,6 @@ val sample_words_wor by Shader("""$TERM_STRUCT
 /* ----------------------------- helpers ------------------------------------------ */
 fn getStartIdx(i : u32) -> u32 { return idx_uni.startIndices[i * 2]; }
 fn getEditDist(i : u32) -> u32 { return idx_uni.startIndices[i * 2 + 1]; }
-fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + nt]; } // |Σ_A|
-fn get_offsets(nt : u32) -> u32 { return terminals.payload[terminals.offsets_offset + nt]; } // offset of Σ_A
-fn get_all_tms(i : u32) -> u32 { return terminals.payload[terminals.all_tms_offset + i]; }   // σ → TM‑id
 
 fn binarySearchCDF(base: u32, len: u32, needle: u32) -> u32 {
     var lo: u32 = 0u;
