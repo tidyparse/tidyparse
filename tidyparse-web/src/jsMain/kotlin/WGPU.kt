@@ -6,6 +6,7 @@ import Shader.Companion.packMetadata
 import Shader.Companion.readIndices
 import Shader.Companion.readInts
 import Shader.Companion.toGPUBuffer
+import Shader.Companion.toGPUBufferSparse
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.types.cache
@@ -19,7 +20,6 @@ import org.w3c.dom.HTMLDivElement
 import web.events.*
 import web.gpu.*
 import kotlin.js.Promise
-import kotlin.js.unsafeCast
 import kotlin.math.*
 import kotlin.reflect.KProperty
 import kotlin.time.TimeSource
@@ -41,7 +41,7 @@ suspend fun tryBootstrappingGPU() {
     gpu.addEventListener(EventType("uncapturederror"), { e: dynamic -> println("Uncaptured: ${e.error.message}") })
     try {
       listOf(
-//        init_chart,
+        init_chart,
         prefix_sum_p1, prefix_sum_p2,      // ADT storage utils
         sparse_load, sparse_mat_load,      // Matrix loading utils
         dag_reach, mdpt_count, mdpt_write, // Graph reachability
@@ -74,6 +74,7 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
   println("Made levFSA in ${t0.elapsedNow()}")
 
   val metaBuf = packMetadata(cfg, fsa)
+  val codeInts = code.map { cfg.tmMap[it]!! }.toIntArray()
 
   // Sparse index nonzero entries of the M_0 parse chart
   fun FSA.byteFormat(cfg: CFG): IntArray { // TODO: kernelize
@@ -118,7 +119,7 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
 //  println("Initial nonzeros: ${dpIn.count { it != 0 }}")
 
   println("PREPROCESSING TOOK: ${t0.elapsedNow()}") // ~230ms
-  val words = repairPipeline(cfg, fsa, dpInSparse, metaBuf, ledBuffer, ngrams)
+  val words = repairPipeline(cfg, fsa, dpInSparse, metaBuf, ledBuffer, ngrams, codeInts)
   println("Received: ${words.size} words")
 //  val distinctWords = words.distinct()
 //  println("Distinct: ${distinctWords.size} words")
@@ -127,12 +128,29 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
   return words
 }
 
-suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GPUBuffer, ledBuffer: Int, ngrams: GPUBuffer?): List<String> {
+suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GPUBuffer, ledBuffer: Int, ngrams: GPUBuffer?, codeInts: IntArray): List<String> {
   val t0 = TimeSource.Monotonic.markNow()
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   println("FSA(|Q|=${numStates}, |δ|=${fsa.transit.size}), " +
           "CFG(|Σ|=${cfg.terminals.size}, |V|=${numNTs}, |P|=${cfg.nonterminalProductions.size})")
-  val dpBuf = cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpInSparse, metaBuf)
+//
+////println("Time to load buffer: ${t0.elapsedNow()} (${input.size * 4} bytes)")
+//
+//  val wordBuf   = codeInts.toGPUBuffer()
+//  val totalSize = numStates * numStates * numNTs
+//  val dpBuf     = Shader.createParseChart(GPUBufferUsage.STCPSD, totalSize)
+//
+//// build the initial chart completely on the GPU
+//  init_chart(dpBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+//
+//  cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpBuf, metaBuf)
+
+  val tmBuf = cfg.termBuf
+  val rowCoeff = numStates * numNTs
+  val colCoeff = numNTs
+  val dpBuf = dpInSparse.toGPUBufferSparse(GPUBufferUsage.STCPSD, numStates * rowCoeff, rowCoeff, colCoeff)
+
+  cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpBuf, metaBuf)
   println("Matrix closure reached in: ${t0.elapsedNow()}")
 
   val t1 = TimeSource.Monotonic.markNow()
@@ -159,8 +177,6 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
     .also { println("Max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)") }
 
   val outBuf = GPUBuffer(MAX_SAMPLES * maxRepairLen * 4, GPUBufferUsage.STCPSD)
-
-  val tmBuf = cfg.termBuf
 
   val lsDense  = buildLanguageSizeBuf(numStates, numNTs, dpBuf, metaBuf, tmBuf)
   val totalExp = bpStorageBuf.size.toInt() / (2 * 4)
@@ -283,13 +299,6 @@ struct Terminals { // Mappings from nonterminals to terminals in CFG
        payload : array<u32>
 };
 
-// Let Σ_A denote the subset of Σ s.t. for all a ∈ Σ_A ⊢ (A -> a) ∈ P
-fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + nt]; } // |Σ_A|
-// Offsets of the nonterminal in the following Map<...> structure
-fn get_offsets(nt : u32) -> u32    { return terminals.payload[terminals.offsets_offset + nt];    } // offset of Σ_A
-// Flattened index of Map<NT, List<TM-id>> values
-fn get_all_tms(i : u32) -> u32     { return terminals.payload[terminals.all_tms_offset + i];     } // σ → TM‑id
-
 struct IndexUniforms {  // Indices of all accepting states in the parse chart
     targetCnt       : atomic<u32>,  // global counter (LFSR advances on host)
     maxWordLen      : u32,
@@ -380,39 +389,99 @@ fn unrank(idx: u32, rm: u32, cm: u32) -> u32 {
 }
 
 const MAX_LEV_RAD : u32 = ${PKT_HDR_LEN}u;
+const LIT_ALL : u32 = 0x7ffffffeu;           // Int.MAX_VALUE-1 on CPU
+const NEG_BIT : u32 = ${NEG_LITERAL}u;       // 0x4000_0000
 
 @group(0) @binding(0) var<storage, read_write> dp_in : array<u32>;
 @group(0) @binding(1) var<storage, read>        word : array<u32>;
 @group(0) @binding(2) var<storage, read>          cs : CFLStruct;
 @group(0) @binding(3) var<storage, read>   terminals : Terminals;
 
+// ───────────────── helpers ──────────────────────────────────────────────
+// 0-based token ids; return an impossible value when i ≥ |word|
+fn letter_at(i : u32, wd_len : u32) -> u32 { return select(word[i], 0xffffffffu, i >= wd_len); }
+// Let Σ_A denote the subset of Σ s.t. for all a ∈ Σ_A ⊢ (A -> a) ∈ P
+fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + nt]; } // |Σ_A|
+// Offsets of the nonterminal in the following Map<...> structure
+fn get_offsets(nt : u32) -> u32    { return terminals.payload[terminals.offsets_offset + nt];    } // offset of Σ_A
+// Flattened index of Map<NT, List<TM-id>> values
+fn get_all_tms(i : u32) -> u32     { return terminals.payload[terminals.all_tms_offset + i];     } // σ → TM‑id
+
+// Encode σ for non-terminal A.  Returns 0 when σ ∉ Σ_A.
+fn encode_pos_literal(A : u32, sigma : u32) -> u32 {
+    let ntLen = get_nt_tm_lens(A);
+    let ntOff = get_offsets(A);
+    for (var k : u32 = 0u; k < ntLen; k = k + 1u) {
+        if (get_all_tms(ntOff + k) == sigma) {      // hit
+            return ((k + 1u) << 1u);                // positive, bit-0 still 0
+        }
+    }
+    return 0u;
+}
+
+// Negative-literal encoding  [!=]σ
+fn encode_neg_literal(A : u32, sigma : u32) -> u32 {
+    let ntLen = get_nt_tm_lens(A);
+    let ntOff = get_offsets(A);
+    for (var k : u32 = 0u; k < ntLen; k = k + 1u) {
+        if (get_all_tms(ntOff + k) == sigma) {      // σ ∈ Σ_A
+            return NEG_BIT | ((k + 1u) << 1u);      // -σ
+        }
+    }
+    return LIT_ALL;                                 // σ ∉ Σ_A  ⇒  Σ_A\{}
+}
+
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-    $PREAMBLE
-    
-    let wd_len = arrayLength(&word);
-    
-    let q1 = unrank(r, MAX_LEV_RAD, wd_len); // Arc origin
-    let q1r = unpack_row(q1);
-    let q1c = unpack_col(q1);
-    
-    let q2 = unrank(c, MAX_LEV_RAD, wd_len); // Arc destination
-    let q2r = unpack_row(q2);
-    let q2c = unpack_col(q2);
-    
-    var arc : uint = 0u;
-    
-    // TODO: check does the arc exist in the Lev(word, MAX_LEV_RAD) automata, if so encode arc predicate
-    
-    // If not, then return
-    if (arc == 0u) { return; }
-    
-    // Otherwise, write the appropriate value to the parse chart
-    var value = 0u;
-    let ntOff  = get_offsets(nt);
-    // TODO: iterate through get_all_tms(ntOff + i) to check if any terminals match the arc predicate, if so then set value
-    
-    if (value == 0u) { return; }
-    dp_in[dpIdx] = value;
+    $PREAMBLE                                         // r,c,A → dpIdx …
+
+    let wd_len  = arrayLength(&word);
+    let q1      = unrank(r, MAX_LEV_RAD, wd_len);     // src
+    let q2      = unrank(c, MAX_LEV_RAD, wd_len);     // dst
+
+    let j1      = unpack_row(q1);                     // edit distance
+    let i1      = unpack_col(q1);                     // string index
+    let j2      = unpack_row(q2);
+    let i2      = unpack_col(q2);
+
+    let dj      = i32(j2) - i32(j1);
+    let di      = i32(i2) - i32(i1);
+
+    var lit     : u32 = 0u;                           // encoded literal (bit-1↑)
+    var arc_ok  : bool = false;
+
+    // (1) UP ARC: (i, j-1) → (i, j)       [!=]σᵢ
+    if (di == 0 && dj == 1) {
+        let sigma = letter_at(i1, wd_len);
+        lit   = encode_neg_literal(A, sigma);
+        arc_ok = true;
+    }
+
+    // (2) RIGHT ARC: (i-1, j) → (i, j)   σᵢ
+    if (di == 1 && dj == 0) {
+        let sigma = letter_at(i2 - 1u, wd_len);
+        let enc   = encode_pos_literal(A, sigma);
+        arc_ok = enc != 0u;
+        lit   = enc;
+    }
+
+    // (3) DIAG ARC: (i-1, j-1) → (i, j)  [!=]σᵢ₋₁
+    if (di == 1 && dj == 1) {
+        let sigma = letter_at(i2 - 1u, wd_len);
+        lit   = encode_neg_literal(A, sigma);
+        arc_ok = true;
+    }
+
+    // (4) "KNIGHT" ARC: (i-Δ-1, j-Δ) → (i, j) , Δ≥1   σᵢ
+    if (di >= 2 && dj == di - 1) {
+        let sigma = letter_at(i2 - 1u, wd_len);
+        let enc   = encode_pos_literal(A, sigma);
+        arc_ok = enc != 0u;
+        lit   = enc;
+    }
+
+    if (!arc_ok || lit == 0u) { return; }             // no match for this A
+
+    dp_in[dpIdx] = lit;                               // leaf only, bit-0 ⟵ 0
 }""")
 
 //language=wgsl
@@ -578,6 +647,9 @@ struct SpanUni { span : u32 };
 @group(0) @binding(3) var<storage, read>       terminals : Terminals;
 @group(0) @binding(4) var<uniform>                    su : SpanUni;
 
+// Let Σ_A denote the subset of Σ s.t. for all a ∈ Σ_A ⊢ (A -> a) ∈ P
+fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + nt]; } // |Σ_A|
+
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let r = gid.x;
     let c = r + su.span;
@@ -627,6 +699,9 @@ val ls_cdf by Shader("""$CFL_STRUCT $TERM_STRUCT
 @group(0) @binding(3) var<storage, read_write>   ls_sparse : array<u32>;
 @group(0) @binding(4) var<storage, read>                cs : CFLStruct;
 @group(0) @binding(5) var<storage, read>         terminals : Terminals;
+
+// Let Σ_A denote the subset of Σ s.t. for all a ∈ Σ_A ⊢ (A -> a) ∈ P
+fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + nt]; } // |Σ_A|
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     $PREAMBLE
@@ -776,6 +851,12 @@ val sample_words_wor by Shader("""$TERM_STRUCT
 /* ----------------------------- helpers ------------------------------------------ */
 fn getStartIdx(i : u32) -> u32 { return idx_uni.startIndices[i * 2]; }
 fn getEditDist(i : u32) -> u32 { return idx_uni.startIndices[i * 2 + 1]; }
+// Let Σ_A denote the subset of Σ s.t. for all a ∈ Σ_A ⊢ (A -> a) ∈ P
+fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + nt]; } // |Σ_A|
+// Offsets of the nonterminal in the following Map<...> structure
+fn get_offsets(nt : u32) -> u32    { return terminals.payload[terminals.offsets_offset + nt];    } // offset of Σ_A
+// Flattened index of Map<NT, List<TM-id>> values
+fn get_all_tms(i : u32) -> u32     { return terminals.payload[terminals.all_tms_offset + i];     } // σ → TM‑id
 
 fn binarySearchCDF(base: u32, len: u32, needle: u32) -> u32 {
     var lo: u32 = 0u;
@@ -1170,13 +1251,17 @@ class Shader constructor(val src: String) {
       return t
     }
 
+    fun createParseChart(usage: Int, totalSizeInInts: Int): GPUBuffer {
+      val outputByteSize = totalSizeInInts.toLong() * Int32Array.BYTES_PER_ELEMENT
+      return GPUBuffer(outputByteSize, usage or GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
+    }
+
     fun IntArray.toGPUBufferSparse(usage: Int, totalSizeInInts: Int, rowCoeff: Int, colCoeff: Int): GPUBuffer {
       require(size % 4 == 0) { "Input array size must be a multiple of 4 for sparse data (r,c,v,i)." }
       require(totalSizeInInts > 0) { "totalSizeInInts must be positive." }
 
       val sparseDataGpuBuffer = toGPUBuffer()
-      val outputByteSize = totalSizeInInts.toLong() * Int32Array.BYTES_PER_ELEMENT
-      val outputBuffer = GPUBuffer(outputByteSize, usage or GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
+      val outputBuffer = createParseChart(usage, totalSizeInInts)
       val coeffsBuffer = intArrayOf(rowCoeff, colCoeff).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
       val numWorkgroups = ceil(size / 4.0 / SPARSE_WRITER_WORKGROUP_SIZE).toInt()
 
@@ -1315,13 +1400,8 @@ class Shader constructor(val src: String) {
   }
 
   // Invocation strategies: eliminates some of the ceremony of calling a GSL shader
-  suspend fun invokeCFLFixpoint(numStates: Int, numNTs: Int, input: IntArray, metaBuf: GPUBuffer): GPUBuffer {
+  suspend fun invokeCFLFixpoint(numStates: Int, numNTs: Int, dpIn: GPUBuffer, metaBuf: GPUBuffer) {
 //    var t0 = TimeSource.Monotonic.markNow()
-
-    val rowCoeff = numStates * numNTs
-    val colCoeff = numNTs
-    val dpIn = input.toGPUBufferSparse(GPUBufferUsage.STCPSD, numStates * rowCoeff, rowCoeff, colCoeff)
-//    println("Time to load buffer: ${t0.elapsedNow()} (${input.size * 4} bytes)")
 
     var prevValue = -1
 
@@ -1335,8 +1415,6 @@ class Shader constructor(val src: String) {
 //      println("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
 //      t0 = TimeSource.Monotonic.markNow()
     }
-
-    return dpIn
   }
 
   suspend fun invokeDAGFixpoint(fsa: FSA): Pair<GPUBuffer, Int> {
