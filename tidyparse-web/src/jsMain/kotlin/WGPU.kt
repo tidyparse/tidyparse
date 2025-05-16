@@ -133,9 +133,10 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   println("FSA(|Q|=${numStates}, |δ|=${fsa.transit.size}), " +
           "CFG(|Σ|=${cfg.terminals.size}, |V|=${numNTs}, |P|=${cfg.nonterminalProductions.size})")
-//
-////println("Time to load buffer: ${t0.elapsedNow()} (${input.size * 4} bytes)")
-//
+
+//println("Time to load buffer: ${t0.elapsedNow()} (${input.size * 4} bytes)")
+
+//  val tmBuf = cfg.termBuf
 //  val wordBuf   = codeInts.toGPUBuffer()
 //  val totalSize = numStates * numStates * numNTs
 //  val dpBuf     = Shader.createParseChart(GPUBufferUsage.STCPSD, totalSize)
@@ -153,13 +154,17 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpBuf, metaBuf)
   println("Matrix closure reached in: ${t0.elapsedNow()}")
 
+//  dpBuf.readInts().filter { it != 0 }.map { it.toString(2) }
+//    .groupingBy { it }.eachCount().entries.sortedBy { it.key }.joinToString("\n") { (a, b) -> "$a => $b" }
+//    .also { println(it) }
+
   val t1 = TimeSource.Monotonic.markNow()
   val startNT     = cfg.bindex[START_SYMBOL]
   val allStartIds = fsa.finalIdxs.map { it * numNTs + startNT }
     .let { it.zip(dpBuf.readIndices(it)) }.filter { (_, v) -> v != 0 }.map { it.first }
 
   if (!allStartIds.isEmpty()) // { println("Valid parse found: dpComplete has ${allStartIds.size} start indices") }
-  else return emptyList<String>().also { println("No valid parse found: dpComplete has no entries in final states!"); }
+  else return emptyList<String>().also { println("No valid parse found: dpComplete has no entries in final states!") }
 
   val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNTs, dpBuf, metaBuf)
   println("Built backpointers in ${t1.elapsedNow()}")
@@ -353,53 +358,107 @@ $SHORT_PREAMBLE"""
 
 //language=wgsl
 val init_chart by Shader("""$CFL_STRUCT $TERM_STRUCT
-fn pack_rc(row: u32, col: u32) -> u32 { return (row << 16u) | (col & 0xffffu); }
-fn unpack_row(packed: u32) -> u32 { return packed >> 16u; }
-fn unpack_col(packed: u32) -> u32 { return packed & 0xffffu; }
+// --- START of Rank/Unrank functions ---
+// pack_rc stores (row, col) -> for us, (j_coord, i_coord)
+fn pack_rc(row_j: u32, col_i: u32) -> u32 { return (row_j << 16u) | (col_i & 0xffffu); }
+fn unpack_row_j(packed: u32) -> u32 { return packed >> 16u; } // Returns j_coord
+fn unpack_col_i(packed: u32) -> u32 { return packed & 0xffffu; } // Returns i_coord
+// tpl(n) = n * (n + 1) / 2 for n >= 0, else 0
 fn tpl(x: i32) -> i32 { let y: i32 = max(x, 0); return (y * (y + 1)) / 2; }
-fn prefix(s: i32, r: i32, c: i32) -> i32 { return tpl(s) - tpl(s - r) - tpl(s - c) + tpl(s - r - c); }
-fn rank(row: u32, col: u32, rm: u32, cm: u32) -> u32 {
-    let r: i32 = i32(row);
-    let c: i32 = i32(col);
-    let s: i32 = r + c;
-    let off: i32 = r - max(0, s - (i32(cm) - 1));
-    return u32(prefix(s, i32(rm), i32(cm)) + off);
+
+// prefix_count(s_sum, num_j_values, num_i_values)
+// Counts pairs (j,i) such that j+i < s_sum,
+// 0 <= j < num_j_values (i.e. 0 <= j <= max_j_idx),
+// 0 <= i < num_i_values (i.e. 0 <= i <= max_i_idx).
+fn prefix_count(s_sum: i32, num_j_values: i32, num_i_values: i32) -> i32 {
+    return tpl(s_sum) - tpl(s_sum - num_j_values) - tpl(s_sum - num_i_values) + tpl(s_sum - num_j_values - num_i_values);
 }
 
-fn find_level(k: u32, r: u32, c: u32) -> i32 {
-    var s: i32 = 0;
-    var step: i32 = 1 << 17;
-    loop {
-        if (step == 0) { break; }
-        let cand: i32 = s | step;
-        let ok: bool = (cand < i32(r + c)) && (prefix(cand, i32(r), i32(c)) <= i32(k));
-        s = select(s, cand, ok);
-        step = step >> 1;
+// find_target_sum(rank_k, max_j_idx, max_i_idx) -> s_sum = j+i
+// Finds the smallest s_sum such that the number of states with sum < s_sum is <= rank_k
+fn find_target_sum(rank_k: u32, max_j_idx: u32, max_i_idx: u32) -> i32 {
+    var s_sum_candidate: i32 = 0;
+    // Max possible sum = max_j_idx + max_i_idx.
+    // Binary search for s_sum_candidate.
+    var low: i32 = 0;
+    var high: i32 = i32(max_j_idx + max_i_idx); // Max possible sum
+
+    // Iterative binary search for the sum s, such that prefix_count(s,...) <= rank_k < prefix_count(s+1,...)
+    // This means rank_k falls into the group of states whose coordinates sum to s.
+    var target_s: i32 = 0;
+    while(low <= high) {
+        let mid_s = low + (high - low) / 2;
+        if (prefix_count(mid_s, i32(max_j_idx + 1u), i32(max_i_idx + 1u)) <= i32(rank_k)) {
+            target_s = mid_s; // mid_s might be our target sum, or we need a larger sum
+            low = mid_s + 1;
+        } else {
+            high = mid_s - 1;
+        }
     }
-    return s;
+    return target_s;
 }
 
-fn unrank(idx: u32, rm: u32, cm: u32) -> u32 {
-    let s: i32 = find_level(idx, rm, cm);
-    let within: i32 = i32(idx) - prefix(s, i32(rm), i32(cm));
-    let base_r: i32 = max(0, s - (i32(cm) - 1));
-    let r: u32 = u32(base_r + within);
-    let c: u32 = u32(s) - r;
-    return pack_rc(r, c);
+// unrank_to_ji(rank_idx, max_j_idx, max_i_idx) -> packed_coords(j,i)
+// max_j_idx: Maximum index for edit distance j (e.g., MAX_EDIT_DIST_CONST)
+// max_i_idx: Maximum index for string position i (e.g., wd_len)
+fn unrank_to_ji(rank_idx: u32, max_j_idx: u32, max_i_idx: u32) -> u32 {
+    let num_j_vals = i32(max_j_idx + 1u);
+    let num_i_vals = i32(max_i_idx + 1u);
+
+    let s_sum: i32 = find_target_sum(rank_idx, max_j_idx, max_i_idx);
+
+    // Number of elements in groups with sum less than s_sum
+    let elements_before_this_sum_group: i32 = prefix_count(s_sum, num_j_vals, num_i_vals);
+    let offset_in_sum_group: i32 = i32(rank_idx) - elements_before_this_sum_group;
+
+    // For a given s_sum = j+i, iterate by j (primary within sum-group)
+    // j ranges from max(0, s_sum - max_i_idx) to min(s_sum, max_j_idx)
+    let j_start_for_sum: i32 = max(0, s_sum - i32(max_i_idx));
+    // The offset_in_sum_group is the 0-based index within this j-iteration
+    let j_final: u32 = u32(j_start_for_sum + offset_in_sum_group);
+    let i_final: u32 = u32(s_sum - i32(j_final));
+
+    // Boundary checks (should ideally not be hit if rank_idx is valid and unrank is correct for the grid)
+    // if (j_final > max_j_idx || i_final > max_i_idx) { /* error or sentinel */ }
+
+    return pack_rc(j_final, i_final); // Store (j,i)
 }
 
-const MAX_LEV_RAD : u32 = ${PKT_HDR_LEN}u;
-const LIT_ALL : u32 = 0x7ffffffeu;           // Int.MAX_VALUE-1 on CPU
-const NEG_BIT : u32 = ${NEG_LITERAL}u;       // 0x4000_0000
+fn letter_at(idx : u32, wd_len : u32) -> u32 { return select(word[idx], 0xffffffffu, idx >= wd_len); }
 
-@group(0) @binding(0) var<storage, read_write> dp_in : array<u32>;
-@group(0) @binding(1) var<storage, read>        word : array<u32>;
-@group(0) @binding(2) var<storage, read>          cs : CFLStruct;
-@group(0) @binding(3) var<storage, read>   terminals : Terminals;
+const LIT_ALL : u32 = 0x7ffffffeu;
+const NEG_BIT : u32 = ${NEG_LITERAL}u;
 
-// ───────────────── helpers ──────────────────────────────────────────────
-// 0-based token ids; return an impossible value when i ≥ |word|
-fn letter_at(i : u32, wd_len : u32) -> u32 { return select(word[i], 0xffffffffu, i >= wd_len); }
+fn encode_pos_literal(A_nt_idx : u32, sigma_token : u32) -> u32 {
+    if (sigma_token == 0xffffffffu) { return 0u; }
+    let ntLen = get_nt_tm_lens(A_nt_idx);
+    let ntOff = get_offsets(A_nt_idx);
+    for (var k : u32 = 0u; k < ntLen; k = k + 1u) {
+        if (get_all_tms(ntOff + k) == sigma_token) { return ((k + 1u) << 1u); }
+    }
+    return 0u;
+}
+
+fn encode_neg_literal(A_nt_idx : u32, sigma_token : u32) -> u32 {
+    var s_is_in_Sigma_A = false;
+    var k_idx_of_s_in_Sigma_A : u32 = 0u;
+    if (sigma_token != 0xffffffffu) {
+        let ntLen = get_nt_tm_lens(A_nt_idx);
+        let ntOff = get_offsets(A_nt_idx);
+        for (var k : u32 = 0u; k < ntLen; k = k + 1u) {
+            if (get_all_tms(ntOff + k) == sigma_token) {
+                s_is_in_Sigma_A = true;
+                k_idx_of_s_in_Sigma_A = k;
+                break;
+            }
+        }
+    }
+    if (s_is_in_Sigma_A) { return NEG_BIT | ((k_idx_of_s_in_Sigma_A + 1u) << 1u); }
+    else { return LIT_ALL; }
+}
+
+const MAX_J_IDX_CONST : u32 = ${MAX_LEV_RAD}u; // Max index for j (edit distance)
+
 // Let Σ_A denote the subset of Σ s.t. for all a ∈ Σ_A ⊢ (A -> a) ∈ P
 fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + nt]; } // |Σ_A|
 // Offsets of the nonterminal in the following Map<...> structure
@@ -407,81 +466,76 @@ fn get_offsets(nt : u32) -> u32    { return terminals.payload[terminals.offsets_
 // Flattened index of Map<NT, List<TM-id>> values
 fn get_all_tms(i : u32) -> u32     { return terminals.payload[terminals.all_tms_offset + i];     } // σ → TM‑id
 
-// Encode σ for non-terminal A.  Returns 0 when σ ∉ Σ_A.
-fn encode_pos_literal(A : u32, sigma : u32) -> u32 {
-    let ntLen = get_nt_tm_lens(A);
-    let ntOff = get_offsets(A);
-    for (var k : u32 = 0u; k < ntLen; k = k + 1u) {
-        if (get_all_tms(ntOff + k) == sigma) {      // hit
-            return ((k + 1u) << 1u);                // positive, bit-0 still 0
-        }
-    }
-    return 0u;
-}
-
-// Negative-literal encoding  [!=]σ
-fn encode_neg_literal(A : u32, sigma : u32) -> u32 {
-    let ntLen = get_nt_tm_lens(A);
-    let ntOff = get_offsets(A);
-    for (var k : u32 = 0u; k < ntLen; k = k + 1u) {
-        if (get_all_tms(ntOff + k) == sigma) {      // σ ∈ Σ_A
-            return NEG_BIT | ((k + 1u) << 1u);      // -σ
-        }
-    }
-    return LIT_ALL;                                 // σ ∉ Σ_A  ⇒  Σ_A\{}
-}
+@group(0) @binding(0) var<storage, read_write> dp_in : array<u32>;
+@group(0) @binding(1) var<storage, read>        word : array<u32>;
+@group(0) @binding(2) var<storage, read>          cs : CFLStruct;
+@group(0) @binding(3) var<storage, read>   terminals : Terminals;
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-    $PREAMBLE                                         // r,c,A → dpIdx …
+    let q1_rank = gid.x;
+    let q2_rank = gid.y;
+    let A_idx  = gid.z;
 
-    let wd_len  = arrayLength(&word);
-    let q1      = unrank(r, MAX_LEV_RAD, wd_len);     // src
-    let q2      = unrank(c, MAX_LEV_RAD, wd_len);     // dst
+    let dpIdx = q1_rank * cs.numStates * cs.numNonterminals +
+                q2_rank * cs.numNonterminals +
+                A_idx;
 
-    let j1      = unpack_row(q1);                     // edit distance
-    let i1      = unpack_col(q1);                     // string index
-    let j2      = unpack_row(q2);
-    let i2      = unpack_col(q2);
+    let max_i_idx = arrayLength(&word); // Max index for i (string position), which is wd_len
 
-    let dj      = i32(j2) - i32(j1);
-    let di      = i32(i2) - i32(i1);
+    let packed_q1_ji = unrank_to_ji(q1_rank, MAX_J_IDX_CONST, max_i_idx);
+    let j1 = unpack_row_j(packed_q1_ji);
+    let i1 = unpack_col_i(packed_q1_ji);
 
-    var lit     : u32 = 0u;                           // encoded literal (bit-1↑)
-    var arc_ok  : bool = false;
+    let packed_q2_ji = unrank_to_ji(q2_rank, MAX_J_IDX_CONST, max_i_idx);
+    let j2 = unpack_row_j(packed_q2_ji);
+    let i2 = unpack_col_i(packed_q2_ji);
 
-    // (1) UP ARC: (i, j-1) → (i, j)       [!=]σᵢ
+    let di = i32(i2) - i32(i1);
+    let dj = i32(j2) - i32(j1);
+
+    var encoded_predicate_val : u32 = 0u;
+    var should_write_to_dp_in : bool = false;
+    let num_prods_for_A = get_nt_tm_lens(A_idx);
+
+    // (1) UP ARC (Insertion): q1=(i,j-1) -> q2=(i,j). Predicate: [!=word[i1]]
     if (di == 0 && dj == 1) {
-        let sigma = letter_at(i1, wd_len);
-        lit   = encode_neg_literal(A, sigma);
-        arc_ok = true;
+        if (j1 < MAX_J_IDX_CONST && i1 <= max_i_idx) { // Check against max_i_idx (wd_len)
+            let s_char = letter_at(i1, max_i_idx);
+            encoded_predicate_val = encode_neg_literal(A_idx, s_char);
+            if (encoded_predicate_val == LIT_ALL) { should_write_to_dp_in = (num_prods_for_A > 0u); }
+            else if ((encoded_predicate_val & NEG_BIT) != 0u) { should_write_to_dp_in = (num_prods_for_A > 0u); }
+        }
+    }
+    // (2) RIGHT ARC (Match): q1=(i-1,j) -> q2=(i,j). Predicate: word[i1]
+    else if (di == 1 && dj == 0) {
+        if (i1 < max_i_idx) {
+            let s_char = letter_at(i1, max_i_idx);
+            encoded_predicate_val = encode_pos_literal(A_idx, s_char);
+            if (encoded_predicate_val != 0u) { should_write_to_dp_in = true; }
+        }
+    }
+    // (3) DIAG ARC (Substitution): q1=(i-1,j-1) -> q2=(i,j). Predicate: [!=word[i1]]
+    else if (di == 1 && dj == 1) {
+        if (i1 < max_i_idx && j1 < MAX_J_IDX_CONST) {
+            let s_char = letter_at(i1, max_i_idx);
+            encoded_predicate_val = encode_neg_literal(A_idx, s_char);
+            if (encoded_predicate_val == LIT_ALL) { should_write_to_dp_in = (num_prods_for_A > 0u); }
+            else if ((encoded_predicate_val & NEG_BIT) != 0u) { should_write_to_dp_in = (num_prods_for_A > 0u); }
+        }
+    }
+    // (4) "KNIGHT" ARC (Deletion): q1=(i,j) -> q2=(i+d+1,j+d). Predicate: word[i1+d]
+    else if (dj >= 1 && di == dj + 1) {
+        let d_val = u32(dj);
+        if (i1 + d_val < max_i_idx) {
+            if ( (i1 + d_val + 1u <= max_i_idx) && (j1 + d_val <= MAX_J_IDX_CONST) ) {
+                let s_char = letter_at(i1 + d_val, max_i_idx);
+                encoded_predicate_val = encode_pos_literal(A_idx, s_char);
+                if (encoded_predicate_val != 0u) { should_write_to_dp_in = true; }
+            }
+        }
     }
 
-    // (2) RIGHT ARC: (i-1, j) → (i, j)   σᵢ
-    if (di == 1 && dj == 0) {
-        let sigma = letter_at(i2 - 1u, wd_len);
-        let enc   = encode_pos_literal(A, sigma);
-        arc_ok = enc != 0u;
-        lit   = enc;
-    }
-
-    // (3) DIAG ARC: (i-1, j-1) → (i, j)  [!=]σᵢ₋₁
-    if (di == 1 && dj == 1) {
-        let sigma = letter_at(i2 - 1u, wd_len);
-        lit   = encode_neg_literal(A, sigma);
-        arc_ok = true;
-    }
-
-    // (4) "KNIGHT" ARC: (i-Δ-1, j-Δ) → (i, j) , Δ≥1   σᵢ
-    if (di >= 2 && dj == di - 1) {
-        let sigma = letter_at(i2 - 1u, wd_len);
-        let enc   = encode_pos_literal(A, sigma);
-        arc_ok = enc != 0u;
-        lit   = enc;
-    }
-
-    if (!arc_ok || lit == 0u) { return; }             // no match for this A
-
-    dp_in[dpIdx] = lit;                               // leaf only, bit-0 ⟵ 0
+    if (should_write_to_dp_in) { dp_in[dpIdx] = encoded_predicate_val; }
 }""")
 
 //language=wgsl
