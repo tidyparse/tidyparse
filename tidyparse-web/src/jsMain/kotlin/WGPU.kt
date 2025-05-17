@@ -30,8 +30,7 @@ external val navigator: dynamic
 
 /*
 TODO:
-  (1) Split words on WGPU
-  (2) Parallelize makeLevFSA/byteFormat
+  (1) Minimize repairs on GPU
 */
 
 suspend fun tryBootstrappingGPU() {
@@ -317,7 +316,6 @@ $SHORT_PREAMBLE"""
 
 //language=wgsl
 val init_chart by Shader("""$CFL_STRUCT $TERM_STRUCT
-// --- START of Rank/Unrank functions ---
 fn pack_rc(row_j: u32, col_i: u32) -> u32 { return (row_j << 16u) | (col_i & 0xffffu); }
 fn unpack_row_j(packed: u32) -> u32 { return packed >> 16u; }
 fn unpack_col_i(packed: u32) -> u32 { return packed & 0xffffu; }
