@@ -70,7 +70,7 @@ suspend fun tryBootstrappingGPU() {
 
 suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VALUE, ngrams: GPUBuffer? = null): List<String> {
   val t0 = TimeSource.Monotonic.markNow()
-  val fsa: FSA = makeLevFSA(code, 5)
+  val fsa: FSA = makeLevFSA(code, MAX_LEV_RAD)
   println("Made levFSA in ${t0.elapsedNow()}")
 
   val metaBuf = packMetadata(cfg, fsa)
@@ -105,6 +105,32 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
   init_chart(dpBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
 
   println("Chart construction took: ${t0.elapsedNow()}")
+
+//  val latexMatrixString = dpBuf.readInts().let { flatInts ->
+//    if (numStates == 0) {
+//      "\\begin{bmatrix}\\end{bmatrix}"
+//    } else {
+//      val matrixContent = (0 until numStates).joinToString("\\\\\n") { rowIndex -> // q1_rank
+//        (0 until numStates).joinToString(" & ") { colIndex -> // q2_rank
+//          val isActive = if (numNTs > 0) {
+//            // Calculate the starting index in the flat array for the NTs of cell (rowIndex, colIndex)
+//            val baseFlatIndex = rowIndex * numStates * numNTs + colIndex * numNTs
+//            (0 until numNTs).any { ntIndexInSlice ->
+//              val currentFlatIndex = baseFlatIndex + ntIndexInSlice
+//              // Check bounds for robustness, though dimensions should match flatInts.size
+//              (currentFlatIndex < flatInts.size && flatInts[currentFlatIndex] != 0)
+//            }
+//          } else {
+//            false // If there are no non-terminals, no cell can be active in that dimension.
+//          }
+//          if (isActive) "\\bs" else "\\ws"
+//        }
+//      }
+//      "\\begin{bmatrix}\n$matrixContent\n\\end{bmatrix}"
+//    }
+//  }
+//
+// println(latexMatrixString)
 
 // val rowCoeff = numStates * numNTs
 //  val colCoeff = numNTs
