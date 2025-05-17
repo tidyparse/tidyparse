@@ -106,31 +106,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
 
   println("Chart construction took: ${t0.elapsedNow()}")
 
-//  val latexMatrixString = dpBuf.readInts().let { flatInts ->
-//    if (numStates == 0) {
-//      "\\begin{bmatrix}\\end{bmatrix}"
-//    } else {
-//      val matrixContent = (0 until numStates).joinToString("\\\\\n") { rowIndex -> // q1_rank
-//        (0 until numStates).joinToString(" & ") { colIndex -> // q2_rank
-//          val isActive = if (numNTs > 0) {
-//            // Calculate the starting index in the flat array for the NTs of cell (rowIndex, colIndex)
-//            val baseFlatIndex = rowIndex * numStates * numNTs + colIndex * numNTs
-//            (0 until numNTs).any { ntIndexInSlice ->
-//              val currentFlatIndex = baseFlatIndex + ntIndexInSlice
-//              // Check bounds for robustness, though dimensions should match flatInts.size
-//              (currentFlatIndex < flatInts.size && flatInts[currentFlatIndex] != 0)
-//            }
-//          } else {
-//            false // If there are no non-terminals, no cell can be active in that dimension.
-//          }
-//          if (isActive) "\\bs" else "\\ws"
-//        }
-//      }
-//      "\\begin{bmatrix}\n$matrixContent\n\\end{bmatrix}"
-//    }
-//  }
-//
-// println(latexMatrixString)
+//   println(dpBuf.readInts().toLaTeX(numStates, numNTs))
 
 // val rowCoeff = numStates * numNTs
 //  val colCoeff = numNTs
@@ -843,7 +819,7 @@ struct PrefixSumUni { n: u32 };
 
 // Longest word WGSL can handle. If ~2^9<MAX_WORD_LEN, pipeline breaks some on architectures
 const val MAX_WORD_LEN = 512
-const val MAX_LEV_RAD = 5
+const val MAX_LEV_RAD = 3
 // Maximum threads WGSL allows in a single dispatch. If ~2^16<MAX_SAMPLES, this always fails
 const val MAX_SAMPLES = 65_535
 // Length of the packet header in each repair buffer
@@ -1424,6 +1400,7 @@ class Shader constructor(val src: String) {
     for (round in 0..<numStates) {
       val changesBuf = 0.toGPUBuffer()
       cfl_mul_upper(dpIn, metaBuf, changesBuf)(numStates, numStates, numNTs)
+//      println(dpIn.readInts().toLaTeX(numStates, numNTs))
       val changesThisRound = changesBuf.readInts()[0]
       changesBuf.destroy()
       if (changesThisRound == prevValue) break
@@ -1550,4 +1527,44 @@ fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer 
   println("Done")
 
   return flat.asList().toGPUBuffer()         // unchanged helper
+}
+
+fun IntArray.toLaTeX(numStates: Int, numNTs: Int): String {
+    val squareUnitSize = "0.3cm" // You can adjust the size of each square here
+
+    val tikzCommands = if (numStates == 0) {
+      "" // No commands for an empty grid
+    } else {
+      (0 until numStates).flatMap { q1_rowIndex -> // q1_rowIndex = 0 is conceptually the top row
+        (0 until numStates).map { q2_colIndex -> // q2_colIndex = 0 is the leftmost column
+          val isActive = if (numNTs > 0) {
+            val baseFlatIndex = q1_rowIndex * numStates * numNTs + q2_colIndex * numNTs
+            (0 until numNTs).any { ntIdxInSlice ->
+              val currentFlatIndex = baseFlatIndex + ntIdxInSlice
+              (currentFlatIndex < size && this[currentFlatIndex] != 0)
+            }
+          } else {
+            // If there are no non-terminals, no cell can be "active" in this sense
+            false
+          }
+
+          // TikZ coordinates: (0,0) is typically bottom-left.
+          // We want row 0 (q1_rowIndex = 0) to be at the top.
+          val tikzX = q2_colIndex
+          val tikzY = numStates - 1 - q1_rowIndex
+
+          val fillColor = if (isActive) "black" else "white"
+
+          // Define the rectangle path with specified fill and a default draw (from tikzpicture options)
+          "  \\path[fill=${fillColor}] (${tikzX},${tikzY}) rectangle ++(1,1);"
+        }
+      }.joinToString("\n")
+    }
+
+    // Construct the full TikZ picture string
+    return """
+    \begin{tikzpicture}[x=${squareUnitSize}, y=${squareUnitSize}, draw=gray, very thin]
+    ${tikzCommands.ifBlank { "% Empty grid" }}
+    \end{tikzpicture}
+    """.trimIndent()
 }
