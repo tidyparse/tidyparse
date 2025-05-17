@@ -74,61 +74,23 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
   println("Made levFSA in ${t0.elapsedNow()}")
 
   val metaBuf = packMetadata(cfg, fsa)
-  val codeInts = code.map { cfg.tmMap[it]!! }.toIntArray()
+  val codeInts = IntArray(code.size) { cfg.tmMap[code[it]]!! }
 
-  // Sparse index nonzero entries of the M_0 parse chart
-  fun FSA.byteFormat(cfg: CFG): IntArray { // TODO: kernelize
-    val t0 = TimeSource.Monotonic.markNow()
-    val bindex = cfg.bindex
-    val terminalLists = cfg.terminalLists
-
-    // 0 and 1 are reserved for (0) no parse exists and (1) parse exists, but an internal nonterminal node
-    // Other byte values are used to denote the presence (+) or absence (-) of a leaf terminal
-    fun StrPred.predByte(A: Int): Int = (
-      if (arg == "[.*]" || (arg.startsWith("[!=]") && arg.drop(4) !in terminalLists[A])) Int.MAX_VALUE - 1 // All possible terminals
-      else if (arg.startsWith("[!=]")) (NEG_LITERAL.toInt() + (terminalLists[A].indexOf(arg.drop(4)) + 1).shl(1)) // Represent negation using sign bit
-      else (terminalLists[A].indexOf(arg) + 1).shl(1)
-    )
-
-    fun buildSparseChart(cfg: CFG, nominalForm: NOM, stateMap: Map<String, Int>, bindex: Bindex<String>): IntArray {
-      val rowCount = cfg.unitProductions.sumOf { (_, σ) -> nominalForm.flattenedTriples.count { arc -> arc.second(σ) } }
-
-      val out = IntArray(rowCount * 4)
-
-      var p = 0
-      for ((A, σ) in cfg.unitProductions) {
-        val Aidx = bindex[A]
-        for ((q0, sp, q1) in nominalForm.flattenedTriples) {
-          if (!sp(σ)) continue
-
-          out[p++] = stateMap[q0]!!          // q0
-          out[p++] = stateMap[q1]!!          // q1
-          out[p++] = Aidx                    // non‑terminal
-          out[p++] = sp.predByte(Aidx)   // terminal byte
-        }
-      }
-      return out
-    }
-
-    val sparseChart = buildSparseChart(cfg, nominalForm, stateMap, bindex)
-    println("Byte format took: ${t0.elapsedNow()}")
-    return sparseChart
-  }
-
-  val dpInSparse = fsa.byteFormat(cfg)
+// This is interchangeable with init_chart for Lev automata
+//  val dpInSparse = fsa.byteFormat(cfg).toGPUBuffer()
 //  println("Initial nonzeros: ${dpIn.count { it != 0 }}")
 
   println("PREPROCESSING TOOK: ${t0.elapsedNow()}") // ~230ms
-  val words = repairPipeline(cfg, fsa, dpInSparse, metaBuf, ledBuffer, ngrams, codeInts)
-  println("Received: ${words.size} words")
+  val words = repairPipeline(cfg, fsa, metaBuf, ledBuffer, ngrams, codeInts)
 //  val distinctWords = words.distinct()
 //  println("Distinct: ${distinctWords.size} words")
-  println("Round trip repair: ${t0.elapsedNow()}") // ~500ms
 
-  return words
+  return words.also { println("Received: ${words.size} words in ${t0.elapsedNow()} (round trip)") }
 }
 
-suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GPUBuffer, ledBuffer: Int, ngrams: GPUBuffer?, codeInts: IntArray): List<String> {
+suspend fun repairPipeline(cfg: CFG, fsa: FSA,
+//                           dpInSparse: IntArray,
+                           metaBuf: GPUBuffer, ledBuffer: Int, ngrams: GPUBuffer?, codeInts: IntArray): List<String> {
   val t0 = TimeSource.Monotonic.markNow()
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   println("FSA(|Q|=${numStates}, |δ|=${fsa.transit.size}), " +
@@ -136,20 +98,17 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
 
 //println("Time to load buffer: ${t0.elapsedNow()} (${input.size * 4} bytes)")
 
-//  val tmBuf = cfg.termBuf
-//  val wordBuf   = codeInts.toGPUBuffer()
-//  val totalSize = numStates * numStates * numNTs
-//  val dpBuf     = Shader.createParseChart(GPUBufferUsage.STCPSD, totalSize)
-//
-//// build the initial chart completely on the GPU
-//  init_chart(dpBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
-//
-//  cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpBuf, metaBuf)
-
   val tmBuf = cfg.termBuf
-  val rowCoeff = numStates * numNTs
-  val colCoeff = numNTs
-  val dpBuf = dpInSparse.toGPUBufferSparse(GPUBufferUsage.STCPSD, numStates * rowCoeff, rowCoeff, colCoeff)
+  val wordBuf   = codeInts.toGPUBuffer()
+  val totalSize = numStates * numStates * numNTs
+  val dpBuf     = Shader.createParseChart(GPUBufferUsage.STCPSD, totalSize)
+  init_chart(dpBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+
+  println("Chart construction took: ${t0.elapsedNow()}")
+
+// val rowCoeff = numStates * numNTs
+//  val colCoeff = numNTs
+//  val dpBuf = dpInSparse.toGPUBufferSparse(GPUBufferUsage.STCPSD, numStates * rowCoeff, rowCoeff, colCoeff)
 
   cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpBuf, metaBuf)
   println("Matrix closure reached in: ${t0.elapsedNow()}")
@@ -196,7 +155,6 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   /** [TERM_STRUCT] */ val idxUniBuf = packStruct(constants = header.toList(), startIdxs.toGPUBuffer())
   println("Pairing function construction took: ${t2.elapsedNow()}")
 
-  val t3 = TimeSource.Monotonic.markNow()
   sample_words_wor(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, idxUniBuf, cdfBuf)(MAX_SAMPLES)
 //  println("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
 
@@ -222,7 +180,6 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, dpInSparse: IntArray, metaBuf: GP
   for (i in 0 until k) result.add(topK.decodePacket(i, cfg.tmLst, maxRepairLen) ?: break)
 
   println("Decoded ${result.distinct().size} unique words out of ${result.size} in ${t4.elapsedNow()}")
-  println("Sampling took ${t3.elapsedNow()}")
   return result
 }
 
@@ -359,37 +316,27 @@ $SHORT_PREAMBLE"""
 //language=wgsl
 val init_chart by Shader("""$CFL_STRUCT $TERM_STRUCT
 // --- START of Rank/Unrank functions ---
-// pack_rc stores (row, col) -> for us, (j_coord, i_coord)
 fn pack_rc(row_j: u32, col_i: u32) -> u32 { return (row_j << 16u) | (col_i & 0xffffu); }
-fn unpack_row_j(packed: u32) -> u32 { return packed >> 16u; } // Returns j_coord
-fn unpack_col_i(packed: u32) -> u32 { return packed & 0xffffu; } // Returns i_coord
-// tpl(n) = n * (n + 1) / 2 for n >= 0, else 0
+fn unpack_row_j(packed: u32) -> u32 { return packed >> 16u; }
+fn unpack_col_i(packed: u32) -> u32 { return packed & 0xffffu; }
+
 fn tpl(x: i32) -> i32 { let y: i32 = max(x, 0); return (y * (y + 1)) / 2; }
 
-// prefix_count(s_sum, num_j_values, num_i_values)
-// Counts pairs (j,i) such that j+i < s_sum,
-// 0 <= j < num_j_values (i.e. 0 <= j <= max_j_idx),
-// 0 <= i < num_i_values (i.e. 0 <= i <= max_i_idx).
 fn prefix_count(s_sum: i32, num_j_values: i32, num_i_values: i32) -> i32 {
     return tpl(s_sum) - tpl(s_sum - num_j_values) - tpl(s_sum - num_i_values) + tpl(s_sum - num_j_values - num_i_values);
 }
 
-// find_target_sum(rank_k, max_j_idx, max_i_idx) -> s_sum = j+i
-// Finds the smallest s_sum such that the number of states with sum < s_sum is <= rank_k
 fn find_target_sum(rank_k: u32, max_j_idx: u32, max_i_idx: u32) -> i32 {
-    var s_sum_candidate: i32 = 0;
-    // Max possible sum = max_j_idx + max_i_idx.
-    // Binary search for s_sum_candidate.
-    var low: i32 = 0;
-    var high: i32 = i32(max_j_idx + max_i_idx); // Max possible sum
-
-    // Iterative binary search for the sum s, such that prefix_count(s,...) <= rank_k < prefix_count(s+1,...)
-    // This means rank_k falls into the group of states whose coordinates sum to s.
     var target_s: i32 = 0;
+    var low: i32 = 0;
+    var high: i32 = i32(max_j_idx + max_i_idx);
+    let num_j_vals = i32(max_j_idx + 1u);
+    let num_i_vals = i32(max_i_idx + 1u);
+
     while(low <= high) {
         let mid_s = low + (high - low) / 2;
-        if (prefix_count(mid_s, i32(max_j_idx + 1u), i32(max_i_idx + 1u)) <= i32(rank_k)) {
-            target_s = mid_s; // mid_s might be our target sum, or we need a larger sum
+        if (prefix_count(mid_s, num_j_vals, num_i_vals) <= i32(rank_k)) {
+            target_s = mid_s;
             low = mid_s + 1;
         } else {
             high = mid_s - 1;
@@ -398,30 +345,22 @@ fn find_target_sum(rank_k: u32, max_j_idx: u32, max_i_idx: u32) -> i32 {
     return target_s;
 }
 
-// unrank_to_ji(rank_idx, max_j_idx, max_i_idx) -> packed_coords(j,i)
-// max_j_idx: Maximum index for edit distance j (e.g., MAX_EDIT_DIST_CONST)
-// max_i_idx: Maximum index for string position i (e.g., wd_len)
-fn unrank_to_ji(rank_idx: u32, max_j_idx: u32, max_i_idx: u32) -> u32 {
+// unrank_to_coords(rank_idx, max_j_idx, max_i_idx) -> packed_coords(j,i)
+// Primary sort: s = i+j (ascending)
+// Secondary sort: i (string position, ascending). For fixed s, as i increases, j decreases.
+fn unrank_to_coords(rank_idx: u32, max_j_idx: u32, max_i_idx: u32) -> u32 {
     let num_j_vals = i32(max_j_idx + 1u);
     let num_i_vals = i32(max_i_idx + 1u);
 
     let s_sum: i32 = find_target_sum(rank_idx, max_j_idx, max_i_idx);
-
-    // Number of elements in groups with sum less than s_sum
     let elements_before_this_sum_group: i32 = prefix_count(s_sum, num_j_vals, num_i_vals);
     let offset_in_sum_group: i32 = i32(rank_idx) - elements_before_this_sum_group;
 
-    // For a given s_sum = j+i, iterate by j (primary within sum-group)
-    // j ranges from max(0, s_sum - max_i_idx) to min(s_sum, max_j_idx)
-    let j_start_for_sum: i32 = max(0, s_sum - i32(max_i_idx));
-    // The offset_in_sum_group is the 0-based index within this j-iteration
-    let j_final: u32 = u32(j_start_for_sum + offset_in_sum_group);
-    let i_final: u32 = u32(s_sum - i32(j_final));
+    let i_start_for_sum: i32 = max(0, s_sum - i32(max_j_idx));
+    let i_final: u32 = u32(i_start_for_sum + offset_in_sum_group);
+    let j_final: u32 = u32(s_sum - i32(i_final));
 
-    // Boundary checks (should ideally not be hit if rank_idx is valid and unrank is correct for the grid)
-    // if (j_final > max_j_idx || i_final > max_i_idx) { /* error or sentinel */ }
-
-    return pack_rc(j_final, i_final); // Store (j,i)
+    return pack_rc(j_final, i_final);
 }
 
 fn letter_at(idx : u32, wd_len : u32) -> u32 { return select(word[idx], 0xffffffffu, idx >= wd_len); }
@@ -476,17 +415,15 @@ fn get_all_tms(i : u32) -> u32     { return terminals.payload[terminals.all_tms_
     let q2_rank = gid.y;
     let A_idx  = gid.z;
 
-    let dpIdx = q1_rank * cs.numStates * cs.numNonterminals +
-                q2_rank * cs.numNonterminals +
-                A_idx;
+    let dpIdx = q1_rank * cs.numStates * cs.numNonterminals + q2_rank * cs.numNonterminals + A_idx;
 
-    let max_i_idx = arrayLength(&word); // Max index for i (string position), which is wd_len
+    let current_word_len = arrayLength(&word); // Max i is current_word_len (0 to N for string of length N)
 
-    let packed_q1_ji = unrank_to_ji(q1_rank, MAX_J_IDX_CONST, max_i_idx);
+    let packed_q1_ji = unrank_to_coords(q1_rank, MAX_J_IDX_CONST, current_word_len);
     let j1 = unpack_row_j(packed_q1_ji);
     let i1 = unpack_col_i(packed_q1_ji);
 
-    let packed_q2_ji = unrank_to_ji(q2_rank, MAX_J_IDX_CONST, max_i_idx);
+    let packed_q2_ji = unrank_to_coords(q2_rank, MAX_J_IDX_CONST, current_word_len);
     let j2 = unpack_row_j(packed_q2_ji);
     let i2 = unpack_col_i(packed_q2_ji);
 
@@ -496,39 +433,39 @@ fn get_all_tms(i : u32) -> u32     { return terminals.payload[terminals.all_tms_
     var encoded_predicate_val : u32 = 0u;
     var should_write_to_dp_in : bool = false;
     let num_prods_for_A = get_nt_tm_lens(A_idx);
-
+    
     // (1) UP ARC (Insertion): q1=(i,j-1) -> q2=(i,j). Predicate: [!=word[i1]]
     if (di == 0 && dj == 1) {
-        if (j1 < MAX_J_IDX_CONST && i1 <= max_i_idx) { // Check against max_i_idx (wd_len)
-            let s_char = letter_at(i1, max_i_idx);
+        if (j1 < MAX_J_IDX_CONST && i1 <= current_word_len) {
+            let s_char = letter_at(i1, current_word_len);
             encoded_predicate_val = encode_neg_literal(A_idx, s_char);
             if (encoded_predicate_val == LIT_ALL) { should_write_to_dp_in = (num_prods_for_A > 0u); }
-            else if ((encoded_predicate_val & NEG_BIT) != 0u) { should_write_to_dp_in = (num_prods_for_A > 0u); }
+            else if ((encoded_predicate_val & NEG_BIT) != 0u) { should_write_to_dp_in = (num_prods_for_A > 1u); }
         }
     }
     // (2) RIGHT ARC (Match): q1=(i-1,j) -> q2=(i,j). Predicate: word[i1]
     else if (di == 1 && dj == 0) {
-        if (i1 < max_i_idx) {
-            let s_char = letter_at(i1, max_i_idx);
+        if (i1 < current_word_len) {
+            let s_char = letter_at(i1, current_word_len);
             encoded_predicate_val = encode_pos_literal(A_idx, s_char);
             if (encoded_predicate_val != 0u) { should_write_to_dp_in = true; }
         }
     }
     // (3) DIAG ARC (Substitution): q1=(i-1,j-1) -> q2=(i,j). Predicate: [!=word[i1]]
     else if (di == 1 && dj == 1) {
-        if (i1 < max_i_idx && j1 < MAX_J_IDX_CONST) {
-            let s_char = letter_at(i1, max_i_idx);
+        if (i1 < current_word_len && j1 < MAX_J_IDX_CONST) {
+            let s_char = letter_at(i1, current_word_len);
             encoded_predicate_val = encode_neg_literal(A_idx, s_char);
             if (encoded_predicate_val == LIT_ALL) { should_write_to_dp_in = (num_prods_for_A > 0u); }
-            else if ((encoded_predicate_val & NEG_BIT) != 0u) { should_write_to_dp_in = (num_prods_for_A > 0u); }
+            else if ((encoded_predicate_val & NEG_BIT) != 0u) { should_write_to_dp_in = (num_prods_for_A > 1u); }
         }
     }
     // (4) "KNIGHT" ARC (Deletion): q1=(i,j) -> q2=(i+d+1,j+d). Predicate: word[i1+d]
     else if (dj >= 1 && di == dj + 1) {
         let d_val = u32(dj);
-        if (i1 + d_val < max_i_idx) {
-            if ( (i1 + d_val + 1u <= max_i_idx) && (j1 + d_val <= MAX_J_IDX_CONST) ) {
-                let s_char = letter_at(i1 + d_val, max_i_idx);
+        if (i1 + d_val < current_word_len) {
+            if ( (i1 + d_val + 1u <= current_word_len) && (j1 + d_val <= MAX_J_IDX_CONST) ) {
+                let s_char = letter_at(i1 + d_val, current_word_len);
                 encoded_predicate_val = encode_pos_literal(A_idx, s_char);
                 if (encoded_predicate_val != 0u) { should_write_to_dp_in = true; }
             }
@@ -883,7 +820,6 @@ const val MAX_WORD_LEN = 512
 const val MAX_LEV_RAD = 5
 // Maximum threads WGSL allows in a single dispatch. If ~2^16<MAX_SAMPLES, this always fails
 const val MAX_SAMPLES = 65_535
-const val NEG_LITERAL = 0x40000000u //=1.shl(30)
 // Length of the packet header in each repair buffer
 const val PKT_HDR_LEN = 2 // [levenshtein distance, Markov probability]
 const val MAX_SAMPLES_PER_DIST = 30_000
