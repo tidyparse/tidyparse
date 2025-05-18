@@ -31,6 +31,7 @@ external val navigator: dynamic
 /*
 TODO:
   (1) Minimize repairs on GPU
+  (2) Use more sensible midpoint filter based on dense adjacency / reachability matrix
 */
 
 suspend fun tryBootstrappingGPU() {
