@@ -1513,7 +1513,7 @@ fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer 
     var slot = ((key * HASH_MUL) shr (32 - pow)) and mask
 
     while (table[(slot * 2u).toInt()] != SENTINEL) { slot = (slot + 1u) and mask }
-    val idx = (slot * 2u).toInt()            // correct slot found
+    val idx = (slot * 2u).toInt()
     table[idx]     = key
     table[idx + 1] = score
   }
@@ -1525,45 +1525,34 @@ fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer 
 
   println("Done")
 
-  return flat.asList().toGPUBuffer()         // unchanged helper
+  return flat.asList().toGPUBuffer()
 }
 
 fun IntArray.toLaTeX(numStates: Int, numNTs: Int): String {
-    val squareUnitSize = "0.3cm" // You can adjust the size of each square here
-
-    val tikzCommands = if (numStates == 0) {
-      "" // No commands for an empty grid
-    } else {
-      (0 until numStates).flatMap { q1_rowIndex -> // q1_rowIndex = 0 is conceptually the top row
-        (0 until numStates).map { q2_colIndex -> // q2_colIndex = 0 is the leftmost column
-          val isActive = if (numNTs > 0) {
-            val baseFlatIndex = q1_rowIndex * numStates * numNTs + q2_colIndex * numNTs
-            (0 until numNTs).any { ntIdxInSlice ->
-              val currentFlatIndex = baseFlatIndex + ntIdxInSlice
-              (currentFlatIndex < size && this[currentFlatIndex] != 0)
-            }
-          } else {
-            // If there are no non-terminals, no cell can be "active" in this sense
-            false
+  val tikzCommands = if (numStates == 0) "" else {
+    (0 until numStates).flatMap { q1_rowIndex ->
+      (0 until numStates).map { q2_colIndex ->
+        val isActive = if (numNTs > 0) {
+          val baseFlatIndex = q1_rowIndex * numStates * numNTs + q2_colIndex * numNTs
+          (0 until numNTs).any { ntIdxInSlice ->
+            val currentFlatIndex = baseFlatIndex + ntIdxInSlice
+            (currentFlatIndex < size && this[currentFlatIndex] != 0)
           }
+        } else { false }
 
-          // TikZ coordinates: (0,0) is typically bottom-left.
-          // We want row 0 (q1_rowIndex = 0) to be at the top.
-          val tikzX = q2_colIndex
-          val tikzY = numStates - 1 - q1_rowIndex
+        val tikzX = q2_colIndex
+        val tikzY = numStates - 1 - q1_rowIndex
 
-          val fillColor = if (isActive) "black" else "white"
+        val fillColor = if (isActive) "black" else "white"
+        "  \\path[fill=${fillColor}] (${tikzX},${tikzY}) rectangle ++(1,1);"
+      }
+    }.joinToString("\n")
+  }
 
-          // Define the rectangle path with specified fill and a default draw (from tikzpicture options)
-          "  \\path[fill=${fillColor}] (${tikzX},${tikzY}) rectangle ++(1,1);"
-        }
-      }.joinToString("\n")
-    }
-
-    // Construct the full TikZ picture string
-    return """
-    \begin{tikzpicture}[x=${squareUnitSize}, y=${squareUnitSize}, draw=gray, very thin]
-    ${tikzCommands.ifBlank { "% Empty grid" }}
-    \end{tikzpicture}
-    """.trimIndent()
+  val squareUnitSize = "0.3cm"
+  return """
+  \begin{tikzpicture}[x=${squareUnitSize}, y=${squareUnitSize}, draw=gray, very thin]
+  ${tikzCommands.ifBlank { "% Empty grid" }}
+  \end{tikzpicture}
+  """.trimIndent()
 }
