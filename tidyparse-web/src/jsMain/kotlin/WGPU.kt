@@ -6,7 +6,6 @@ import Shader.Companion.packMetadata
 import Shader.Companion.readIndices
 import Shader.Companion.readInts
 import Shader.Companion.toGPUBuffer
-import Shader.Companion.toGPUBufferSparse
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.types.cache
@@ -73,15 +72,14 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
   val fsa: FSA = makeLevFSA(code, MAX_LEV_RAD)
   println("Made levFSA in ${t0.elapsedNow()}")
 
-  val metaBuf = packMetadata(cfg, fsa)
-  val codeInts = IntArray(code.size) { cfg.tmMap[code[it]]!! }
+  val codePoints = IntArray(code.size) { cfg.tmMap[code[it]]!! }
 
 // This is interchangeable with init_chart for Lev automata
 //  val dpInSparse = fsa.byteFormat(cfg).toGPUBuffer()
 //  println("Initial nonzeros: ${dpIn.count { it != 0 }}")
 
   println("PREPROCESSING TOOK: ${t0.elapsedNow()}") // ~230ms
-  val words = repairPipeline(cfg, fsa, metaBuf, ledBuffer, ngrams, codeInts)
+  val words = repairPipeline(cfg, fsa, ledBuffer, ngrams, codePoints)
 //  val distinctWords = words.distinct()
 //  println("Distinct: ${distinctWords.size} words")
 
@@ -90,7 +88,7 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
 
 suspend fun repairPipeline(cfg: CFG, fsa: FSA,
 //                           dpInSparse: IntArray,
-                           metaBuf: GPUBuffer, ledBuffer: Int, ngrams: GPUBuffer?, codeInts: IntArray): List<String> {
+                           ledBuffer: Int, ngrams: GPUBuffer?, codePoints: IntArray): List<String> {
   val t0 = TimeSource.Monotonic.markNow()
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   println("FSA(|Q|=${numStates}, |δ|=${fsa.transit.size}), " +
@@ -98,8 +96,10 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
 
 //println("Time to load buffer: ${t0.elapsedNow()} (${input.size * 4} bytes)")
 
+  val metaBuf = packMetadata(cfg, fsa)
+
   val tmBuf = cfg.termBuf
-  val wordBuf   = codeInts.toGPUBuffer()
+  val wordBuf   = codePoints.toGPUBuffer()
   val totalSize = numStates * numStates * numNTs
   val dpBuf     = Shader.createParseChart(GPUBufferUsage.STCPSD, totalSize)
   init_chart(dpBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
@@ -291,7 +291,7 @@ grammarFlattenedOffset : u32, grammarFlattenedSize : u32,
 fn getGrammarSymbol(index: u32) -> u32 { return cs.payload[cs.grammarFlattenedOffset + index]; }
 fn getGrammarOffset(index: u32) -> u32 { return cs.payload[cs.grammarOffsetsOffset + index]; }"""
 
-//language=text
+//language=wgsl
 const val SHORT_PREAMBLE = """
 let N  = cs.numStates;
 let NT = cs.numNonterminals;
@@ -305,7 +305,8 @@ let aoi            = r*N + c + 1u;
 let pairOffset     = getMdptOffset(aoi - 1u);
 var pairOffsetNext: u32;
 if (aoi < cs.mdptsOffsetsSize) { pairOffsetNext = getMdptOffset(aoi); } 
-else { pairOffsetNext = cs.mdptsSize; }"""
+else { pairOffsetNext = cs.mdptsSize; }
+"""
 
 //language=text
 const val PREAMBLE = """
@@ -415,8 +416,9 @@ fn get_all_tms(i : u32) -> u32     { return terminals.payload[terminals.all_tms_
     let q1_rank = gid.x;
     let q2_rank = gid.y;
     let A_idx  = gid.z;
+    let nts = cs.numNonterminals;
 
-    let dpIdx = q1_rank * cs.numStates * cs.numNonterminals + q2_rank * cs.numNonterminals + A_idx;
+    let dpIdx = q1_rank * cs.numStates * nts + q2_rank * nts + A_idx;
 
     let current_word_len = arrayLength(&word); // Max i is current_word_len (0 to N for string of length N)
 
@@ -477,8 +479,7 @@ fn get_all_tms(i : u32) -> u32     { return terminals.payload[terminals.all_tms_
 }""")
 
 //language=wgsl
-val dag_reach by Shader("""
-struct AtomicChange { count: atomic<u32> };
+val dag_reach by Shader("""struct AtomicChange { count: atomic<u32> };
 @group(0) @binding(0) var<storage, read_write>   input : array<u32>;
 @group(0) @binding(1) var<storage, read_write> changes : AtomicChange;
 
@@ -500,9 +501,7 @@ struct AtomicChange { count: atomic<u32> };
 }""")
 
 //language=wgsl
-val mdpt_count by Shader("""
-struct Uni { n : u32 };
-
+val mdpt_count by Shader("""struct Uni { n : u32 };
 @group(0) @binding(0) var<storage, read>       reach  : array<u32>;   // N×N upper‑tri (0/1)
 @group(0) @binding(1) var<storage, read_write> counts : array<u32>;   // N×N (aoi‑1 → #midpts)
 @group(0) @binding(2) var<uniform>             uni    : Uni;
@@ -516,13 +515,11 @@ struct Uni { n : u32 };
 
     var cnt = 0u;
     for (var v=0u; v<N; v++) { if (reach[r*N+v]==1u && reach[v*N+c]==1u) { cnt++; } }
-  counts[idx] = cnt;
+    counts[idx] = cnt;
 }""")
 
 //language=wgsl
-val mdpt_write by Shader("""
-struct Uni { n : u32 };
-
+val mdpt_write by Shader("""struct Uni { n : u32 };
 @group(0) @binding(0) var<storage, read>       reach   : array<u32>;
 @group(0) @binding(1) var<storage, read>       offsets : array<u32>; // exclusive scan of counts
 @group(0) @binding(2) var<storage, read_write> flat_mp : array<u32>; // flattened mid‑points
@@ -732,9 +729,7 @@ fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_le
 }""")
 
 // language=wgsl
-val prefix_sum_p1 by Shader("""
-struct PrefixSumUni { n : u32 };
-
+val prefix_sum_p1 by Shader("""struct PrefixSumUni { n : u32 };
 @group(0) @binding(0) var<storage, read>         inputBuf : array<u32>;
 @group(0) @binding(1) var<storage, read_write>  outputBuf : array<u32>;
 @group(0) @binding(2) var<storage, read_write>  blockSums : array<u32>;
@@ -796,9 +791,7 @@ var<workgroup> tile: array<u32, WORKGROUP_SIZE>;
 }""")
 
 //language=wgsl
-val prefix_sum_p2 by Shader("""
-struct PrefixSumUni { n: u32 };
-
+val prefix_sum_p2 by Shader("""struct PrefixSumUni { n: u32 };
 @group(0) @binding(0) var<storage, read_write>          dataBuf : array<u32>;
 @group(0) @binding(1) var<storage, read>       scannedBlockSums : array<u32>;
 @group(0) @binding(2) var<uniform>                    prefixUni : PrefixSumUni;
@@ -1031,21 +1024,23 @@ fn lookupScore(key: u32) -> u32 {
 }
 
 @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-    let sid     : u32 = gid.x;
-    let stride  : u32 = idx_uni.maxWordLen;     // real packet length
-    let base    : u32 = sid * stride;
+    let sid    : u32 = gid.x;
+    let stride : u32 = idx_uni.maxWordLen;
+    let base   : u32 = sid * stride;
 
-    // prefix window <BOS><NEWLINE><BOS>  (order = 4 → need 3 prefixes)
-    var t0 = BOS_ID - 1u;
-    var t1 = NEWLINE_ID - 1u;
-    var t2 = BOS_ID - 1u;
+    var t0 : u32 = BOS_ID     - 1u;
+    var t1 : u32 = NEWLINE_ID - 1u;
 
-    var pos   : u32 = 0u;
-    var score : u32 = 0u;
-    var doneSuffix : u32 = 0u;
+    // -- pre-fetch the guaranteed first real token -----------
+    var pos : u32 = 1u;
+    let w1  : u32 = packets[base + PKT_HDR_LEN];
+    var t2  : u32 = w1 - 1u;
+
+    var score       : u32 = 0u;
+    var doneSuffix  : u32 = 0u;
 
     loop {
-        // ---------- fetch next token or synthesize suffix ----------------
+        // ----- next token or synthetic suffix ---------------
         var tok : u32;
         if (pos < stride - PKT_HDR_LEN && packets[base + PKT_HDR_LEN + pos] != 0u) {
             tok = packets[base + PKT_HDR_LEN + pos];
@@ -1054,22 +1049,21 @@ fn lookupScore(key: u32) -> u32 {
             // two‑token suffix: NEWLINE , EOS
             tok = select(EOS_ID, NEWLINE_ID, doneSuffix == 0u);
             doneSuffix += 1u;
-            if (doneSuffix > 2u) { break; }        // finished the suffix
+            if (doneSuffix > 2u) { break; }
         }
 
-        // ---------- accumulate penalty -----------------------------------
+        // ----- accumulate n-gram score ----------------------
         let key = packGram(t0, t1, t2, tok - 1u);
-        score += lookupScore(key);
+        score  += lookupScore(key);
 
-        t0 = t1;  t1 = t2;  t2 = tok - 1u;
+        t0 = t1; t1 = t2; t2 = tok - 1u;
     }
 
-    packets[base + 1u] = score + (packets[base] + 1) * 10000000;
+    packets[base + 1u] = score + (packets[base] + 1u) * 10000000u;
 }""")
 
 //language=wgsl
-val select_top_k by Shader("""
-struct Params { n: u32, k: u32, stride: u32 };
+val select_top_k by Shader("""struct Params { n: u32, k: u32, stride: u32 };
 
 @group(0) @binding(0) var<uniform>                  prm : Params;
 @group(0) @binding(1) var<storage, read>        packets : array<u32>;
@@ -1099,9 +1093,7 @@ const UINT_MAX : u32 = 0xFFFFFFFFu;
 }""")
 
 //language=wgsl
-val gather_top_k by Shader("""
-struct Gather { stride: u32, k: u32 };
-
+val gather_top_k by Shader("""struct Gather { stride: u32, k: u32 };
 @group(0) @binding(0) var<uniform>                  g : Gather;
 @group(0) @binding(1) var<storage, read>      packets : array<u32>;  // full outBuf
 @group(0) @binding(2) var<storage, read>       topIdx : array<u32>;  // k indices
@@ -1144,9 +1136,7 @@ const WORKGROUP_SIZE: u32 = ${SPARSE_WRITER_WORKGROUP_SIZE}u;
 }""")
 
 //language=wgsl
-val sparse_mat_load by Shader("""
-struct SparseElement { r: u32, c: u32 };
-
+val sparse_mat_load by Shader("""struct SparseElement { r: u32, c: u32 };
 @group(0) @binding(0) var<storage, read>     sparse_elements : array<SparseElement>;
 @group(0) @binding(1) var<storage, read_write> output_buffer : array<u32>;
 
