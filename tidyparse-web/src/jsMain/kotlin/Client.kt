@@ -58,7 +58,7 @@ fun main() {
 suspend fun headlessSetup() {
   println("Starting Tidyparse (headless)…")
 
-  val cfg = pythonStatementCNFAllProds
+  val cfg = vanillaS2PCFG
   tryBootstrappingGPU()
   println("Bootstrapped GPU")
   val ngramTensor = loadNgramsFromString(window["raw_ngrams"].toString())
