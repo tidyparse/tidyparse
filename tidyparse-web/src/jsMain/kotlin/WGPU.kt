@@ -55,16 +55,17 @@ suspend fun tryBootstrappingGPU() {
 //      benchmarkReach()
     } catch (e: Exception) { e.printStackTrace(); return }
 
+    print("Bootstrapping GPU successful!")
     gpuAvailable = true
-    val obj = document.createElement("object").apply {
+
+    (document.getElementById("gpuAvail") as? HTMLDivElement)?.appendChild(
+    document.createElement("object").apply {
       setAttribute("type", "image/svg+xml")
       setAttribute("data", "/webgpu.svg")
       setAttribute("width", "35")
       setAttribute("height", "35")
-    }
-
-    (document.getElementById("gpuAvail") as HTMLDivElement).appendChild(obj)
-  } else { println("not detected.") }
+    })
+  } else { print("GPU not detected.") }
 }
 
 suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VALUE, ngrams: GPUBuffer? = null): List<String> {
@@ -1477,6 +1478,23 @@ fun packStruct(constants: List<Int> = emptyList(), vararg buffers: GPUBuffer): G
 
   return metaBuf
 }
+
+const val NEWLINE_ID = 1
+const val BOS_ID     = 2
+const val EOS_ID     = 3
+const val FIRST_TID  = 4
+
+fun tmToInt(tm: String, cfg: CFG): Int = when (tm) {
+  "NEWLINE" -> NEWLINE_ID
+  "BOS"     -> BOS_ID
+  "EOS"     -> EOS_ID
+  else      -> cfg.tmMap[tm]!! + FIRST_TID
+}
+
+private val SCALE = 10_000.0
+fun Map<List<String>, Double>.toGpuHash(norm: Double = values.sum(), cfg: CFG): Map<List<UInt>, UInt> =
+  mapValues { (_, p) -> (-ln(p / norm) * SCALE).roundToInt().coerceAtLeast(0).toUInt() }
+    .mapKeys { (gram, _) -> gram.map { tmToInt(it, cfg).toUInt() } }
 
 fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer {
   require(all { it.key.size == 4 }) { "Only 4-grams are supported" }

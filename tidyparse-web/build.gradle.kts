@@ -1,5 +1,6 @@
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.DEVELOPMENT
 import org.jetbrains.kotlin.gradle.targets.js.webpack.WebpackDevtool
+import java.util.Base64
 
 plugins {
   kotlin("multiplatform")
@@ -35,6 +36,47 @@ kotlin {
         implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2025.5.3")
       }
     }
+  }
+}
+
+tasks.register("bundleHeadless") {
+  dependsOn(project(":tidyparse-web").tasks.named("jsBrowserProductionWebpack"))
+
+  val bundleDir = project(":tidyparse-web").layout.buildDirectory
+    .dir("kotlin-webpack/js/productionExecutable/")
+
+  val jsFile = bundleDir.map { it.file("tidyparse-web.js").asFile }
+  val mapFile = bundleDir.map { it.file("tidyparse-web.js.map").asFile }
+
+  inputs.files(jsFile, mapFile)
+  outputs.file(File(System.getProperty("user.home"), "gpu.html"))
+
+  doLast {
+    val jsCode = jsFile.get().readText()
+    val mapJson = mapFile.get().readText()
+
+    val mapB64 = Base64.getEncoder().encodeToString(mapJson.toByteArray())
+    val inlinedJs = jsCode.replace(Regex("""(?m)^//# sourceMappingURL=.*$"""), "")
+      .trimEnd('\n', '\r') + "\n//# sourceMappingURL=data:application/json;base64,$mapB64"
+    val ngramPath = "src/jsMain/resources/python_4grams.txt"
+    val rawNgrams = project(":tidyparse-web").layout.projectDirectory.file(ngramPath).asFile.readText()
+
+    val html = """
+        <!doctype html>
+        <meta charset="utf-8">
+        <title>TidyParse Headless</title>
+        <script type="text/javascript">var REPAIR_MODE = "headless"</script>
+        <script type="text/javascript">var raw_ngrams = `${rawNgrams}`;</script>
+        <script type="module">
+        $inlinedJs
+        </script>
+        <script src="https://cdn.jsdelivr.net/pyodide/v0.27.5/full/pyodide.js"></script>
+    """.trimIndent()
+
+    val outHtml = File(System.getProperty("user.home"), "tidyparse.html")
+    outHtml.writeText(html)
+
+    println("✓ Self-contained headless bundle written to ${outHtml.absolutePath}")
   }
 }
 

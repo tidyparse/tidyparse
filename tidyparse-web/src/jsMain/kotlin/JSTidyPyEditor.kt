@@ -8,33 +8,16 @@ import web.gpu.GPUBuffer
 import kotlin.math.*
 import kotlin.time.TimeSource
 
-const val NEWLINE_ID = 1
-const val BOS_ID     = 2
-const val EOS_ID     = 3
-const val FIRST_TID  = 4
+
 @ExperimentalUnsignedTypes
 class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val output: Node) : JSTidyEditor(editor, output) {
   val ngrams: MutableMap<List<String>, Double> = mutableMapOf()
-
-  fun tmToInt(tm: String): Int = when (tm) {
-    "NEWLINE" -> NEWLINE_ID
-    "BOS"     -> BOS_ID
-    "EOS"     -> EOS_ID
-    else      -> cfg.tmMap[tm]!! + FIRST_TID
-  }
 
   val order: Int by lazy { ngrams.keys.firstOrNull()!!.size }
   val normalizingConst by lazy { ngrams.values.sum() }
   var allowCompilerErrors = false
 
-  private val SCALE = 10_000.0
-  val ngramTensor: GPUBuffer by lazy {
-    fun Map<List<String>, Double>.toGpuHash(norm: Double = values.sum()): Map<List<UInt>, UInt> =
-      mapValues { (_, p) -> (-ln(p / norm) * SCALE).roundToInt().coerceAtLeast(0).toUInt() }
-        .mapKeys { (gram, _) -> gram.map { tmToInt(it).toUInt() } }
-
-    ngrams.toGpuHash().loadToGPUBuffer()
-  }
+  val ngramTensor: GPUBuffer by lazy { ngrams.toGpuHash(cfg = cfg).loadToGPUBuffer() }
 
   val PLACEHOLDERS = listOf("STRING", "NAME", "NUMBER")
   override val stubMatcher: Regex = Regex(PLACEHOLDERS.joinToString("|") { Regex.escape(it) })
@@ -63,7 +46,8 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
   }
 
   fun score(text: List<String>): Double =
-    -(prefix + text + suffix).windowed(order, 1).sumOf { ngram -> ln((ngrams[ngram] ?: 1.0) / normalizingConst) }
+    -(prefix + text + suffix).windowed(order, 1)
+      .sumOf { ngram -> ln((ngrams[ngram] ?: 1.0) / normalizingConst) }
 
   var pyodide: dynamic? = null
 

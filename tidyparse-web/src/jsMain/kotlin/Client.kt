@@ -2,11 +2,13 @@
 
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
+import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.kaliningraph.types.PlatformVars
 import kotlinx.browser.*
 import kotlinx.coroutines.*
 import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
+import org.w3c.fetch.RequestInit
 import kotlin.js.Promise
 
 /**
@@ -45,7 +47,31 @@ fun main() {
   if (window.navigator.userAgent.indexOf("hrome") != -1) {
     PlatformVars.PLATFORM_CALLER_STACKTRACE_DEPTH = 4
   }
-  MainScope().async { if (window["PROGRAMMING_LANG"] == "python") pythonSetup() else defaultSetup() }
+
+  MainScope().async {
+    if (window["REPAIR_MODE"] == "headless") headlessSetup()
+    else if (window["PROGRAMMING_LANG"] == "python") pythonSetup()
+    else defaultSetup()
+  }
+}
+
+suspend fun headlessSetup() {
+  println("Starting Tidyparse (headless)…")
+
+  val cfg = pythonStatementCNFAllProds
+  tryBootstrappingGPU()
+  println("Bootstrapped GPU")
+  val ngramTensor = loadNgramsFromString(window["raw_ngrams"].toString())
+    .toGpuHash(cfg = cfg).loadToGPUBuffer()
+
+  val es = EventSource("/stream")
+  es.onmessage = { ev ->
+    MainScope().launch {
+      val prompt = (ev.data as String).also { println("Received prompt: $it") }.tokenizeByWhitespace()
+      val out = repairCode(cfg, prompt, LED_BUFFER, ngramTensor).joinToString("\n")
+      window.fetch("/result", RequestInit(method = "POST", body = out)).await()
+    }
+  }
 }
 
 suspend fun defaultSetup() {
@@ -110,11 +136,18 @@ val ntscheck by lazy { document.getElementById("ntstubs-checkbox") as HTMLInputE
 val timeout by lazy { document.getElementById("timeout") as HTMLInputElement }
 val ledBuffSel by lazy { document.getElementById("led-buffer") as HTMLInputElement }
 
+fun loadNgramsFromString(ngrams: String): Map<List<String>, Double> =
+  ngrams.lines().filter { it.isNotBlank() }.associate {
+    val (ngram, count) = it.split(" ::: ")
+    ngram.split(" ") to count.toDouble()
+  }
+
 suspend fun loadNgrams(file: String = "python_4grams.txt") {
   val response = window.fetch(file).await()
   if (response.ok) {
     var numNgrams = 0
     var n = 0
+    loadNgramsFromString(response.text().await())
     response.text().await().lines().filter { it.isNotBlank() }.forEach { line ->
       val (ngram, count) = line.split(" ::: ")
       jsPyEditor.ngrams[ngram.split(" ").also { n = it.size }] = count.toDouble()
