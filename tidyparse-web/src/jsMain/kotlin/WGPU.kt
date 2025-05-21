@@ -34,7 +34,8 @@ TODO:
 */
 
 suspend fun tryBootstrappingGPU() {
-  val tmpDev = (navigator.gpu as? GPU)?.requestAdapter()?.requestDevice()?.also { gpu = it }
+  val desc = js("{ requiredLimits: { maxBufferSize: 1000000000, maxStorageBufferBindingSize: 1000000000 } }")
+  val tmpDev = (navigator.gpu as? GPU)?.requestAdapter()?.requestDevice(desc)?.also { gpu = it }
 
   if (tmpDev != null) {
     gpu.addEventListener(EventType("uncapturederror"), { e: dynamic -> println("Uncaptured: ${e.error.message}") })
@@ -182,7 +183,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
 
   for (i in 0 until k) result.add(topK.decodePacket(i, cfg.tmLst, maxRepairLen) ?: break)
 
-  println("Decoded ${result.distinct().size} unique words out of ${result.size} in ${t4.elapsedNow()}")
+//  println("Decoded ${result.distinct().size} unique words out of ${result.size} in ${t4.elapsedNow()}")
   return result
 }
 
@@ -730,7 +731,7 @@ fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_le
 }""")
 
 // language=wgsl
-val prefix_sum_p1 by Shader("""struct PrefixSumUni { n : u32 };
+val prefix_sum_p1 by Shader("""struct PrefixSumUni { n : u32, numBlocks : u32, groupsX : u32 };
 @group(0) @binding(0) var<storage, read>         inputBuf : array<u32>;
 @group(0) @binding(1) var<storage, read_write>  outputBuf : array<u32>;
 @group(0) @binding(2) var<storage, read_write>  blockSums : array<u32>;
@@ -741,14 +742,15 @@ const WORKGROUP_SIZE: u32 = 256u;
 var<workgroup> tile: array<u32, WORKGROUP_SIZE>;
 
 @compute @workgroup_size(WORKGROUP_SIZE) fn main(
-    @builtin(global_invocation_id) globalId : vec3<u32>,
-    @builtin(workgroup_id)          groupId : vec3<u32>,
-    @builtin(local_invocation_id)   localId : vec3<u32>
+  @builtin(workgroup_id)        groupId : vec3<u32>,
+  @builtin(local_invocation_id) localId : vec3<u32>
 ) {
     let N       = prefixUni.n;
-    let gid     = globalId.x;
-    let lid     = localId.x;
-    let grpId   = groupId.x;
+    let block = groupId.x + groupId.y * prefixUni.groupsX;
+    if (block >= prefixUni.numBlocks) { return; }
+    
+    let lid  = localId.x;
+    let gid  = block * WORKGROUP_SIZE + lid;   // global element index
 
     // 1) Load data from inputBuf into shared workgroup array `tile`.
     if (gid < N) { tile[lid] = inputBuf[gid]; } else { tile[lid] = 0u; }
@@ -768,7 +770,7 @@ var<workgroup> tile: array<u32, WORKGROUP_SIZE>;
     // 3) The last element of `tile` now has the total sum of this block.
     //    Save that to blockSums, then zero it out so this becomes an EXCLUSIVE scan.
     if (lid == 0u) {
-        blockSums[grpId] = tile[WORKGROUP_SIZE - 1u];
+        blockSums[block] = tile[WORKGROUP_SIZE - 1u];
         tile[WORKGROUP_SIZE - 1u] = 0u;
     }
     workgroupBarrier();
@@ -792,27 +794,28 @@ var<workgroup> tile: array<u32, WORKGROUP_SIZE>;
 }""")
 
 //language=wgsl
-val prefix_sum_p2 by Shader("""struct PrefixSumUni { n: u32 };
+val prefix_sum_p2 by Shader("""struct PrefixSumUni { n : u32, numBlocks : u32, groupsX : u32 };
 @group(0) @binding(0) var<storage, read_write>          dataBuf : array<u32>;
 @group(0) @binding(1) var<storage, read>       scannedBlockSums : array<u32>;
 @group(0) @binding(2) var<uniform>                    prefixUni : PrefixSumUni;
 
 @compute @workgroup_size(256) fn main(
-    @builtin(workgroup_id)         groupId  : vec3<u32>,
-    @builtin(global_invocation_id) globalId : vec3<u32>,
+    @builtin(workgroup_id)        groupId : vec3<u32>,
+    @builtin(local_invocation_id) localId : vec3<u32>
 ) {
-    let grpId = groupId.x;
-    let gid   = globalId.x;
-    let N     = prefixUni.n;
+    let block = groupId.x + groupId.y * prefixUni.groupsX;
+    if (block >= prefixUni.numBlocks) { return; }
 
-    // For each block `grpId`, the offset is scannedBlockSums[grpId].
-    let offsetVal = scannedBlockSums[grpId];
-    if (gid < N) { dataBuf[gid] = dataBuf[gid] + offsetVal; }
+    let gid = block * 256u + localId.x;
+    if (gid >= prefixUni.n) { return; }
+
+    let offset = scannedBlockSums[block];
+    dataBuf[gid] = dataBuf[gid] + offset;
 }""")
 
 // Longest word WGSL can handle. If ~2^9<MAX_WORD_LEN, pipeline breaks some on architectures
 const val MAX_WORD_LEN = 512
-const val MAX_LEV_RAD = 3
+const val MAX_LEV_RAD = 5
 // Maximum threads WGSL allows in a single dispatch. If ~2^16<MAX_SAMPLES, this always fails
 const val MAX_SAMPLES = 65_535
 // Length of the packet header in each repair buffer
@@ -1278,25 +1281,26 @@ class Shader constructor(val src: String) {
       gpu.createBuffer(descriptor = GPUBufferDescriptor(size = byteSize.toDouble(), usage = us))
         .also { if (data != null) { gpu.queue.writeBuffer(it, 0.0, data) } }
 
-    // Define the workgroup size consistently (must match WGSL)
-    const val PREFIX_SUM_WORKGROUP_SIZE = 256
+    private const val WORKGROUP_SIZE = 256
+    private const val GROUPS_X       = 65_535
 
     suspend fun prefixSumGPU(inputBuf: GPUBuffer, length: Int): GPUBuffer {
-      val numGroups = (length + PREFIX_SUM_WORKGROUP_SIZE - 1) / PREFIX_SUM_WORKGROUP_SIZE
+      val numBlocks = (length + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE
+      val groupsX   = GROUPS_X
+      val groupsY   = (numBlocks + groupsX - 1) / groupsX
 
-      val outputBuf = GPUBuffer(inputBuf.size.toInt(), GPUBufferUsage.STCPSD)
-      val blockSumsBuf = GPUBuffer(numGroups * 4, GPUBufferUsage.STCPSD)
-      val uniBuf = intArrayOf(length).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
+      val outputBuf     = GPUBuffer(inputBuf.size.toInt(), GPUBufferUsage.STCPSD)
+      val blockSumsBuf  = GPUBuffer(numBlocks * 4, GPUBufferUsage.STCPSD)
+      val uniBuf        = intArrayOf(length, numBlocks, groupsX).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
 
-      prefix_sum_p1(inputBuf, outputBuf, blockSumsBuf, uniBuf)(numGroups)
+      prefix_sum_p1(inputBuf, outputBuf, blockSumsBuf, uniBuf)(groupsX, groupsY)
 
-      if (numGroups > 1) {
-        val scannedBlockSumsBuf = blockSumsBuf.readInts().scan(0) { acc, it -> acc + it }.toGPUBuffer()
-        prefix_sum_p2(outputBuf, scannedBlockSumsBuf, uniBuf)(numGroups)
-        scannedBlockSumsBuf.destroy()
-      }
+      val scannedBlockSumsBuf = if (numBlocks > 1) prefixSumGPU(blockSumsBuf, numBlocks) else blockSumsBuf
 
-      uniBuf.destroy()
+      prefix_sum_p2(outputBuf, scannedBlockSumsBuf, uniBuf)(groupsX, groupsY)
+
+      if (scannedBlockSumsBuf !== blockSumsBuf) scannedBlockSumsBuf.destroy()
+      blockSumsBuf.destroy();  uniBuf.destroy()
       return outputBuf
     }
 

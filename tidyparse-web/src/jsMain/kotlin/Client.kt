@@ -64,14 +64,17 @@ suspend fun headlessSetup() {
   val ngramTensor = loadNgramsFromString(window["raw_ngrams"].toString())
     .toGpuHash(cfg = cfg).loadToGPUBuffer()
 
+  var errors = 0
   val es = EventSource("/stream")
   es.onmessage = { ev ->
     MainScope().launch {
+      errors = 0
       val prompt = (ev.data as String).also { println("Received prompt: $it") }.tokenizeByWhitespace()
-      val out = repairCode(cfg, prompt, LED_BUFFER, ngramTensor).joinToString("\n")
+      val out = repairCode(cfg, prompt, LED_BUFFER, ngramTensor).distinct().joinToString("\n")
       window.fetch("/result", RequestInit(method = "POST", body = out)).await()
     }
   }
+  es.onerror = { if (errors++ > 20) es.close() }
 }
 
 suspend fun defaultSetup() {
