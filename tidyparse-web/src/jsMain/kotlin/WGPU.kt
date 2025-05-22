@@ -33,9 +33,11 @@ TODO:
   (2) Use more sensible midpoint filter based on dense adjacency / reachability matrix
 */
 
-suspend fun tryBootstrappingGPU() {
-  val desc = js("{ requiredLimits: { maxBufferSize: 1000000000, maxStorageBufferBindingSize: 1000000000 } }")
-  val tmpDev = (navigator.gpu as? GPU)?.requestAdapter()?.requestDevice(desc)?.also { gpu = it }
+suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
+  val tmpDev = (navigator.gpu as? GPU)?.requestAdapter()?.also {
+    val desc = js("{ requiredLimits: { maxBufferSize: 2000000000, maxStorageBufferBindingSize: 2000000000 } }")
+    gpu = if (needsExtraMemory) it.requestDevice(desc) else it.requestDevice()
+  }
 
   if (tmpDev != null) {
     gpu.addEventListener(EventType("uncapturederror"), { e: dynamic -> println("Uncaptured: ${e.error.message}") })
@@ -56,7 +58,7 @@ suspend fun tryBootstrappingGPU() {
 //      benchmarkReach()
     } catch (e: Exception) { e.printStackTrace(); return }
 
-    print("Bootstrapping GPU successful!")
+    println("Bootstrapping GPU successful!")
     gpuAvailable = true
 
     (document.getElementById("gpuAvail") as? HTMLDivElement)?.appendChild(

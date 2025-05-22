@@ -59,7 +59,7 @@ suspend fun headlessSetup() {
   println("Starting Tidyparse (headless)…")
 
   val cfg = vanillaS2PCFG
-  tryBootstrappingGPU()
+  tryBootstrappingGPU(needsExtraMemory = true)
   println("Bootstrapped GPU")
   val ngramTensor = loadNgramsFromString(window["raw_ngrams"].toString())
     .toGpuHash(cfg = cfg).loadToGPUBuffer()
@@ -108,13 +108,14 @@ suspend fun defaultSetup() {
   tryBootstrappingGPU()
 }
 
-fun pythonSetup() {
+suspend fun pythonSetup() {
   println("Starting TidyPython")
 
   jsPyEditor.redecorateLines()
 //    LED_BUFFER = maxEdits.value.toInt()
-  MainScope().async { tryBootstrappingGPU(); loadNgrams() }
-  MainScope().async { initPyodide() }
+  tryBootstrappingGPU()
+  loadNgrams()
+  initPyodide()
 
   TIMEOUT_MS = 1000
 
@@ -150,7 +151,6 @@ suspend fun loadNgrams(file: String = "python_4grams.txt") {
   if (response.ok) {
     var numNgrams = 0
     var n = 0
-    loadNgramsFromString(response.text().await())
     response.text().await().lines().filter { it.isNotBlank() }.forEach { line ->
       val (ngram, count) = line.split(" ::: ")
       jsPyEditor.ngrams[ngram.split(" ").also { n = it.size }] = count.toDouble()
@@ -159,7 +159,7 @@ suspend fun loadNgrams(file: String = "python_4grams.txt") {
 
     val message = "Loaded ${jsPyEditor.ngrams.size} $n-grams from $file"
     println(if (!gpuAvailable) message else "$message into ${jsPyEditor.ngramTensor.size / 1000000}mb flat buffer")
-  }
+  } else println("Failed to load ngrams from $file")
 }
 
 suspend fun initPyodide() {
