@@ -113,7 +113,7 @@ suspend fun pythonSetup() {
 
   jsPyEditor.redecorateLines()
 //    LED_BUFFER = maxEdits.value.toInt()
-  tryBootstrappingGPU()
+  tryBootstrappingGPU(true)
   loadNgrams()
   initPyodide()
 
