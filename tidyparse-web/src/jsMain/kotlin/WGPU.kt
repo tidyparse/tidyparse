@@ -68,7 +68,7 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
       setAttribute("width", "35")
       setAttribute("height", "35")
     })
-  } else { print("GPU not detected.") }
+  } else print("GPU not detected.")
 }
 
 suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VALUE, ngrams: GPUBuffer? = null): List<String> {

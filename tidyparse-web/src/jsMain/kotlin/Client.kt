@@ -10,6 +10,7 @@ import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
 import org.w3c.fetch.RequestInit
 import kotlin.js.Promise
+import kotlin.time.TimeSource
 
 /**
 TODO (soon):
@@ -113,8 +114,13 @@ suspend fun pythonSetup() {
 
   jsPyEditor.redecorateLines()
 //    LED_BUFFER = maxEdits.value.toInt()
-  tryBootstrappingGPU(true)
   loadNgrams()
+  MainScope().async {
+    val t0 = TimeSource.Monotonic.markNow()
+    tryBootstrappingGPU(true)
+    if (gpuAvailable)
+      println("Loaded n-grams into ${jsPyEditor.ngramTensor.size / 1000000}mb GPU buffer in ${t0.elapsedNow()}")
+  }
   initPyodide()
 
   TIMEOUT_MS = 1000
@@ -147,6 +153,7 @@ fun loadNgramsFromString(ngrams: String): Map<List<String>, Double> =
   }
 
 suspend fun loadNgrams(file: String = "python_4grams.txt") {
+  val t0 = TimeSource.Monotonic.markNow()
   val response = window.fetch(file).await()
   if (response.ok) {
     var numNgrams = 0
@@ -157,8 +164,7 @@ suspend fun loadNgrams(file: String = "python_4grams.txt") {
       numNgrams++
     }
 
-    val message = "Loaded ${jsPyEditor.ngrams.size} $n-grams from $file"
-    println(if (!gpuAvailable) message else "$message into ${jsPyEditor.ngramTensor.size / 1000000}mb flat buffer")
+    println("Loaded ${jsPyEditor.ngrams.size} $n-grams from $file in ${t0.elapsedNow()}")
   } else println("Failed to load ngrams from $file")
 }
 
