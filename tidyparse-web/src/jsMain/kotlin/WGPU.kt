@@ -165,11 +165,13 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
 //  println("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
 
   if (ngrams == null) {
-    val result = mutableListOf<String>()
+    val result = mutableMapOf<Int, MutableSet<String>>()
     val allResults = outBuf.readInts()
-    for (i in 0 until MAX_SAMPLES)
-      result.add(allResults.decodePacket(i, cfg.tmLst, maxRepairLen) ?: break)
-    return result
+    for (i in 0 until MAX_SAMPLES) {
+      val t = allResults.decodePacket(i, cfg.tmLst, maxRepairLen) ?: break
+      result.getOrPut(t.first) { mutableSetOf() }.add(t.second)
+    }
+    return result.map { println("Δ=${it.key} -> |L|=${it.value.size}"); it.value.toList() }.flatten()
   }
 
   // TODO: WGSL kernel for repair minimization here?
@@ -194,14 +196,15 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
   for (i in 0 until k) {
     val t = topK.decodePacket(i, cfg.tmLst, maxRepairLen)
     if (t == null) { println("Escaped after $i samples"); break }
-    result.add(t)
+    result.add(t.second)
   }
 
 //  println("Decoded ${result.distinct().size} unique words out of ${result.size} in ${t4.elapsedNow()}")
   return result
 }
 
-fun IntArray.decodePacket(idx: Int, tm: List<String>, pktLen: Int): String? {
+// Returns Levenshtein distance and string repair
+fun IntArray.decodePacket(idx: Int, tm: List<String>, pktLen: Int): Pair<Int, String>? {
   var cur: StringBuilder? = null
   val base = idx * pktLen + PKT_HDR_LEN // skip header cells
 
@@ -214,7 +217,7 @@ fun IntArray.decodePacket(idx: Int, tm: List<String>, pktLen: Int): String? {
     } else break
   }
 
-  return if (cur != null && cur.isNotEmpty()) cur.toString() else null
+  return if (cur != null && cur.isNotEmpty()) this[base - PKT_HDR_LEN] to cur.toString() else null
 }
 
 suspend fun scoreSelectGather(
@@ -251,7 +254,7 @@ suspend fun scoreSelectGather(
 
 //  t0 = TimeSource.Monotonic.markNow()
   val topK = bestBuf.readInts()
-  println("Read ${topK.size} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
+  println("Score/select/gather read ${topK.size} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
 
   listOf(prmBuf, idxBuf, scrBuf, gatherPrm, bestBuf).forEach(GPUBuffer::destroy)
   return topK
@@ -927,24 +930,30 @@ fn lcg_rand(stateRef: ptr<function, u32>, range: u32) -> u32 {
 
 fn min_u32(a: u32, b: u32) -> u32 { return select(a, b, a > b); }
 
+/* ---------- temperature knob ---------------------------------------------------- */
+const TEMPERATURE : f32 = 1.1; // 1.0 = unmodified;  ∞ ≈ uniform
+fn weight(sz: u32) -> u32 { return max(1u, u32(pow(f32(sz), 1.0 / TEMPERATURE))); }
+/* -------------------------------------------------------------------------------- */
+
 @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     /* ---- unique global rank ---------------------------------------------------- */
 //    let seqId : u32 = atomicAdd(&idx_uni.targetCnt, 1u);
     let gRank : u32 = gid.x; //lcg_permute(seqId + 0x9E3779B9u * gid.x);
 
     let numStartIdxs = idx_uni.numStartIndices / 2u;
-    /* ---- total language size over all accepting states ------------------------- */
+    
+    /* ---- total tempered weight over all accepting states ----------------------- */
     var total : u32 = 0u;
-    for (var i = 0u; i < numStartIdxs; i = i + 1u) { total = total + langSize(getStartIdx(i)); }
+    for (var i = 0u; i < numStartIdxs; i = i + 1u) { total += weight(langSize(getStartIdx(i))); }
     var rank : u32 = gRank % total;
 
-    /* ---- pick a root in proportion to its language size ------------------------ */
+    /* ---- pick a root in proportion to its tempered weight ---------------------- */
     var rootIdx : u32 = 0u;
     var levDist : u32 = 0u;
     for (var i = 0u; i < numStartIdxs; i = i + 1u) {
-        let sz = langSize(getStartIdx(i));
-        if (rank < sz) { rootIdx = getStartIdx(i); levDist = getEditDist(i); break; }
-        rank = rank - sz;
+        let w = weight(langSize(getStartIdx(i)));
+        if (rank < w) { rootIdx = getStartIdx(i); levDist = getEditDist(i); break; }
+        rank -= w;
     }
     
     /* ---- DFS stack ------------------------------------------------------------- */

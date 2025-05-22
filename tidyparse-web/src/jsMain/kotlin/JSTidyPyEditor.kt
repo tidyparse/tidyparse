@@ -52,23 +52,24 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
   var pyodide: dynamic? = null
 
   fun getOutput(code: String): String = try {
-    val types = code.replace("NUMBER", "1").replace("STRING", "\"\"")
+    val src = code.replace("NUMBER",  "1").replace("STRING", "\"\"")
+
+    val encoded: String = js("btoa")(src) as String
+
     val pyCode = """
-      import sys
-      from io import StringIO
-      _output = StringIO()
-      sys.stdout = sys.stderr = _output
-      try:
-          compile(""${'"'}${types.trimIndent()}${'"'}"", 'test_compile.py', 'exec')
-      except Exception:
-          import traceback
-          traceback.print_exc()
-      _result = _output.getvalue()
+        import sys, traceback, io, base64, textwrap
+        _out = io.StringIO()
+        sys.stdout = sys.stderr = _out
+        try:
+            _src = base64.b64decode("$encoded").decode("utf-8")
+            _src = textwrap.dedent(_src)
+            compile(_src, "test_compile.py", "exec")
+        except Exception:
+            traceback.print_exc()
+        _result = _out.getvalue()
     """.trimIndent()
 
-    // Run the Python code synchronously.
     jsPyEditor.pyodide.runPython(pyCode)
-    // Retrieve _result from the Pyodide globals.
     jsPyEditor.pyodide.globals.get("_result") as String
   } catch (e: dynamic) { "Error during compilation: $e".also { println(it) } }
 
