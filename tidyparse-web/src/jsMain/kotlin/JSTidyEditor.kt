@@ -93,7 +93,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
         }
         Scenario.REPAIR ->
           if (gpuAvailable)
-            repairCode(cfg, tokens, LED_BUFFER, emptyMap<List<UInt>, UInt>().loadToGPUBuffer()).asSequence()
+            repairCode(cfg, tokens, LED_BUFFER).asSequence()
               .map { it.replace("ε", "").tokenizeByWhitespace().joinToString(" ") }
           else initiateSuspendableRepair(tokens, cfg)
       }?.enumerateInteractively(workHash, tokens,

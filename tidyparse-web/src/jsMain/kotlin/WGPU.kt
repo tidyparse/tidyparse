@@ -164,12 +164,20 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
   sample_words_wor(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, idxUniBuf, cdfBuf)(MAX_SAMPLES)
 //  println("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
 
+  if (ngrams == null) {
+    val result = mutableListOf<String>()
+    val allResults = outBuf.readInts()
+    for (i in 0 until MAX_SAMPLES)
+      result.add(allResults.decodePacket(i, cfg.tmLst, maxRepairLen) ?: break)
+    return result
+  }
+
   // TODO: WGSL kernel for repair minimization here?
 
   val k = 20 * MAX_DISP_RESULTS
   val topK = scoreSelectGather(
     packets          = outBuf,
-    ngrams           = ngrams ?: emptyMap<List<UInt>, UInt>().loadToGPUBuffer(),
+    ngrams           = ngrams,
     indexUniformsBuf = idxUniBuf,
     maxSamples       = MAX_SAMPLES,
     stride           = maxRepairLen,
@@ -183,7 +191,11 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
 
   val result = mutableListOf<String>()
 
-  for (i in 0 until k) result.add(topK.decodePacket(i, cfg.tmLst, maxRepairLen) ?: break)
+  for (i in 0 until k) {
+    val t = topK.decodePacket(i, cfg.tmLst, maxRepairLen)
+    if (t == null) { println("Escaped after $i samples"); break }
+    result.add(t)
+  }
 
 //  println("Decoded ${result.distinct().size} unique words out of ${result.size} in ${t4.elapsedNow()}")
   return result
@@ -1087,14 +1099,16 @@ const UINT_MAX : u32 = 0xFFFFFFFFu;
     loop {
         var worstPos : u32 = 0u;
         var worstVal : u32 = atomicLoad(&topScore[0]);
+        var duplicate : bool = (worstVal == score);
         for (var j : u32 = 1u; j < prm.k; j = j + 1u) {
             let v = atomicLoad(&topScore[j]);
+            if (v == score) { duplicate = true; }
             if (v > worstVal) { worstVal = v; worstPos = j; }
         }
 
-        if (score >= worstVal) { break; }
+        if (duplicate || score >= worstVal) { return; }
         let old = atomicCompareExchangeWeak(&topScore[worstPos], worstVal, score);
-        if (old.exchanged) { atomicStore(&topIdx[worstPos], i); break; }
+        if (old.exchanged) { atomicStore(&topIdx[worstPos], i); return; }
     }
 }""")
 
