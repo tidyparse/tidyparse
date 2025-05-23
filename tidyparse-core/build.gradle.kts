@@ -5,7 +5,7 @@ import org.jetbrains.kotlin.gradle.tasks.BaseKotlinCompile
 plugins {
   kotlin("plugin.serialization")
   kotlin("multiplatform")
-  id("com.strumenta.antlr-kotlin") version "1.0.2"
+  alias(libs.plugins.antlrKotlin)
 }
 
 group = providers.gradleProperty("pluginGroup")
@@ -43,7 +43,7 @@ kotlin {
         api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
         api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
 
-        api("com.strumenta:antlr-kotlin-runtime:1.0.2")
+        api(libs.antlrKotlinRuntime)
       }
       kotlin { srcDir(layout.buildDirectory.dir("generatedAntlr")) }
     }

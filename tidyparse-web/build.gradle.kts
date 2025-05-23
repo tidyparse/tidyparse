@@ -1,6 +1,8 @@
+@file:OptIn(ExperimentalEncodingApi::class)
+
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.DEVELOPMENT
 import org.jetbrains.kotlin.gradle.targets.js.webpack.WebpackDevtool
-import java.util.Base64
+import kotlin.io.encoding.*
 
 plugins {
   kotlin("multiplatform")
@@ -33,7 +35,7 @@ kotlin {
     val jsMain by getting {
       dependencies {
         implementation(project(":tidyparse-core"))
-        implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2025.5.3")
+        implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2025.5.8")
       }
     }
   }
@@ -55,7 +57,7 @@ tasks.register("bundleHeadless") {
     val jsCode = jsFile.get().readText()
     val mapJson = mapFile.get().readText()
 
-    val mapB64 = Base64.getEncoder().encodeToString(mapJson.toByteArray())
+    val mapB64 = Base64.encode(mapJson.toByteArray())
     val inlinedJs = jsCode.replace(Regex("""(?m)^//# sourceMappingURL=.*$"""), "")
       .trimEnd('\n', '\r') + "\n//# sourceMappingURL=data:application/json;base64,$mapB64"
     val ngramPath = "src/jsMain/resources/python_4grams.txt"
