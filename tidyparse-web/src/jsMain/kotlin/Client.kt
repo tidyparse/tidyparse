@@ -71,7 +71,9 @@ suspend fun headlessSetup() {
     MainScope().launch {
       errors = 0
       val prompt = (ev.data as String).also { println("Received prompt: $it") }.tokenizeByWhitespace()
-      val out = repairCode(cfg, prompt, LED_BUFFER, ngramTensor).distinct().joinToString("\n")
+//      val out = repairCode(cfg, prompt, LED_BUFFER, ngramTensor) // With reranking + truncation
+      val out = repairCode(cfg, prompt, LED_BUFFER, null) // Without reranking + truncation
+        .distinct().joinToString("\n")
       window.fetch("/result", RequestInit(method = "POST", body = out)).await()
     }
   }
