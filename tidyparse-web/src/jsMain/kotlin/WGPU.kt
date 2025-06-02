@@ -155,14 +155,17 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
 
   lsDense.destroy()
 
-  val header = intArrayOf(0, maxRepairLen, numNTs, numStates)
+  val groupsX = DISPATCH_GROUP_SIZE_X
+  val header = intArrayOf(0, maxRepairLen, numNTs, numStates, groupsX, MAX_SAMPLES)
 
   /** [TERM_STRUCT] */ val idxUniBuf = packStruct(constants = header.toList(), startIdxs.toGPUBuffer())
   println("Pairing function construction took: ${t2.elapsedNow()}")
 
+  val t3 = TimeSource.Monotonic.markNow()
   val outBuf = GPUBuffer(MAX_SAMPLES * maxRepairLen * 4, GPUBufferUsage.STCPSD)
-  sample_words_wor(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, idxUniBuf, cdfBuf)(MAX_SAMPLES)
-//  println("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
+  val groupsY = (MAX_SAMPLES + groupsX - 1) / groupsX
+  sample_words_wor(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, idxUniBuf, cdfBuf)(groupsX, groupsY)
+  println("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
 
   if (ngrams == null) {
     val result = mutableMapOf<Int, MutableSet<String>>()
@@ -228,7 +231,9 @@ suspend fun scoreSelectGather(
   k                : Int
 ): IntArray {
   val t0 = TimeSource.Monotonic.markNow()
-  markov_score(packets, ngrams, indexUniformsBuf)(maxSamples)
+  val groupsX = DISPATCH_GROUP_SIZE_X
+  val groupsY = (maxSamples + groupsX - 1) / groupsX
+  markov_score(packets, ngrams, indexUniformsBuf)(groupsX, groupsY)
 //  println("Score in ${t0.elapsedNow()}")
 
 //  println(packets.readInts().toList().windowed(stride, stride)
@@ -236,12 +241,14 @@ suspend fun scoreSelectGather(
 //    .sortedBy { it.key }.joinToString("\n") { (a, b) -> "$a => $b" })
 
 //  t0 = TimeSource.Monotonic.markNow()
-  val prmBuf   = intArrayOf(maxSamples, k, stride).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
+  val selGroupsX = DISPATCH_GROUP_SIZE_X
+  val totalGroups = (maxSamples + 255) / 256
+  val selGroupsY = (totalGroups + selGroupsX - 1) / selGroupsX
+  val prmBuf   = intArrayOf(maxSamples, k, stride, selGroupsX).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
   val idxBuf   = IntArray(k) { Int.Companion.MAX_VALUE }.toGPUBuffer(GPUBufferUsage.STCPSD)
   val scrBuf   = IntArray(k) { Int.Companion.MAX_VALUE }.toGPUBuffer(GPUBufferUsage.STCPSD)
 
-  val groups   = (maxSamples + 255) / 256
-  select_top_k(prmBuf, packets, idxBuf, scrBuf)(groups)
+  select_top_k(prmBuf, packets, idxBuf, scrBuf)(selGroupsX, selGroupsY)
 //  println("Select in ${t0.elapsedNow()}")
 
 //  t0 = TimeSource.Monotonic.markNow()
@@ -286,6 +293,8 @@ struct IndexUniforms {  // Indices of all accepting states in the parse chart
     maxWordLen      : u32,
     numNonterminals : u32,
     numStates       : u32,
+    grid_dim_x      : u32,
+    max_samples     : u32,
     
     startIdxOffset  : u32, numStartIndices : u32,
     startIndices    : array<u32> // Contains alternating (1) start index and (2) edit distance
@@ -832,8 +841,8 @@ val prefix_sum_p2 by Shader("""struct PrefixSumUni { n : u32, numBlocks : u32, g
 // Longest word WGSL can handle. If ~2^9<MAX_WORD_LEN, pipeline breaks some on architectures
 const val MAX_WORD_LEN = 512
 const val MAX_LEV_RAD = 5
-// Maximum threads WGSL allows in a single dispatch. If ~2^16<MAX_SAMPLES, this always fails
-const val MAX_SAMPLES = 65_535
+const val MAX_SAMPLES = 250_000
+const val DISPATCH_GROUP_SIZE_X = 65535
 // Length of the packet header in each repair buffer
 const val PKT_HDR_LEN = 2 // [levenshtein distance, Markov probability]
 const val MAX_SAMPLES_PER_DIST = 30_000
@@ -934,10 +943,10 @@ const TEMPERATURE : f32 = 1.1; // 1.0 = unmodified;  ∞ ≈ uniform
 fn weight(sz: u32) -> u32 { return max(1u, u32(pow(f32(sz), 1.0 / TEMPERATURE))); }
 /* -------------------------------------------------------------------------------- */
 
-@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+@compute @workgroup_size(1, 1, 1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     /* ---- unique global rank ---------------------------------------------------- */
-//    let seqId : u32 = atomicAdd(&idx_uni.targetCnt, 1u);
-    let gRank : u32 = gid.x; //lcg_permute(seqId + 0x9E3779B9u * gid.x);
+    let gRank = gid.x + gid.y * idx_uni.grid_dim_x;
+    if (gRank >= idx_uni.max_samples) { return; }
 
     let numStartIdxs = idx_uni.numStartIndices / 2u;
     
@@ -1013,7 +1022,7 @@ fn weight(sz: u32) -> u32 { return max(1u, u32(pow(f32(sz), 1.0 / TEMPERATURE)))
     }
 
     /* ---- write the resulting word to the output buffer ------------------------- */
-    let outBase = gid.x * idx_uni.maxWordLen;
+    let outBase = gRank * idx_uni.maxWordLen;
     sampledWords[outBase] = levDist;
     for (var i = 0u; i < wLen; i++) { sampledWords[outBase + i + ${PKT_HDR_LEN}u] = word[i]; }
 }""")
@@ -1049,8 +1058,10 @@ fn lookupScore(key: u32) -> u32 {
     }
 }
 
-@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-    let sid    : u32 = gid.x;
+@compute @workgroup_size(1, 1, 1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+    let sid = gid.x + gid.y * idx_uni.grid_dim_x;
+    if (sid >= idx_uni.max_samples) { return; }
+
     let stride : u32 = idx_uni.maxWordLen;
     let base   : u32 = sid * stride;
 
@@ -1089,7 +1100,7 @@ fn lookupScore(key: u32) -> u32 {
 }""")
 
 //language=wgsl
-val select_top_k by Shader("""struct Params { n: u32, k: u32, stride: u32 };
+val select_top_k by Shader("""struct Params { n: u32, k: u32, stride: u32, groupsX: u32 };
 
 @group(0) @binding(0) var<uniform>                  prm : Params;
 @group(0) @binding(1) var<storage, read>        packets : array<u32>;
@@ -1098,8 +1109,12 @@ val select_top_k by Shader("""struct Params { n: u32, k: u32, stride: u32 };
 
 const UINT_MAX : u32 = 0xFFFFFFFFu;
 
-@compute @workgroup_size(256) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-    let i = gid.x;
+@compute @workgroup_size(256) fn main(
+    @builtin(workgroup_id)        workgroup_id : vec3<u32>,
+    @builtin(local_invocation_id) local_id     : vec3<u32>
+) {
+    let workgroup_linear_id = workgroup_id.x + workgroup_id.y * prm.groupsX;
+    let i = workgroup_linear_id * 256u + local_id.x;
     if (i >= prm.n || prm.k == 0u) { return; }
 
     let score : u32 = packets[i * prm.stride + 1u];
