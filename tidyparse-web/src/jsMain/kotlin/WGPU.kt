@@ -76,7 +76,8 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
   val fsa: FSA = makeLevFSA(code, MAX_LEV_RAD)
   println("Made levFSA in ${t0.elapsedNow()}")
 
-  val codePoints = IntArray(code.size) { cfg.tmMap[code[it]]!! }
+  // TODO: maybe modify the LevFSA to accommodate unknown tokens?
+  val codePoints = IntArray(code.size) { cfg.tmMap[code[it]] ?: 0 }
 
 // This is interchangeable with init_chart for Lev automata
 //  val dpInSparse = fsa.byteFormat(cfg).toGPUBuffer()
@@ -146,8 +147,6 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
   if (MAX_WORD_LEN < maxRepairLen) return emptyList<String>()
     .also { println("Max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)") }
 
-  val outBuf = GPUBuffer(MAX_SAMPLES * maxRepairLen * 4, GPUBufferUsage.STCPSD)
-
   val lsDense  = buildLanguageSizeBuf(numStates, numNTs, dpBuf, metaBuf, tmBuf)
   val totalExp = bpStorageBuf.size.toInt() / (2 * 4)
   val cdfBuf = GPUBuffer(totalExp * 4, GPUBufferUsage.STCPSD)
@@ -161,6 +160,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
   /** [TERM_STRUCT] */ val idxUniBuf = packStruct(constants = header.toList(), startIdxs.toGPUBuffer())
   println("Pairing function construction took: ${t2.elapsedNow()}")
 
+  val outBuf = GPUBuffer(MAX_SAMPLES * maxRepairLen * 4, GPUBufferUsage.STCPSD)
   sample_words_wor(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, idxUniBuf, cdfBuf)(MAX_SAMPLES)
 //  println("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
 
@@ -186,8 +186,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
     k                = k
   )
 
-  listOf(outBuf, metaBuf, dpBuf, idxUniBuf, cdfBuf,
-    bpCountBuf, bpOffsetBuf, bpStorageBuf).forEach(GPUBuffer::destroy)
+  listOf(outBuf, metaBuf, dpBuf, idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf).forEach(GPUBuffer::destroy)
 
   val t4 = TimeSource.Monotonic.markNow()
 
