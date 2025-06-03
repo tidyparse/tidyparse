@@ -1,6 +1,7 @@
 package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.*
+import ai.hypergraph.kaliningraph.automata.initiateSuspendableRepair
 import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.LED_BUFFER
@@ -105,7 +106,7 @@ abstract class TidyEditor {
           val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
           writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it }); null
         }
-        Scenario.REPAIR -> initiateSuspendableRepair(tokens, cfg)
+        Scenario.REPAIR -> sampleGREUntilTimeout(tokens, cfg)
       }?.enumerateInteractively(workHash, tokens, reason = scenario.reason)
     }
   }

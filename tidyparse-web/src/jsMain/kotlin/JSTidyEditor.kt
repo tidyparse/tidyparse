@@ -1,12 +1,9 @@
+import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.kaliningraph.repair.LED_BUFFER
-import ai.hypergraph.kaliningraph.repair.TIMEOUT_MS
-import ai.hypergraph.kaliningraph.stripStub
-import ai.hypergraph.kaliningraph.tokenizeByWhitespace
+import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.tidyparse.*
 import kotlinx.browser.window
-import kotlinx.coroutines.MainScope
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
 import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
 import kotlin.time.TimeSource
@@ -95,7 +92,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
           if (gpuAvailable)
             repairCode(cfg, tokens, LED_BUFFER).asSequence()
               .map { it.replace("ε", "").tokenizeByWhitespace().joinToString(" ") }
-          else initiateSuspendableRepair(tokens, cfg)
+          else sampleGREUntilTimeout(tokens, cfg)
       }?.enumerateInteractively(workHash, tokens,
         reason = scenario.reason, postCompletionSummary = { ", ${t0.elapsedNow()} latency." })
     }

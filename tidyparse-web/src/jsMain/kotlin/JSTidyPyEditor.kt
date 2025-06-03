@@ -5,7 +5,7 @@ import ai.hypergraph.tidyparse.*
 import kotlinx.coroutines.*
 import org.w3c.dom.*
 import web.gpu.GPUBuffer
-import kotlin.math.*
+import kotlin.math.ln
 import kotlin.time.TimeSource
 
 
@@ -132,7 +132,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
         } else {
           println("Repairing on CPU...")
           metric = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() }
-          initiateSuspendableRepair(tokens, cfg)
+          sampleGREUntilTimeout(tokens, cfg)
         })
           // Drop NEWLINE (added by default to PyCodeSnippets)
           .map { it.dropLast(8).replacePythonKeywords() }
