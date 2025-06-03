@@ -91,11 +91,11 @@ suspend fun defaultSetup() {
   jsEditor.minimize = mincheck.checked
   jsEditor.ntStubs = ntscheck.checked
 
-  inputField.addEventListener("input", { jsEditor.run { continuation { handleInput() } } })
-  inputField.addEventListener("input", { jsEditor.redecorateLines() })
+  codeMirrorInstance.on("change", { _: dynamic, _: dynamic -> jsEditor.run { continuation { handleInput() } } })
+  codeMirrorInstance.on("change", { _: dynamic, _: dynamic -> jsEditor.redecorateLines() })
   exSelector.addEventListener(type = "change", callback = { MainScope().async { fetchSelectedExample() } })
 
-  inputField.addEventListener("keydown", { event -> jsEditor.navUpdate(event as KeyboardEvent) })
+  codeMirrorInstance.on("keydown", { _: dynamic, event -> jsEditor.navUpdate(event as KeyboardEvent) })
   mincheck.addEventListener("change", { jsEditor.minimize = mincheck.checked })
   ntscheck.addEventListener("change", {
     jsEditor.ntStubs = ntscheck.checked
@@ -127,9 +127,9 @@ suspend fun pythonSetup() {
 
   TIMEOUT_MS = 1000
 
-  inputField.addEventListener("input", { jsPyEditor.run { continuation { handleInput() } } })
-  inputField.addEventListener("input", { jsPyEditor.redecorateLines() })
-  inputField.addEventListener("keydown", { event -> jsPyEditor.navUpdate(event as KeyboardEvent) })
+  codeMirrorInstance.on("change", { _: dynamic, _: dynamic -> jsPyEditor.run { continuation { handleInput() } } })
+  codeMirrorInstance.on("change", { _: dynamic, _: dynamic -> jsPyEditor.redecorateLines() })
+  codeMirrorInstance.on("keydown", { _: dynamic, event -> jsPyEditor.navUpdate(event as KeyboardEvent) })
 
 //  jsPyEditor.minimize = mincheck.checked
 //  mincheck.addEventListener("change", { jsPyEditor.minimize = mincheck.checked })
@@ -138,10 +138,10 @@ suspend fun pythonSetup() {
 }
 
 val exSelector by lazy { document.getElementById("ex-selector") as HTMLSelectElement }
-val decorator by lazy { TextareaDecorator(inputField, parser) }
-val jsEditor by lazy { JSTidyEditor(inputField, outputField) }
-val jsPyEditor by lazy { JSTidyPyEditor(inputField, outputField) }
-val inputField by lazy { document.getElementById("tidyparse-input") as HTMLTextAreaElement }
+val textArea by lazy { document.getElementById("tidyparse-input") as HTMLTextAreaElement }
+val codeMirrorInstance by lazy { js("CodeMirror.fromTextArea(textArea, { lineNumbers: true })") }
+val jsEditor by lazy { JSTidyEditor(codeMirrorInstance, outputField) }
+val jsPyEditor by lazy { JSTidyPyEditor(codeMirrorInstance, outputField) }
 val outputField by lazy { document.getElementById("tidyparse-output") as Node }
 val mincheck by lazy { document.getElementById("minimize-checkbox") as HTMLInputElement }
 val ntscheck by lazy { document.getElementById("ntstubs-checkbox") as HTMLInputElement }
@@ -194,10 +194,7 @@ suspend fun fetchSelectedExample() {
   val response = window.fetch(exSelector.value).await()
   if (response.ok) {
     val text = response.text().await()
-    inputField.apply {
-      value = text
-      window.setTimeout({scrollIntoView(js("{ behavior: 'instant', block: 'end' }"))}, 1)
-    }
+    codeMirrorInstance.setValue(text)
     jsEditor.redecorateLines()
   } else console.error("Failed to load file: ${response.status}")
 }
