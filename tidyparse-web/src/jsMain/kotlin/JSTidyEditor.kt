@@ -9,41 +9,43 @@ import org.w3c.dom.events.KeyboardEvent
 import kotlin.time.TimeSource
 
 /** Compare with [ai.hypergraph.tidyparse.IJTidyEditor] */
-open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: Node): TidyEditor() {
-  companion object {
-    private fun HTMLTextAreaElement.getEndOfLineIdx() =
-      // Gets the end of the line or the end of the string, whichever comes first
-      value.indexOf("\n", selectionStart!!).takeIf { it != -1 } ?: value.length
-    private fun HTMLTextAreaElement.getLineStartIdx() =
-      value.lastIndexOf('\n', selectionStart!! - 1).takeIf { it != -1 } ?.plus(1) ?: 0
-    private fun HTMLTextAreaElement.lineBounds() = getLineStartIdx()..getEndOfLineIdx()
-    private fun HTMLTextAreaElement.getCurrentLine() =
-      value.substring(0, getEndOfLineIdx()).substringAfterLast("\n")
+open class JSTidyEditor(open val editor: dynamic, open val output: Node): TidyEditor() {
 
-    fun HTMLTextAreaElement.overwriteCurrentLineWith(region: IntRange, text: String) {
-      value = buildString {
-        append(value.substring(0, region.first))
-        append(text)
-        append(value.substring(region.last))
-      }
+  private fun pos(line: Int, ch: Int) = js("({line: line, ch: ch})")
 
-      val newSelectionStart = region.first + text.length
-      selectionStart = newSelectionStart
-      selectionEnd = newSelectionStart
-    }
+  private fun lineBounds(): IntRange {
+    val cursor = editor.getCursor()
+    val line = cursor.line as Int
+    val start = editor.indexFromPos(pos(line, 0)) as Int
+    val end = editor.indexFromPos(pos(line, (editor.getLine(line) as String).length)) as Int
+    return start..end
+  }
+
+  private fun currentLineText(): String {
+    val cursor = editor.getCursor()
+    return editor.getLine(cursor.line) as String
+  }
+
+  private fun overwriteCurrentLineWith(region: IntRange, text: String) {
+    val from = editor.posFromIndex(region.first)
+    val to = editor.posFromIndex(region.last)
+    editor.replaceRange(text, from, to)
+    val newPos = editor.posFromIndex(region.first + text.length)
+    editor.setCursor(newPos)
   }
 
   override fun continuation(f: () -> Unit): Any = window.setTimeout(f, 0)
 
-  override fun getLineBounds(): IntRange = editor.lineBounds()
-  override fun currentLine(): Σᐩ = editor.getCurrentLine()
-  override fun overwriteRegion(region: IntRange, s: Σᐩ) { editor.overwriteCurrentLineWith(region, s) }
-  override fun readEditorText(): Σᐩ = editor.value
-  override fun getCaretPosition(): IntRange = editor.selectionStart!!..editor.selectionEnd!!
-  override fun setCaretPosition(range: IntRange) = editor.setSelectionRange(range.first, range.last)
-  private fun rawDisplayHTML() = (outputField as HTMLDivElement).innerHTML
+  override fun getLineBounds(): IntRange = lineBounds()
+  override fun currentLine(): Σᐩ = currentLineText()
+  override fun overwriteRegion(region: IntRange, s: Σᐩ) { overwriteCurrentLineWith(region, s) }
+  override fun readEditorText(): Σᐩ = editor.getValue() as String
+  override fun getCaretPosition(): IntRange =
+    (editor.indexFromPos(editor.getCursor("from")) as Int)..(editor.indexFromPos(editor.getCursor("to")) as Int)
+  override fun setCaretPosition(range: IntRange) = editor.setSelection(editor.posFromIndex(range.first), editor.posFromIndex(range.last))
+  private fun rawDisplayHTML() = (output as HTMLDivElement).innerHTML
   override fun readDisplayText(): Σᐩ = output.textContent ?: ""
-  override fun writeDisplayText(s: Σᐩ) { (outputField as HTMLDivElement).innerHTML = s }
+  override fun writeDisplayText(s: Σᐩ) { (output as HTMLDivElement).innerHTML = s }
   override fun writeDisplayText(s: (Σᐩ) -> Σᐩ) = writeDisplayText(s(readDisplayText()))
 
   override fun handleInput() {
@@ -153,13 +155,12 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
   override fun redecorateLines(cfg: CFG) {
     val currentHash = ++hashIter
 //    val timer = TimeSource.Monotonic.markNow()
-    if (caretInGrammar()) decorator.quickDecorate()
+    if (caretInGrammar()) Unit
 
     fun decorate() {
       if (currentHash != hashIter) return
       val decCFG = getLatestCFG()
       jsEditor.apply { preparseParseableLines(decCFG, getExampleText()) }
-      if (currentHash == hashIter) decorator.fullDecorate(decCFG)
     }
 
     if (!caretInGrammar()) continuation { decorate() }

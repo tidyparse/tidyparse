@@ -10,7 +10,7 @@ import kotlin.time.TimeSource
 
 
 @ExperimentalUnsignedTypes
-class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val output: Node) : JSTidyEditor(editor, output) {
+class JSTidyPyEditor(override val editor: dynamic, override val output: Node) : JSTidyEditor(editor, output) {
   val ngrams: MutableMap<List<String>, Double> = mutableMapOf()
 
   val order: Int by lazy { ngrams.keys.firstOrNull()!!.size }
@@ -33,7 +33,6 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
       preparseParseableLines(decCFG, readEditorText()) {
         PyCodeSnippet(it).lexedTokens().replace("|", "OR") in decCFG.language
       }
-      if (currentHash == hashIter) decorator.fullDecorate(decCFG)
     }
 
     continuation { decorate() }
