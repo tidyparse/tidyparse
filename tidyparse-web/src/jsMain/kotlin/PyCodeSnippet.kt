@@ -5,20 +5,10 @@ import org.antlr.v4.kotlinruntime.*
 data class PyCodeSnippet(val rawCode: String) {
   // Keep all tokens, including whitespace/comments. The hidden channel is included by default.
   val tokens: List<Token> =
-    Python3Lexer(CharStreams.fromString(rawCode)).run {
-      allTokens
-        .filter { it.text?.isNotBlank() == true }
-        .takeWhile { it.type != Token.EOF }
-        .toList()
-    }
-
-//  val essentialTokens: List<Token> =
-//    Python3Lexer(CharStreams.fromString(rawCode)).run {
-//      allTokens
-//        .filter { it.text?.isNotBlank() == true }
-//        .takeWhile { it.type != Token.EOF }
-//        .toList()
-//    }
+    Python3Lexer(CharStreams.fromString(rawCode)).allTokens
+      .filter { it.text?.isNotBlank() == true }
+      .takeWhile { it.type != Token.EOF }
+      .toList()
 
   /**
    * Returns just the ANTLR "names" of the lexed tokens, e.g. "NAME", "FOR", "IN", etc.
