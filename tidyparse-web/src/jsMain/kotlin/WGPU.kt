@@ -43,9 +43,10 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
     gpu.addEventListener(EventType("uncapturederror"), { e: dynamic -> println("Uncaptured: ${e.error.message}") })
     try {
       listOf(
-        init_chart,
         prefix_sum_p1, prefix_sum_p2,      // ADT storage utils
         sparse_load, sparse_mat_load,      // Matrix loading utils
+
+        init_chart,
         dag_reach, mdpt_count, mdpt_write, // Graph reachability
         cfl_mul_upper,                     // Matrix exponentiation
         bp_count, bp_write,                // Backpointer addressing
