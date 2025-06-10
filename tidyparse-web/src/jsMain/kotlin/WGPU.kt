@@ -166,17 +166,16 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
   val outBuf = GPUBuffer(MAX_SAMPLES * maxRepairLen * 4, GPUBufferUsage.STCPSD)
   val groupsY = (MAX_SAMPLES + groupsX - 1) / groupsX
   sample_words_wor(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, idxUniBuf, cdfBuf)(groupsX, groupsY)
-  println("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
 
-  if (ngrams == null) {
-    val result = mutableMapOf<Int, MutableSet<String>>()
+    val res = mutableMapOf<Int, MutableSet<String>>()
     val allResults = outBuf.readInts()
     for (i in 0 until MAX_SAMPLES) {
       val t = allResults.decodePacket(i, cfg.tmLst, maxRepairLen) ?: break
-      result.getOrPut(t.first) { mutableSetOf() }.add(t.second)
+      res.getOrPut(t.first) { mutableSetOf() }.add(t.second)
     }
-    return result.map { println("Δ=${it.key} -> |L|=${it.value.size}"); it.value.toList() }.flatten()
-  }
+    res.forEach { println("Δ=${it.key} -> |L|=${it.value.size}") }
+  println("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
+  if (ngrams == null) { return res.map { it.value.toList() }.flatten() }
 
   // TODO: WGSL kernel for repair minimization here?
 

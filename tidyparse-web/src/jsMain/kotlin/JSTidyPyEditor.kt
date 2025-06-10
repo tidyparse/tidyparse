@@ -128,7 +128,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
         (if (gpuAvailable) {
           println("Repairing on GPU...")
-          repairCode(cfg, tokens, LED_BUFFER, ngramTensor).asSequence()
+          repairCode(cfg, tokens, if (minimize) 0 else LED_BUFFER, ngramTensor).asSequence()
         } else {
           println("Repairing on CPU...")
           metric = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() }
