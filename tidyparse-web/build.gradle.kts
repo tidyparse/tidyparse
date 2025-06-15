@@ -35,7 +35,7 @@ kotlin {
     val jsMain by getting {
       dependencies {
         implementation(project(":tidyparse-core"))
-        implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2025.5.10")
+        implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2025.6.4")
       }
     }
   }
@@ -68,7 +68,7 @@ tasks.register("bundleHeadless") {
         <meta charset="utf-8">
         <title>TidyParse Headless</title>
         <script type="text/javascript">var REPAIR_MODE = "headless"</script>
-        <script type="text/javascript">var raw_ngrams = `${rawNgrams}`;</script>
+        <script type="text/javascript">var raw_ngrams = `$rawNgrams`;</script>
         <script type="module">
         $inlinedJs
         </script>
