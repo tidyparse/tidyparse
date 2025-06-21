@@ -150,7 +150,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
 
   val lsDense  = buildLanguageSizeBuf(numStates, numNTs, dpBuf, metaBuf, tmBuf)
   val totalExp = bpStorageBuf.size.toInt() / (2 * 4)
-  val cdfBuf = GPUBuffer(totalExp * 4, GPUBufferUsage.STCPSD)
+  val cdfBuf   = GPUBuffer(totalExp * 4, GPUBufferUsage.STCPSD)
 
   ls_cdf(dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
 
@@ -841,7 +841,7 @@ val prefix_sum_p2 by Shader("""struct PrefixSumUni { n : u32, numBlocks : u32, g
 // Longest word WGSL can handle. If ~2^9<MAX_WORD_LEN, pipeline breaks some on architectures
 const val MAX_WORD_LEN = 512
 const val MAX_LEV_RAD = 5
-const val MAX_SAMPLES = 250_000
+const val MAX_SAMPLES = 550_000
 const val DISPATCH_GROUP_SIZE_X = 65535
 // Length of the packet header in each repair buffer
 const val PKT_HDR_LEN = 2 // [levenshtein distance, Markov probability]
