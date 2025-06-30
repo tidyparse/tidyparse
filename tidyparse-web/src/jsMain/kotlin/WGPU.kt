@@ -1426,7 +1426,7 @@ class Shader constructor(val src: String) {
 
   // Invocation strategies: eliminates some of the ceremony of calling a GSL shader
   suspend fun invokeCFLFixpoint(numStates: Int, numNTs: Int, dpIn: GPUBuffer, metaBuf: GPUBuffer) {
-//    var t0 = TimeSource.Monotonic.markNow()
+    var t0 = TimeSource.Monotonic.markNow()
 
     var prevValue = -1
 
@@ -1438,8 +1438,8 @@ class Shader constructor(val src: String) {
       changesBuf.destroy()
       if (changesThisRound == prevValue) break
       prevValue = changesThisRound
-//      println("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
-//      t0 = TimeSource.Monotonic.markNow()
+      println("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}, ⌈log(|Q|*|V|)⌉=${ceil(log2(numStates * numNTs.toDouble()))}")
+      t0 = TimeSource.Monotonic.markNow()
     }
   }
 
