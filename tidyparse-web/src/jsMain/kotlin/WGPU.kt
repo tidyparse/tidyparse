@@ -31,6 +31,7 @@ external val navigator: dynamic
 TODO:
   (1) Minimize repairs on GPU
   (2) Use more sensible midpoint filter based on dense adjacency / reachability matrix
+  (3) Implement test harness to avoid regressions. Need to measure: (1) perf (2) prec@k
 */
 
 suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
@@ -104,7 +105,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
 
   val metaBuf = packMetadata(cfg, fsa)
 
-  val tmBuf = cfg.termBuf
+  val tmBuf     = cfg.termBuf
   val wordBuf   = codePoints.toGPUBuffer()
   val totalSize = numStates * numStates * numNTs
   val dpBuf     = Shader.createParseChart(GPUBufferUsage.STCPSD, totalSize)
@@ -176,8 +177,6 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
     res.forEach { println("Δ=${it.key} -> |L|=${it.value.size}") }
   println("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
   if (ngrams == null) { return res.map { it.value.toList() }.flatten() }
-
-  // TODO: WGSL kernel for repair minimization here?
 
   val k = 20 * MAX_DISP_RESULTS
   val topK = scoreSelectGather(
@@ -362,7 +361,7 @@ fn find_target_sum(rank_k: u32, max_j_idx: u32, max_i_idx: u32) -> i32 {
     let num_j_vals = i32(max_j_idx + 1u);
     let num_i_vals = i32(max_i_idx + 1u);
 
-    while(low <= high) {
+    while (low <= high) {
         let mid_s = low + (high - low) / 2;
         if (prefix_count(mid_s, num_j_vals, num_i_vals) <= i32(rank_k)) {
             target_s = mid_s;
@@ -770,12 +769,13 @@ var<workgroup> tile: array<u32, WORKGROUP_SIZE>;
   @builtin(workgroup_id)        groupId : vec3<u32>,
   @builtin(local_invocation_id) localId : vec3<u32>
 ) {
-    let N       = prefixUni.n;
+    let N     = prefixUni.n;
     let block = groupId.x + groupId.y * prefixUni.groupsX;
+    
     if (block >= prefixUni.numBlocks) { return; }
     
-    let lid  = localId.x;
-    let gid  = block * WORKGROUP_SIZE + lid;   // global element index
+    let lid = localId.x;
+    let gid = block * WORKGROUP_SIZE + lid;   // global element index
 
     // 1) Load data from inputBuf into shared workgroup array `tile`.
     if (gid < N) { tile[lid] = inputBuf[gid]; } else { tile[lid] = 0u; }
@@ -943,7 +943,7 @@ const TEMPERATURE : f32 = 1.1; // 1.0 = unmodified;  ∞ ≈ uniform
 fn weight(sz: u32) -> u32 { return max(1u, u32(pow(f32(sz), 1.0 / TEMPERATURE))); }
 /* -------------------------------------------------------------------------------- */
 
-@compute @workgroup_size(1, 1, 1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     /* ---- unique global rank ---------------------------------------------------- */
     let gRank = gid.x + gid.y * idx_uni.grid_dim_x;
     if (gRank >= idx_uni.max_samples) { return; }
@@ -1058,7 +1058,7 @@ fn lookupScore(key: u32) -> u32 {
     }
 }
 
-@compute @workgroup_size(1, 1, 1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let sid = gid.x + gid.y * idx_uni.grid_dim_x;
     if (sid >= idx_uni.max_samples) { return; }
 
@@ -1577,33 +1577,4 @@ fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer 
   println("Done")
 
   return flat.asList().toGPUBuffer()
-}
-
-fun IntArray.toLaTeX(numStates: Int, numNTs: Int): String {
-  val tikzCommands = if (numStates == 0) "" else {
-    (0 until numStates).flatMap { q1_rowIndex ->
-      (0 until numStates).map { q2_colIndex ->
-        val isActive = if (numNTs > 0) {
-          val baseFlatIndex = q1_rowIndex * numStates * numNTs + q2_colIndex * numNTs
-          (0 until numNTs).any { ntIdxInSlice ->
-            val currentFlatIndex = baseFlatIndex + ntIdxInSlice
-            (currentFlatIndex < size && this[currentFlatIndex] != 0)
-          }
-        } else { false }
-
-        val tikzX = q2_colIndex
-        val tikzY = numStates - 1 - q1_rowIndex
-
-        val fillColor = if (isActive) "black" else "white"
-        "  \\path[fill=${fillColor}] (${tikzX},${tikzY}) rectangle ++(1,1);"
-      }
-    }.joinToString("\n")
-  }
-
-  val squareUnitSize = "0.3cm"
-  return """
-  \begin{tikzpicture}[x=${squareUnitSize}, y=${squareUnitSize}, draw=gray, very thin]
-  ${tikzCommands.ifBlank { "% Empty grid" }}
-  \end{tikzpicture}
-  """.trimIndent()
 }
