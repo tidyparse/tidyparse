@@ -28,6 +28,12 @@ kotlin {
         mainOutputFileName = "tidyparse-web.js"
         devtool = "source-map" // For debugging; remove for production
       }
+
+      testTask {
+        useKarma {
+          useChromeHeadless()
+        }
+      }
     }
   }
 
@@ -35,7 +41,14 @@ kotlin {
     val jsMain by getting {
       dependencies {
         implementation(project(":tidyparse-core"))
-        implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2025.8.0")
+        // Do not update until 2025.8.0 is stable
+        implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2025.6.4")
+      }
+    }
+
+    val jsTest by getting {
+      dependencies {
+        implementation(kotlin("test-js"))
       }
     }
   }
