@@ -34,10 +34,13 @@ TODO:
   (3) Implement test harness to avoid regressions. Need to measure: (1) perf (2) prec@k
 */
 
+const val largeMem = "{ requiredLimits: { maxBufferSize: 2000000000, maxStorageBufferBindingSize: 2000000000 } }"
+const val smallMem = "{ requiredLimits: { maxBufferSize: 1073741824, maxStorageBufferBindingSize: 1073741824 } }"
+
 suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
   val tmpDev = (navigator.gpu as? GPU)?.requestAdapter()?.also {
-    val desc = js("{ requiredLimits: { maxBufferSize: 2000000000, maxStorageBufferBindingSize: 2000000000 } }")
-    gpu = if (needsExtraMemory) it.requestDevice(desc) else it.requestDevice()
+    gpu = if (needsExtraMemory) it.requestDevice(js(largeMem))
+          else it.requestDevice(js(smallMem))
   }
 
   if (tmpDev != null) {

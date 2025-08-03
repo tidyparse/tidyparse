@@ -1,5 +1,6 @@
 @file:OptIn(ExperimentalEncodingApi::class)
 
+import org.jetbrains.kotlin.gradle.targets.js.testing.KotlinJsTest
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.DEVELOPMENT
 import org.jetbrains.kotlin.gradle.targets.js.webpack.WebpackDevtool
 import kotlin.io.encoding.*
@@ -29,11 +30,7 @@ kotlin {
         devtool = "source-map" // For debugging; remove for production
       }
 
-      testTask {
-        useKarma {
-          useChromeHeadless()
-        }
-      }
+      testTask { useKarma { useChrome() } }
     }
   }
 
@@ -49,34 +46,41 @@ kotlin {
     val jsTest by getting {
       dependencies {
         implementation(kotlin("test-js"))
+//        implementation(npm("kotlin-web-helpers", "2.1.0"))
+//        implementation(npm("karma-mocha-reporter", "2.2.5"))
+//        implementation(npm("karma-junit-reporter", "2.0.4"))
+        implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
       }
     }
   }
 }
 
-tasks.register("bundleHeadless") {
-  dependsOn(project(":tidyparse-web").tasks.named("jsBrowserProductionWebpack"))
+tasks {
+//  withType<KotlinJsTest> { testLogging.showStandardStreams = true }
 
-  val bundleDir = project(":tidyparse-web").layout.buildDirectory
-    .dir("kotlin-webpack/js/productionExecutable/")
+  register("bundleHeadless") {
+    dependsOn(project(":tidyparse-web").tasks.named("jsBrowserProductionWebpack"))
 
-  val jsFile = bundleDir.map { it.file("tidyparse-web.js").asFile }
-  val mapFile = bundleDir.map { it.file("tidyparse-web.js.map").asFile }
+    val bundleDir = project(":tidyparse-web").layout.buildDirectory
+      .dir("kotlin-webpack/js/productionExecutable/")
 
-  inputs.files(jsFile, mapFile)
-  outputs.file(File(System.getProperty("user.home"), "gpu.html"))
+    val jsFile = bundleDir.map { it.file("tidyparse-web.js").asFile }
+    val mapFile = bundleDir.map { it.file("tidyparse-web.js.map").asFile }
 
-  doLast {
-    val jsCode = jsFile.get().readText()
-    val mapJson = mapFile.get().readText()
+    inputs.files(jsFile, mapFile)
+    outputs.file(File(System.getProperty("user.home"), "gpu.html"))
 
-    val mapB64 = Base64.encode(mapJson.toByteArray())
-    val inlinedJs = jsCode.replace(Regex("""(?m)^//# sourceMappingURL=.*$"""), "")
-      .trimEnd('\n', '\r') + "\n//# sourceMappingURL=data:application/json;base64,$mapB64"
-    val ngramPath = "src/jsMain/resources/python_4grams.txt"
-    val rawNgrams = project(":tidyparse-web").layout.projectDirectory.file(ngramPath).asFile.readText()
+    doLast {
+      val jsCode = jsFile.get().readText()
+      val mapJson = mapFile.get().readText()
 
-    val html = """
+      val mapB64 = Base64.encode(mapJson.toByteArray())
+      val inlinedJs = jsCode.replace(Regex("""(?m)^//# sourceMappingURL=.*$"""), "")
+        .trimEnd('\n', '\r') + "\n//# sourceMappingURL=data:application/json;base64,$mapB64"
+      val ngramPath = "src/jsMain/resources/python_4grams.txt"
+      val rawNgrams = project(":tidyparse-web").layout.projectDirectory.file(ngramPath).asFile.readText()
+
+      val html = """
         <!doctype html>
         <meta charset="utf-8">
         <title>TidyParse Headless</title>
@@ -88,10 +92,11 @@ tasks.register("bundleHeadless") {
         <script src="https://cdn.jsdelivr.net/pyodide/v0.27.5/full/pyodide.js"></script>
     """.trimIndent()
 
-    val outHtml = File(System.getProperty("user.home"), "tidyparse.html")
-    outHtml.writeText(html)
+      val outHtml = File(System.getProperty("user.home"), "tidyparse.html")
+      outHtml.writeText(html)
 
-    println("✓ Self-contained headless bundle written to ${outHtml.absolutePath}")
+      println("✓ Self-contained headless bundle written to ${outHtml.absolutePath}")
+    }
   }
 }
 
