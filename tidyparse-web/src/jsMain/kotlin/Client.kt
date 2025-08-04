@@ -57,11 +57,11 @@ fun main() {
 }
 
 suspend fun headlessSetup() {
-  println("Starting Tidyparse (headless)…")
+  log("Starting Tidyparse (headless)…")
 
   val cfg = vanillaS2PCFG
   tryBootstrappingGPU(needsExtraMemory = true)
-  println("Bootstrapped GPU")
+  log("Bootstrapped GPU")
   val ngramTensor = loadNgramsFromString(window["raw_ngrams"].toString())
     .toGpuHash(cfg = cfg).loadToGPUBuffer()
 
@@ -70,7 +70,7 @@ suspend fun headlessSetup() {
   es.onmessage = { ev ->
     MainScope().launch {
       errors = 0
-      val prompt = (ev.data as String).also { println("Received prompt: $it") }.tokenizeByWhitespace()
+      val prompt = (ev.data as String).also { log("Received prompt: $it") }.tokenizeByWhitespace()
 //      val out = repairCode(cfg, prompt, LED_BUFFER, ngramTensor) // With reranking + truncation
       val out = repairCode(cfg, prompt, LED_BUFFER, null) // Without reranking + truncation
         .distinct().joinToString("\n")
@@ -81,7 +81,7 @@ suspend fun headlessSetup() {
 }
 
 suspend fun defaultSetup() {
-  println("Starting Tidyparse/CFG")
+  log("Starting Tidyparse/CFG")
 
   fetchSelectedExample()
   jsEditor.getLatestCFG()
@@ -112,7 +112,7 @@ suspend fun defaultSetup() {
 }
 
 suspend fun pythonSetup() {
-  println("Starting TidyPython")
+  log("Starting TidyPython")
 
   jsPyEditor.redecorateLines()
 //    LED_BUFFER = maxEdits.value.toInt()
@@ -121,7 +121,7 @@ suspend fun pythonSetup() {
     val t0 = TimeSource.Monotonic.markNow()
     tryBootstrappingGPU(true)
     if (gpuAvailable)
-      println("Loaded n-grams into ${jsPyEditor.ngramTensor.size / 1000000}mb GPU buffer in ${t0.elapsedNow()}")
+      log("Loaded n-grams into ${jsPyEditor.ngramTensor.size / 1000000}mb GPU buffer in ${t0.elapsedNow()}")
   }
   initPyodide()
 
@@ -166,8 +166,8 @@ suspend fun loadNgrams(file: String = "python_4grams.txt") {
       numNgrams++
     }
 
-    println("Loaded ${jsPyEditor.ngrams.size} $n-grams from $file in ${t0.elapsedNow()}")
-  } else println("Failed to load ngrams from $file")
+    log("Loaded ${jsPyEditor.ngrams.size} $n-grams from $file in ${t0.elapsedNow()}")
+  } else log("Failed to load ngrams from $file")
 }
 
 suspend fun initPyodide() {
@@ -186,8 +186,8 @@ suspend fun initPyodide() {
   val fmtCode = "from black import format_str, FileMode; format_str(\"$testStr\", mode=FileMode())"
   val beautified = jsPyEditor.pyodide.runPythonAsync(fmtCode).unsafeCast<Promise<String>>().await()
 
-  println("Black test => $beautified")
-  println(jsPyEditor.getOutput("1+"))
+  log("Black test => $beautified")
+  log(jsPyEditor.getOutput("1+"))
 }
 
 suspend fun fetchSelectedExample() {

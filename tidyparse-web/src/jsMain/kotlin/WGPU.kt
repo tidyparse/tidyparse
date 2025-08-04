@@ -44,7 +44,7 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
   }
 
   if (tmpDev != null) {
-    gpu.addEventListener(EventType("uncapturederror"), { e: dynamic -> println("Uncaptured: ${e.error.message}") })
+    gpu.addEventListener(EventType("uncapturederror"), { e: dynamic -> log("Uncaptured: ${e.error.message}") })
     try {
       listOf(
         prefix_sum_p1, prefix_sum_p2,      // ADT storage utils
@@ -63,7 +63,7 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
 //      benchmarkReach()
     } catch (e: Exception) { e.printStackTrace(); return }
 
-    println("Bootstrapping GPU successful!")
+    log("Bootstrapping GPU successful!")
     gpuAvailable = true
 
     (document.getElementById("gpuAvail") as? HTMLDivElement)?.appendChild(
@@ -79,21 +79,21 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
 suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VALUE, ngrams: GPUBuffer? = null): List<String> {
   val t0 = TimeSource.Monotonic.markNow()
   val fsa: FSA = makeLevFSA(code, MAX_LEV_RAD)
-  println("Made levFSA in ${t0.elapsedNow()}")
+  log("Made levFSA in ${t0.elapsedNow()}")
 
   // TODO: maybe modify the LevFSA to accommodate unknown tokens?
   val codePoints = IntArray(code.size) { cfg.tmMap[code[it]] ?: 0 }
 
 // This is interchangeable with init_chart for Lev automata
 //  val dpInSparse = fsa.byteFormat(cfg).toGPUBuffer()
-//  println("Initial nonzeros: ${dpIn.count { it != 0 }}")
+//  log("Initial nonzeros: ${dpIn.count { it != 0 }}")
 
-  println("PREPROCESSING TOOK: ${t0.elapsedNow()}") // ~230ms
+  log("PREPROCESSING TOOK: ${t0.elapsedNow()}") // ~230ms
   val words = repairPipeline(cfg, fsa, ledBuffer, ngrams, codePoints)
 //  val distinctWords = words.distinct()
-//  println("Distinct: ${distinctWords.size} words")
+//  log("Distinct: ${distinctWords.size} words")
 
-  return words.also { println("Received: ${words.size} words in ${t0.elapsedNow()} (round trip)") }
+  return words.also { log("Received: ${words.size} words in ${t0.elapsedNow()} (round trip)") }
 }
 
 suspend fun repairPipeline(cfg: CFG, fsa: FSA,
@@ -101,10 +101,10 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
                            ledBuffer: Int, ngrams: GPUBuffer?, codePoints: IntArray): List<String> {
   val t0 = TimeSource.Monotonic.markNow()
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
-  println("FSA(|Q|=${numStates}, |δ|=${fsa.transit.size}), " +
+  log("FSA(|Q|=${numStates}, |δ|=${fsa.transit.size}), " +
           "CFG(|Σ|=${cfg.terminals.size}, |V|=${numNTs}, |P|=${cfg.nonterminalProductions.size})")
 
-//println("Time to load buffer: ${t0.elapsedNow()} (${input.size * 4} bytes)")
+//log("Time to load buffer: ${t0.elapsedNow()} (${input.size * 4} bytes)")
 
   val metaBuf = packMetadata(cfg, fsa)
 
@@ -114,43 +114,43 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
   val dpBuf     = Shader.createParseChart(GPUBufferUsage.STCPSD, totalSize)
   init_chart(dpBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
 
-  println("Chart construction took: ${t0.elapsedNow()}")
+  log("Chart construction took: ${t0.elapsedNow()}")
 
-//   println(dpBuf.readInts().toLaTeX(numStates, numNTs))
+//   log(dpBuf.readInts().toLaTeX(numStates, numNTs))
 
 // val rowCoeff = numStates * numNTs
 //  val colCoeff = numNTs
 //  val dpBuf = dpInSparse.toGPUBufferSparse(GPUBufferUsage.STCPSD, numStates * rowCoeff, rowCoeff, colCoeff)
 
   cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpBuf, metaBuf)
-  println("Matrix closure reached in: ${t0.elapsedNow()}")
+  log("Matrix closure reached in: ${t0.elapsedNow()}")
 
 //  dpBuf.readInts().filter { it != 0 }.map { it.toString(2) }
 //    .groupingBy { it }.eachCount().entries.sortedBy { it.key }.joinToString("\n") { (a, b) -> "$a => $b" }
-//    .also { println(it) }
+//    .also { log(it) }
 
   val t1 = TimeSource.Monotonic.markNow()
   val startNT     = cfg.bindex[START_SYMBOL]
   val allStartIds = fsa.finalIdxs.map { it * numNTs + startNT }
     .let { it.zip(dpBuf.readIndices(it)) }.filter { (_, v) -> v != 0 }.map { it.first }
 
-  if (!allStartIds.isEmpty()) // { println("Valid parse found: dpComplete has ${allStartIds.size} start indices") }
-  else return emptyList<String>().also { println("No valid parse found: dpComplete has no entries in final states!") }
+  if (!allStartIds.isEmpty()) // { log("Valid parse found: dpComplete has ${allStartIds.size} start indices") }
+  else return emptyList<String>().also { log("No valid parse found: dpComplete has no entries in final states!") }
 
   val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNTs, dpBuf, metaBuf)
-  println("Built backpointers in ${t1.elapsedNow()}")
+  log("Built backpointers in ${t1.elapsedNow()}")
 
   val t2 = TimeSource.Monotonic.markNow()
   val statesToDist = allStartIds.map { it to fsa.idsToCoords[(it - startNT) / numNTs]!!.second }
   val led = statesToDist.minOf { it.second } // Language edit distance
 
   val startIdxs = statesToDist.filter { it.second in (led..(led + ledBuffer)) }
-    .map { listOf(it.first, it.second) }.sortedBy { it[1] }.also { println("Start indices: $it") }.flatten()
+    .map { listOf(it.first, it.second) }.sortedBy { it[1] }.also { log("Start indices: $it") }.flatten()
 
   val maxRepairLen = fsa.width + fsa.height + 10
 
   if (MAX_WORD_LEN < maxRepairLen) return emptyList<String>()
-    .also { println("Max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)") }
+    .also { log("Max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)") }
 
   val lsDense  = buildLanguageSizeBuf(numStates, numNTs, dpBuf, metaBuf, tmBuf)
   val totalExp = bpStorageBuf.size.toInt() / (2 * 4)
@@ -164,7 +164,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
   val header = intArrayOf(0, maxRepairLen, numNTs, numStates, groupsX, MAX_SAMPLES)
 
   /** [TERM_STRUCT] */ val idxUniBuf = packStruct(constants = header.toList(), startIdxs.toGPUBuffer())
-  println("Pairing function construction took: ${t2.elapsedNow()}")
+  log("Pairing function construction took: ${t2.elapsedNow()}")
 
   val t3 = TimeSource.Monotonic.markNow()
   val outBuf = GPUBuffer(MAX_SAMPLES * maxRepairLen * 4, GPUBufferUsage.STCPSD)
@@ -177,8 +177,8 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
       val t = allResults.decodePacket(i, cfg.tmLst, maxRepairLen) ?: break
       res.getOrPut(t.first) { mutableSetOf() }.add(t.second)
     }
-    res.forEach { println("Δ=${it.key} -> |L|=${it.value.size}") }
-  println("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
+    res.forEach { log("Δ=${it.key} -> |L|=${it.value.size}") }
+  log("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
   if (ngrams == null) { return res.map { it.value.toList() }.flatten() }
 
   val k = 20 * MAX_DISP_RESULTS
@@ -199,11 +199,11 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
 
   for (i in 0 until k) {
     val t = topK.decodePacket(i, cfg.tmLst, maxRepairLen)
-    if (t == null) { println("Escaped after $i samples"); break }
+    if (t == null) { log("Escaped after $i samples"); break }
     result.add(t.second)
   }
 
-//  println("Decoded ${result.distinct().size} unique words out of ${result.size} in ${t4.elapsedNow()}")
+//  log("Decoded ${result.distinct().size} unique words out of ${result.size} in ${t4.elapsedNow()}")
   return result
 }
 
@@ -236,9 +236,9 @@ suspend fun scoreSelectGather(
   val groupsX = DISPATCH_GROUP_SIZE_X
   val groupsY = (maxSamples + groupsX - 1) / groupsX
   markov_score(packets, ngrams, indexUniformsBuf)(groupsX, groupsY)
-//  println("Score in ${t0.elapsedNow()}")
+//  log("Score in ${t0.elapsedNow()}")
 
-//  println(packets.readInts().toList().windowed(stride, stride)
+//  log(packets.readInts().toList().windowed(stride, stride)
 //    .map { it[1] }.groupingBy { it }.eachCount().entries
 //    .sortedBy { it.key }.joinToString("\n") { (a, b) -> "$a => $b" })
 
@@ -251,18 +251,18 @@ suspend fun scoreSelectGather(
   val scrBuf   = IntArray(k) { Int.Companion.MAX_VALUE }.toGPUBuffer(GPUBufferUsage.STCPSD)
 
   select_top_k(prmBuf, packets, idxBuf, scrBuf)(selGroupsX, selGroupsY)
-//  println("Select in ${t0.elapsedNow()}")
+//  log("Select in ${t0.elapsedNow()}")
 
 //  t0 = TimeSource.Monotonic.markNow()
   val gatherPrm = intArrayOf(stride, k).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
   val bestBuf   = GPUBuffer(k * stride * 4, GPUBufferUsage.STCPSD)
 
   gather_top_k(gatherPrm, packets, idxBuf, bestBuf)(k)
-//  println("Gather in ${t0.elapsedNow()}")
+//  log("Gather in ${t0.elapsedNow()}")
 
 //  t0 = TimeSource.Monotonic.markNow()
   val topK = bestBuf.readInts()
-  println("Score/select/gather read ${topK.size} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
+  log("Score/select/gather read ${topK.size} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
 
   listOf(prmBuf, idxBuf, scrBuf, gatherPrm, bestBuf).forEach(GPUBuffer::destroy)
   return topK
@@ -277,7 +277,7 @@ val CFG.termBuf: GPUBuffer by cache {
   val all_tm = terminalLists.flatten().toGPUBuffer()
 
   /** Memory layout: [TERM_STRUCT] */ packStruct(emptyList(), nt_tm_lens, nt_tm_offsets, all_tm)
-//    .also { println("Packing time: ${packTime.elapsedNow()}") }
+//    .also { log("Packing time: ${packTime.elapsedNow()}") }
 }
 
 //language=wgsl
@@ -1253,7 +1253,7 @@ class Shader constructor(val src: String) {
       (readDst.mapAsync(1) as Promise<*>).await()
       val t = Int32Array(readDst.getMappedRange()).asList().toIntArray()
       readDst.destroy()
-//      println("Read ${size.toInt()} bytes in ${t0.elapsedNow()}")
+//      log("Read ${size.toInt()} bytes in ${t0.elapsedNow()}")
       return t
     }
 
@@ -1274,7 +1274,7 @@ class Shader constructor(val src: String) {
       (stagingBuffer.mapAsync(1) as Promise<*>).await()
       val t = Int32Array(stagingBuffer.getMappedRange())
         .asList().toIntArray().toList().also { stagingBuffer.destroy() }
-      println("Read ${indices.size}/${size.toInt()} bytes in ${t0.elapsedNow()}")
+      log("Read ${indices.size}/${size.toInt()} bytes in ${t0.elapsedNow()}")
       return t
     }
 
@@ -1350,18 +1350,18 @@ class Shader constructor(val src: String) {
       val t0 = TimeSource.Monotonic.markNow()
       val grammarFlattened = cfg.vindex.map { it.toList() }.flatten().toGPUBuffer()
       val grammarOffsets = cfg.vindex.map { it.size }.fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toGPUBuffer()
-      println("Encoded grammar in ${t0.elapsedNow()}")
+      log("Encoded grammar in ${t0.elapsedNow()}")
 
       val (reachBuf: GPUBuffer, entries: Int) = dag_reach.invokeDAGFixpoint(fsa)
 
-      println("DAG fixpoint in ${t0.elapsedNow()}")
+      log("DAG fixpoint in ${t0.elapsedNow()}")
 //    val (allFSAPairsFlattened, allFSAPairsOffsets) = //fsa.midpoints.prefixScan()
 //        reachBuf.readInts().sparsifyReachabilityMatrix().prefixScan()
       //  TODO: enforce exact equivalence?
       val (allFSAPairsFlattened, allFSAPairsOffsets) = buildMidpointsGPU(fsa.numStates, reachBuf)
-//      println("Flat midpoints in ${t0.elapsedNow()} : ${allFSAPairsFlattened.size} # ${allFSAPairsOffsets.size}")
+//      log("Flat midpoints in ${t0.elapsedNow()} : ${allFSAPairsFlattened.size} # ${allFSAPairsOffsets.size}")
 
-      println("Sparse reachability took ${t0.elapsedNow()} / (${4 *(allFSAPairsFlattened.size + allFSAPairsOffsets.size)} bytes)")
+      log("Sparse reachability took ${t0.elapsedNow()} / (${4 *(allFSAPairsFlattened.size + allFSAPairsOffsets.size)} bytes)")
 
       /** Memory layout: [CFL_STRUCT] */ val metaBuf = packStruct(
         constants = listOf(fsa.numStates, cfg.nonterminals.size),
@@ -1371,7 +1371,7 @@ class Shader constructor(val src: String) {
         grammarFlattened, grammarOffsets
       )
 
-      println("Packed metadata in ${t0.elapsedNow()}")
+      log("Packed metadata in ${t0.elapsedNow()}")
       return metaBuf
     }
 
@@ -1397,7 +1397,7 @@ class Shader constructor(val src: String) {
 
       val bpCountBuf = GPUBuffer(totalCells * 4, GPUBufferUsage.STCPSD)
 
-      println("Total cells: $totalCells = $numStates^2 * $numNTs")
+      log("Total cells: $totalCells = $numStates^2 * $numNTs")
       bp_count(dpIn, bpCountBuf, metaBuf)(numStates, numStates, numNTs)
 
 //    val bpOffsetBuf = bpCountBuf.readInts().scan(0) { acc, arr -> acc + arr }.dropLast(1).toIntArray().toGPUBuffer(GPUBufferUsage.STCPSD)
@@ -1405,7 +1405,7 @@ class Shader constructor(val src: String) {
 
       val lastIdx = listOf(totalCells - 1)
       val totalExpansions = bpOffsetBuf.readIndices(lastIdx)[0] + bpCountBuf.readIndices(lastIdx)[0]
-      println("Total expansions: $totalExpansions")
+      log("Total expansions: $totalExpansions")
 
       val bpStorageBuf = GPUBuffer(totalExpansions * 2 * 4, GPUBufferUsage.STCPSD)
 
@@ -1436,12 +1436,12 @@ class Shader constructor(val src: String) {
     for (round in 0..<numStates) {
       val changesBuf = 0.toGPUBuffer()
       cfl_mul_upper(dpIn, metaBuf, changesBuf)(numStates, numStates, numNTs)
-//      println(dpIn.readInts().toLaTeX(numStates, numNTs))
+//      log(dpIn.readInts().toLaTeX(numStates, numNTs))
       val changesThisRound = changesBuf.readInts()[0]
       changesBuf.destroy()
       if (changesThisRound == prevValue) break
       prevValue = changesThisRound
-      println("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}, ⌈log(|Q|*|V|)⌉=${ceil(log2(numStates * numNTs.toDouble()))}")
+      log("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}, ⌈log(|Q|*|V|)⌉=${ceil(log2(numStates * numNTs.toDouble()))}")
       t0 = TimeSource.Monotonic.markNow()
     }
   }
@@ -1460,7 +1460,7 @@ class Shader constructor(val src: String) {
       changesBuf.destroy()
       if (changesThisRound == prevValue) break
       prevValue = changesThisRound
-//      println("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
+//      log("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
 //      t0 = TimeSource.Monotonic.markNow()
     }
 
@@ -1577,7 +1577,7 @@ fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer 
   flat[0] = pow.toUInt()
   table.copyInto(flat, 1)
 
-  println("Done")
+  log("Done")
 
   return flat.asList().toGPUBuffer()
 }

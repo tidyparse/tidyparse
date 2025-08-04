@@ -46,9 +46,6 @@ kotlin {
     val jsTest by getting {
       dependencies {
         implementation(kotlin("test-js"))
-//        implementation(npm("kotlin-web-helpers", "2.1.0"))
-//        implementation(npm("karma-mocha-reporter", "2.2.5"))
-//        implementation(npm("karma-junit-reporter", "2.0.4"))
         implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
       }
     }

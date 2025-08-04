@@ -1,3 +1,5 @@
+import kotlin.time.TimeSource
+
 fun IntArray.toLaTeX(numStates: Int, numNTs: Int): String {
   val tikzCommands = if (numStates == 0) "" else {
     (0 until numStates).flatMap { q1_rowIndex ->
@@ -25,4 +27,14 @@ fun IntArray.toLaTeX(numStates: Int, numNTs: Int): String {
   ${tikzCommands.ifBlank { "% Empty grid" }}
   \end{tikzpicture}
   """.trimIndent()
+}
+
+var lastTimeMeasurement: TimeSource.Monotonic.ValueTimeMark? = null
+var DEBUG_SUFFIX = ""
+
+fun log(s: String) {
+  if (lastTimeMeasurement == null) lastTimeMeasurement = TimeSource.Monotonic.markNow()
+  val prefix = "(Δ=${lastTimeMeasurement!!.elapsedNow().inWholeMilliseconds}ms):".padEnd(11)
+  println("$prefix$s$DEBUG_SUFFIX")
+  lastTimeMeasurement = TimeSource.Monotonic.markNow()
 }

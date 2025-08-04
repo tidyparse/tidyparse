@@ -22,19 +22,19 @@ suspend fun benchmarkReach() {
   val t0 = TimeSource.Monotonic.markNow()
   val midpoints = fsa.midpoints
   val (tdata, toffset) = midpoints.prefixScan()
-  println("Sparse CPU reachability took ${t0.elapsedNow()} / sum: ${midpoints.flatten().size}")
+  log("Sparse CPU reachability took ${t0.elapsedNow()} / sum: ${midpoints.flatten().size}")
 
   val t1 = TimeSource.Monotonic.markNow()
   val (reachBuf, _) = dag_reach.invokeDAGFixpoint(fsa)
   val (data, offset) = reachBuf.readInts()
-    .also { println("Fixpoint reached in ${t1.elapsedNow()} / sum: ${it.sum()}") }
+    .also { log("Fixpoint reached in ${t1.elapsedNow()} / sum: ${it.sum()}") }
     .sparsifyReachabilityMatrix()
-    .also { println("Sparse GPU reachability in ${t1.elapsedNow()} / sum: ${it.flatten().size}") }
+    .also { log("Sparse GPU reachability in ${t1.elapsedNow()} / sum: ${it.flatten().size}") }
     .prefixScan()
 
-  println("Full sparse GPU reachability took ${t1.elapsedNow()}")
+  log("Full sparse GPU reachability took ${t1.elapsedNow()}")
 
-  println("Reference (${tdata.size}, ${toffset.size}) / Actual (${data.size}, ${offset.size})")
+  log("Reference (${tdata.size}, ${toffset.size}) / Actual (${data.size}, ${offset.size})")
 }
 
 // TODO: move into shader kernel?
@@ -54,7 +54,7 @@ fun List<List<List<Int>>>.prefixScan(): Pair<IntArray, IntArray> =
     val offsets = filtered.map { it.size }.toIntArray().prefixSumSizes()
 
     flattened to offsets
-  }.also { println("Completed prefix scan in: ${it.duration}") }.value
+  }.also { log("Completed prefix scan in: ${it.duration}") }.value
 
 fun IntArray.sparsifyReachabilityMatrix(n: Int = sqrt(size.toDouble()).toInt()): List<List<List<Int>>> =
   List(n) { i ->
@@ -68,13 +68,13 @@ suspend fun benchmarkWGPURepair() {
   val cfg = pythonStatementCNFAllProds
   val code = "NAME = [ ( STRING , NAME ) , , ( NAME , NAME ) , ( NAME , NAME ) , ( NAME , NAME ) , , ( NAME , NAME ) ] NEWLINE".tokenizeByWhitespace()
   val words = repairCode(cfg, code, 5).distinct()
-  println("Distinct words: ${words.size}")
+  log("Distinct words: ${words.size}")
 
   val (valid, invalid) = words.shuffled().take(3).partition { it in cfg.language }
-  println("\nValid samples (${valid.size})\n")
-  valid.forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
-  println("\nInvalid samples (${invalid.size})\n")
-  invalid.forEachIndexed { i, it -> println("$i.) ${it.trim()}") }
+  log("\nValid samples (${valid.size})\n")
+  valid.forEachIndexed { i, it -> log("$i.) ${it.trim()}") }
+  log("\nInvalid samples (${invalid.size})\n")
+  invalid.forEachIndexed { i, it -> log("$i.) ${it.trim()}") }
 }
 
 suspend fun benchmarkWGPU() {
@@ -91,7 +91,7 @@ suspend fun benchmarkWGPU() {
   val gSum = WGSL_GEMX_ITERATE.invokeExp(intArrayOf(N).toGPUBuffer(), M.toGPUBuffer(140),
     threads = N, iterations = P).asList().hashCode()
   val t3 = performance.now()
-  println("GPU hash=$gSum in ${t3 - t2} ms (N=$N, P=$P)")
+  log("GPU hash=$gSum in ${t3 - t2} ms (N=$N, P=$P)")
 
   val t0 = performance.now()
 
@@ -109,7 +109,7 @@ suspend fun benchmarkWGPU() {
 
   val cSum = iterateCPU(M, P)
   val t1 = performance.now()
-  println("CPU hash=$cSum in ${t1 - t0} ms (N=$N, P=$P)")
+  log("CPU hash=$cSum in ${t1 - t0} ms (N=$N, P=$P)")
 }
 
 suspend fun Shader.invokeExp(vararg inputs: GPUBuffer, threads: Int, iterations: Int = 1): IntArray {
@@ -127,9 +127,9 @@ suspend fun Shader.invokeExp(vararg inputs: GPUBuffer, threads: Int, iterations:
       dispatchWorkgroups(threads, threads)
       end()
     }
-//      println("Read: ${inputs[0].readInts()}")
+//      log("Read: ${inputs[0].readInts()}")
 //      gpu.queue.submit(arrayOf(encoder.finish()))
-//      println("Elapsed: ${t0.elapsedNow()}")
+//      log("Elapsed: ${t0.elapsedNow()}")
   }
 
   gpu.queue.submit(arrayOf(encoder.finish()))

@@ -37,7 +37,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     }
 
     continuation { decorate() }
-//    println("Redecorated in ${timer.elapsedNow()}")
+//    log("Redecorated in ${timer.elapsedNow()}")
   }
 
   companion object {
@@ -71,7 +71,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
     jsPyEditor.pyodide.runPython(pyCode)
     jsPyEditor.pyodide.globals.get("_result") as String
-  } catch (e: dynamic) { "Error during compilation: $e".also { println(it) } }
+  } catch (e: dynamic) { "Error during compilation: $e".also { log(it) } }
 
   private fun String.getErrorType(): String =
     if (isEmpty()) "" else lines().dropLast(1).lastOrNull()?.substringBeforeLast(":") ?: this
@@ -86,7 +86,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     jsPyEditor.pyodide.globals.get("pretty_code").trim().replace("\n", " ")
   } catch (error: dynamic) {
     // If there's any issue, log the error and return the original
-    println("Error formatting Python code: $error")
+    log("Error formatting Python code: $error")
     code
   }
 
@@ -95,12 +95,12 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
   override fun handleInput() {
     val t0 = TimeSource.Monotonic.markNow()
-    val currentLine = currentLine().also { println("Current line is: $it") }
+    val currentLine = currentLine().also { log("Current line is: $it") }
     if (currentLine.isBlank()) return
     val pcs = PyCodeSnippet(currentLine)
     val tokens = pcs.lexedTokens().tokenizeByWhitespace().map { if (it == "|") "OR" else it }
 
-    println("Repairing: " + tokens.dropLast(1).joinToString(" "))
+    log("Repairing: " + tokens.dropLast(1).joinToString(" "))
 
     var containsUnk = false
     val abstractUnk = tokens.map { if (it in cfg.terminals) it else { containsUnk = true; "_" } }
@@ -127,10 +127,10 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 //        var metric: (List<String>) -> Int = { -1 }
 
         (if (gpuAvailable) {
-          println("Repairing on GPU...")
+          log("Repairing on GPU...")
           repairCode(cfg, tokens, if (minimize) 0 else LED_BUFFER, ngramTensor).asSequence()
         } else {
-          println("Repairing on CPU...")
+          log("Repairing on CPU...")
           metric = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() }
           sampleGREUntilTimeout(tokens, cfg)
         })

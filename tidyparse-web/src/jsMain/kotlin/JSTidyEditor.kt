@@ -51,7 +51,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     val caretInGrammar = caretInGrammar()
     val context = getApplicableContext()
     if (context.isEmpty()) return
-    println("Applicable context:\n$context")
+    log("Applicable context:\n$context")
     val tokens = context.tokenizeByWhitespace()
 
     val cfg =
@@ -164,6 +164,6 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
     if (!caretInGrammar()) continuation { decorate() }
     else if (currentLine().isValidProd()) window.setTimeout({ decorate() }, 100)
-//    println("Redecorated in ${timer.elapsedNow()}")
+//    log("Redecorated in ${timer.elapsedNow()}")
   }
 }
