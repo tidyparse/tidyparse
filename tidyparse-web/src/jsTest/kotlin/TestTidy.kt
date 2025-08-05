@@ -4,6 +4,7 @@ import ai.hypergraph.kaliningraph.types.PlatformVars
 import kotlinx.browser.window
 import kotlinx.coroutines.test.runTest
 import kotlin.test.*
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.TimeSource
 
 class TestTidy {
@@ -15,21 +16,22 @@ class TestTidy {
   }
 
   @Test
-  fun testRepairCode() = runTest {
+  fun testRepairCode() = runTest(timeout = 10.minutes) {
     log("Test WGPU repair")
     tryBootstrappingGPU()
     val cfg = vanillaS2PCFG
 
     val startTime = TimeSource.Monotonic.markNow()
-    val lines = PYTHON_SNIPPETS.lines().windowed(4).map { it.first() }.take(20)
+    val lines = PYTHON_SNIPPETS.lines().windowed(4).map { it.first() }.take(50)
+    log("Total lines")
 
     lines.forEach { line ->
       val t0 = TimeSource.Monotonic.markNow()
       val results = listOf("Sample repairs:") +
-        repairCode(cfg, code="$line NEWLINE".tokenizeByWhitespace(), LED_BUFFER, null)
+          repairCode(cfg, code = "$line NEWLINE".tokenizeByWhitespace(), LED_BUFFER, null)
       val elapsed = t0.elapsedNow()
 
-      assertTrue(results.isNotEmpty(), "No repairs generated for '$line'")
+      assertTrue(results.isNotEmpty(), "No repairs generated for:\n '$line'")
 
       log("Generated ${results.size} repairs in $elapsed")
       log(results.take(5).joinToString("\n\t\t\t"))

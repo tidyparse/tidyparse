@@ -42,3 +42,4 @@ out
 temp*.svg
 kotlin-js-store
 *.cf
+tidyparse-web/*.svg

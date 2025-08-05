@@ -2,7 +2,20 @@
 
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.DEVELOPMENT
 import org.jetbrains.kotlin.gradle.targets.js.webpack.WebpackDevtool
+import org.jetbrains.letsPlot.export.ggsave
+import org.jetbrains.letsPlot.geom.geomLine
+import org.jetbrains.letsPlot.letsPlot
+import java.awt.Desktop
+import java.io.ByteArrayOutputStream
 import kotlin.io.encoding.*
+
+buildscript {
+  repositories { mavenCentral() }
+  dependencies {
+    classpath("org.jetbrains.lets-plot:platf-awt-jvm:4.4.1")
+    classpath("org.jetbrains.lets-plot:lets-plot-kotlin-jvm:4.11.0")
+  }
+}
 
 plugins {
   kotlin("multiplatform")
@@ -45,14 +58,41 @@ kotlin {
     val jsTest by getting {
       dependencies {
         implementation(kotlin("test-js"))
-        implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+        implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
       }
     }
   }
 }
 
 tasks {
-//  withType<KotlinJsTest> { testLogging.showStandardStreams = true }
+  register<Exec>("replotMetrics") {
+    group = "verification"
+    description = "Runs jsBrowserTest plots runtime"
+
+    commandLine("../gradlew", "clean", "jsBrowserTest", "--info")
+
+    val outputStream = ByteArrayOutputStream()
+    standardOutput = outputStream
+
+    doLast {
+      val output = outputStream.toString()
+
+      val totalTime = output.substringAfter("Total time:").substringBefore("ms")
+      if (totalTime.isEmpty()) throw IllegalStateException("Total time not found in output")
+      val timingsFile = file("repair_timings.txt")
+      timingsFile.appendText("${totalTime.trim().toLong()}\n")
+
+      val timings = timingsFile.readLines().mapNotNull { it.toDoubleOrNull() }
+
+      val data = mapOf("run" to timings.indices.map { it + 1 }, "time" to timings)
+      val p = letsPlot(data) { x = "run"; y = "time" } + geomLine()
+
+      val plotFile = file("repair_timings_plot.svg")
+      ggsave(p, plotFile.name, path = projectDir.absolutePath)
+
+      Desktop.getDesktop().browse(plotFile.toURI())
+    }
+  }
 
   register("bundleHeadless") {
     dependsOn(project(":tidyparse-web").tasks.named("jsBrowserProductionWebpack"))
