@@ -1,6 +1,5 @@
 @file:OptIn(ExperimentalEncodingApi::class)
 
-import org.jetbrains.kotlin.gradle.targets.js.testing.KotlinJsTest
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.DEVELOPMENT
 import org.jetbrains.kotlin.gradle.targets.js.webpack.WebpackDevtool
 import kotlin.io.encoding.*

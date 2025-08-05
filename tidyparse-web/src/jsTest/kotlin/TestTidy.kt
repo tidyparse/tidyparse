@@ -23,7 +23,7 @@ class TestTidy {
     val startTime = TimeSource.Monotonic.markNow()
     val lines = PYTHON_SNIPPETS.lines().windowed(4).map { it.first() }.take(20)
 
-    lines.forEachIndexed { index, line ->
+    lines.forEach { line ->
       val t0 = TimeSource.Monotonic.markNow()
       val results = listOf("Sample repairs:") +
         repairCode(cfg, code="$line NEWLINE".tokenizeByWhitespace(), LED_BUFFER, null)
@@ -34,6 +34,7 @@ class TestTidy {
       log("Generated ${results.size} repairs in $elapsed")
       log(results.take(5).joinToString("\n\t\t\t"))
     }
+
     log("Total time: ${startTime.elapsedNow().inWholeMilliseconds}ms")
   }
 }
