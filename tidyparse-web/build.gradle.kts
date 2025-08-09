@@ -2,9 +2,11 @@
 
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.DEVELOPMENT
 import org.jetbrains.kotlin.gradle.targets.js.webpack.WebpackDevtool
+import org.jetbrains.letsPlot.*
 import org.jetbrains.letsPlot.export.ggsave
 import org.jetbrains.letsPlot.geom.geomLine
-import org.jetbrains.letsPlot.letsPlot
+import org.jetbrains.letsPlot.intern.Plot
+import org.jetbrains.letsPlot.label.ggtitle
 import java.awt.Desktop
 import java.io.ByteArrayOutputStream
 import kotlin.io.encoding.*
@@ -64,33 +66,34 @@ kotlin {
   }
 }
 
+fun saveStats(stat: String, name: String) =
+  if (stat.isEmpty()) throw IllegalStateException("Total time not found in output")
+  else file("$name.txt").apply { appendText("${stat.trim().toLong()}\n") }
+
+fun plotGrid(name: String, x_lbl: String = "x", y_lbl: String = "y"): Plot {
+  val timings = file("$name.txt").readLines().mapNotNull { it.toDoubleOrNull() }
+  val data = mapOf(x_lbl to (1..timings.size).toList(), y_lbl to timings)
+  return letsPlot(data) { x = x_lbl; y = y_lbl } + geomLine() + ggtitle(name)
+}
+
+fun plotGrids(vararg names: String) {
+  ggsave(gggrid(names.map { plotGrid(it) }, ncol = 2), "grid.svg", path = projectDir.absolutePath)
+  Desktop.getDesktop().browse(file("grid.svg").toURI())
+}
+
 tasks {
   register<Exec>("replotMetrics") {
-    group = "verification"
-    description = "Runs jsBrowserTest plots runtime"
-
     commandLine("../gradlew", "clean", "jsBrowserTest", "--info")
 
-    val outputStream = ByteArrayOutputStream()
-    standardOutput = outputStream
+    standardOutput = ByteArrayOutputStream()
 
     doLast {
-      val output = outputStream.toString()
-
+      val output = standardOutput.toString()
       val totalTime = output.substringAfter("Total time:").substringBefore("ms")
-      if (totalTime.isEmpty()) throw IllegalStateException("Total time not found in output")
-      val timingsFile = file("repair_timings.txt")
-      timingsFile.appendText("${totalTime.trim().toLong()}\n")
-
-      val timings = timingsFile.readLines().mapNotNull { it.toDoubleOrNull() }
-
-      val data = mapOf("run" to timings.indices.map { it + 1 }, "time" to timings)
-      val p = letsPlot(data) { x = "run"; y = "time" } + geomLine()
-
-      val plotFile = file("repair_timings_plot.svg")
-      ggsave(p, plotFile.name, path = projectDir.absolutePath)
-
-      Desktop.getDesktop().browse(plotFile.toURI())
+      val totalRepairs = output.substringAfter("Total repairs:").substringBefore("\n")
+      saveStats(totalTime, "repair_timings")
+      saveStats(totalRepairs, "total_repairs")
+      plotGrids("repair_timings", "total_repairs")
     }
   }
 

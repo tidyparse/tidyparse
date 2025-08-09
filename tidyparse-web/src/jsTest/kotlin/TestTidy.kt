@@ -24,6 +24,7 @@ class TestTidy {
     val startTime = TimeSource.Monotonic.markNow()
     val lines = PYTHON_SNIPPETS.lines().windowed(4).map { it.first() }.take(50)
     log("Total lines")
+    var totalRepairs = 0
 
     lines.forEach { line ->
       val t0 = TimeSource.Monotonic.markNow()
@@ -33,10 +34,12 @@ class TestTidy {
 
       assertTrue(results.isNotEmpty(), "No repairs generated for:\n '$line'")
 
-      log("Generated ${results.size} repairs in $elapsed")
+      val numRepairs = results.size.also { totalRepairs += it }
+      log("Generated $numRepairs repairs in $elapsed")
       log(results.take(5).joinToString("\n\t\t\t"))
     }
 
     log("Total time: ${startTime.elapsedNow().inWholeMilliseconds}ms")
+    log("Total repairs: $totalRepairs")
   }
 }
