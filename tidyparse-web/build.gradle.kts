@@ -144,7 +144,7 @@ tasks {
     dependsOn(":tidyparse-web:jsBrowserProductionWebpack")
     doLast {
       val webProject = project(":tidyparse-web")
-      val buildDir = webProject.buildDir.resolve("kotlin-webpack/js/productionExecutable/")
+      val buildDir = webProject.layout.buildDirectory.asFile.get().resolve("kotlin-webpack/js/productionExecutable/")
       val resourcesDir = webProject.file("src/jsMain/resources")
 
       exec { commandLine("open", buildDir.absolutePath) }
