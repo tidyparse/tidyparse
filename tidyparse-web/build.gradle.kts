@@ -137,10 +137,25 @@ tasks {
       println("✓ Self-contained headless bundle written to ${outHtml.absolutePath}")
     }
   }
+
+  register("deployWeb") {
+    group = "deployment"
+    description = "Builds app, opens Finder to the build and resources directories, and launches the browser for upload"
+    dependsOn(":tidyparse-web:jsBrowserProductionWebpack")
+    doLast {
+      val webProject = project(":tidyparse-web")
+      val buildDir = webProject.buildDir.resolve("kotlin-webpack/js/productionExecutable/")
+      val resourcesDir = webProject.file("src/jsMain/resources")
+
+      exec { commandLine("open", buildDir.absolutePath) }
+      exec { commandLine("open", resourcesDir.absolutePath) }
+      exec { commandLine("open", "https://github.com/tidyparse/tidyparse.github.io/upload/main") }
+    }
+  }
 }
 
 // To deploy the browser application, run:
-//  ./gradlew :tidyparse-web:jsBrowserProductionWebpack
+// ./gradlew deployWeb
 // Then copy the contents of tidyparse-web/build/kotlin-webpack/js/productionExecutable/tidyparse-web
 // (and optionally, if static resources have been modified, tidyparse-web/src/jsMain/resources) to:
 //  https://github.com/tidyparse/tidyparse.github.io/upload/main

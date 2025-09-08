@@ -28,10 +28,10 @@ var gpuAvailable = false
 external val navigator: dynamic
 
 /*
-TODO:
-  (1) Minimize repairs on GPU
-  (2) Use more sensible midpoint filter based on dense adjacency / reachability matrix
-  (3) Implement test harness to avoid regressions. Need to measure: (1) perf (2) prec@k
+  TODO:
+    (1) Minimize repairs on GPU
+    (2) Use more sensible midpoint filter based on dense adjacency / reachability matrix
+    (3) Implement test harness to avoid regressions. Need to measure: (1) perf (2) prec@k
 */
 
 const val largeMem = "{ requiredLimits: { maxBufferSize: 2000000000, maxStorageBufferBindingSize: 2000000000 } }"
@@ -679,8 +679,8 @@ fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_le
     let val = dp_in[dpIdx];
     if (val == 0u) { return; }
 
-    let hasLiteral = ((val >> 1u) != 0u);           // bit‑packed literal present?
-    let negLit     = (val & ${NEG_LITERAL}u) != 0u;     // negative‑literal flag
+    let hasLiteral = ((val >> 1u) != 0u);             // bit‑packed literal present?
+    let negLit     = (val & ${NEG_LITERAL}u) != 0u;   // negative‑literal flag
     let litCount   =
         select(0u,
             select(1u,                                // positive literal ⇒ exactly 1
@@ -730,8 +730,8 @@ fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_le
     var acc    : u32 = 0u;
     var outPos : u32 = bp_offset[dpIdx];
     
-    let hasLiteral = ((val >> 1u) != 0u);           // bit‑packed literal present?
-    let negLit     = (val & ${NEG_LITERAL}u) != 0u;     // negative‑literal flag 
+    let hasLiteral = ((val >> 1u) != 0u);            // bit‑packed literal present?
+    let negLit     = (val & ${NEG_LITERAL}u) != 0u;  // negative‑literal flag 
     let litCount   = select(0u,
                             select(1u,                               // positive literal ⇒ exactly 1
                                     max(1u, get_nt_tm_lens(A) - 1u), // negative ⇒ |Σ_A|‑1
@@ -1572,7 +1572,7 @@ fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer 
     table[idx + 1] = score
   }
 
-  /* ── prepend header (pow) and upload ─────────────────────────────────── */
+  /* ── prepend header (pow) and upload ────────────────────────────────── */
   val flat = UIntArray(1 + table.size)
   flat[0] = pow.toUInt()
   table.copyInto(flat, 1)

@@ -93,7 +93,7 @@ suspend fun defaultSetup() {
 
   inputField.addEventListener("input", { jsEditor.run { continuation { handleInput() } } })
   inputField.addEventListener("input", { jsEditor.redecorateLines() })
-  exSelector.addEventListener(type = "change", callback = { MainScope().async { fetchSelectedExample() } })
+  exSelector.addEventListener("change", { MainScope().async { fetchSelectedExample() } })
 
   inputField.addEventListener("keydown", { event -> jsEditor.navUpdate(event as KeyboardEvent) })
   mincheck.addEventListener("change", { jsEditor.minimize = mincheck.checked })
@@ -191,6 +191,10 @@ suspend fun initPyodide() {
 }
 
 suspend fun fetchSelectedExample() {
+  if (exSelector.value == "python.html") {
+    window.location.href = exSelector.value
+    return
+  }
   val response = window.fetch(exSelector.value).await()
   if (response.ok) {
     val text = response.text().await()
