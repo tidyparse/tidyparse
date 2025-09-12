@@ -1,5 +1,5 @@
 config.set({
-    client: { mocha: { timeout: 90000 } },
+    client: { mocha: { timeout: 540000 } },
     customLaunchers: {
         ChromeSmall: {
             base: 'Chrome',

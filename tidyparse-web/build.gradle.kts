@@ -68,7 +68,10 @@ kotlin {
 
 fun saveStats(stat: String, name: String) =
   if (stat.isEmpty()) throw IllegalStateException("Total time not found in output")
-  else file("$name.txt").apply { appendText("${stat.trim().toLong()}\n") }
+  else file("$name.txt").also { if (!it.exists()) it.createNewFile() }
+    .apply {
+      println("Stat: $stat")
+      appendText("${stat.trim().toLong()}\n") }
 
 fun plotGrid(name: String, x_lbl: String = "x", y_lbl: String = "y"): Plot {
   val timings = file("$name.txt").readLines().mapNotNull { it.toDoubleOrNull() }
@@ -83,17 +86,24 @@ fun plotGrids(vararg names: String) {
 
 tasks {
   register<Exec>("replotMetrics") {
-    commandLine("../gradlew", "clean", "jsBrowserTest", "--info")
+    commandLine("../gradlew", "clean", "jsBrowserTest", "--info") // --info flag is crucial to read output
 
     standardOutput = ByteArrayOutputStream()
 
     doLast {
       val output = standardOutput.toString()
-      val totalTime = output.substringAfter("Total time:").substringBefore("ms")
-      val totalRepairs = output.substringAfter("Total repairs:").substringBefore("\n")
-      saveStats(totalTime, "repair_timings")
-      saveStats(totalRepairs, "total_repairs")
-      plotGrids("repair_timings", "total_repairs")
+      if ("Total CPU time" !in output) throw Exception("No output found!")
+      val totalGPUTime = output.substringAfter("Total GPU time:").substringBefore("ms")
+      val totalGPURepairs = output.substringAfter("Total GPU repairs:").substringBefore("\n")
+      saveStats(totalGPUTime, "repair_gpu_timings")
+      saveStats(totalGPURepairs, "total_gpu_repairs")
+
+      val totalCPUTime = output.substringAfter("Total CPU time:").substringBefore("ms")
+      val totalCPURepairs = output.substringAfter("Total CPU repairs:").substringBefore("\n")
+      saveStats(totalCPUTime, "repair_cpu_timings")
+      saveStats(totalCPURepairs, "total_cpu_repairs")
+
+      plotGrids("repair_gpu_timings", "total_gpu_repairs", "repair_cpu_timings", "total_cpu_repairs")
     }
   }
 
