@@ -69,9 +69,7 @@ kotlin {
 fun saveStats(stat: String, name: String) =
   if (stat.isEmpty()) throw IllegalStateException("Total time not found in output")
   else file("$name.txt").also { if (!it.exists()) it.createNewFile() }
-    .apply {
-      println("Stat: $stat")
-      appendText("${stat.trim().toLong()}\n") }
+    .apply { println("$name:\t$stat"); appendText("${stat.trim().toLong()}\n") }
 
 fun plotGrid(name: String, x_lbl: String = "x", y_lbl: String = "y"): Plot {
   val timings = file("$name.txt").readLines().mapNotNull { it.toDoubleOrNull() }
@@ -92,7 +90,7 @@ tasks {
 
     doLast {
       val output = standardOutput.toString()
-      if ("Total CPU time" !in output) throw Exception("No output found!")
+      if ("Total CPU time" !in output) throw Exception("No output found: $output")
       val totalGPUTime = output.substringAfter("Total GPU time:").substringBefore("ms")
       val totalGPURepairs = output.substringAfter("Total GPU repairs:").substringBefore("\n")
       saveStats(totalGPUTime, "repair_gpu_timings")

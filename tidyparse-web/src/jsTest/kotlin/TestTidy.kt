@@ -54,7 +54,7 @@ class TestTidy {
     val startTime = TimeSource.Monotonic.markNow()
     var totalRepairs = 0
 
-    repairs.take(10).forEach { line ->
+    repairs.forEach { line ->
       val t0 = TimeSource.Monotonic.markNow()
       val results = listOf("Sample repairs:") + sampleGREUntilTimeout(line, cfg).distinct().toList()
       val elapsed = t0.elapsedNow()
