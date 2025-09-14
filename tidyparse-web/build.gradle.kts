@@ -78,7 +78,7 @@ fun plotGrid(name: String, x_lbl: String = "x", y_lbl: String = "y"): Plot {
 }
 
 fun plotGrids(vararg names: String) {
-  ggsave(gggrid(names.map { plotGrid(it) }, ncol = 2), "grid.svg", path = projectDir.absolutePath)
+  ggsave(gggrid(names.map { plotGrid(it) }, ncol = 3), "grid.svg", path = projectDir.absolutePath)
   Desktop.getDesktop().browse(file("grid.svg").toURI())
 }
 
@@ -90,18 +90,22 @@ tasks {
 
     doLast {
       val output = standardOutput.toString()
-      if ("Total CPU time" !in output) throw Exception("No output found: $output")
-      val totalGPUTime = output.substringAfter("Total GPU time:").substringBefore("ms")
+      if ("Total CPU latency" !in output) throw Exception("No output found: $output")
+      val totalGPUTime = output.substringAfter("Total GPU latency:").substringBefore("\n")
       val totalGPURepairs = output.substringAfter("Total GPU repairs:").substringBefore("\n")
+      val totalGPUMatches = output.substringAfter("Total GPU matches:").substringBefore("\n")
       saveStats(totalGPUTime, "repair_gpu_timings")
       saveStats(totalGPURepairs, "total_gpu_repairs")
+      saveStats(totalGPUMatches, "total_gpu_matches")
 
-      val totalCPUTime = output.substringAfter("Total CPU time:").substringBefore("ms")
+      val totalCPUTime = output.substringAfter("Total CPU latency:").substringBefore("\n")
       val totalCPURepairs = output.substringAfter("Total CPU repairs:").substringBefore("\n")
+      val totalCPUMatches = output.substringAfter("Total CPU matches:").substringBefore("\n")
       saveStats(totalCPUTime, "repair_cpu_timings")
       saveStats(totalCPURepairs, "total_cpu_repairs")
+      saveStats(totalCPUMatches, "total_cpu_matches")
 
-      plotGrids("repair_gpu_timings", "total_gpu_repairs", "repair_cpu_timings", "total_cpu_repairs")
+      plotGrids("repair_gpu_timings", "total_gpu_repairs", "total_gpu_matches", "repair_cpu_timings", "total_cpu_repairs", "total_cpu_matches")
     }
   }
 

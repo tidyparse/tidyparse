@@ -18,55 +18,46 @@ class TestTidy {
 
   val cfg by lazy { vanillaS2PCFG }
   val repairs by lazy {
-    PYTHON_SNIPPETS.lines().windowed(4).map { it.first() }.take(50)
-      .map { "$it NEWLINE".tokenizeByWhitespace() }
+    PYTHON_SNIPPETS.lines().windowed(4)
+      .map { it.map { "$it NEWLINE".tokenizeByWhitespace() } }
+      .map { it[0] to it[1] }.take(50)
   }
 
   @Test
   fun testRepairCodeGPU() = runTest(timeout = 10.minutes) {
-    log("Testing WGPU repairs...")
     tryBootstrappingGPU()
-
-    val startTime = TimeSource.Monotonic.markNow()
-    var totalRepairs = 0
-
-    repairs.forEach { line ->
-      val t0 = TimeSource.Monotonic.markNow()
-      val results = listOf("Sample repairs:") + repairCode(cfg, code = line, LED_BUFFER, null)
-      val elapsed = t0.elapsedNow()
-
-      assertTrue(results.isNotEmpty(), "No repairs generated for:\n '${line.joinToString(" ")}'")
-
-      val numRepairs = results.size.also { totalRepairs += it }
-      log("Generated $numRepairs repairs in $elapsed")
-      log(results.take(5).joinToString("\n\t\t\t"))
-    }
-
-    log("Total GPU time: ${startTime.elapsedNow().inWholeMilliseconds}ms")
-    log("Total GPU repairs: $totalRepairs")
-
+    benchmarkRepair("GPU") { repairCode(cfg, code = it, LED_BUFFER, null) }
   }
 
   @Test
-  fun testRepairCPU() = runTest(timeout = 10.minutes) {
-    log("Testing CPU repairs...")
+  fun testRepairCodeCPU() = runTest(timeout = 10.minutes) {
+    benchmarkRepair("CPU") { sampleGREUntilTimeout(it, cfg).distinct().toList() }
+  }
+
+  suspend fun benchmarkRepair(name: String, repair: suspend (List<String>) -> List<String>) {
+    log("Testing $name repairs...")
 
     val startTime = TimeSource.Monotonic.markNow()
-    var totalRepairs = 0
+    var totalResults = 0; var totalRepairs = 0; var totalMatches = 0
 
-    repairs.forEach { line ->
+    repairs.forEach { (line, fixed) ->
+      totalRepairs++
       val t0 = TimeSource.Monotonic.markNow()
-      val results = listOf("Sample repairs:") + sampleGREUntilTimeout(line, cfg).distinct().toList()
+      val repairResults = repair(line)
+      val results = listOf("Sample repairs:") + repairResults
       val elapsed = t0.elapsedNow()
 
-      assertTrue(results.isNotEmpty(), "No repairs generated for:\n '${line.joinToString(" ")}'")
+      assertTrue(repairResults.isNotEmpty(), "No repairs generated for:\n '${line.joinToString(" ")}'")
 
-      val numRepairs = results.size.also { totalRepairs += it }
+      if (fixed in results.map { it.tokenizeByWhitespace() }) totalMatches++
+
+      val numRepairs = repairResults.size.also { totalResults += it }
       log("Generated $numRepairs repairs in $elapsed")
       log(results.take(5).joinToString("\n\t\t\t"))
     }
 
-    log("Total CPU time: ${startTime.elapsedNow().inWholeMilliseconds}ms")
-    log("Total CPU repairs: $totalRepairs")
+    log("Total $name latency: ${startTime.elapsedNow().inWholeMilliseconds}")
+    log("Total $name repairs: $totalResults")
+    log("Total $name matches: $totalMatches")
   }
 }
