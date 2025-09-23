@@ -62,8 +62,6 @@ suspend fun headlessSetup() {
   val cfg = vanillaS2PCFG
   tryBootstrappingGPU(needsExtraMemory = true)
   log("Bootstrapped GPU")
-  val ngramTensor = loadNgramsFromString(window["raw_ngrams"].toString())
-    .toGpuHash(cfg = cfg).loadToGPUBuffer()
 
   var errors = 0
   val es = EventSource("/stream")
@@ -147,12 +145,6 @@ val mincheck by lazy { document.getElementById("minimize-checkbox") as HTMLInput
 val ntscheck by lazy { document.getElementById("ntstubs-checkbox") as HTMLInputElement }
 val timeout by lazy { document.getElementById("timeout") as HTMLInputElement }
 val ledBuffSel by lazy { document.getElementById("led-buffer") as HTMLInputElement }
-
-fun loadNgramsFromString(ngrams: String): Map<List<String>, Double> =
-  ngrams.lines().filter { it.isNotBlank() }.associate {
-    val (ngram, count) = it.split(" ::: ")
-    ngram.split(" ") to count.toDouble()
-  }
 
 suspend fun loadNgrams(file: String = "python_4grams.txt") {
   val t0 = TimeSource.Monotonic.markNow()

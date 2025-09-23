@@ -1,5 +1,6 @@
 @file:OptIn(ExperimentalUnsignedTypes::class, ExperimentalStdlibApi::class)
 
+import GPUBufferUsage.STCPSD
 import Shader.Companion.GPUBuffer
 import Shader.Companion.buildLanguageSizeBuf
 import Shader.Companion.packMetadata
@@ -111,7 +112,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
   val tmBuf     = cfg.termBuf
   val wordBuf   = codePoints.toGPUBuffer()
   val totalSize = numStates * numStates * numNTs
-  val dpBuf     = Shader.createParseChart(GPUBufferUsage.STCPSD, totalSize)
+  val dpBuf     = Shader.createParseChart(STCPSD, totalSize)
   init_chart(dpBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
 
   log("Chart construction took: ${t0.elapsedNow()}")
@@ -154,7 +155,8 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
 
   val lsDense  = buildLanguageSizeBuf(numStates, numNTs, dpBuf, metaBuf, tmBuf)
   val totalExp = bpStorageBuf.size.toInt() / (2 * 4)
-  val cdfBuf   = GPUBuffer(totalExp * 4, GPUBufferUsage.STCPSD)
+//  log("Total expansions: $totalExp")
+  val cdfBuf   = GPUBuffer(totalExp * 4, STCPSD)
 
   ls_cdf(dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
 
@@ -167,44 +169,47 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
   log("Pairing function construction took: ${t2.elapsedNow()}")
 
   val t3 = TimeSource.Monotonic.markNow()
-  val outBuf = GPUBuffer(MAX_SAMPLES * maxRepairLen * 4, GPUBufferUsage.STCPSD)
+  val outBuf = GPUBuffer(MAX_SAMPLES * maxRepairLen * 4, STCPSD)
   val groupsY = (MAX_SAMPLES + groupsX - 1) / groupsX
   sample_words_wor(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, idxUniBuf, cdfBuf)(groupsX, groupsY)
 
+  return if (ngrams == null) {
     val res = mutableMapOf<Int, MutableSet<String>>()
     val allResults = outBuf.readInts()
+    log("sample_words_wor invocation took: ${t3.elapsedNow()}")
     for (i in 0 until MAX_SAMPLES) {
       val t = allResults.decodePacket(i, cfg.tmLst, maxRepairLen) ?: break
       res.getOrPut(t.first) { mutableSetOf() }.add(t.second)
     }
     res.forEach { log("Δ=${it.key} -> |L|=${it.value.size}") }
-  log("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
-  if (ngrams == null) { return res.map { it.value.toList() }.flatten() }
+    log("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
+    res.map { it.value.toList() }.flatten()
+  } else {
+    val k = 20 * MAX_DISP_RESULTS
+    val topK = scoreSelectGather(
+      packets = outBuf,
+      ngrams = ngrams,
+      indexUniformsBuf = idxUniBuf,
+      maxSamples = MAX_SAMPLES,
+      stride = maxRepairLen,
+      k = k
+    )
 
-  val k = 20 * MAX_DISP_RESULTS
-  val topK = scoreSelectGather(
-    packets          = outBuf,
-    ngrams           = ngrams,
-    indexUniformsBuf = idxUniBuf,
-    maxSamples       = MAX_SAMPLES,
-    stride           = maxRepairLen,
-    k                = k
-  )
+    listOf(outBuf, metaBuf, dpBuf, idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf).forEach(GPUBuffer::destroy)
 
-  listOf(outBuf, metaBuf, dpBuf, idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf).forEach(GPUBuffer::destroy)
+    val t4 = TimeSource.Monotonic.markNow()
 
-  val t4 = TimeSource.Monotonic.markNow()
+    val result = mutableListOf<String>()
 
-  val result = mutableListOf<String>()
+    for (i in 0 until k) {
+      val t = topK.decodePacket(i, cfg.tmLst, maxRepairLen)
+      if (t == null) { log("Escaped after $i samples"); break }
+      result.add(t.second)
+    }
 
-  for (i in 0 until k) {
-    val t = topK.decodePacket(i, cfg.tmLst, maxRepairLen)
-    if (t == null) { log("Escaped after $i samples"); break }
-    result.add(t.second)
+    log("Decoded ${result.distinct().size} unique words out of ${result.size} in ${t4.elapsedNow()}")
+    result
   }
-
-//  log("Decoded ${result.distinct().size} unique words out of ${result.size} in ${t4.elapsedNow()}")
-  return result
 }
 
 // Returns Levenshtein distance and string repair
@@ -247,15 +252,15 @@ suspend fun scoreSelectGather(
   val totalGroups = (maxSamples + 255) / 256
   val selGroupsY = (totalGroups + selGroupsX - 1) / selGroupsX
   val prmBuf   = intArrayOf(maxSamples, k, stride, selGroupsX).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
-  val idxBuf   = IntArray(k) { Int.Companion.MAX_VALUE }.toGPUBuffer(GPUBufferUsage.STCPSD)
-  val scrBuf   = IntArray(k) { Int.Companion.MAX_VALUE }.toGPUBuffer(GPUBufferUsage.STCPSD)
+  val idxBuf   = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
+  val scrBuf   = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
 
   select_top_k(prmBuf, packets, idxBuf, scrBuf)(selGroupsX, selGroupsY)
 //  log("Select in ${t0.elapsedNow()}")
 
 //  t0 = TimeSource.Monotonic.markNow()
   val gatherPrm = intArrayOf(stride, k).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
-  val bestBuf   = GPUBuffer(k * stride * 4, GPUBufferUsage.STCPSD)
+  val bestBuf   = GPUBuffer(k * stride * 4, STCPSD)
 
   gather_top_k(gatherPrm, packets, idxBuf, bestBuf)(k)
 //  log("Gather in ${t0.elapsedNow()}")
@@ -397,7 +402,7 @@ fn unrank_to_coords(rank_idx: u32, max_j_idx: u32, max_i_idx: u32) -> u32 {
 fn letter_at(idx : u32, wd_len : u32) -> u32 { return select(word[idx], 0xffffffffu, idx >= wd_len); }
 
 const LIT_ALL : u32 = 0x7ffffffeu;
-const NEG_BIT : u32 = ${NEG_LITERAL}u;
+const NEG_BIT : u32 = $NEG_STR_LIT;
 
 fn encode_pos_literal(A_nt_idx : u32, sigma_token : u32) -> u32 {
     if (sigma_token == 0xffffffffu) { return 0u; }
@@ -531,9 +536,9 @@ val dag_reach by Shader("""struct AtomicChange { count: atomic<u32> };
 
 //language=wgsl
 val mdpt_count by Shader("""struct Uni { n : u32 };
-@group(0) @binding(0) var<storage, read>       reach  : array<u32>;   // N×N upper‑tri (0/1)
+@group(0) @binding(0) var<storage, read>        reach : array<u32>;   // N×N upper‑tri (0/1)
 @group(0) @binding(1) var<storage, read_write> counts : array<u32>;   // N×N (aoi‑1 → #midpts)
-@group(0) @binding(2) var<uniform>             uni    : Uni;
+@group(0) @binding(2) var<uniform>                uni : Uni;
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid:vec3<u32>) {
     let r = gid.y;  let c = gid.x;  let N = uni.n;
@@ -549,10 +554,10 @@ val mdpt_count by Shader("""struct Uni { n : u32 };
 
 //language=wgsl
 val mdpt_write by Shader("""struct Uni { n : u32 };
-@group(0) @binding(0) var<storage, read>       reach   : array<u32>;
+@group(0) @binding(0) var<storage, read>         reach : array<u32>;
 @group(0) @binding(1) var<storage, read>       offsets : array<u32>; // exclusive scan of counts
 @group(0) @binding(2) var<storage, read_write> flat_mp : array<u32>; // flattened mid‑points
-@group(0) @binding(3) var<uniform>             uni     : Uni;
+@group(0) @binding(3) var<uniform>                 uni : Uni;
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid:vec3<u32>) {
     let r = gid.y;  let c = gid.x;  let N = uni.n;
@@ -680,7 +685,7 @@ fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_le
     if (val == 0u) { return; }
 
     let hasLiteral = ((val >> 1u) != 0u);             // bit‑packed literal present?
-    let negLit     = (val & ${NEG_LITERAL}u) != 0u;   // negative‑literal flag
+    let negLit     = (val & $NEG_STR_LIT) != 0u;      // negative‑literal flag
     let litCount   =
         select(0u,
             select(1u,                                // positive literal ⇒ exactly 1
@@ -731,7 +736,7 @@ fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_le
     var outPos : u32 = bp_offset[dpIdx];
     
     let hasLiteral = ((val >> 1u) != 0u);            // bit‑packed literal present?
-    let negLit     = (val & ${NEG_LITERAL}u) != 0u;  // negative‑literal flag 
+    let negLit     = (val & $NEG_STR_LIT) != 0u;     // negative‑literal flag 
     let litCount   = select(0u,
                             select(1u,                               // positive literal ⇒ exactly 1
                                     max(1u, get_nt_tm_lens(A) - 1u), // negative ⇒ |Σ_A|‑1
@@ -849,8 +854,9 @@ const val DISPATCH_GROUP_SIZE_X = 65535
 // Length of the packet header in each repair buffer
 const val PKT_HDR_LEN = 2 // [levenshtein distance, Markov probability]
 const val MAX_SAMPLES_PER_DIST = 30_000
-val SENTINEL = 0xFFFF_FFFFu
-val HASH_MUL = 0x1e35a7bdu
+val hexFmt = HexFormat { number.prefix = "0x"; number.suffix = "u" }
+const val SENTINEL = 0xFFFF_FFFFu
+const val HASH_MUL = 0x1e35a7bdu
 
 /** See [PTree.sampleStrWithoutReplacement] for CPU version. */
 //language=wgsl
@@ -889,7 +895,7 @@ fn langSize(dpIdx : u32) -> u32 {
     /* literal domain */
     let val    = dp_in[dpIdx];
     let hasLit = ((val >> 1u) != 0u);
-    let negLit = (val & ${NEG_LITERAL}u) != 0u;
+    let negLit = (val & $NEG_STR_LIT) != 0u;
     let litCnt =
         select(0u,
                select(1u,
@@ -986,7 +992,7 @@ fn weight(sz: u32) -> u32 { return max(1u, u32(pow(f32(sz), 1.0 / TEMPERATURE)))
         /* --- literal vs expansion ---------------------------------------------- */
         let val      = dp_in[dpIdx];
         let hasLit   = ((val >> 1u) != 0u);
-        let negLit   = (val & ${NEG_LITERAL}u) != 0u;
+        let negLit   = (val & $NEG_STR_LIT) != 0u;
         let litCnt   =
             select(0u,
                    select(1u,                     // positive
@@ -1037,8 +1043,8 @@ val markov_score by Shader("""$TERM_STRUCT
 @group(0) @binding(2) var<storage, read_write>  idx_uni : IndexUniforms;
 
 const PKT_HDR_LEN  : u32 = ${PKT_HDR_LEN}u;
-const SENTINEL_KEY : u32 = 0x${SENTINEL.toHexString()}u;
-const HASH_MUL     : u32 = 0x${HASH_MUL.toHexString()}u;      // same multiplier as CPU side
+const SENTINEL_KEY : u32 = ${SENTINEL.toHexString(hexFmt)};
+const HASH_MUL     : u32 = ${HASH_MUL.toHexString(hexFmt)};      // same multiplier as CPU side
 const BOS_ID       : u32 = ${BOS_ID}u;
 const NEWLINE_ID   : u32 = ${NEWLINE_ID}u;
 const EOS_ID       : u32 = ${EOS_ID}u;
@@ -1104,7 +1110,6 @@ fn lookupScore(key: u32) -> u32 {
 
 //language=wgsl
 val select_top_k by Shader("""struct Params { n: u32, k: u32, stride: u32, groupsX: u32 };
-
 @group(0) @binding(0) var<uniform>                  prm : Params;
 @group(0) @binding(1) var<storage, read>        packets : array<u32>;
 @group(0) @binding(2) var<storage, read_write>   topIdx : array<atomic<u32>>;
@@ -1301,7 +1306,7 @@ class Shader constructor(val src: String) {
 
     fun IntArray.toSquareMatrixSparse(n: Int): GPUBuffer {
       val outputByteSize = n * n * Int32Array.BYTES_PER_ELEMENT
-      val outputBuffer = GPUBuffer(outputByteSize, GPUBufferUsage.STCPSD)
+      val outputBuffer = GPUBuffer(outputByteSize, STCPSD)
       val sparseDataBuffer = toGPUBuffer()
       val numWorkgroups = ceil((size / 2.0) / SPARSE_WRITER_WORKGROUP_SIZE).toInt()
       sparse_mat_load(sparseDataBuffer, outputBuffer)(numWorkgroups)
@@ -1309,12 +1314,12 @@ class Shader constructor(val src: String) {
       return outputBuffer
     }
 
-    fun List<Int>.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer = toTypedArray().toGPUBuffer(usage)
-    fun List<UInt>.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer = map { it.toInt() }.toTypedArray().toGPUBuffer(usage)
+    fun List<Int>.toGPUBuffer(usage: Int = STCPSD): GPUBuffer = toTypedArray().toGPUBuffer(usage)
+    fun List<UInt>.toGPUBuffer(usage: Int = STCPSD): GPUBuffer = map { it.toInt() }.toTypedArray().toGPUBuffer(usage)
     fun IntArray.toGPUBuffer(usage: Int = GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST): GPUBuffer =
       GPUBuffer(size * 4, usage, unsafeCast<Int32Array<ArrayBuffer>>())
-    fun Int.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer = intArrayOf(this).toGPUBuffer(usage)
-    fun Array<Int>.toGPUBuffer(usage: Int = GPUBufferUsage.STCPSD): GPUBuffer =
+    fun Int.toGPUBuffer(usage: Int = STCPSD): GPUBuffer = intArrayOf(this).toGPUBuffer(usage)
+    fun Array<Int>.toGPUBuffer(usage: Int = STCPSD): GPUBuffer =
       Int32Array<ArrayBuffer>(size).apply { set(this@toGPUBuffer, 0) }
         .let { GPUBuffer(byteSize = size * 4, us = usage, data = it) }
 
@@ -1331,8 +1336,8 @@ class Shader constructor(val src: String) {
       val groupsX   = GROUPS_X
       val groupsY   = (numBlocks + groupsX - 1) / groupsX
 
-      val outputBuf     = GPUBuffer(inputBuf.size.toInt(), GPUBufferUsage.STCPSD)
-      val blockSumsBuf  = GPUBuffer(numBlocks * 4, GPUBufferUsage.STCPSD)
+      val outputBuf     = GPUBuffer(inputBuf.size.toInt(), STCPSD)
+      val blockSumsBuf  = GPUBuffer(numBlocks * 4, STCPSD)
       val uniBuf        = intArrayOf(length, numBlocks, groupsX).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
 
       prefix_sum_p1(inputBuf, outputBuf, blockSumsBuf, uniBuf)(groupsX, groupsY)
@@ -1377,14 +1382,14 @@ class Shader constructor(val src: String) {
 
     suspend fun buildMidpointsGPU(states: Int, reachBuf: GPUBuffer): Pair<GPUBuffer, GPUBuffer> {
       val totalPairs = states * states
-      val cntBuf     = GPUBuffer(totalPairs * 4, GPUBufferUsage.STCPSD)
+      val cntBuf     = GPUBuffer(totalPairs * 4, STCPSD)
       val uniBuf     = states.toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
 
       mdpt_count(reachBuf, cntBuf, uniBuf)(states, states)
       val offBuf = prefixSumGPU(cntBuf, totalPairs)
       val last   = listOf(totalPairs - 1)
       val totalM = offBuf.readIndices(last)[0] + cntBuf.readIndices(last)[0]
-      val flatBuf = GPUBuffer(totalM * 4, GPUBufferUsage.STCPSD)
+      val flatBuf = GPUBuffer(totalM * 4, STCPSD)
       mdpt_write(reachBuf, offBuf, flatBuf, uniBuf)(states, states)
 
       uniBuf.destroy()
@@ -1395,19 +1400,19 @@ class Shader constructor(val src: String) {
     suspend fun buildBackpointers(numStates: Int, numNTs: Int, dpIn: GPUBuffer, metaBuf: GPUBuffer): Triple<GPUBuffer, GPUBuffer, GPUBuffer> {
       val totalCells = numStates * numStates * numNTs
 
-      val bpCountBuf = GPUBuffer(totalCells * 4, GPUBufferUsage.STCPSD)
+      val bpCountBuf = GPUBuffer(totalCells * 4, STCPSD)
 
       log("Total cells: $totalCells = $numStates^2 * $numNTs")
       bp_count(dpIn, bpCountBuf, metaBuf)(numStates, numStates, numNTs)
 
-//    val bpOffsetBuf = bpCountBuf.readInts().scan(0) { acc, arr -> acc + arr }.dropLast(1).toIntArray().toGPUBuffer(GPUBufferUsage.STCPSD)
+//    val bpOffsetBuf = bpCountBuf.readInts().scan(0) { acc, arr -> acc + arr }.dropLast(1).toIntArray().toGPUBuffer(STCPSD)
       val bpOffsetBuf = prefixSumGPU(bpCountBuf, totalCells)
 
       val lastIdx = listOf(totalCells - 1)
       val totalExpansions = bpOffsetBuf.readIndices(lastIdx)[0] + bpCountBuf.readIndices(lastIdx)[0]
       log("Total expansions: $totalExpansions")
 
-      val bpStorageBuf = GPUBuffer(totalExpansions * 2 * 4, GPUBufferUsage.STCPSD)
+      val bpStorageBuf = GPUBuffer(totalExpansions * 2 * 4, STCPSD)
 
       bp_write(dpIn, bpOffsetBuf, bpStorageBuf, metaBuf)(numStates, numStates, numNTs)
 
@@ -1416,7 +1421,7 @@ class Shader constructor(val src: String) {
 
     fun buildLanguageSizeBuf(nStates: Int, nNT: Int, dpIn: GPUBuffer, metaBuf: GPUBuffer, tmBuf: GPUBuffer): GPUBuffer {
       val totalCells = nStates * nStates * nNT
-      val lsDenseBuf = GPUBuffer(totalCells * 4, GPUBufferUsage.STCPSD)
+      val lsDenseBuf = GPUBuffer(totalCells * 4, STCPSD)
 
       for (span in 1..<nStates) {
         val spanBuf = span.toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
@@ -1507,7 +1512,7 @@ fun packStruct(constants: List<Int> = emptyList(), vararg buffers: GPUBuffer): G
   val totalBytes   = headerBytes + payloadBytes
 
   // ── allocate destination buffer ───────────────────────────────────────────
-  val metaBuf = GPUBuffer(totalBytes, GPUBufferUsage.STCPSD)
+  val metaBuf = GPUBuffer(totalBytes, STCPSD)
 
   // ── upload header (one writeBuffer) ───────────────────────────────────────
   gpu.queue.writeBuffer(metaBuf, 0.0, Int32Array<ArrayBuffer>(headerInts.size).apply { set(headerInts.toTypedArray(), 0) })
