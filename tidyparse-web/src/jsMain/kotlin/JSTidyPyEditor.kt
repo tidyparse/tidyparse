@@ -74,9 +74,9 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
   } catch (e: dynamic) { "Error during compilation: $e".also { log(it) } }
 
   private fun String.getErrorType(): String =
-    if (isEmpty()) "" else lines().dropLast(1).lastOrNull()?.substringBeforeLast(":") ?: this
+    if (isEmpty()) "" else lines().dropLast(1).lastOrNull()?.substringBeforeLast(":")?.substringAfterLast(":1: ") ?: this
 
-  private fun String.getErrorMessage(): String = substringAfter(": ")
+  private fun String.getErrorMessage(): String = substringAfterLast(": ").substringBefore('.').trim()
 
   override fun formatCode(code: String): String = try {
     jsPyEditor.pyodide.runPython("""
@@ -114,6 +114,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
     runningJob?.cancel()
 
+    val errHst = mutableMapOf<String, Int>()
     if (!containsUnk && tokens in cfg.language) {
 //      val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
       val compilerFeedback = getOutput(pcs.rawCode)
@@ -139,11 +140,17 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
           .distinct().let {
             if (allowCompilerErrors) it.onEach { total++ }
             else it.filter { s ->
-              val errorType = getOutput(s).getErrorType()
+              val output = getOutput(s)
+              val errorType = output.getErrorType()
               when (errorType) {
-                "SyntaxError", "TypeError" -> false
                 "" -> true
-                else -> false
+                else -> {
+                  "$errorType: ${output.getErrorMessage()}"
+                    .also { errHst[it] = if (it in errHst) errHst[it]!! + 1 else {
+//                    log("REPAIR: $s\nERROR: $it")
+                    1 }; }
+                   false
+                }
               }.also { if (!it) rejected++; total++ }
             }
           }.enumerateInteractively(
@@ -155,7 +162,14 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
               val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())
               pcs.paintDiff(levAlign)
             },
-            postCompletionSummary = { ", discarded $rejected/$total, ${t0.elapsedNow()} latency." },
+            postCompletionSummary = {
+              if (errHst.isNotEmpty()) {
+                val pad = (errHst.values.maxOrNull()?.toString()?.length ?: 1) + 1
+                val summary = errHst.toMap().entries.sortedBy { -it.component2() }
+                    .joinToString("\n") { "${it.value.toString().padEnd(pad)}| ${it.key}" }
+                log("Rejection histogram:\n$summary")
+              }
+              ", discarded $rejected/$total, ${t0.elapsedNow()} latency." },
             reason = invalidPrefix
           )
       }
