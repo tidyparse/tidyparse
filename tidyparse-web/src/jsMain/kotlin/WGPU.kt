@@ -35,8 +35,8 @@ external val navigator: dynamic
     (3) Implement test harness to avoid regressions. Need to measure: (1) perf (2) prec@k
 */
 
-const val largeMem = "{ requiredLimits: { maxBufferSize: 2000000000, maxStorageBufferBindingSize: 2000000000 } }"
-const val smallMem = "{ requiredLimits: { maxBufferSize: 1073741824, maxStorageBufferBindingSize: 1073741824 } }"
+const val largeMem = "{ requiredLimits: { maxBufferSize: 2000000000, maxStorageBufferBindingSize: 2000000000, maxStorageBuffersPerShaderStage: 10 } }"
+const val smallMem = "{ requiredLimits: { maxBufferSize: 1073741824, maxStorageBufferBindingSize: 1073741824, maxStorageBuffersPerShaderStage: 10 } }"
 
 suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
   val tmpDev = (navigator.gpu as? GPU)?.requestAdapter()?.also {
@@ -52,12 +52,12 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         sparse_load, sparse_mat_load,      // Matrix loading utils
 
         init_chart,
-        dag_reach, mdpt_count, mdpt_write, // Graph reachability
-        cfl_mul_upper,                     // Matrix exponentiation
-        bp_count, bp_write,                // Backpointer addressing
-        ls_dense, ls_cdf,                  // Language size estimation
-        sample_words_wor, markov_score,    // Enumeration and reranking
-        select_top_k, gather_top_k         // Top-k selection
+        dag_reach, mdpt_count, mdpt_write,       // Graph reachability
+        cfl_mul_upper,                           // Matrix exponentiation
+        bp_count, bp_write,                      // Backpointer addressing
+        ls_dense, ls_cdf,                        // Language size estimation
+        build_root_sizes, enum_words_wor,        // Enumeration and decoding
+        markov_score, select_top_k, gather_top_k // Reranking and truncation
       ).forEach { it.bind() }
 //      benchmarkWGPU() // TODO: remove for deployment
 //      benchmarkWGPURepair()
@@ -135,7 +135,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
   val allStartIds = fsa.finalIdxs.map { it * numNTs + startNT }
     .let { it.zip(dpBuf.readIndices(it)) }.filter { (_, v) -> v != 0 }.map { it.first }
 
-  if (!allStartIds.isEmpty()) // { log("Valid parse found: dpComplete has ${allStartIds.size} start indices") }
+  if (!allStartIds.isEmpty()) { log("Valid parse found: dpComplete has ${allStartIds.size} start indices") }
   else return emptyList<String>().also { log("No valid parse found: dpComplete has no entries in final states!") }
 
   val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNTs, dpBuf, metaBuf)
@@ -162,16 +162,27 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
 
   lsDense.destroy()
 
-  val groupsX = DISPATCH_GROUP_SIZE_X
-  val header = intArrayOf(0, maxRepairLen, numNTs, numStates, groupsX, MAX_SAMPLES)
-
-  /** [TERM_STRUCT] */ val idxUniBuf = packStruct(constants = header.toList(), startIdxs.toGPUBuffer())
   log("Pairing function construction took: ${t2.elapsedNow()}")
 
   val t3 = TimeSource.Monotonic.markNow()
+
+  val numRoots = startIdxs.size / 2
+  val rootSizes = GPUBuffer(numRoots * 4, STCPSD)
+
+  /** Memory layout: [IDX_UNIFORM_STRUCT] */
+  val idxUniBuf = packStruct(listOf(0, maxRepairLen, numNTs, numStates, DISPATCH_GROUP_SIZE_X, MAX_SAMPLES), startIdxs.toGPUBuffer())
+
+  build_root_sizes(dpBuf, bpCountBuf, bpOffsetBuf, cdfBuf, tmBuf, rootSizes, idxUniBuf)((numRoots + 255) / 256)
+
+// 2) Exclusive scan → rootCDF (still on device)
+  val rootCDF = Shader.prefixSumGPU(rootSizes, numRoots)
+
+// 3) Decode WOR directly from chart
   val outBuf = GPUBuffer(MAX_SAMPLES * maxRepairLen * 4, STCPSD)
-  val groupsY = (MAX_SAMPLES + groupsX - 1) / groupsX
-  sample_words_wor(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, outBuf, tmBuf, idxUniBuf, cdfBuf)(groupsX, groupsY)
+  enum_words_wor(
+    dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf,
+    cdfBuf /*ls_sparse*/, tmBuf, idxUniBuf, rootSizes, rootCDF, outBuf
+  )(DISPATCH_GROUP_SIZE_X, (MAX_SAMPLES + DISPATCH_GROUP_SIZE_X - 1) / DISPATCH_GROUP_SIZE_X)
 
   return if (ngrams == null) {
     val res = mutableMapOf<Int, MutableSet<String>>()
@@ -189,7 +200,6 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
     val topK = scoreSelectGather(
       packets = outBuf,
       ngrams = ngrams,
-      indexUniformsBuf = idxUniBuf,
       maxSamples = MAX_SAMPLES,
       stride = maxRepairLen,
       k = k
@@ -232,15 +242,17 @@ fun IntArray.decodePacket(idx: Int, tm: List<String>, pktLen: Int): Pair<Int, St
 suspend fun scoreSelectGather(
   packets          : GPUBuffer,
   ngrams           : GPUBuffer,
-  indexUniformsBuf : GPUBuffer,
   maxSamples       : Int,
   stride           : Int,
   k                : Int
 ): IntArray {
   val t0 = TimeSource.Monotonic.markNow()
-  val groupsX = DISPATCH_GROUP_SIZE_X
-  val groupsY = (maxSamples + groupsX - 1) / groupsX
-  markov_score(packets, ngrams, indexUniformsBuf)(groupsX, groupsY)
+  val threads = DISPATCH_GROUP_SIZE_X
+  val groupsY = (maxSamples + threads - 1) / threads
+  /** Memory layout: [SAMPLER_PARAMS] */
+  val prmBuf  = intArrayOf(maxSamples, k, stride, threads).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
+
+  markov_score(packets, ngrams, prmBuf)(threads, groupsY)
 //  log("Score in ${t0.elapsedNow()}")
 
 //  log(packets.readInts().toList().windowed(stride, stride)
@@ -248,28 +260,25 @@ suspend fun scoreSelectGather(
 //    .sortedBy { it.key }.joinToString("\n") { (a, b) -> "$a => $b" })
 
 //  t0 = TimeSource.Monotonic.markNow()
-  val selGroupsX = DISPATCH_GROUP_SIZE_X
   val totalGroups = (maxSamples + 255) / 256
-  val selGroupsY = (totalGroups + selGroupsX - 1) / selGroupsX
-  val prmBuf   = intArrayOf(maxSamples, k, stride, selGroupsX).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
-  val idxBuf   = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
-  val scrBuf   = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
+  val selGroupsY  = (totalGroups + threads - 1) / threads
+  val idxBuf      = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
+  val scrBuf      = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
 
-  select_top_k(prmBuf, packets, idxBuf, scrBuf)(selGroupsX, selGroupsY)
+  select_top_k(prmBuf, packets, idxBuf, scrBuf)(threads, selGroupsY)
 //  log("Select in ${t0.elapsedNow()}")
 
 //  t0 = TimeSource.Monotonic.markNow()
-  val gatherPrm = intArrayOf(stride, k).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
   val bestBuf   = GPUBuffer(k * stride * 4, STCPSD)
 
-  gather_top_k(gatherPrm, packets, idxBuf, bestBuf)(k)
+  gather_top_k(prmBuf, packets, idxBuf, bestBuf)(k)
 //  log("Gather in ${t0.elapsedNow()}")
 
 //  t0 = TimeSource.Monotonic.markNow()
   val topK = bestBuf.readInts()
   log("Score/select/gather read ${topK.size} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
 
-  listOf(prmBuf, idxBuf, scrBuf, gatherPrm, bestBuf).forEach(GPUBuffer::destroy)
+  listOf(prmBuf, idxBuf, scrBuf, bestBuf).forEach(GPUBuffer::destroy)
   return topK
 }
 
@@ -286,6 +295,48 @@ val CFG.termBuf: GPUBuffer by cache {
 }
 
 //language=wgsl
+const val CHART_DECODING_HELPERS = """
+fn getStartIdx(i : u32) -> u32 { return idx_uni.startIndices[i * 2]; }
+fn getEditDist(i : u32) -> u32 { return idx_uni.startIndices[i * 2 + 1]; }
+"""
+
+//language=wgsl
+const val TM_DECODING_HELPERS = """
+// Let Σ_A denote the subset of Σ s.t. for all a ∈ Σ_A ⊢ (A -> a) ∈ P
+fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + nt]; } // |Σ_A|
+// Offsets of the nonterminal in the following Map<...> structure
+fn get_offsets(nt : u32) -> u32    { return terminals.payload[terminals.offsets_offset + nt];    } // offset of Σ_A
+// Flattened index of Map<NT, List<TM-id>> values
+fn get_all_tms(i : u32) -> u32     { return terminals.payload[terminals.all_tms_offset + i];     } // σ → TM‑id
+// Counts the number of terminals directly generated by a unit-nonterminal entry in the parse chart
+fn count_tms(val: u32, unit_nt: u32) -> u32 {
+    let hasLiteral = ((val >> 1u) != 0u);             // bit‑packed literal present?
+    let negLit     = (val & $NEG_STR_LIT) != 0u;      // negative‑literal flag
+    let litCount   = select(0u,
+                       select(1u,                                     // positive literal ⇒ exactly 1
+                               max(1u, get_nt_tm_lens(unit_nt) - 1u), // negative ⇒ |Σ_A|‑1
+                               negLit),
+                       hasLiteral);
+    return litCount;
+}
+"""
+
+//language=wgsl
+const val IDX_UNIFORM_STRUCT = """
+struct IndexUniforms {  // Indices of all accepting states in the parse chart
+    targetCnt       : atomic<u32>,  // global counter (LFSR advances on host)
+    maxWordLen      : u32,
+    numNonterminals : u32,
+    numStates       : u32,
+    threads         : u32,
+    max_samples     : u32,
+    
+    startIdxOffset  : u32, numStartIndices : u32,
+    startIndices    : array<u32> // Contains alternating (1) start index and (2) edit distance
+};
+"""
+
+//language=wgsl
 const val TERM_STRUCT = """
 struct Terminals { // Mappings from nonterminals to terminals in CFG
     nt_tm_lens_offset : u32,    nt_tm_lens_size : u32,
@@ -295,17 +346,10 @@ struct Terminals { // Mappings from nonterminals to terminals in CFG
        payload : array<u32>
 };
 
-struct IndexUniforms {  // Indices of all accepting states in the parse chart
-    targetCnt       : atomic<u32>,  // global counter (LFSR advances on host)
-    maxWordLen      : u32,
-    numNonterminals : u32,
-    numStates       : u32,
-    grid_dim_x      : u32,
-    max_samples     : u32,
-    
-    startIdxOffset  : u32, numStartIndices : u32,
-    startIndices    : array<u32> // Contains alternating (1) start index and (2) edit distance
-};"""
+$IDX_UNIFORM_STRUCT
+
+$TM_DECODING_HELPERS
+"""
 
 //language=wgsl
 const val CFL_STRUCT = """struct CFLStruct { // Carries metadata about the CFL + NFA intersection
@@ -325,7 +369,7 @@ grammarFlattenedOffset : u32, grammarFlattenedSize : u32,
 fn getGrammarSymbol(index: u32) -> u32 { return cs.payload[cs.grammarFlattenedOffset + index]; }
 fn getGrammarOffset(index: u32) -> u32 { return cs.payload[cs.grammarOffsetsOffset + index]; }"""
 
-//language=wgsl
+//language=text
 const val SHORT_PREAMBLE = """
 let N  = cs.numStates;
 let NT = cs.numNonterminals;
@@ -352,6 +396,11 @@ $SHORT_PREAMBLE"""
 
 //language=wgsl
 val init_chart by Shader("""$CFL_STRUCT $TERM_STRUCT
+@group(0) @binding(0) var<storage, read_write>     dp_in : array<u32>;
+@group(0) @binding(1) var<storage, read>            word : array<u32>;
+@group(0) @binding(2) var<storage, read>              cs : CFLStruct;
+@group(0) @binding(3) var<storage, read>       terminals : Terminals;
+
 fn pack_rc(row_j: u32, col_i: u32) -> u32 { return (row_j << 16u) | (col_i & 0xffffu); }
 fn unpack_row_j(packed: u32) -> u32 { return packed >> 16u; }
 fn unpack_col_i(packed: u32) -> u32 { return packed & 0xffffu; }
@@ -433,18 +482,6 @@ fn encode_neg_literal(A_nt_idx : u32, sigma_token : u32) -> u32 {
 }
 
 const MAX_J_IDX_CONST : u32 = ${MAX_LEV_RAD}u; // Max index for j (edit distance)
-
-// Let Σ_A denote the subset of Σ s.t. for all a ∈ Σ_A ⊢ (A -> a) ∈ P
-fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + nt]; } // |Σ_A|
-// Offsets of the nonterminal in the following Map<...> structure
-fn get_offsets(nt : u32) -> u32    { return terminals.payload[terminals.offsets_offset + nt];    } // offset of Σ_A
-// Flattened index of Map<NT, List<TM-id>> values
-fn get_all_tms(i : u32) -> u32     { return terminals.payload[terminals.all_tms_offset + i];     } // σ → TM‑id
-
-@group(0) @binding(0) var<storage, read_write> dp_in : array<u32>;
-@group(0) @binding(1) var<storage, read>        word : array<u32>;
-@group(0) @binding(2) var<storage, read>          cs : CFLStruct;
-@group(0) @binding(3) var<storage, read>   terminals : Terminals;
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let q1_rank = gid.x;
@@ -670,9 +707,6 @@ struct SpanUni { span : u32 };
 @group(0) @binding(3) var<storage, read>       terminals : Terminals;
 @group(0) @binding(4) var<uniform>                    su : SpanUni;
 
-// Let Σ_A denote the subset of Σ s.t. for all a ∈ Σ_A ⊢ (A -> a) ∈ P
-fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + nt]; } // |Σ_A|
-
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let r = gid.x;
     let c = r + su.span;
@@ -684,14 +718,7 @@ fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_le
     let val = dp_in[dpIdx];
     if (val == 0u) { return; }
 
-    let hasLiteral = ((val >> 1u) != 0u);             // bit‑packed literal present?
-    let negLit     = (val & $NEG_STR_LIT) != 0u;      // negative‑literal flag
-    let litCount   =
-        select(0u,
-            select(1u,                                // positive literal ⇒ exactly 1
-                    max(1u, get_nt_tm_lens(A) - 1u),  // negative ⇒ |Σ_A|‑1
-                    negLit),
-            hasLiteral);
+    let litCount = count_tms(val, A);
 
     if ((val & 0x01u) == 0u) { ls_dense[dpIdx] = max(litCount, 1u); return; }
 
@@ -723,9 +750,6 @@ val ls_cdf by Shader("""$CFL_STRUCT $TERM_STRUCT
 @group(0) @binding(4) var<storage, read>                cs : CFLStruct;
 @group(0) @binding(5) var<storage, read>         terminals : Terminals;
 
-// Let Σ_A denote the subset of Σ s.t. for all a ∈ Σ_A ⊢ (A -> a) ∈ P
-fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + nt]; } // |Σ_A|
-
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     $PREAMBLE
 
@@ -735,13 +759,7 @@ fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_le
     var acc    : u32 = 0u;
     var outPos : u32 = bp_offset[dpIdx];
     
-    let hasLiteral = ((val >> 1u) != 0u);            // bit‑packed literal present?
-    let negLit     = (val & $NEG_STR_LIT) != 0u;     // negative‑literal flag 
-    let litCount   = select(0u,
-                            select(1u,                               // positive literal ⇒ exactly 1
-                                    max(1u, get_nt_tm_lens(A) - 1u), // negative ⇒ |Σ_A|‑1
-                                    negLit),
-                            hasLiteral);
+    let litCount = count_tms(val, A);
 
     for (var p = pairOffset; p < pairOffsetNext; p = p + 1u) {
         let m = getMdpt(p);
@@ -762,8 +780,9 @@ fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_le
     }
 }""")
 
+const val PFX_SUM_PARAMS = """struct PrefixSumUni { n : u32, numBlocks : u32, threads : u32 };"""
 // language=wgsl
-val prefix_sum_p1 by Shader("""struct PrefixSumUni { n : u32, numBlocks : u32, groupsX : u32 };
+val prefix_sum_p1 by Shader("""$PFX_SUM_PARAMS
 @group(0) @binding(0) var<storage, read>         inputBuf : array<u32>;
 @group(0) @binding(1) var<storage, read_write>  outputBuf : array<u32>;
 @group(0) @binding(2) var<storage, read_write>  blockSums : array<u32>;
@@ -778,7 +797,7 @@ var<workgroup> tile: array<u32, WORKGROUP_SIZE>;
   @builtin(local_invocation_id) localId : vec3<u32>
 ) {
     let N     = prefixUni.n;
-    let block = groupId.x + groupId.y * prefixUni.groupsX;
+    let block = groupId.x + groupId.y * prefixUni.threads;
     
     if (block >= prefixUni.numBlocks) { return; }
     
@@ -827,7 +846,7 @@ var<workgroup> tile: array<u32, WORKGROUP_SIZE>;
 }""")
 
 //language=wgsl
-val prefix_sum_p2 by Shader("""struct PrefixSumUni { n : u32, numBlocks : u32, groupsX : u32 };
+val prefix_sum_p2 by Shader("""$PFX_SUM_PARAMS
 @group(0) @binding(0) var<storage, read_write>          dataBuf : array<u32>;
 @group(0) @binding(1) var<storage, read>       scannedBlockSums : array<u32>;
 @group(0) @binding(2) var<uniform>                    prefixUni : PrefixSumUni;
@@ -836,7 +855,7 @@ val prefix_sum_p2 by Shader("""struct PrefixSumUni { n : u32, numBlocks : u32, g
     @builtin(workgroup_id)        groupId : vec3<u32>,
     @builtin(local_invocation_id) localId : vec3<u32>
 ) {
-    let block = groupId.x + groupId.y * prefixUni.groupsX;
+    let block = groupId.x + groupId.y * prefixUni.threads;
     if (block >= prefixUni.numBlocks) { return; }
 
     let gid = block * 256u + localId.x;
@@ -850,197 +869,202 @@ val prefix_sum_p2 by Shader("""struct PrefixSumUni { n : u32, numBlocks : u32, g
 const val MAX_WORD_LEN = 512
 const val MAX_LEV_RAD = 5
 const val MAX_SAMPLES = 550_000
-const val DISPATCH_GROUP_SIZE_X = 65535
+const val DISPATCH_GROUP_SIZE_X = 65_535
 // Length of the packet header in each repair buffer
 const val PKT_HDR_LEN = 2 // [levenshtein distance, Markov probability]
 const val MAX_SAMPLES_PER_DIST = 30_000
-val hexFmt = HexFormat { number.prefix = "0x"; number.suffix = "u" }
 const val SENTINEL = 0xFFFF_FFFFu
 const val HASH_MUL = 0x1e35a7bdu
 
-/** See [PTree.sampleStrWithoutReplacement] for CPU version. */
 //language=wgsl
-val sample_words_wor by Shader("""$TERM_STRUCT
-@group(0) @binding(0) var<storage, read>              dp_in : array<u32>;
-@group(0) @binding(1) var<storage, read>           bp_count : array<u32>;
-@group(0) @binding(2) var<storage, read>          bp_offset : array<u32>;
-@group(0) @binding(3) var<storage, read>         bp_storage : array<u32>;
-@group(0) @binding(4) var<storage, read_write> sampledWords : array<u32>;
-@group(0) @binding(5) var<storage, read>          terminals : Terminals;
-@group(0) @binding(6) var<storage, read_write>      idx_uni : IndexUniforms;
-@group(0) @binding(7) var<storage, read>          ls_sparse : array<u32>;
+val build_root_sizes by Shader("""$TERM_STRUCT
+@group(0) @binding(0) var<storage, read>        dp_in      : array<u32>;
+@group(0) @binding(1) var<storage, read>        bp_count   : array<u32>;
+@group(0) @binding(2) var<storage, read>        bp_offset  : array<u32>;
+@group(0) @binding(3) var<storage, read>        ls_sparse  : array<u32>;
+@group(0) @binding(4) var<storage, read>        terminals  : Terminals;
+@group(0) @binding(5) var<storage, read_write>  root_sizes : array<u32>;
+@group(0) @binding(6) var<storage, read_write>  idx_uni    : IndexUniforms;
 
-/* ----------------------------- helpers ------------------------------------------ */
-fn getStartIdx(i : u32) -> u32 { return idx_uni.startIndices[i * 2]; }
-fn getEditDist(i : u32) -> u32 { return idx_uni.startIndices[i * 2 + 1]; }
-// Let Σ_A denote the subset of Σ s.t. for all a ∈ Σ_A ⊢ (A -> a) ∈ P
-fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + nt]; } // |Σ_A|
-// Offsets of the nonterminal in the following Map<...> structure
-fn get_offsets(nt : u32) -> u32    { return terminals.payload[terminals.offsets_offset + nt];    } // offset of Σ_A
-// Flattened index of Map<NT, List<TM-id>> values
-fn get_all_tms(i : u32) -> u32     { return terminals.payload[terminals.all_tms_offset + i];     } // σ → TM‑id
+$CHART_DECODING_HELPERS
 
-fn binarySearchCDF(base: u32, len: u32, needle: u32) -> u32 {
-    var lo: u32 = 0u;
-    var hi: u32 = len;
-    loop {
-        if (lo >= hi) { return base + lo; }
-        let mid = (lo + hi) >> 1u;
-        if (needle < ls_sparse[base + mid]) { hi = mid; } else { lo = mid + 1u; }
-    }
+const NEG_MASK : u32 = $NEG_STR_LIT;
+
+fn langSize(dpIdx: u32, numNTs: u32) -> u32 {
+  let val    = dp_in[dpIdx];
+  let nt     = dpIdx % numNTs;
+
+  let litCount = count_tms(val, nt);
+
+  let expCnt = bp_count[dpIdx];
+  if (expCnt == 0u) { return litCount; }
+  let base   = bp_offset[dpIdx];
+  let last   = ls_sparse[base + expCnt - 1u];
+  return litCount + last;
 }
 
-/* ---------- size of the language rooted at any DP‑cell ------------------------- */
-fn langSize(dpIdx : u32) -> u32 {
-    /* literal domain */
-    let val    = dp_in[dpIdx];
-    let hasLit = ((val >> 1u) != 0u);
-    let negLit = (val & $NEG_STR_LIT) != 0u;
-    let litCnt =
-        select(0u,
-               select(1u,
-                      max(1u, get_nt_tm_lens(dpIdx % idx_uni.numNonterminals) - 1u),
-                      negLit),
-               hasLit);
-
-    /* expansion domain */
-    let expCnt = bp_count[dpIdx];
-    if (expCnt == 0u) { return litCnt; }
-
-    let base   = bp_offset[dpIdx];
-    let cdfLast = ls_sparse[base + expCnt - 1u];   // inclusive CDF
-    return litCnt + cdfLast;
-}
-
-/* ---------- literal decoder ----------------------------------------------------- */
-fn decodeLiteral(
-    nt          : u32,   // non‑terminal
-    litEnc      : u32,   // encoded literal (1‑based)
-    negLit      : bool,  // negative‑literal flag
-    variant     : u32,   // rank inside the literal domain
-    word        : ptr<function, array<u32, $MAX_WORD_LEN>>,
-    wordLen     : ptr<function, u32>
-) {
-    let numTms = get_nt_tm_lens(nt);
-    let ntOff  = get_offsets(nt);
-
-    if (negLit) { // choose any terminal ≠ (litEnc‑1)
-        let excl = litEnc - 1u;
-        let idx  = select(variant, variant + 1u, variant >= excl);
-        (*word)[*wordLen] = get_all_tms(ntOff + idx) + 1u;
-    } else {      // positive literal → single choice
-        (*word)[*wordLen] = get_all_tms(ntOff + (litEnc - 1u)) + 1u;
-    }
-    *wordLen = *wordLen + 1u;
-}
-
-/* ---------- stack frame --------------------------------------------------------- */
-struct Frame { dp : u32, rk : u32 };
-
-fn lcg_permute(x : u32) -> u32 { return 1664525u * x + 1013904223u; }
-
-fn lcg_rand(stateRef: ptr<function, u32>, range: u32) -> u32 { 
-  let newVal = (1664525u * (*stateRef)) + 1013904223u;
-  *stateRef = newVal;
-  return select(newVal % range, 0u, range == 0u); 
-}
-
-fn min_u32(a: u32, b: u32) -> u32 { return select(a, b, a > b); }
-
-/* ---------- temperature knob ---------------------------------------------------- */
-const TEMPERATURE : f32 = 1.1; // 1.0 = unmodified;  ∞ ≈ uniform
-fn weight(sz: u32) -> u32 { return max(1u, u32(pow(f32(sz), 1.0 / TEMPERATURE))); }
-/* -------------------------------------------------------------------------------- */
-
-@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-    /* ---- unique global rank ---------------------------------------------------- */
-    let gRank = gid.x + gid.y * idx_uni.grid_dim_x;
-    if (gRank >= idx_uni.max_samples) { return; }
-
-    let numStartIdxs = idx_uni.numStartIndices / 2u;
-    
-    /* ---- total tempered weight over all accepting states ----------------------- */
-    var total : u32 = 0u;
-    for (var i = 0u; i < numStartIdxs; i = i + 1u) { total += weight(langSize(getStartIdx(i))); }
-    var rank : u32 = gRank % total;
-
-    /* ---- pick a root in proportion to its tempered weight ---------------------- */
-    var rootIdx : u32 = 0u;
-    var levDist : u32 = 0u;
-    for (var i = 0u; i < numStartIdxs; i = i + 1u) {
-        let w = weight(langSize(getStartIdx(i)));
-        if (rank < w) { rootIdx = getStartIdx(i); levDist = getEditDist(i); break; }
-        rank -= w;
-    }
-    
-    /* ---- DFS stack ------------------------------------------------------------- */
-    var stack : array<Frame, $MAX_WORD_LEN>;
-    var top   : u32 = 0u;
-    stack[top] = Frame(rootIdx, rank);   top++;
-
-    var word  : array<u32, $MAX_WORD_LEN>;
-    var wLen  : u32 = 0u;
-
-    /* ---------------- depth‑first enumeration without replacement --------------- */
-    loop {
-        if (top == 0u) { break; }
-        top = top - 1u;
-        var fr     = stack[top];
-        var dpIdx  = fr.dp;
-        var rk     = fr.rk;
-
-        /* --- literal vs expansion ---------------------------------------------- */
-        let val      = dp_in[dpIdx];
-        let hasLit   = ((val >> 1u) != 0u);
-        let negLit   = (val & $NEG_STR_LIT) != 0u;
-        let litCnt   =
-            select(0u,
-                   select(1u,                     // positive
-                          max(1u, get_nt_tm_lens(dpIdx % idx_uni.numNonterminals) - 1u),
-                          negLit),
-                   hasLit);
-
-        let expCnt   = bp_count[dpIdx];
-        let base     = bp_offset[dpIdx];
-        let totSize  = litCnt + select(0u, ls_sparse[base + expCnt - 1u], expCnt != 0u);
-
-        rk = rk % totSize;                     // residual rank at this node
-
-        /* --- literal branch ----------------------------------------------------- */
-        if (rk < litCnt) {
-            decodeLiteral(dpIdx % idx_uni.numNonterminals, (val >> 1u) & 0x1fffffffu, negLit, rk, &word, &wLen);
-            continue;
-        }
-        rk = rk - litCnt;                      // shift into expansion domain
-
-        /* --- expansion branch --------------------------------------------------- */
-        let choiceIdx   = binarySearchCDF(base, expCnt, rk);
-        let prevCDF     = select(0u, ls_sparse[choiceIdx - 1u], choiceIdx != base);
-        let insidePair  = rk - prevCDF;
-
-        let idxBM = bp_storage[2u*choiceIdx + 0u];
-        let idxMC = bp_storage[2u*choiceIdx + 1u];
-
-        let sizeC = langSize(idxMC);           // |L(C)|
-        let rkB   = insidePair / sizeC;        // quotient  → rank for B
-        let rkC   = insidePair % sizeC;        // remainder → rank for C
-
-        /* push right child first so left child is processed first (DFS order) */
-        stack[top] = Frame(idxMC, rkC); top++;
-        stack[top] = Frame(idxBM, rkB); top++;
-    }
-
-    /* ---- write the resulting word to the output buffer ------------------------- */
-    let outBase = gRank * idx_uni.maxWordLen;
-    sampledWords[outBase] = levDist;
-    for (var i = 0u; i < wLen; i++) { sampledWords[outBase + i + ${PKT_HDR_LEN}u] = word[i]; }
+@compute @workgroup_size(256) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  let numRoots = idx_uni.numStartIndices / 2u;
+  if (i >= numRoots) { return; }
+  root_sizes[i] = langSize(getStartIdx(i), idx_uni.numNonterminals);
 }""")
 
+/** See [PTree.sampleStrWithoutReplacement] for CPU version. */
 //language=wgsl
-val markov_score by Shader("""$TERM_STRUCT
+val enum_words_wor by Shader("""$TERM_STRUCT
+@group(0) @binding(0) var<storage, read>        dp_in       : array<u32>;
+@group(0) @binding(1) var<storage, read>        bp_count    : array<u32>;
+@group(0) @binding(2) var<storage, read>        bp_offset   : array<u32>;
+@group(0) @binding(3) var<storage, read>        bp_storage  : array<u32>;
+@group(0) @binding(4) var<storage, read>        ls_sparse   : array<u32>;
+@group(0) @binding(5) var<storage, read>        terminals   : Terminals;
+@group(0) @binding(6) var<storage, read_write>  idx_uni     : IndexUniforms;
+@group(0) @binding(7) var<storage, read>        root_sizes  : array<u32>;   // length = numRoots
+@group(0) @binding(8) var<storage, read>        root_cdf    : array<u32>;   // exclusive scan
+@group(0) @binding(9) var<storage, read_write>  sampled     : array<u32>;   // out packets
+
+$CHART_DECODING_HELPERS
+
+const PKT_HDR_LEN : u32 = ${PKT_HDR_LEN}u;
+const NEG_MASK    : u32 = ${NEG_STR_LIT};
+
+fn langSize(dpIdx: u32) -> u32 {
+  let nt     = dpIdx % idx_uni.numNonterminals;
+  let val    = dp_in[dpIdx];
+  let litCount = count_tms(val, nt);
+  let expCnt = bp_count[dpIdx];
+  if (expCnt == 0u) { return litCount; }
+  let base   = bp_offset[dpIdx];
+  let last   = ls_sparse[base + expCnt - 1u];
+  return litCount + last;
+}
+
+fn binarySearchCDF(base: u32, len: u32, needle: u32) -> u32 {
+  var lo: u32 = 0u;
+  var hi: u32 = len;
+  loop {
+    if (lo >= hi) { return base + lo; }
+    let mid = (lo + hi) >> 1u;
+    if (needle < ls_sparse[base + mid]) { hi = mid; } else { lo = mid + 1u; }
+  }
+}
+
+fn decodeLiteral(
+  dpIdx: u32, // gives NT via modulo
+  litEnc: u32,
+  negLit: bool,
+  variant: u32,
+  word: ptr<function, array<u32, ${MAX_WORD_LEN}u>>,
+  wLen: ptr<function, u32>
+) {
+  let nt    = dpIdx % idx_uni.numNonterminals;
+  let ntLen = get_nt_tm_lens(nt);
+  let ntOff = get_offsets(nt);
+  if (negLit) {
+    if (ntLen == 0u) { return; }
+    let excl = litEnc - 1u;
+    let idx  = select(variant, variant + 1u, variant >= excl);
+    (*word)[*wLen] = get_all_tms(ntOff + idx) + 1u;
+  } else { (*word)[*wLen] = get_all_tms(ntOff + (litEnc - 1u)) + 1u; }
+  *wLen = *wLen + 1u;
+}
+
+struct Frame { dp: u32, rk: u32 }
+
+@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+  let sid = gid.x + gid.y * idx_uni.threads;
+  if (sid >= idx_uni.max_samples) { return; }
+
+  let numRoots = idx_uni.numStartIndices / 2u;
+  if (numRoots == 0u) { return; }
+
+  // total = lastCDF + lastSize
+  let last = numRoots - 1u;
+  let total = root_cdf[last] + root_sizes[last];
+  if (sid >= total) { return; } // strict WOR
+
+  // Global rank → root via binary search over root_cdf/root_sizes
+  var rLo: u32 = 0u;
+  var rHi: u32 = numRoots;
+  loop {
+    if (rLo + 1u >= rHi) { break; }
+    let mid = (rLo + rHi) >> 1u;
+    let base = root_cdf[mid];
+    if (sid < base) { rHi = mid; } else {
+      let size = root_sizes[mid];
+      if (sid < base + size) { rLo = mid; rHi = mid + 1u; break; }
+      rLo = mid + 1u;
+    }
+  }
+  let rootIdx = rLo;
+  let base    = root_cdf[rootIdx];
+  var rk      = sid - base;               // rank within chosen root
+  let dpRoot  = getStartIdx(rootIdx);
+  let levDist = getEditDist(rootIdx);
+
+  // DFS decode by rank (without replacement by construction)
+  var stack : array<Frame, ${MAX_WORD_LEN}u>;
+  var top   : u32 = 0u;
+  stack[top] = Frame(dpRoot, rk); top++;
+
+  var word  : array<u32, ${MAX_WORD_LEN}u>;
+  var wLen  : u32 = 0u;
+
+  loop {
+    if (top == 0u) { break; }
+    top = top - 1u;
+    var fr = stack[top];
+    var d  = fr.dp;
+    rk     = fr.rk;
+
+    let val    = dp_in[d];
+    let nt     = d % idx_uni.numNonterminals;
+    let negLit   = (val & $NEG_STR_LIT) != 0u;
+    let litCount = count_tms(val, nt);
+
+    let expCnt = bp_count[d];
+    let tot    = litCount + select(0u, ls_sparse[bp_offset[d] + expCnt - 1u], expCnt != 0u);
+    rk = rk % tot;
+
+    if (rk < litCount) {
+      decodeLiteral(d, (val >> 1u) & 0x1fffffffu, negLit, rk, &word, &wLen);
+      continue;
+    }
+    rk = rk - litCount;
+
+    let base2    = bp_offset[d];
+    let choiceIx = binarySearchCDF(base2, expCnt, rk);
+    let prevCDF  = select(0u, ls_sparse[choiceIx - 1u], choiceIx != base2);
+    let inside   = rk - prevCDF;
+
+    let left  = bp_storage[2u * choiceIx + 0u];
+    let right = bp_storage[2u * choiceIx + 1u];
+
+    let sizeR = langSize(right);
+    let rkL   = inside / sizeR;
+    let rkR   = inside % sizeR;
+
+    // Push right first, then left, to keep left-to-right DFS order
+    stack[top] = Frame(right, rkR); top++;
+    stack[top] = Frame(left,  rkL); top++;
+  }
+
+  // Write packet
+  let stride = idx_uni.maxWordLen;
+  let outBase = sid * stride;
+  sampled[outBase + 0u] = levDist; // distance
+  // sampled[outBase + 1u] left for score; will be filled by markov_score
+  for (var i = 0u; i < wLen && i + PKT_HDR_LEN < stride; i = i + 1u) { sampled[outBase + PKT_HDR_LEN + i] = word[i]; }
+}""".trimIndent())
+
+//language=wgsl
+const val SAMPLER_PARAMS = """struct Params { maxSamples: u32, k: u32, stride: u32, threads: u32 };"""
+//language=wgsl
+val markov_score by Shader("""$SAMPLER_PARAMS
 @group(0) @binding(0) var<storage, read_write>  packets : array<u32>; // sampledWords/outBuf
 @group(0) @binding(1) var<storage, read>          ngram : array<u32>; // hash table
-@group(0) @binding(2) var<storage, read_write>  idx_uni : IndexUniforms;
+@group(0) @binding(2) var<uniform>                  prm : Params;
 
 const PKT_HDR_LEN  : u32 = ${PKT_HDR_LEN}u;
 const SENTINEL_KEY : u32 = ${SENTINEL.toHexString(hexFmt)};
@@ -1068,10 +1092,10 @@ fn lookupScore(key: u32) -> u32 {
 }
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-    let sid = gid.x + gid.y * idx_uni.grid_dim_x;
-    if (sid >= idx_uni.max_samples) { return; }
+    let sid = gid.x + gid.y * prm.threads;
+    if (sid >= prm.maxSamples) { return; }
 
-    let stride : u32 = idx_uni.maxWordLen;
+    let stride : u32 = prm.stride;
     let base   : u32 = sid * stride;
 
     var t0 : u32 = BOS_ID     - 1u;
@@ -1109,7 +1133,7 @@ fn lookupScore(key: u32) -> u32 {
 }""")
 
 //language=wgsl
-val select_top_k by Shader("""struct Params { n: u32, k: u32, stride: u32, groupsX: u32 };
+val select_top_k by Shader("""$SAMPLER_PARAMS
 @group(0) @binding(0) var<uniform>                  prm : Params;
 @group(0) @binding(1) var<storage, read>        packets : array<u32>;
 @group(0) @binding(2) var<storage, read_write>   topIdx : array<atomic<u32>>;
@@ -1121,9 +1145,9 @@ const UINT_MAX : u32 = 0xFFFFFFFFu;
     @builtin(workgroup_id)        workgroup_id : vec3<u32>,
     @builtin(local_invocation_id) local_id     : vec3<u32>
 ) {
-    let workgroup_linear_id = workgroup_id.x + workgroup_id.y * prm.groupsX;
+    let workgroup_linear_id = workgroup_id.x + workgroup_id.y * prm.threads;
     let i = workgroup_linear_id * 256u + local_id.x;
-    if (i >= prm.n || prm.k == 0u) { return; }
+    if (i >= prm.maxSamples || prm.k == 0u) { return; }
 
     let score : u32 = packets[i * prm.stride + 1u];
 
@@ -1144,20 +1168,20 @@ const UINT_MAX : u32 = 0xFFFFFFFFu;
 }""")
 
 //language=wgsl
-val gather_top_k by Shader("""struct Gather { stride: u32, k: u32 };
-@group(0) @binding(0) var<uniform>                  g : Gather;
+val gather_top_k by Shader("""$SAMPLER_PARAMS
+@group(0) @binding(0) var<uniform>                prm : Params;
 @group(0) @binding(1) var<storage, read>      packets : array<u32>;  // full outBuf
 @group(0) @binding(2) var<storage, read>       topIdx : array<u32>;  // k indices
 @group(0) @binding(3) var<storage, read_write> bestPk : array<u32>;  // compacted result
 
 @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let j : u32 = gid.x;
-    if (j >= g.k) { return; }
+    if (j >= prm.k) { return; }
 
     let srcIdx : u32 = topIdx[j];
     if (srcIdx == 0xFFFFFFFFu) { return; } 
 
-    let stride : u32 = g.stride;
+    let stride : u32 = prm.stride;
     let srcOff : u32 = srcIdx * stride;
     let dstOff : u32 = j      * stride;
 
@@ -1230,7 +1254,7 @@ class Shader constructor(val src: String) {
         GPUComputePipelineDescriptor(
           layout = "auto",
           compute = GPUProgrammableStage(
-            module = gpu.createShaderModule(GPUShaderModuleDescriptor(code = src)),
+            module = gpu.createShaderModule(GPUShaderModuleDescriptor(label = name, code = src)),
             entryPoint = "main"
           )
         )
@@ -1329,11 +1353,10 @@ class Shader constructor(val src: String) {
         .also { if (data != null) { gpu.queue.writeBuffer(it, 0.0, data) } }
 
     private const val WORKGROUP_SIZE = 256
-    private const val GROUPS_X       = 65_535
 
     suspend fun prefixSumGPU(inputBuf: GPUBuffer, length: Int): GPUBuffer {
       val numBlocks = (length + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE
-      val groupsX   = GROUPS_X
+      val groupsX   = DISPATCH_GROUP_SIZE_X
       val groupsY   = (numBlocks + groupsX - 1) / groupsX
 
       val outputBuf     = GPUBuffer(inputBuf.size.toInt(), STCPSD)
