@@ -146,9 +146,9 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
                 "" -> true
                 else -> {
                   "$errorType: ${output.getErrorMessage()}"
-                    .also { errHst[it] = if (it in errHst) errHst[it]!! + 1 else {
+                    .also { errHst[it] = 1 + errHst.getOrElse(it) {
 //                    log("REPAIR: $s\nERROR: $it")
-                    1 }; }
+                    0 }; }
                    false
                 }
               }.also { if (!it) rejected++; total++ }
@@ -160,7 +160,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
             metric = metric,
             customDiff = {
               val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())
-              pcs.paintDiff(levAlign)
+              pcs.paintDiff(levAlign) { formatCode(it) }
             },
             postCompletionSummary = {
               if (errHst.isNotEmpty()) {
@@ -169,7 +169,8 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
                     .joinToString("\n") { "${it.value.toString().padEnd(pad)}| ${it.key}" }
                 log("Rejection histogram:\n$summary")
               }
-              ", discarded $rejected/$total, ${t0.elapsedNow()} latency." },
+              ", discarded $rejected/$total, ${t0.elapsedNow()} latency."
+            },
             reason = invalidPrefix
           )
       }
