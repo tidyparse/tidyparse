@@ -131,7 +131,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
         overwriteRegion(
           getCaretPosition().takeIf { it.last - it.first > 0 } ?: getLineBounds(),
-          formatCode(selection.tokenizeByWhitespace().joinToString(" ").replace("STRING", "\"STRING\""))
+          selection.replace(" ", "").trim()
         )
         redecorateLines()
         continuation { handleInput() }

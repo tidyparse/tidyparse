@@ -49,18 +49,27 @@ data class PyCodeSnippet(val rawCode: String) {
       indexInOriginal++
     }
 
-    val formattedString = format(taggedStr.joinToString(" ") { it.second }).replace("\n", " ").trim()
+    // This removes newlines, since the input and output are assumed to be a single line
+    val formattedString = format(taggedStr.joinToString(" ") { it.second }).replace(Regex("\\s+"), " ").trim()
 
+    // The basic assumption here is that the formatter will only adjust whitespaces between valid tokens but
+    // this is a heuristic and will probably need to be handled on an ad hoc basis for each programming language.
     val sb = StringBuilder(); var i = 0; var ti = 0
-    while (i < formattedString.length)
+    while (i < formattedString.length) {
+//      println("sb: $sb / fs: $formattedString")
       if (!formattedString[i].isWhitespace()) {
         while (ti < taggedStr.size && taggedStr[ti].first == Paint.GRAY) sb.append(paint(taggedStr[ti++]))
         if (ti >= taggedStr.size) break
         val ts = taggedStr[ti]
-        sb.append(paint(ts))
-        i += ts.second.length
+        // Sometimes the formatter will remove non-WS tokens like semicolons so we handle this case individually
+        if (ts.second.startsWith(formattedString[i])) {
+          sb.append(paint(ts))
+          i += ts.second.length
+        } else sb.append(paint(ts.first to ts.second + " "))
         ti++
       } else sb.append(formattedString[i++])
+    }
+    while (ti < taggedStr.size) sb.append(paint(taggedStr[ti++]))
 
     return sb.toString()
   }
@@ -68,7 +77,7 @@ data class PyCodeSnippet(val rawCode: String) {
   private fun paint(ts: Pair<Paint, String>): String {
     return when (ts.first) {
       Paint.GREEN -> """<span style="color: green">${ts.second.escapeHTML()}</span>"""
-      Paint.GRAY -> """<span style="background-color: gray"><span class="noselect"> </span></span>"""
+      Paint.GRAY -> """<span style="background-color: gray"><span class="noselect"> </span></span>"""
       Paint.ORANGE -> """<span style="color: orange">${ts.second.escapeHTML()}</span>"""
       Paint.NONE -> ts.second.escapeHTML()
     }
