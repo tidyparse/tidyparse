@@ -1,0 +1,32 @@
+START -> t:∅/m:∅
+t:∅/m:∅ -> ( t:∅/m:∅ t:∅/m:∅ ) | λ a . t:a/m:a | λ b . t:b/m:b | λ c . t:c/m:c
+t:a/m:∅ -> ( t:a/m:∅ t:a/m:∅ ) | λ b . t:a,b/m:b | λ c . t:a,c/m:c | a
+t:a/m:a -> ( t:a/m:∅ t:a/m:a ) | ( t:a/m:a t:a/m:∅ ) | λ b . t:a,b/m:a,b | λ c . t:a,c/m:a,c | a
+t:b/m:∅ -> ( t:b/m:∅ t:b/m:∅ ) | λ a . t:a,b/m:a | λ c . t:b,c/m:c | b
+t:b/m:b -> ( t:b/m:∅ t:b/m:b ) | ( t:b/m:b t:b/m:∅ ) | λ a . t:a,b/m:a,b | λ c . t:b,c/m:b,c | b
+t:c/m:∅ -> ( t:c/m:∅ t:c/m:∅ ) | λ a . t:a,c/m:a | λ b . t:b,c/m:b | c
+t:c/m:c -> ( t:c/m:∅ t:c/m:c ) | ( t:c/m:c t:c/m:∅ ) | λ a . t:a,c/m:a,c | λ b . t:b,c/m:b,c | c
+t:a,b/m:∅ -> ( t:a,b/m:∅ t:a,b/m:∅ ) | λ c . t:a,b,c/m:c | a | b
+t:a,b/m:a -> ( t:a,b/m:∅ t:a,b/m:a ) | ( t:a,b/m:a t:a,b/m:∅ ) | λ c . t:a,b,c/m:a,c | a
+t:a,b/m:b -> ( t:a,b/m:∅ t:a,b/m:b ) | ( t:a,b/m:b t:a,b/m:∅ ) | λ c . t:a,b,c/m:b,c | b
+t:a,b/m:a,b -> ( t:a,b/m:∅ t:a,b/m:a,b ) | ( t:a,b/m:b t:a,b/m:a ) | ( t:a,b/m:a t:a,b/m:b ) | ( t:a,b/m:a,b t:a,b/m:∅ ) | λ c . t:a,b,c/m:a,b,c
+t:a,c/m:∅ -> ( t:a,c/m:∅ t:a,c/m:∅ ) | λ b . t:a,b,c/m:b | a | c
+t:a,c/m:a -> ( t:a,c/m:∅ t:a,c/m:a ) | ( t:a,c/m:a t:a,c/m:∅ ) | λ b . t:a,b,c/m:a,b | a
+t:a,c/m:c -> ( t:a,c/m:∅ t:a,c/m:c ) | ( t:a,c/m:c t:a,c/m:∅ ) | λ b . t:a,b,c/m:b,c | c
+t:a,c/m:a,c -> ( t:a,c/m:∅ t:a,c/m:a,c ) | ( t:a,c/m:c t:a,c/m:a ) | ( t:a,c/m:a t:a,c/m:c ) | ( t:a,c/m:a,c t:a,c/m:∅ ) | λ b . t:a,b,c/m:a,b,c
+t:b,c/m:∅ -> ( t:b,c/m:∅ t:b,c/m:∅ ) | λ a . t:a,b,c/m:a | b | c
+t:b,c/m:b -> ( t:b,c/m:∅ t:b,c/m:b ) | ( t:b,c/m:b t:b,c/m:∅ ) | λ a . t:a,b,c/m:a,b | b
+t:b,c/m:c -> ( t:b,c/m:∅ t:b,c/m:c ) | ( t:b,c/m:c t:b,c/m:∅ ) | λ a . t:a,b,c/m:a,c | c
+t:b,c/m:b,c -> ( t:b,c/m:∅ t:b,c/m:b,c ) | ( t:b,c/m:c t:b,c/m:b ) | ( t:b,c/m:b t:b,c/m:c ) | ( t:b,c/m:b,c t:b,c/m:∅ ) | λ a . t:a,b,c/m:a,b,c
+t:a,b,c/m:∅ -> ( t:a,b,c/m:∅ t:a,b,c/m:∅ ) | a | b | c
+t:a,b,c/m:a -> ( t:a,b,c/m:∅ t:a,b,c/m:a ) | ( t:a,b,c/m:a t:a,b,c/m:∅ ) | a
+t:a,b,c/m:b -> ( t:a,b,c/m:∅ t:a,b,c/m:b ) | ( t:a,b,c/m:b t:a,b,c/m:∅ ) | b
+t:a,b,c/m:c -> ( t:a,b,c/m:∅ t:a,b,c/m:c ) | ( t:a,b,c/m:c t:a,b,c/m:∅ ) | c
+t:a,b,c/m:a,b -> ( t:a,b,c/m:∅ t:a,b,c/m:a,b ) | ( t:a,b,c/m:b t:a,b,c/m:a ) | ( t:a,b,c/m:a t:a,b,c/m:b ) | ( t:a,b,c/m:a,b t:a,b,c/m:∅ )
+t:a,b,c/m:a,c -> ( t:a,b,c/m:∅ t:a,b,c/m:a,c ) | ( t:a,b,c/m:c t:a,b,c/m:a ) | ( t:a,b,c/m:a t:a,b,c/m:c ) | ( t:a,b,c/m:a,c t:a,b,c/m:∅ )
+t:a,b,c/m:b,c -> ( t:a,b,c/m:∅ t:a,b,c/m:b,c ) | ( t:a,b,c/m:c t:a,b,c/m:b ) | ( t:a,b,c/m:b t:a,b,c/m:c ) | ( t:a,b,c/m:b,c t:a,b,c/m:∅ )
+t:a,b,c/m:a,b,c -> ( t:a,b,c/m:∅ t:a,b,c/m:a,b,c ) | ( t:a,b,c/m:c t:a,b,c/m:a,b ) | ( t:a,b,c/m:b t:a,b,c/m:a,c ) | ( t:a,b,c/m:b,c t:a,b,c/m:a ) | ( t:a,b,c/m:a t:a,b,c/m:b,c ) | ( t:a,b,c/m:a,c t:a,b,c/m:b ) | ( t:a,b,c/m:a,b t:a,b,c/m:c ) | ( t:a,b,c/m:a,b,c t:a,b,c/m:∅ )
+
+---
+
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _
