@@ -127,12 +127,10 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     val currentIdx = lines[htmlIndex].substringBefore(".)").substringAfterLast('>').trim().toInt()
     when (key) {
       SelectorAction.ENTER -> {
-        val selection = readDisplayText().lines()[currentIdx + 2].substringAfter(".) ")
-
-        overwriteRegion(
-          getCaretPosition().takeIf { it.last - it.first > 0 } ?: getLineBounds(),
-          selection.replace(" ", "").trim()
-        )
+        val selection = readDisplayText().lines()[currentIdx + 2]
+          /** See [PyCodeSnippet.paint] - we render EMSP to accentuate deletion but remove on paste */
+          .substringAfter(".) ").replace(" ", "").trim()
+        overwriteRegion(getCaretPosition().takeIf { it.last - it.first > 0 } ?: getLineBounds(), selection)
         redecorateLines()
         continuation { handleInput() }
         continuation { handleTab() }
