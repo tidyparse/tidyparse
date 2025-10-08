@@ -1265,12 +1265,12 @@ class Shader constructor(val src: String) {
   operator fun getValue(tr: Any?, property: KProperty<*>): Shader = this.also { name = property.name }
 
   companion object {
-    fun GPUComputePipeline.bindBuffers(vararg buffers: GPUBuffer): GPUBindGroup {
+    fun GPUComputePipeline.bindBuffers(label: String, vararg buffers: GPUBuffer): GPUBindGroup {
       inline fun <T> jsObject(init: dynamic.() -> Unit): T { val o = js("{}"); init(o); return o as T }
       val ent = buffers.mapIndexed { index, buf ->
         GPUBindGroupEntry(binding = index, resource = jsObject { buffer = buf })
       }.toTypedArray()
-      return gpu.createBindGroup(GPUBindGroupDescriptor(layout = getBindGroupLayout(0), entries = ent))
+      return gpu.createBindGroup(GPUBindGroupDescriptor(label = label, layout = getBindGroupLayout(0), entries = ent))
     }
 
     suspend fun GPUBuffer.readInts(): IntArray {
@@ -1507,7 +1507,7 @@ class Shader constructor(val src: String) {
     gpu.createCommandEncoder().let { gce ->
       gce.beginComputePass().let { gcpe ->
         gcpe.setPipeline(pipeline)
-        gcpe.setBindGroup(0, pipeline.bindBuffers(*inputs))
+        gcpe.setBindGroup(0, pipeline.bindBuffers("$name.buffers", *inputs))
         return DispatchStrategy(gce, gcpe)
       }
     }

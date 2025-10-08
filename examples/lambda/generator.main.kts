@@ -1,8 +1,8 @@
 #!/usr/bin/env kotlin
 
-val names = setOf("a", "b", "c")
+val names = ('a'..'z').map { it.toString() }.toSet()
 val cfg = generateRelevantLambdaCFG(names)
-println(cfg)
+println(cfg.lines().size)
 
 /**
  * Nonterminal t[S,U] is encoded as: t:<S>/u:<U>
@@ -42,9 +42,7 @@ fun generateAffineLambdaCFG(names: Set<String>): String {
     // Enumerate U1 ⊆ U, then U2 ⊆ (U \\ U1)
     for (U1 in powerSet(U.toList())) {
       val remaining = U - U1
-      for (U2 in powerSet(remaining.toList())) {
-        alts += "( ${nt(S, U1)} ${nt(S, U2)} )"
-      }
+      for (U2 in powerSet(remaining.toList())) alts += "( ${nt(S, U1)} ${nt(S, U2)} )"
     }
 
     // Lambda: introduce fresh x (no shadowing), make it available once
@@ -182,9 +180,7 @@ fun generateLinearLambdaCFG(names: Set<String>): String {
 private fun <T> powerSet(items: List<T>): List<Set<T>> {
   val out = ArrayList<Set<T>>(1 shl items.size)
   fun go(i: Int, acc: MutableSet<T>) {
-    if (i == items.size) {
-      out += acc.toSet(); return
-    }
+    if (i == items.size) { out += acc.toSet(); return }
     go(i + 1, acc)
     acc += items[i]; go(i + 1, acc); acc.remove(items[i])
   }

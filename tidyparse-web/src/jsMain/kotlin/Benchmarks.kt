@@ -123,7 +123,7 @@ suspend fun Shader.invokeExp(vararg inputs: GPUBuffer, threads: Int, iterations:
     val (currentM, currentOut) = if (step % 2 == 1) buf1 to buf2 else buf2 to buf1
     encoder.beginComputePass().apply {
       setPipeline(pipeline)
-      setBindGroup(0, pipeline.bindBuffers(currentM, currentOut, inputs[0]))
+      setBindGroup(0, pipeline.bindBuffers(name, currentM, currentOut, inputs[0]))
       dispatchWorkgroups(threads, threads)
       end()
     }
