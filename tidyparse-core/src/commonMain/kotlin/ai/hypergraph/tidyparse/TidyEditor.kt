@@ -1,7 +1,6 @@
 package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.*
-import ai.hypergraph.kaliningraph.automata.initiateSuspendableRepair
 import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.LED_BUFFER
