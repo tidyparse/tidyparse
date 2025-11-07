@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <link href='https://fonts.googleapis.com/css?family=JetBrains Mono' rel='stylesheet'>
+    <style>
+        #tidyparse-output.panel {
+            white-space: pre;
+            overflow-x: auto;
+            overflow-y: auto;
+            width: 130%;
+        }
+
+        #tidyparse-output { width: 130%; }
+
+        .cnf-modal__overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,.45);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+        }
+        .cnf-modal__dialog {
+            width: min(560px, 92vw);
+            background: var(--panel-background);
+            color: #efefef;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 10px;
+            box-shadow: 0 12px 36px rgba(0,0,0,0.35);
+            font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        }
+        .cnf-modal__header {
+            padding: 16px 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            font-weight: 600;
+            font-size: 16px;
+        }
+        .cnf-modal__body {
+            padding: 18px 20px 8px 20px;
+            font-size: 14px;
+            color: #efefef;
+        }
+        .cnf-modal__footer {
+            padding: 14px 20px 18px 20px;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+        .cnf-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 8px;
+            padding: 8px 12px;
+            background: transparent;
+            color: #efefef;
+        }
+        .cnf-btn:hover {
+            background: rgba(255,255,255,0.06);
+        }
+        .cnf-input { display: none; }
+        .cnf-file-name { margin-left: 4px; color: #efefef; }
+        .cnf-lock-scroll { overflow: hidden; }
+    </style>
+
+    <link rel="stylesheet" type="text/css" href="index.css">
+    <title>Tidyparse</title>
+    <link rel="icon" href="/pluginIcon.svg" type="image/svg+xml">
+</head>
+<body>
+<!-- Now render the pluginIcon.svg next to the header: -->
+<h1><img style="display: inline;" src="/pluginIcon.svg" width="26">&nbsp;&nbsp;Tidyparse Browser Demonstration</h1>
+<div id="content">
+    <textarea id="tidyparse-input" class="ldt" spellcheck="false">
+_ _ _ _ _ _ _ _ _ _ _ _
+
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+</textarea>
+    <div id="tidyparse-output" class="panel">
+        Usage Tips:
+
+        • To trigger an update, try modifying the editor to the left.
+
+        • Invalid lines of code are marked with <u>a squiggly underline</u>.
+
+        • Use the ↑/↓ keys to scroll completions, then ↵ to select one.
+
+        • Press the [Tab] key to fill in NAME, NUMBER and STRING stubs.
+
+        • Repairs are scoped to a single line (based on caret position).
+
+        • In case of slow repairs, try enabling WebGPU in your browser.
+    </div>
+</div>
+<div title="Minimizes total edits per repair." id="confrow1">
+    <label>Max edit distance: <a href="https://en.wikipedia.org/wiki/Edit_distance#Language_edit_distance">LED</a> + <input id="led-buffer" type="number" value="2" min="0" max="3" step="1" style="margin-right: 1.2em"></label>
+</div>
+<div title="Adds nonterminal stubs to CFG." id="confrow2">
+    <div id="gpuAvail" style="margin-right: 770px; margin-top:-50px"></div>
+    <!--    <label for="ntstubs-checkbox">Nonterminal stubs&nbsp;</label>-->
+    <!--    <input type="checkbox" id="ntstubs-checkbox" checked>-->
+</div>
+<script type="text/javascript">var PROGRAMMING_LANG = "cnf"</script>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.27.5/full/pyodide.js"></script>
+<script src="tidyparse-web.js"></script>
+</body>
+</html>

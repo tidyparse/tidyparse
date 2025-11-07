@@ -51,6 +51,7 @@ fun main() {
 
   MainScope().async {
     if (window["REPAIR_MODE"] == "headless") headlessSetup()
+    else if (window["PROGRAMMING_LANG"] == "cnf") cnfSetup()
     else if (window["PROGRAMMING_LANG"] == "python") pythonSetup()
     else defaultSetup()
   }
@@ -183,7 +184,7 @@ suspend fun initPyodide() {
 }
 
 suspend fun fetchSelectedExample() {
-  if (exSelector.value == "python.html") {
+  if (exSelector.value.endsWith(".html")) {
     window.location.href = exSelector.value
     return
   }
