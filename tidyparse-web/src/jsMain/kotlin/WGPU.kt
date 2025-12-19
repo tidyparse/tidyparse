@@ -173,38 +173,9 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
   val idxUniBuf = packStruct(listOf(0, maxRepairLen, numNTs, numStates, DISPATCH_GROUP_SIZE_X, MAX_SAMPLES), startIdxs.toGPUBuffer())
 
   build_root_sizes(dpBuf, bpCountBuf, bpOffsetBuf, cdfBuf, tmBuf, rootSizes, idxUniBuf)((numRoots + 255) / 256)
-  // ---- DEBUG: dump rootSizes (unsigned-safe) -------------------------------
-  run {
-    val rsI32 = rootSizes.readInts()               // length = numRoots
-    fun u(i: Int) = rsI32[i].toUInt().toLong()     // treat as u32
-
-    val n = rsI32.size
-    val sum = (0 until n).sumOf { u(it) }
-    val min = (0 until n).minOfOrNull { u(it) } ?: 0L
-    val max = (0 until n).maxOfOrNull { u(it) } ?: 0L
-    val nz  = (0 until n).count { u(it) != 0L }
-
-    log("rootSizes: n=$n nonzero=$nz sum=$sum min=$min max=$max")
-
-    // Print first few roots with their (dpIdx, editDist, size)
-    val k = minOf(n, 50)
-    for (i in 0 until k) {
-      val dpIdx = startIdxs[i * 2]
-      val dist  = startIdxs[i * 2 + 1]
-      log("root[$i]: dpIdx=$dpIdx dist=$dist size=${u(i)}")
-    }
-  }
-// --------------------------------------------------------------------------
 
 // 2) Exclusive scan → rootCDF (still on device)
   val rootCDF = Shader.prefixSumGPU(rootSizes, numRoots)
-  run {
-    val rs = rootSizes.readInts().map { it.toUInt().toLong() }
-    val cdf = rootCDF.readInts().map { it.toUInt().toLong() }
-    val last = if (numRoots > 0) numRoots - 1 else 0
-    val total = if (numRoots > 0) cdf[last] + rs[last] else 0L
-    log("rootCDF: last=${if (numRoots > 0) cdf[last] else 0L} total=$total")
-  }
 
 // 3) Decode WOR directly from chart
   val outBuf = GPUBuffer(MAX_SAMPLES * maxRepairLen * 4, STCPSD)
