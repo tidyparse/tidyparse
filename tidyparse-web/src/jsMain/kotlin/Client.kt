@@ -122,7 +122,6 @@ suspend fun pythonSetup() {
     if (gpuAvailable)
       log("Loaded n-grams into ${jsPyEditor.ngramTensor.size / 1000000}mb GPU buffer in ${t0.elapsedNow()}")
   }
-  initPyodide()
 
   TIMEOUT_MS = 1000
 
@@ -134,6 +133,8 @@ suspend fun pythonSetup() {
 //  mincheck.addEventListener("change", { jsPyEditor.minimize = mincheck.checked })
   LED_BUFFER = ledBuffSel.value.toInt()
   ledBuffSel.addEventListener("change", { LED_BUFFER = ledBuffSel.value.toInt() })
+
+  initPyodide()
 }
 
 val exSelector by lazy { document.getElementById("ex-selector") as HTMLSelectElement }
@@ -163,7 +164,7 @@ suspend fun loadNgrams(file: String = "python_4grams.txt") {
   } else log("Failed to load ngrams from $file")
 }
 
-suspend fun initPyodide() {
+suspend fun initPyodide() = try {
   val scriptTag = (document.querySelector("script[src*='pyodide.js']") as HTMLScriptElement)
     .getAttribute("src")!!.substringBefore("pyodide.js")
 
@@ -176,12 +177,11 @@ suspend fun initPyodide() {
   micropip.install("black").unsafeCast<Promise<*>>().await()
 
   val testStr = "1+1"
-  val fmtCode = "from black import format_str, FileMode; format_str(\"$testStr\", mode=FileMode())"
-  val beautified = jsPyEditor.pyodide.runPythonAsync(fmtCode).unsafeCast<Promise<String>>().await()
+  val beautified = jsPyEditor.formatCode(testStr)
 
   log("Black test => $beautified")
   log(jsPyEditor.getOutput("1+"))
-}
+} catch (e: Exception) { log("Error during Pyodide initialization: ${e.message}") }
 
 suspend fun fetchSelectedExample() {
   if (exSelector.value.endsWith(".html")) {

@@ -52,6 +52,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
   var pyodide: dynamic? = null
 
   fun getOutput(code: String): String = try {
+    if (pyodide == null) throw Exception("Pyodide not initialized")
     val src = code.replace("NUMBER",  "1").replace("STRING", "\"\"")
 
     val encoded: String = js("btoa")(src) as String
@@ -71,7 +72,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
     jsPyEditor.pyodide.runPython(pyCode)
     jsPyEditor.pyodide.globals.get("_result") as String
-  } catch (e: dynamic) { "Error during compilation: $e".also { log(it) } }
+  } catch (e: dynamic) {""}//{ "Error during compilation: $e".also { log(it) }; "" }
 
   private fun String.getErrorType(): String =
     if (isEmpty()) "" else lines().dropLast(1).lastOrNull()?.substringBeforeLast(":")?.substringAfterLast(":1: ") ?: this
@@ -79,15 +80,14 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
   private fun String.getErrorMessage(): String = substringAfterLast(": ").substringBefore('.').trim()
 
   override fun formatCode(code: String): String = try {
+    if (pyodide == null) throw Exception("Pyodide not initialized")
     jsPyEditor.pyodide.runPython("""
       from black import format_str, FileMode
       pretty_code = format_str("${code.replace("\\", "\\\\").replace("\"", "\\\"")}", mode=FileMode(string_normalization=False))
     """.trimIndent())
     jsPyEditor.pyodide.globals.get("pretty_code").trim().replace("\n", " ")
   } catch (error: dynamic) {
-    // If there's any issue, log the error and return the original
-    log("Error formatting Python code: $error")
-    code
+    code.also { log("Error formatting Python code: $error") }
   }
 
   fun String.replacePythonKeywords() =
