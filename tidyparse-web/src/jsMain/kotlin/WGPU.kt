@@ -173,9 +173,38 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
   val idxUniBuf = packStruct(listOf(0, maxRepairLen, numNTs, numStates, DISPATCH_GROUP_SIZE_X, MAX_SAMPLES), startIdxs.toGPUBuffer())
 
   build_root_sizes(dpBuf, bpCountBuf, bpOffsetBuf, cdfBuf, tmBuf, rootSizes, idxUniBuf)((numRoots + 255) / 256)
+  // ---- DEBUG: dump rootSizes (unsigned-safe) -------------------------------
+  run {
+    val rsI32 = rootSizes.readInts()               // length = numRoots
+    fun u(i: Int) = rsI32[i].toUInt().toLong()     // treat as u32
+
+    val n = rsI32.size
+    val sum = (0 until n).sumOf { u(it) }
+    val min = (0 until n).minOfOrNull { u(it) } ?: 0L
+    val max = (0 until n).maxOfOrNull { u(it) } ?: 0L
+    val nz  = (0 until n).count { u(it) != 0L }
+
+    log("rootSizes: n=$n nonzero=$nz sum=$sum min=$min max=$max")
+
+    // Print first few roots with their (dpIdx, editDist, size)
+    val k = minOf(n, 50)
+    for (i in 0 until k) {
+      val dpIdx = startIdxs[i * 2]
+      val dist  = startIdxs[i * 2 + 1]
+      log("root[$i]: dpIdx=$dpIdx dist=$dist size=${u(i)}")
+    }
+  }
+// --------------------------------------------------------------------------
 
 // 2) Exclusive scan → rootCDF (still on device)
   val rootCDF = Shader.prefixSumGPU(rootSizes, numRoots)
+  run {
+    val rs = rootSizes.readInts().map { it.toUInt().toLong() }
+    val cdf = rootCDF.readInts().map { it.toUInt().toLong() }
+    val last = if (numRoots > 0) numRoots - 1 else 0
+    val total = if (numRoots > 0) cdf[last] + rs[last] else 0L
+    log("rootCDF: last=${if (numRoots > 0) cdf[last] else 0L} total=$total")
+  }
 
 // 3) Decode WOR directly from chart
   val outBuf = GPUBuffer(MAX_SAMPLES * maxRepairLen * 4, STCPSD)
@@ -188,8 +217,15 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
     val res = mutableMapOf<Int, MutableSet<String>>()
     val allResults = outBuf.readInts()
     log("sample_words_wor invocation took: ${t3.elapsedNow()}")
-    for (i in 0 until MAX_SAMPLES) {
-      val t = allResults.decodePacket(i, cfg.tmLst, maxRepairLen) ?: break
+    val rootSizesI32 = rootSizes.readInts()
+    val rootCDFI32   = rootCDF.readInts()
+    fun u(x: Int)    = x.toUInt().toLong()
+    val last = numRoots - 1
+    val total = if (numRoots > 0) u(rootCDFI32[last]) + u(rootSizesI32[last]) else 0L
+    val decodeN = minOf(MAX_SAMPLES.toLong(), total).toInt()
+
+    for (i in 0 until decodeN) {
+      val t = allResults.decodePacket(i, cfg.tmLst, maxRepairLen) ?: continue
       res.getOrPut(t.first) { mutableSetOf() }.add(t.second)
     }
     res.forEach { log("Δ=${it.key} -> |L|=${it.value.size}") }
@@ -208,15 +244,8 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
     listOf(outBuf, metaBuf, dpBuf, idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf).forEach(GPUBuffer::destroy)
 
     val t4 = TimeSource.Monotonic.markNow()
-
     val result = mutableListOf<String>()
-
-    for (i in 0 until k) {
-      val t = topK.decodePacket(i, cfg.tmLst, maxRepairLen)
-      if (t == null) { log("Escaped after $i samples"); break }
-      result.add(t.second)
-    }
-
+    for (i in 0 until k) result.add(topK.decodePacket(i, cfg.tmLst, maxRepairLen)?.second ?: continue)
     log("Decoded ${result.distinct().size} unique words out of ${result.size} in ${t4.elapsedNow()}")
     result
   }
@@ -1051,11 +1080,21 @@ struct Frame { dp: u32, rk: u32 }
   }
 
   // Write packet
-  let stride = idx_uni.maxWordLen;
+  let stride  = idx_uni.maxWordLen;
   let outBase = sid * stride;
-  sampled[outBase + 0u] = levDist; // distance
-  // sampled[outBase + 1u] left for score; will be filled by markov_score
+
+  sampled[outBase + 0u] = levDist;
+  sampled[outBase + 1u] = 0u; // optional, keep deterministic before markov_score
+
   for (var i = 0u; i < wLen && i + PKT_HDR_LEN < stride; i = i + 1u) { sampled[outBase + PKT_HDR_LEN + i] = word[i]; }
+
+  // CRITICAL: write a terminator so the CPU decoder stops correctly
+  if (PKT_HDR_LEN + wLen < stride) { sampled[outBase + PKT_HDR_LEN + wLen] = 0u; }
+//  let stride = idx_uni.maxWordLen;
+//  let outBase = sid * stride;
+//  sampled[outBase + 0u] = levDist; // distance
+  // sampled[outBase + 1u] left for score; will be filled by markov_score
+//  for (var i = 0u; i < wLen && i + PKT_HDR_LEN < stride; i = i + 1u) { sampled[outBase + PKT_HDR_LEN + i] = word[i]; }
 }""".trimIndent())
 
 //language=wgsl
