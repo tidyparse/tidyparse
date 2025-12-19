@@ -396,7 +396,7 @@ kernel void prefix_sum_p2(
   interface NativeBridge : Library {
     fun setup(numNts: Int, startIdx: Int, s: String)
 
-               fun repairPipeline(
+    fun repairPipeline(
     /** [GPUBridge.swiftSrc] */
       // Expects a flattened array of triples containing the indices (r, c, A) that are initially set
       dp_in: Pointer,              // buffer(0)

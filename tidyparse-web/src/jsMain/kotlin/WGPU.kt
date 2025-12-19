@@ -146,7 +146,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
   val led = statesToDist.minOf { it.second } // Language edit distance
 
   val startIdxs = statesToDist.filter { it.second in (led..(led + ledBuffer)) }
-    .map { listOf(it.first, it.second) }.sortedBy { it[1] }.also { log("Start indices: $it") }.flatten()
+    .map { listOf(it.first, it.second) }.sortedBy { it[1] }.also { log("Start indices (LED=$led): $it") }.flatten()
 
   val maxRepairLen = fsa.width + fsa.height + 10
 
@@ -1365,12 +1365,11 @@ class Shader constructor(val src: String) {
 
       prefix_sum_p1(inputBuf, outputBuf, blockSumsBuf, uniBuf)(groupsX, groupsY)
 
-      val scannedBlockSumsBuf = if (numBlocks > 1) prefixSumGPU(blockSumsBuf, numBlocks) else blockSumsBuf
+      val scannedBlockSumsBuf = if (numBlocks > 1) prefixSumGPU(blockSumsBuf, numBlocks) else intArrayOf(0).toGPUBuffer(STCPSD)
 
       prefix_sum_p2(outputBuf, scannedBlockSumsBuf, uniBuf)(groupsX, groupsY)
 
-      if (scannedBlockSumsBuf !== blockSumsBuf) scannedBlockSumsBuf.destroy()
-      blockSumsBuf.destroy();  uniBuf.destroy()
+      scannedBlockSumsBuf.destroy(); blockSumsBuf.destroy(); uniBuf.destroy()
       return outputBuf
     }
 
