@@ -140,6 +140,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
           .distinct().let {
             if (allowCompilerErrors) it.onEach { total++ }
             else it.filter { s ->
+//              if (total - rejected)
               val output = getOutput(s)
               val errorType = output.getErrorType()
               when (errorType) {
