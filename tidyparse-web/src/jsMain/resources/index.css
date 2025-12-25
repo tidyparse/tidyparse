@@ -40,6 +40,8 @@ u {
     grid-template-columns: 62% 55%;
     grid-template-rows: 100%;
     grid-gap: 1.5rem;
+    max-width: 1200px;   /* wider */
+    margin: 0 auto;      /* centered */
 }
 
 .panel {

@@ -2,16 +2,91 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <link href='https://fonts.googleapis.com/css?family=JetBrains Mono' rel='stylesheet'>
+    <link href="https://fonts.googleapis.com/css?family=JetBrains%20Mono" rel="stylesheet">
     <link rel="stylesheet" type="text/css" href="index.css">
     <title>TidyPython</title>
     <link rel="icon" href="/pluginIcon.svg" type="image/svg+xml">
+    <style>
+        body {
+            margin: 0 auto;              /* center page */
+            max-width: 1400px;           /* wider */
+            padding: 5px 24px;           /* keep similar padding */
+        }
+
+        #content {
+            display: block;              /* no grid */
+            height: auto;                /* let editor define height */
+            width: 100%;
+            max-width: 1400px;
+            margin: 0 auto;              /* centered */
+        }
+
+        .CodeMirror {
+            height: 700px;
+            width: 100%;
+            border-radius: 14px;
+            overflow: hidden;
+            background: var(--panel-background);
+            border: 1px solid rgba(0,0,0,0.18);
+            font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 16px;
+        }
+
+        #confrow1, #confrow2 {
+            max-width: 1400px;
+            margin: 20px auto 0;
+            padding: 0 10px;
+            justify-content: flex-end;
+            margin-right: 0;
+        }
+    </style>
+    <!-- CodeMirror 5 -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/hint/show-hint.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/material-darker.min.css">
+    <style>
+        /* must come after codemirror.min.css */
+        #content .CodeMirror { height: 700px !important; }
+        #tidyparse-output {
+            display: none !important;
+        }
+        .CodeMirror .cm-squiggle {
+            text-decoration: underline wavy red;
+            -webkit-text-decoration: underline wavy red;
+            text-underline-offset: 2px;
+        }
+
+        /* Material-darker styled hint dropdown */
+        .CodeMirror-hints {
+            background: #212121 !important;              /* material-darker panel */
+            color: #e0e0e0 !important;
+            border: 1px solid rgba(255,255,255,0.12) !important;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.35) !important;
+            border-radius: 10px;
+            padding: 4px 0;
+            font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 14px;
+        }
+
+        .CodeMirror-hint {
+            color: inherit !important;
+            padding: 2px 10px;
+        }
+
+        .CodeMirror-hint-active {
+            background: rgba(255,255,255,0.10) !important;
+            color: #ffffff !important;
+        }
+
+        .CodeMirror-hint span { color: inherit; }
+    </style>
 </head>
+
 <body>
-<!-- Now render the pluginIcon.svg next to the header: -->
 <h1><img style="display: inline;" src="/pluginIcon.svg" width="26">&nbsp;&nbsp;TidyPython Browser Demonstration</h1>
+
 <div id="content">
-    <textarea id="tidyparse-input" class="ldt" spellcheck="false">
+    <textarea id="tidyparse-input" spellcheck="false">
 x = 1 -
 x = 1 + 1
 
@@ -46,32 +121,103 @@ filtered = [x for x in common if x in words]
 (,) + (1, 'a') + (2, 'b') + (3, 'c')
 () + (1, 'a') + (2, 'b') + (3, 'c')
 </textarea>
-<div id="tidyparse-output" class="panel">
-    Usage Tips:
-
-    • To trigger an update, try modifying the editor to the left.
-
-    • Invalid lines of code are marked with <u>a squiggly underline</u>.
-
-    • Use the ↑/↓ keys to scroll completions, then ↵ to select one.
-
-    • Press the [Tab] key to fill in NAME, NUMBER and STRING stubs.
-
-    • Repairs are scoped to a single line (based on caret position).
-
-    • In case of slow repairs, try enabling WebGPU in your browser.
 </div>
-</div>
+
+<div id="tidyparse-output" class="panel" style="display:none"></div>
+
 <div title="Minimizes total edits per repair." id="confrow1">
-    <label>Max edit distance: <a href="https://en.wikipedia.org/wiki/Edit_distance#Language_edit_distance">LED</a> + <input id="led-buffer" type="number" value="2" min="0" max="3" step="1" style="margin-right: 1.2em"></label>
+    <label>
+        Max edit distance:
+        <a href="https://en.wikipedia.org/wiki/Edit_distance#Language_edit_distance">LED</a> +
+        <input id="led-buffer" type="number" value="2" min="0" max="3" step="1" style="margin-right: 1.2em">
+    </label>
 </div>
+
 <div title="Adds nonterminal stubs to CFG." id="confrow2">
-    <div id="gpuAvail" style="margin-right: 770px; margin-top:-50px"></div>
-<!--    <label for="ntstubs-checkbox">Nonterminal stubs&nbsp;</label>-->
-<!--    <input type="checkbox" id="ntstubs-checkbox" checked>-->
+    <div id="gpuAvail" style="margin-right: 270px; margin-top:-48px"></div>
 </div>
+
 <script type="text/javascript">var PROGRAMMING_LANG = "python"</script>
+
+<!-- CodeMirror 5 -->
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/python/python.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/hint/show-hint.min.js"></script>
 <script src="https://cdn.jsdelivr.net/pyodide/v0.27.5/full/pyodide.js"></script>
+
+<script>
+    // ---- HTML-rendered completions + replace whole line from first non-whitespace ----
+
+    function firstNonWhitespaceCh(lineStr) {
+        const m = lineStr.match(/^\s*/);
+        return m ? m[0].length : 0;
+    }
+
+    // COMPLETIONS is a list of *HTML strings* provided by Kotlin
+    var COMPLETIONS = [];
+
+    function htmlToPlaintext(html) {
+        const tmp = document.createElement("div");
+        tmp.innerHTML = html;
+        return (tmp.textContent || tmp.innerText || "").trim();
+    }
+
+    function fixedHtmlHint(cm) {
+        const cur = cm.getCursor();
+        const lineStr = cm.getLine(cur.line);
+        const startCh = firstNonWhitespaceCh(lineStr);
+
+        const from = CodeMirror.Pos(cur.line, startCh);
+        const to   = CodeMirror.Pos(cur.line, lineStr.length);
+
+        const list = (window.COMPLETIONS || []).map(html => {
+            const plain = htmlToPlaintext(html);
+            return {
+                text: plain,          // what gets inserted
+                displayText: plain,   // what CodeMirror uses for filtering/fallback
+                _html: html,          // rich HTML for the popup row
+                render: function(elt, data, completion) { elt.innerHTML = completion._html; }
+            };
+        });
+
+        return { list, from, to };
+    }
+
+    const ta = document.getElementById("tidyparse-input");
+
+    const editor = CodeMirror.fromTextArea(ta, {
+        mode: "python",
+        theme: "material-darker",
+        lineNumbers: true,
+        indentUnit: 4,
+        tabSize: 4,
+        indentWithTabs: false,
+        extraKeys: { "Ctrl-Space": (cm) => cm.showHint({ hint: fixedHtmlHint, completeSingle: false }) }
+    });
+
+    function syncTextareaAndEvents() {
+        editor.save();
+
+        const idx = editor.indexFromPos(editor.getCursor());
+        try { ta.selectionStart = idx; ta.selectionEnd = idx; } catch (e) {}
+        try { ta.dispatchEvent(new Event("input", { bubbles: true })) } catch (e) {}
+    }
+
+    editor.on("change", function() { syncTextareaAndEvents(); });
+
+    editor.on("cursorActivity", function() {
+        const idx = editor.indexFromPos(editor.getCursor());
+        try {
+            ta.selectionStart = idx;
+            ta.selectionEnd = idx;
+        } catch (e) {}
+    });
+
+    syncTextareaAndEvents();
+
+    window.cmEditor = editor;
+    window.fixedHtmlHint = fixedHtmlHint;
+</script>
 <script src="tidyparse-web.js"></script>
 </body>
 </html>

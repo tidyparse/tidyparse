@@ -4,6 +4,7 @@ import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.kaliningraph.types.PlatformVars
+import ai.hypergraph.tidyparse.MAX_DISP_RESULTS
 import kotlinx.browser.*
 import kotlinx.coroutines.*
 import org.w3c.dom.*
@@ -113,9 +114,12 @@ suspend fun defaultSetup() {
 suspend fun pythonSetup() {
   log("Starting TidyPython")
 
-  jsPyEditor.redecorateLines()
+  MAX_DISP_RESULTS = 50
+  jsPyEditor.getLatestCFG()
 //    LED_BUFFER = maxEdits.value.toInt()
+
   loadNgrams()
+  log("Loaded ngrams")
   MainScope().async {
     val t0 = TimeSource.Monotonic.markNow()
     tryBootstrappingGPU(true)
@@ -139,6 +143,7 @@ suspend fun pythonSetup() {
 
 val exSelector by lazy { document.getElementById("ex-selector") as HTMLSelectElement }
 val decorator by lazy { TextareaDecorator(inputField, parser) }
+val pyDecorator by lazy { PyTextareaDecorator(inputField, parser = parser) }
 val jsEditor by lazy { JSTidyEditor(inputField, outputField) }
 val jsPyEditor by lazy { JSTidyPyEditor(inputField, outputField) }
 val inputField by lazy { document.getElementById("tidyparse-input") as HTMLTextAreaElement }

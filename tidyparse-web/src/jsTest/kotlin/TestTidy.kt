@@ -8,6 +8,9 @@ import kotlin.test.*
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.TimeSource
 
+/*
+./gradlew jsTest
+ */
 class TestTidy {
   @BeforeTest
   fun before() {

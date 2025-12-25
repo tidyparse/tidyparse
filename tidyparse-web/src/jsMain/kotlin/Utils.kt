@@ -1,3 +1,4 @@
+import kotlinx.browser.window
 import kotlin.time.TimeSource
 
 fun IntArray.toLaTeX(numStates: Int, numNTs: Int): String {
@@ -37,4 +38,16 @@ fun log(s: String) {
   val prefix = "(Δ=${lastTimeMeasurement!!.elapsedNow().inWholeMilliseconds}ms):".padEnd(11)
   println("$prefix$s$DEBUG_SUFFIX")
   lastTimeMeasurement = TimeSource.Monotonic.markNow()
+}
+
+fun setCompletionsAndShow(items: List<String>) {
+  window.asDynamic().COMPLETIONS = items.toTypedArray()
+
+  val cm = window.asDynamic().cmEditor ?: return
+
+  window.setTimeout({
+    try { cm.state.completionActive?.close() } catch (_: dynamic) {}
+    cm.focus()
+    cm.showHint(js("({hint: window.fixedHtmlHint, completeSingle: false})"))
+  }, 0)
 }

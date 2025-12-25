@@ -209,7 +209,7 @@ suspend fun uniformDeocder(outBuf: GPUBuffer, rootSizes: GPUBuffer, rootCDF: GPU
 }
 
 suspend fun ngramDecoder(outBuf: GPUBuffer, ngrams: GPUBuffer, maxRepairLen: Int, cfg: CFG): MutableList<String> {
-  val k = 20 * MAX_DISP_RESULTS
+  val k = 10 * MAX_DISP_RESULTS
   val topK = scoreSelectGather(packets = outBuf, ngrams = ngrams, maxSamples = MAX_SAMPLES, stride = maxRepairLen, k = k)
 
   val t4 = TimeSource.Monotonic.markNow()

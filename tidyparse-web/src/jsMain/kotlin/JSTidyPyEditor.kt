@@ -2,6 +2,7 @@ import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.tidyparse.*
+import kotlinx.browser.window
 import kotlinx.coroutines.*
 import org.w3c.dom.*
 import web.gpu.GPUBuffer
@@ -33,7 +34,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
       preparseParseableLines(decCFG, readEditorText()) {
         PyCodeSnippet(it).lexedTokens().replace("|", "OR") in decCFG.language
       }
-      if (currentHash == hashIter) decorator.fullDecorate(decCFG)
+      if (currentHash == hashIter) pyDecorator.fullDecorate(decCFG)
     }
 
     continuation { decorate() }
@@ -43,6 +44,13 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
   companion object {
     val prefix = listOf("BOS", "NEWLINE")
     val suffix = listOf("NEWLINE", "EOS")
+  }
+
+  override fun writeDisplayText(s: Σᐩ) {
+    setCompletionsAndShow(s.split("\n")
+      .map { it.substringAfter("</span>") }
+//      .also { println("first two:\n${it.subList(0, 2).joinToString("\n")}") }
+      .drop(2).dropLast(1))
   }
 
   fun score(text: List<String>): Double =
@@ -94,6 +102,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     replace("OR", "|").replace("not_in", "not in").replace("is_not", "is not")
 
   override fun handleInput() {
+    window.asDynamic().COMPLETIONS = arrayOf<String>()
     val t0 = TimeSource.Monotonic.markNow()
     val currentLine = currentLine().also { log("Current line is: $it") }
     if (currentLine.isBlank()) return
@@ -129,6 +138,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
         (if (gpuAvailable) {
           log("Repairing on GPU...")
+          println("CFG: $cfg")
           repairCode(cfg, tokens, if (minimize) 0 else LED_BUFFER, ngramTensor).asSequence()
         } else {
           log("Repairing on CPU...")
