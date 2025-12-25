@@ -114,7 +114,6 @@ suspend fun defaultSetup() {
 suspend fun pythonSetup() {
   log("Starting TidyPython")
 
-  MAX_DISP_RESULTS = 50
   jsPyEditor.getLatestCFG()
 //    LED_BUFFER = maxEdits.value.toInt()
 
