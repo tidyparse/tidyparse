@@ -23,3 +23,9 @@ jobs:
           git submodule update --init --recursive
           ./gradlew jsTest
 #          ./gradlew generateDylib && ./gradlew test buildPlugin --stacktrace
+      - name: Upload Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: tidyparse-web/build/reports/tests/jsBrowserTest/

@@ -44,7 +44,7 @@ kotlin {
         devtool = "source-map" // For debugging; remove for production
       }
 
-      testTask { useKarma { useChrome() } }
+      testTask { useKarma { } }
     }
   }
 
