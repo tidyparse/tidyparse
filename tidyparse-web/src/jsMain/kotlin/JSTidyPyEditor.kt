@@ -50,7 +50,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     setCompletionsAndShow(s.split("\n")
       .map { it.substringAfter("</span>") }
 //      .also { println("first two:\n${it.subList(0, 2).joinToString("\n")}") }
-      .drop(2).dropLast(1))
+      .drop(2).dropLast(2))
   }
 
   fun score(text: List<String>): Double =

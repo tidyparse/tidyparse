@@ -24,13 +24,23 @@ config.set({
         ChromeHeadlessWebGPU: {
             base: 'ChromeHeadless',
             flags: [
+                '--headless=new',
                 '--enable-unsafe-webgpu',
-                // '--use-angle=swiftshader',  // CPU fallback
+                '--enable-gpu',
+
+                '--use-angle=metal',
+
+                '--ignore-gpu-blocklist',
                 '--disable-gpu-driver-bug-workarounds',
-                '--enable-logging=stderr',  // Route Chrome logs to stderr (visible in Gradle)
-                '--v=1',  // Verbose Chrome logging
-                '--no-sandbox',  // Required for some CI/headless envs
-                '--headless=new'  // New headless mode (better stability in Chrome 109+)
+                '--no-sandbox',
+                '--disable-software-rasterizer'
+                // '--enable-unsafe-webgpu',
+                // // '--use-angle=swiftshader',  // CPU fallback
+                // '--disable-gpu-driver-bug-workarounds',
+                // '--enable-logging=stderr',  // Route Chrome logs to stderr (visible in Gradle)
+                // '--v=1',  // Verbose Chrome logging
+                // '--no-sandbox',  // Required for some CI/headless envs
+                // '--headless=new'  // New headless mode (better stability in Chrome 109+)
             ]
         }
     },
