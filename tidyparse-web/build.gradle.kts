@@ -176,3 +176,6 @@ tasks {
 
 // To run on localhost and open a browser, run:
 //  ./gradlew :tidyparse-web:jsBrowserDevelopmentRun --continuous
+
+// To test on localhost, run:
+// ./gradlew jsTest
