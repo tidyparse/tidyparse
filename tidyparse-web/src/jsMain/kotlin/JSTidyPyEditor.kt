@@ -49,7 +49,6 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
   override fun writeDisplayText(s: Σᐩ) {
     setCompletionsAndShow(s.split("\n")
       .map { it.substringAfter("</span>") }
-//      .also { println("first two:\n${it.subList(0, 2).joinToString("\n")}") }
       .drop(2).dropLast(2))
   }
 
