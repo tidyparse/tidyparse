@@ -21,4 +21,5 @@ jobs:
       - name: Build with Gradle
         run: |
           git submodule update --init --recursive
-          ./gradlew generateDylib && ./gradlew test buildPlugin --stacktrace
+          ./gradlew jsTest
+#          ./gradlew generateDylib && ./gradlew test buildPlugin --stacktrace

@@ -10,6 +10,8 @@ import kotlin.time.TimeSource
 
 /*
 ./gradlew jsTest
+or
+./gradlew replotMetrics
  */
 class TestTidy {
   @BeforeTest
