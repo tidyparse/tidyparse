@@ -1,8 +1,8 @@
 plugins {
-  val kotVer = "2.1.20"
+  val kotVer = "2.3.0"
   idea
   kotlin("multiplatform") version kotVer apply false
-  id("com.github.ben-manes.versions") version "0.52.0"
+  id("com.github.ben-manes.versions") version "0.53.0"
   kotlin("plugin.serialization") version kotVer apply false
 }
 

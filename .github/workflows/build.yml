@@ -28,4 +28,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-reports
-          path: tidyparse-web/build/reports/tests/jsBrowserTest/
+          path: tidyparse-core/build/reports/tests/jsTest/

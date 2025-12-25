@@ -15,7 +15,7 @@ buildscript {
   repositories { mavenCentral() }
   dependencies {
     classpath("org.jetbrains.lets-plot:platf-awt-jvm:4.4.1")
-    classpath("org.jetbrains.lets-plot:lets-plot-kotlin-jvm:4.11.0")
+    classpath("org.jetbrains.lets-plot:lets-plot-kotlin-jvm:4.12.1")
   }
 }
 

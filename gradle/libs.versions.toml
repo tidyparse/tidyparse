@@ -1,5 +1,5 @@
 [versions]
-antlrKotlin = "1.0.5"
+antlrKotlin = "1.0.9"
 
 [plugins]
 antlrKotlin = { id = "com.strumenta.antlr-kotlin", version.ref = "antlrKotlin" }
