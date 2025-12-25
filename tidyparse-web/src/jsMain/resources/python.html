@@ -86,7 +86,8 @@
 <h1><img style="display: inline;" src="/pluginIcon.svg" width="26">&nbsp;&nbsp;TidyPython Browser Demonstration</h1>
 
 <div id="content">
-    <textarea id="tidyparse-input" spellcheck="false">
+    <textarea id="tidyparse-input" spellcheck="false"># Try editing one of the malformed lines
+
 x = 1 -
 x = 1 + 1
 
@@ -119,8 +120,7 @@ filtered = [x if x in words for x in common]
 filtered = [x for x in common if x in words]
 
 (,) + (1, 'a') + (2, 'b') + (3, 'c')
-() + (1, 'a') + (2, 'b') + (3, 'c')
-</textarea>
+() + (1, 'a') + (2, 'b') + (3, 'c')</textarea>
 </div>
 
 <div id="tidyparse-output" class="panel" style="display:none"></div>
@@ -159,7 +159,7 @@ filtered = [x for x in common if x in words]
     function htmlToPlaintext(html) {
         const tmp = document.createElement("div");
         tmp.innerHTML = html;
-        return (tmp.textContent || tmp.innerText || "").trim();
+        return (tmp.textContent || tmp.innerText || "").trim().replace(" ", "");
     }
 
     function fixedHtmlHint(cm) {

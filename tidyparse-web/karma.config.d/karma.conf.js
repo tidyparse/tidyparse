@@ -1,30 +1,38 @@
-module.exports = function(config) {
-    config.set({
-        browserDisconnectTimeout: 540000,  // 9min for reconnect attempts
-        browserNoActivityTimeout: 900000,  // 15min for inactivity
-        captureTimeout: 180000,            // 3min to capture browser
-        browserDisconnectTolerance: 5,     // Allow up to 5 disconnects
-        client: {
-            mocha: { timeout: 540000 }       // Per-test timeout
-        },
-        customLaunchers: {
-            ChromeHeadlessWebGPU: {
-                base: 'ChromeHeadless',
-                flags: [
-                    '--headless=new',                   // New headless mode for better GPU/WebGL support (Chrome 109+)
-                    '--enable-unsafe-webgpu',           // Explicitly enable WebGPU (required as it's blocklisted)
-                    '--use-angle=swiftshader',          // Software GPU fallback to prevent init failures; try '--use-gl=swiftshader' as alt
-                    '--disable-gpu-driver-bug-workarounds',  // Avoid unnecessary GPU blacklisting
-                    '--enable-logging=stderr',          // Route Chrome logs to stderr (visible in Gradle/CI output)
-                    '--v=1',                            // Verbose logging level 1 (adjust to --v=2 for more)
-                    '--no-sandbox',                     // Required for CI security restrictions
-                    '--disable-software-rasterizer',    // Prefer hardware if available (fallback to software otherwise)
-                    '--disable-dev-shm-usage',          // Avoid shared memory issues in VMs
-                    '--remote-debugging-port=9222'      // Optional: For remote inspection if needed
-                ]
-            }
-            // ChromeSmall: { ... }  // Commented: Non-headless won't launch in headless-only CI env
-        },
-        browsers: ['ChromeHeadlessWebGPU']
-    });
-};
+config.set({
+    browserDisconnectTimeout: 540000,
+    client: { mocha: { timeout: 540000 } },
+    // customLaunchers: {
+    //     ChromeSmall: {
+    //         base: 'Chrome',
+    //         // flags: ['--window-size=1,1', '--enable-profiling', '--profiling-at-start=gpu-process', '--no-sandbox', '--profiling-flush']
+    //         flags: [
+    //             '--window-size=1,1',
+    //             // '--enable-profiling',
+    //             // '--profiling-at-start=renderer',  // Or gpu-process if that's your focus
+    //             // '--no-sandbox',
+    //             // `--profiling-file=/Users/breandan/IdeaProjects/tidyparse/profile.log',
+    //             // '--profiling-flush=5'  // Adjust interval as needed
+    //             // '--trace-startup',  // Auto-starts tracing
+    //             // '--trace-startup-file=/Users/breandan/IdeaProjects/tidyparse/trace.json',  // e.g., '/Users/yourusername/project/trace.json'
+    //             // '--trace-startup-duration=60',  // Adjust to cover test runtime
+    //             // '--trace-startup-categories=*,disabled-by-default-v8.cpu_profiler,disabled-by-default-v8.runtime_stats,devtools.timeline,blink.user_timing'  // Captures JS CPU data
+    //         ]
+    //     }
+    // },
+    // browsers: ['ChromeSmall'],
+    customLaunchers: {
+        ChromeHeadlessWebGPU: {
+            base: 'ChromeHeadless',
+            flags: [
+                '--enable-unsafe-webgpu',
+                // '--use-angle=swiftshader',  // CPU fallback
+                '--disable-gpu-driver-bug-workarounds',
+                '--enable-logging=stderr',  // Route Chrome logs to stderr (visible in Gradle)
+                '--v=1',  // Verbose Chrome logging
+                '--no-sandbox',  // Required for some CI/headless envs
+                '--headless=new'  // New headless mode (better stability in Chrome 109+)
+            ]
+        }
+    },
+    browsers: ['ChromeHeadlessWebGPU']
+});
