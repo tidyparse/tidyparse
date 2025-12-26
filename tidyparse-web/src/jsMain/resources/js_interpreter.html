@@ -1,0 +1,1081 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>WebGPU String→Bytecode→Run (GPU compiler + interpreter)</title>
+    <style>
+        body { font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 18px; }
+        textarea { width: 100%; height: 340px; box-sizing: border-box; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+        button { padding: 10px 14px; border-radius: 10px; border: 1px solid #ccc; background: #fafafa; cursor: pointer; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .row { display: flex; gap: 12px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+        input[type="number"] { width: 110px; padding: 6px 8px; border-radius: 8px; border: 1px solid #ccc; }
+        pre { white-space: pre-wrap; background: #f7f7f7; padding: 12px; border-radius: 10px; border: 1px solid #e5e5e5; word-wrap: break-word; }
+        .err { color: #b00020; }
+        .ok { color: #0a7a0a; }
+    </style>
+</head>
+<body>
+<h2>GPU-based (JS+i32 compiler + interpreter): String → Int buffer</h2>
+
+<textarea id="src">// x will be the thread ID
+let n = x + 1;
+let steps = 0;
+
+while (n != 1) {
+  if ((n % 2) == 0) {
+    n = n / 2;
+  } else {
+    n = 3 * n + 1;
+  }
+  steps = steps + 1;
+}
+
+return steps;</textarea>
+
+<div class="row">
+    <button id="run">Run</button>
+    <label>Outputs:
+        <input id="n" type="number" min="1" max="4096" value="256" />
+    </label>
+    <span id="status"></span>
+</div>
+
+<pre id="out"></pre>
+
+<script type="module">
+    function el(id) { return document.getElementById(id); }
+    const statusEl = el('status');
+    const outEl = el('out');
+    const runBtn = el('run');
+
+    function setStatus(msg, cls) {
+        statusEl.textContent = msg;
+        statusEl.className = cls || '';
+    }
+
+    async function initWebGPU() {
+        if (!navigator.gpu) throw new Error("WebGPU not available (need a WebGPU-capable browser, secure context).");
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) throw new Error("No WebGPU adapter found.");
+        return await adapter.requestDevice();
+    }
+
+    function ceilDiv(a, b) { return Math.floor((a + b - 1) / b); }
+
+    // Tunables for demo. For many-program scaling, make these per-program strides.
+    const MAX_SRC_BYTES   = 100 * 1024; // per program
+    const MAX_CODE_WORDS  = 65536;      // i32 words of bytecode (per program)
+    const MAX_VARS        = 64;
+    const MAX_STACK       = 64;
+    const MAX_EXPR_TOKS   = 512;        // expression token budget inside compiler
+    const MAX_CTRL_STACK  = 64;         // nested if/while blocks
+
+    // Shared ISA between compiler and interpreter
+    const OP = {
+        PUSH_IMM: 1,
+        PUSH_INPUT: 2,
+        LOAD: 3,
+        STORE: 4,
+        ADD: 5,
+        MUL: 6,
+        SUB: 7,
+        DIV: 8,
+        MOD: 9,
+        EQ: 10,
+        NE: 11,
+        LT: 12,
+        LE: 13,
+        GT: 14,
+        GE: 15,
+        JMP: 16,
+        JZ: 17,
+        RETURN: 18,
+    };
+
+    // One WGSL module with two entry points: compile + run
+    const wgsl = /* wgsl */`
+struct CompileUniforms {
+  srcLen : u32,
+  _pad0  : u32,
+};
+
+struct RunUniforms {
+  codeLen : u32,
+  outLen  : u32,
+};
+
+@group(0) @binding(0) var<storage, read> src : array<u32>;          // bytes packed in u32s (little-endian)
+@group(0) @binding(1) var<storage, read_write> codeOut : array<i32>; // bytecode words
+@group(0) @binding(2) var<storage, read_write> metaBuf : array<i32>;    // metaBuf[0]=codeLen, metaBuf[1]=status (0 ok)
+@group(0) @binding(3) var<storage, read_write> out : array<i32>;     // outputs
+@group(0) @binding(4) var<uniform> cu : CompileUniforms;
+@group(0) @binding(5) var<uniform> ru : RunUniforms;
+
+const MAX_VARS       : u32 = ${MAX_VARS}u;
+const MAX_STACK      : u32 = ${MAX_STACK}u;
+const MAX_EXPR_TOKS  : u32 = ${MAX_EXPR_TOKS}u;
+const MAX_CTRL_STACK : u32 = ${MAX_CTRL_STACK}u;
+
+const OP_PUSH_IMM   : i32 = ${OP.PUSH_IMM};
+const OP_PUSH_INPUT : i32 = ${OP.PUSH_INPUT};
+const OP_LOAD       : i32 = ${OP.LOAD};
+const OP_STORE      : i32 = ${OP.STORE};
+const OP_ADD        : i32 = ${OP.ADD};
+const OP_MUL        : i32 = ${OP.MUL};
+const OP_SUB        : i32 = ${OP.SUB};
+const OP_DIV        : i32 = ${OP.DIV};
+const OP_MOD        : i32 = ${OP.MOD};
+const OP_EQ         : i32 = ${OP.EQ};
+const OP_NE         : i32 = ${OP.NE};
+const OP_LT         : i32 = ${OP.LT};
+const OP_LE         : i32 = ${OP.LE};
+const OP_GT         : i32 = ${OP.GT};
+const OP_GE         : i32 = ${OP.GE};
+const OP_JMP        : i32 = ${OP.JMP};
+const OP_JZ         : i32 = ${OP.JZ};
+const OP_RETURN     : i32 = ${OP.RETURN};
+
+// --- Token kinds ---
+const TK_EOF    : i32 = 0;
+const TK_NUM    : i32 = 1;
+const TK_ID     : i32 = 2;
+
+const TK_LET    : i32 = 10;
+const TK_IF     : i32 = 11;
+const TK_ELSE   : i32 = 12;
+const TK_WHILE  : i32 = 13;
+const TK_RETURN : i32 = 14;
+
+// operators/punct encoded by kind too:
+const TK_PLUS   : i32 = 20; // +
+const TK_MINUS  : i32 = 21; // -
+const TK_STAR   : i32 = 22; // *
+const TK_SLASH  : i32 = 23; // /
+const TK_PCT    : i32 = 24; // %
+
+const TK_EQEQ   : i32 = 30; // ==
+const TK_NEQ    : i32 = 31; // !=
+const TK_LT     : i32 = 32; // <
+const TK_LE     : i32 = 33; // <=
+const TK_GT     : i32 = 34; // >
+const TK_GE     : i32 = 35; // >=
+
+const TK_ASSIGN : i32 = 40; // =
+const TK_SEMI   : i32 = 41; // ;
+const TK_LP     : i32 = 42; // (
+const TK_RP     : i32 = 43; // )
+const TK_LB     : i32 = 44; // {
+const TK_RB     : i32 = 45; // }
+
+// --- status codes (metaBuf[1]) ---
+const ST_OK          : i32 = 0;
+const ST_LEX         : i32 = 1;
+const ST_PARSE       : i32 = 2;
+const ST_CODE_OVER   : i32 = 3;
+const ST_VAR_OVER    : i32 = 4;
+const ST_UNDECL      : i32 = 5;
+const ST_EXPR_OVER   : i32 = 6;
+const ST_CTRL_OVER   : i32 = 7;
+
+// Read byte i from packed u32 array
+fn read_u8(i: u32) -> u32 {
+  // src is u32-packed, little-endian: byte0 in bits 0..7
+  let word = src[i >> 2u];
+  let sh = (i & 3u) * 8u;
+  return (word >> sh) & 255u;
+}
+
+fn is_ws(c: u32) -> bool {
+  return c == 32u || c == 9u || c == 10u || c == 13u;
+}
+fn is_digit(c: u32) -> bool { return c >= 48u && c <= 57u; }
+fn is_alpha(c: u32) -> bool {
+  return (c >= 65u && c <= 90u) || (c >= 97u && c <= 122u) || (c == 95u);
+}
+fn is_alnum(c: u32) -> bool { return is_alpha(c) || is_digit(c); }
+
+// 32-bit FNV-1a hash
+fn fnv1a_init() -> u32 { return 2166136261u; }
+fn fnv1a_step(h: u32, b: u32) -> u32 { return (h ^ b) * 16777619u; }
+
+// Token stream state
+struct Tok {
+  k: i32,
+  v: i32, // number value or hashed id
+};
+
+fn kw_hash_let() -> u32 {
+  var h = fnv1a_init();
+  h = fnv1a_step(h, 108u); // l
+  h = fnv1a_step(h, 101u); // e
+  h = fnv1a_step(h, 116u); // t
+  return h;
+}
+fn kw_hash_if() -> u32 {
+  var h = fnv1a_init();
+  h = fnv1a_step(h, 105u); // i
+  h = fnv1a_step(h, 102u); // f
+  return h;
+}
+fn kw_hash_else() -> u32 {
+  var h = fnv1a_init();
+  h = fnv1a_step(h, 101u); // e
+  h = fnv1a_step(h, 108u); // l
+  h = fnv1a_step(h, 115u); // s
+  h = fnv1a_step(h, 101u); // e
+  return h;
+}
+fn kw_hash_while() -> u32 {
+  var h = fnv1a_init();
+  h = fnv1a_step(h, 119u); // w
+  h = fnv1a_step(h, 104u); // h
+  h = fnv1a_step(h, 105u); // i
+  h = fnv1a_step(h, 108u); // l
+  h = fnv1a_step(h, 101u); // e
+  return h;
+}
+fn kw_hash_return() -> u32 {
+  var h = fnv1a_init();
+  h = fnv1a_step(h, 114u); // r
+  h = fnv1a_step(h, 101u); // e
+  h = fnv1a_step(h, 116u); // t
+  h = fnv1a_step(h, 117u); // u
+  h = fnv1a_step(h, 114u); // r
+  h = fnv1a_step(h, 110u); // n
+  return h;
+}
+
+// Special id hash for "x"
+fn id_hash_x() -> u32 {
+  var h = fnv1a_init();
+  h = fnv1a_step(h, 120u);
+  return h;
+}
+
+// Streaming lexer: advances cursor 'p' over bytes [0..srcLen)
+fn next_tok(p_in: u32, srcLen: u32, status: ptr<function, i32>) -> vec2<u32> {
+  // returns (p_out, packed tok: (k in low16, v in high16? no, too small) -> instead store k in low16, v in full u32 by writing to globals? We'll return p_out and stash token in function vars via out params.
+  // WGSL can't return multiple by reference, so we encode: return p_out; token held in private function variables in caller using helper below.
+  return vec2<u32>(p_in, 0u);
+}
+
+// We'll implement a lexer with explicit out params:
+fn lex_one(p: ptr<function, u32>, srcLen: u32, t: ptr<function, Tok>, status: ptr<function, i32>) {
+  // skip ws and // comments
+  loop {
+    if (*p >= srcLen) { (*t).k = TK_EOF; (*t).v = 0; return; }
+    let c = read_u8(*p);
+    if (is_ws(c)) { *p = *p + 1u; continue; }
+    if (c == 47u && (*p + 1u) < srcLen && read_u8(*p + 1u) == 47u) {
+      // //
+      *p = *p + 2u;
+      loop {
+        if (*p >= srcLen) { break; }
+        let d = read_u8(*p);
+        *p = *p + 1u;
+        if (d == 10u) { break; }
+      }
+      continue;
+    }
+    break;
+  }
+
+  if (*p >= srcLen) { (*t).k = TK_EOF; (*t).v = 0; return; }
+
+  let c0 = read_u8(*p);
+
+  // numbers
+  if (is_digit(c0)) {
+    var v: i32 = 0;
+    loop {
+      if (*p >= srcLen) { break; }
+      let c = read_u8(*p);
+      if (!is_digit(c)) { break; }
+      v = v * 10 + i32(c - 48u);
+      *p = *p + 1u;
+    }
+    (*t).k = TK_NUM;
+    (*t).v = v;
+    return;
+  }
+
+  // identifiers/keywords
+  if (is_alpha(c0)) {
+    var h: u32 = fnv1a_init();
+    loop {
+      if (*p >= srcLen) { break; }
+      let c = read_u8(*p);
+      if (!is_alnum(c)) { break; }
+      h = fnv1a_step(h, c);
+      *p = *p + 1u;
+    }
+
+    // keyword dispatch by hash (fine for our tiny set)
+    if (h == kw_hash_let())    { (*t).k = TK_LET;    (*t).v = 0; return; }
+    if (h == kw_hash_if())     { (*t).k = TK_IF;     (*t).v = 0; return; }
+    if (h == kw_hash_else())   { (*t).k = TK_ELSE;   (*t).v = 0; return; }
+    if (h == kw_hash_while())  { (*t).k = TK_WHILE;  (*t).v = 0; return; }
+    if (h == kw_hash_return()) { (*t).k = TK_RETURN; (*t).v = 0; return; }
+
+    (*t).k = TK_ID;
+    (*t).v = i32(h);
+    return;
+  }
+
+  // operators/punct, including 2-char
+  // two-char: == != <= >=
+  if (c0 == 61u /*=*/) {
+    if ((*p + 1u) < srcLen && read_u8(*p + 1u) == 61u) { *p = *p + 2u; (*t).k = TK_EQEQ; (*t).v = 0; return; }
+    *p = *p + 1u; (*t).k = TK_ASSIGN; (*t).v = 0; return;
+  }
+  if (c0 == 33u /*!*/) {
+    if ((*p + 1u) < srcLen && read_u8(*p + 1u) == 61u) { *p = *p + 2u; (*t).k = TK_NEQ; (*t).v = 0; return; }
+    *status = ST_LEX; (*t).k = TK_EOF; (*t).v = 0; return;
+  }
+  if (c0 == 60u /*<*/) {
+    if ((*p + 1u) < srcLen && read_u8(*p + 1u) == 61u) { *p = *p + 2u; (*t).k = TK_LE; (*t).v = 0; return; }
+    *p = *p + 1u; (*t).k = TK_LT; (*t).v = 0; return;
+  }
+  if (c0 == 62u /*>*/) {
+    if ((*p + 1u) < srcLen && read_u8(*p + 1u) == 61u) { *p = *p + 2u; (*t).k = TK_GE; (*t).v = 0; return; }
+    *p = *p + 1u; (*t).k = TK_GT; (*t).v = 0; return;
+  }
+
+  // single-char
+  if (c0 == 43u) { *p = *p + 1u; (*t).k = TK_PLUS;  (*t).v = 0; return; } // +
+  if (c0 == 45u) { *p = *p + 1u; (*t).k = TK_MINUS; (*t).v = 0; return; } // -
+  if (c0 == 42u) { *p = *p + 1u; (*t).k = TK_STAR;  (*t).v = 0; return; } // *
+  if (c0 == 47u) { *p = *p + 1u; (*t).k = TK_SLASH; (*t).v = 0; return; } // /
+  if (c0 == 37u) { *p = *p + 1u; (*t).k = TK_PCT;   (*t).v = 0; return; } // %
+
+  if (c0 == 59u) { *p = *p + 1u; (*t).k = TK_SEMI; (*t).v = 0; return; } // ;
+  if (c0 == 40u) { *p = *p + 1u; (*t).k = TK_LP;   (*t).v = 0; return; } // (
+  if (c0 == 41u) { *p = *p + 1u; (*t).k = TK_RP;   (*t).v = 0; return; } // )
+  if (c0 == 123u){ *p = *p + 1u; (*t).k = TK_LB;   (*t).v = 0; return; } // {
+  if (c0 == 125u){ *p = *p + 1u; (*t).k = TK_RB;   (*t).v = 0; return; } // }
+
+  *status = ST_LEX;
+  (*t).k = TK_EOF;
+  (*t).v = 0;
+}
+
+fn prec(op: i32) -> i32 {
+  // higher = tighter
+  if (op == TK_STAR || op == TK_SLASH || op == TK_PCT) { return 3; }
+  if (op == TK_PLUS || op == TK_MINUS) { return 2; }
+  if (op == TK_EQEQ || op == TK_NEQ || op == TK_LT || op == TK_LE || op == TK_GT || op == TK_GE) { return 1; }
+  return 0;
+}
+fn is_binop(k: i32) -> bool {
+  return k == TK_PLUS || k == TK_MINUS || k == TK_STAR || k == TK_SLASH || k == TK_PCT ||
+         k == TK_EQEQ || k == TK_NEQ || k == TK_LT || k == TK_LE || k == TK_GT || k == TK_GE;
+}
+
+fn emit(codeLen: ptr<function, u32>, w: i32, status: ptr<function, i32>) {
+  if (*codeLen >= ${MAX_CODE_WORDS}u) { *status = ST_CODE_OVER; return; }
+  codeOut[*codeLen] = w;
+  *codeLen = *codeLen + 1u;
+}
+
+fn emit2(codeLen: ptr<function, u32>, a: i32, b: i32, status: ptr<function, i32>) {
+  emit(codeLen, a, status);
+  if (*status != ST_OK) { return; }
+  emit(codeLen, b, status);
+}
+
+fn var_find_or_add(h: u32, varHash: ptr<function, array<u32, ${MAX_VARS}>>, varCount: ptr<function, u32>, status: ptr<function, i32>) -> u32 {
+  // linear search small table
+  for (var i: u32 = 0u; i < *varCount; i = i + 1u) {
+    if ((*varHash)[i] == h) { return i; }
+  }
+  if (*varCount >= MAX_VARS) { *status = ST_VAR_OVER; return 0u; }
+  let idx = *varCount;
+  (*varHash)[idx] = h;
+  *varCount = *varCount + 1u;
+  return idx;
+}
+
+fn var_find(h: u32, varHash: ptr<function, array<u32, ${MAX_VARS}>>, varCount: u32) -> i32 {
+  for (var i: u32 = 0u; i < varCount; i = i + 1u) {
+    if ((*varHash)[i] == h) { return i32(i); }
+  }
+  return -1;
+}
+
+// Compile expression until a stop token kind (e.g. ';' or ')' ), leaving stop token unconsumed.
+// Shunting-yard into RPN arrays then emit bytecode.
+fn compile_expr(
+  p: ptr<function, u32>,
+  srcLen: u32,
+  t: ptr<function, Tok>,
+  stop1: i32,
+  stop2: i32,
+  varHash: ptr<function, array<u32, ${MAX_VARS}>>,
+  varCount: ptr<function, u32>,
+  codeLen: ptr<function, u32>,
+  status: ptr<function, i32>
+) {
+  var outK : array<i32, ${MAX_EXPR_TOKS}>;
+  var outV : array<i32, ${MAX_EXPR_TOKS}>;
+  var outN : u32 = 0u;
+
+  var opS  : array<i32, ${MAX_EXPR_TOKS}>;
+  var opN  : u32 = 0u;
+
+  var expectValue: bool = true; // for unary '-'
+  var parenDepth: i32 = 0;      // depth of *inner* parentheses within the expression
+
+  loop {
+    if (*status != ST_OK) { return; }
+    // current token in *t; stop if matches
+    // Stop tokens should only terminate the expression when we're not inside inner parentheses.
+    if ((*t).k == TK_EOF) { break; }
+    if (parenDepth == 0 && ((*t).k == stop1 || (*t).k == stop2)) { break; }
+
+    if ((*t).k == TK_NUM || (*t).k == TK_ID) {
+      if (outN >= MAX_EXPR_TOKS) { *status = ST_EXPR_OVER; return; }
+      outK[outN] = (*t).k;
+      outV[outN] = (*t).v;
+      outN = outN + 1u;
+      expectValue = false;
+      lex_one(p, srcLen, t, status);
+      continue;
+    }
+
+    if ((*t).k == TK_LP) {
+      parenDepth = parenDepth + 1;
+      if (opN >= MAX_EXPR_TOKS) { *status = ST_EXPR_OVER; return; }
+      opS[opN] = TK_LP;
+      opN = opN + 1u;
+      expectValue = true;
+      lex_one(p, srcLen, t, status);
+      continue;
+    }
+
+    if ((*t).k == TK_RP) {
+      // pop until LP
+      loop {
+        if (opN == 0u) { *status = ST_PARSE; return; }
+        opN = opN - 1u;
+        let op = opS[opN];
+        if (op == TK_LP) { break; }
+        if (outN >= MAX_EXPR_TOKS) { *status = ST_EXPR_OVER; return; }
+        outK[outN] = op;
+        outV[outN] = 0;
+        outN = outN + 1u;
+      }
+      // this ')' closes an inner '('
+      parenDepth = parenDepth - 1;
+      expectValue = false;
+      lex_one(p, srcLen, t, status);
+      continue;
+    }
+
+    if (is_binop((*t).k)) {
+      var opk = (*t).k;
+
+      // unary minus rewrite: "-E" => "0 E -"
+      if (opk == TK_MINUS && expectValue) {
+        if (outN >= MAX_EXPR_TOKS) { *status = ST_EXPR_OVER; return; }
+        outK[outN] = TK_NUM;
+        outV[outN] = 0;
+        outN = outN + 1u;
+        // treat as binary '-'
+        opk = TK_MINUS;
+      }
+
+      // pop while top op has >= precedence
+      loop {
+        if (opN == 0u) { break; }
+        let top = opS[opN - 1u];
+        if (top == TK_LP) { break; }
+        if (prec(top) >= prec(opk)) {
+          opN = opN - 1u;
+          if (outN >= MAX_EXPR_TOKS) { *status = ST_EXPR_OVER; return; }
+          outK[outN] = top;
+          outV[outN] = 0;
+          outN = outN + 1u;
+          continue;
+        }
+        break;
+      }
+
+      if (opN >= MAX_EXPR_TOKS) { *status = ST_EXPR_OVER; return; }
+      opS[opN] = opk;
+      opN = opN + 1u;
+      expectValue = true;
+      lex_one(p, srcLen, t, status);
+      continue;
+    }
+
+    // anything else is a parse error inside expr
+    *status = ST_PARSE;
+    return;
+  }
+
+  // drain ops
+  loop {
+    if (opN == 0u) { break; }
+    opN = opN - 1u;
+    let op = opS[opN];
+    if (op == TK_LP) { *status = ST_PARSE; return; }
+    if (outN >= MAX_EXPR_TOKS) { *status = ST_EXPR_OVER; return; }
+    outK[outN] = op;
+    outV[outN] = 0;
+    outN = outN + 1u;
+  }
+
+  // Emit bytecode from RPN
+  for (var i: u32 = 0u; i < outN; i = i + 1u) {
+    if (*status != ST_OK) { return; }
+    let k = outK[i];
+    let v = outV[i];
+
+    if (k == TK_NUM) {
+      emit2(codeLen, OP_PUSH_IMM, v, status);
+      continue;
+    }
+    if (k == TK_ID) {
+      let h = u32(v);
+      if (h == id_hash_x()) {
+        emit(codeLen, OP_PUSH_INPUT, status);
+      } else {
+        let idx = var_find(h, varHash, *varCount);
+        if (idx < 0) { *status = ST_UNDECL; return; }
+        emit2(codeLen, OP_LOAD, idx, status);
+      }
+      continue;
+    }
+
+    // operators
+    if (k == TK_PLUS) { emit(codeLen, OP_ADD, status); continue; }
+    if (k == TK_STAR) { emit(codeLen, OP_MUL, status); continue; }
+    if (k == TK_MINUS){ emit(codeLen, OP_SUB, status); continue; }
+    if (k == TK_SLASH){ emit(codeLen, OP_DIV, status); continue; }
+    if (k == TK_PCT)  { emit(codeLen, OP_MOD, status); continue; }
+    if (k == TK_EQEQ) { emit(codeLen, OP_EQ, status); continue; }
+    if (k == TK_NEQ)  { emit(codeLen, OP_NE, status); continue; }
+    if (k == TK_LT)   { emit(codeLen, OP_LT, status); continue; }
+    if (k == TK_LE)   { emit(codeLen, OP_LE, status); continue; }
+    if (k == TK_GT)   { emit(codeLen, OP_GT, status); continue; }
+    if (k == TK_GE)   { emit(codeLen, OP_GE, status); continue; }
+
+    *status = ST_PARSE;
+    return;
+  }
+}
+
+struct CtrlFrame {
+  kind: i32,       // 1=WHILE, 2=IF_THEN, 3=IF_ELSE
+  blockDepth: i32, // depth after consuming '{'
+  a: i32,          // while: startPc ; if: jzPatchPos
+  b: i32,          // while: jzPatchPos ; if: endJmpPos (when else present)
+};
+
+// Compile pass: single invocation compiles src[0..srcLen) into codeOut
+@compute @workgroup_size(1)
+fn compiler(@builtin(global_invocation_id) gid: vec3<u32>) {
+  // init metaBuf
+  metaBuf[0] = 0;
+  metaBuf[1] = ST_OK;
+  metaBuf[2] = 0;   // err byte offset
+  metaBuf[3] = 0;   // err token kind
+
+  var status: i32 = ST_OK;
+  var p: u32 = 0u;
+  let srcLen = cu.srcLen;
+
+  // symbol table
+  var varHash: array<u32, ${MAX_VARS}>;
+  var varCount: u32 = 0u;
+
+  // control stack
+  var ctrl: array<CtrlFrame, ${MAX_CTRL_STACK}>;
+  var ctrlN: u32 = 0u;
+  var depth: i32 = 0;
+
+  // current token
+  var t: Tok;
+  lex_one(&p, srcLen, &t, &status);
+
+  var codeLen: u32 = 0u;
+
+  // helper: expect token
+  // (WGSL lacks macros; inline-ish)
+  loop {
+    if (status != ST_OK) { break; }
+    if (t.k == TK_EOF) { break; }
+
+    // let id = expr ;
+    if (t.k == TK_LET) {
+      lex_one(&p, srcLen, &t, &status);
+      if (status != ST_OK) { break; }
+      if (t.k != TK_ID) { status = ST_PARSE; break; }
+      let name = u32(t.v);
+      if (name == id_hash_x()) { status = ST_PARSE; break; }
+      let idx = var_find_or_add(name, &varHash, &varCount, &status);
+
+      lex_one(&p, srcLen, &t, &status);
+      if (t.k != TK_ASSIGN) { status = ST_PARSE; break; }
+      lex_one(&p, srcLen, &t, &status);
+
+      compile_expr(&p, srcLen, &t, TK_SEMI, TK_EOF, &varHash, &varCount, &codeLen, &status);
+      if (status != ST_OK) { break; }
+      if (t.k != TK_SEMI) { status = ST_PARSE; break; }
+      // store
+      emit2(&codeLen, OP_STORE, i32(idx), &status);
+      lex_one(&p, srcLen, &t, &status);
+      continue;
+    }
+
+    // return expr ;
+    if (t.k == TK_RETURN) {
+      lex_one(&p, srcLen, &t, &status);
+      compile_expr(&p, srcLen, &t, TK_SEMI, TK_EOF, &varHash, &varCount, &codeLen, &status);
+      if (status != ST_OK) { break; }
+      if (t.k != TK_SEMI) { status = ST_PARSE; break; }
+      emit(&codeLen, OP_RETURN, &status);
+      lex_one(&p, srcLen, &t, &status);
+      break; // stop after return
+    }
+
+    // while (cond) { ... }
+    if (t.k == TK_WHILE) {
+      lex_one(&p, srcLen, &t, &status);
+      if (t.k != TK_LP) { status = ST_PARSE; break; }
+      lex_one(&p, srcLen, &t, &status);
+
+      let startPc = i32(codeLen);
+      compile_expr(&p, srcLen, &t, TK_RP, TK_EOF, &varHash, &varCount, &codeLen, &status);
+      if (status != ST_OK) { break; }
+      if (t.k != TK_RP) { status = ST_PARSE; break; }
+      lex_one(&p, srcLen, &t, &status);
+
+      if (t.k != TK_LB) { status = ST_PARSE; break; }
+      // emit JZ placeholder
+      emit2(&codeLen, OP_JZ, 0, &status);
+      let jzPos = i32(codeLen) - 1; // points to target word
+
+      // consume '{'
+      depth = depth + 1;
+      lex_one(&p, srcLen, &t, &status);
+
+      if (ctrlN >= MAX_CTRL_STACK) { status = ST_CTRL_OVER; break; }
+      ctrl[ctrlN] = CtrlFrame(1, depth, startPc, jzPos);
+      ctrlN = ctrlN + 1u;
+      continue;
+    }
+
+    // if (cond) { ... } else { ... }
+    if (t.k == TK_IF) {
+      lex_one(&p, srcLen, &t, &status);
+      if (t.k != TK_LP) { status = ST_PARSE; break; }
+      lex_one(&p, srcLen, &t, &status);
+
+      compile_expr(&p, srcLen, &t, TK_RP, TK_EOF, &varHash, &varCount, &codeLen, &status);
+      if (status != ST_OK) { break; }
+      if (t.k != TK_RP) { status = ST_PARSE; break; }
+      lex_one(&p, srcLen, &t, &status);
+
+      if (t.k != TK_LB) { status = ST_PARSE; break; }
+      emit2(&codeLen, OP_JZ, 0, &status);
+      let jzPos = i32(codeLen) - 1;
+
+      depth = depth + 1;
+      lex_one(&p, srcLen, &t, &status);
+
+      if (ctrlN >= MAX_CTRL_STACK) { status = ST_CTRL_OVER; break; }
+      ctrl[ctrlN] = CtrlFrame(2, depth, jzPos, -1);
+      ctrlN = ctrlN + 1u;
+      continue;
+    }
+
+    // block end: }
+    if (t.k == TK_RB) {
+      depth = depth - 1;
+      lex_one(&p, srcLen, &t, &status);
+
+      // close frames whose blockDepth was the just-closed one (depth+1)
+      loop {
+        if (ctrlN == 0u) { break; }
+        let top = ctrl[ctrlN - 1u];
+        if (top.blockDepth != (depth + 1)) { break; }
+
+        // WHILE
+        if (top.kind == 1) {
+          // JMP back
+          emit2(&codeLen, OP_JMP, top.a, &status);
+          // patch jz target to current pc
+          if (status == ST_OK) { codeOut[u32(top.b)] = i32(codeLen); }
+          ctrlN = ctrlN - 1u;
+          continue;
+        }
+
+        // IF_THEN
+        if (top.kind == 2) {
+          // if next token is ELSE, switch to ELSE mode
+          if (t.k == TK_ELSE) {
+            // emit JMP end placeholder
+            emit2(&codeLen, OP_JMP, 0, &status);
+            let endPos = i32(codeLen) - 1;
+            // patch JZ to else start (current pc)
+            if (status == ST_OK) { codeOut[u32(top.a)] = i32(codeLen); }
+
+            // consume else
+            lex_one(&p, srcLen, &t, &status);
+            if (t.k != TK_LB) { status = ST_PARSE; break; }
+
+            // consume '{'
+            depth = depth + 1;
+            lex_one(&p, srcLen, &t, &status);
+
+            ctrl[ctrlN - 1u] = CtrlFrame(3, depth, endPos, 0);
+            continue;
+          } else {
+            // no else: patch JZ to end
+            if (status == ST_OK) { codeOut[u32(top.a)] = i32(codeLen); }
+            ctrlN = ctrlN - 1u;
+            continue;
+          }
+        }
+
+        // IF_ELSE
+        if (top.kind == 3) {
+          if (status == ST_OK) { codeOut[u32(top.a)] = i32(codeLen); } // patch end JMP
+          ctrlN = ctrlN - 1u;
+          continue;
+        }
+
+        // unknown
+        ctrlN = ctrlN - 1u;
+      }
+
+      continue;
+    }
+
+    // assignment: id = expr ;
+    if (t.k == TK_ID) {
+      let name = u32(t.v);
+      if (name == id_hash_x()) { status = ST_PARSE; break; }
+      let idx = var_find_or_add(name, &varHash, &varCount, &status);
+      lex_one(&p, srcLen, &t, &status);
+      if (t.k != TK_ASSIGN) { status = ST_PARSE; break; }
+      lex_one(&p, srcLen, &t, &status);
+
+      compile_expr(&p, srcLen, &t, TK_SEMI, TK_EOF, &varHash, &varCount, &codeLen, &status);
+      if (status != ST_OK) { break; }
+      if (t.k != TK_SEMI) { status = ST_PARSE; break; }
+      emit2(&codeLen, OP_STORE, i32(idx), &status);
+      lex_one(&p, srcLen, &t, &status);
+      continue;
+    }
+
+    // stray '{' increases depth but is only expected after if/while/else; treat as parse error
+    if (t.k == TK_LB) { status = ST_PARSE; break; }
+
+    // anything else
+    status = ST_PARSE;
+    break;
+  }
+
+  if (status == ST_OK) {
+    // if no explicit return emitted, return 0
+    // (cheap check: last word == OP_RETURN)
+    if (codeLen == 0u || codeOut[codeLen - 1u] != OP_RETURN) {
+      emit2(&codeLen, OP_PUSH_IMM, 0, &status);
+      emit(&codeLen, OP_RETURN, &status);
+    }
+  }
+
+  metaBuf[0] = i32(codeLen);
+  metaBuf[1] = status;
+
+  // If anything went wrong, record where we were (byte offset + current token kind)
+   if (status != ST_OK) {
+     metaBuf[2] = i32(p);
+     metaBuf[3] = t.k;
+   }
+
+   metaBuf[0] = i32(codeLen);
+   metaBuf[1] = status;
+}
+
+// --- Interpreter helper stack ---
+fn pop(stack: ptr<function, array<i32, ${MAX_STACK}>>, sp: ptr<function, i32>) -> i32 {
+  if ((*sp) <= 0) { return 0; }
+  (*sp) = (*sp) - 1;
+  return (*stack)[u32((*sp))];
+}
+fn push(stack: ptr<function, array<i32, ${MAX_STACK}>>, sp: ptr<function, i32>, v: i32) {
+  if (u32(*sp) >= MAX_STACK) { return; }
+  (*stack)[u32(*sp)] = v;
+  (*sp) = (*sp) + 1;
+}
+
+@compute @workgroup_size(64)
+fn run(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let idx = gid.x;
+  if (idx >= ru.outLen) { return; }
+
+  // If compile failed, write sentinel
+  if (metaBuf[1] != ST_OK) {
+    out[idx] = -999999;
+    return;
+  }
+
+  var vars : array<i32, ${MAX_VARS}>;
+  var stack : array<i32, ${MAX_STACK}>;
+  var sp : i32 = 0;
+  var pc : u32 = 0u;
+  var steps : u32 = 0u;
+  let codeLen = ru.codeLen;
+
+  // cap to avoid hangs on buggy programs
+  let MAX_STEPS: u32 = 200000u;
+
+  loop {
+    if (pc >= codeLen) { break; }
+    if (steps >= MAX_STEPS) { break; }
+    steps = steps + 1u;
+
+    let op = codeOut[pc];
+    pc = pc + 1u;
+
+    if (op == OP_PUSH_IMM) {
+      if (pc >= codeLen) { break; }
+      let imm = codeOut[pc];
+      pc = pc + 1u;
+      push(&stack, &sp, imm);
+      continue;
+    }
+    if (op == OP_PUSH_INPUT) {
+      push(&stack, &sp, i32(idx));
+      continue;
+    }
+    if (op == OP_LOAD) {
+      if (pc >= codeLen) { break; }
+      let v = u32(codeOut[pc]);
+      pc = pc + 1u;
+      if (v < ${MAX_VARS}u) { push(&stack, &sp, vars[v]); }
+      continue;
+    }
+    if (op == OP_STORE) {
+      if (pc >= codeLen) { break; }
+      let v = u32(codeOut[pc]);
+      pc = pc + 1u;
+      if (v < ${MAX_VARS}u) { vars[v] = pop(&stack, &sp); }
+      continue;
+    }
+
+    if (op == OP_ADD) { let b=pop(&stack,&sp); let a=pop(&stack,&sp); push(&stack,&sp,a+b); continue; }
+    if (op == OP_MUL) { let b=pop(&stack,&sp); let a=pop(&stack,&sp); push(&stack,&sp,a*b); continue; }
+    if (op == OP_SUB) { let b=pop(&stack,&sp); let a=pop(&stack,&sp); push(&stack,&sp,a-b); continue; }
+    if (op == OP_DIV) {
+      let b=pop(&stack,&sp); let a=pop(&stack,&sp);
+      if (b == 0) { push(&stack,&sp,0); } else { push(&stack,&sp,a/b); }
+      continue;
+    }
+    if (op == OP_MOD) {
+      let b=pop(&stack,&sp); let a=pop(&stack,&sp);
+      if (b == 0) { push(&stack,&sp,0); } else { push(&stack,&sp,a%b); }
+      continue;
+    }
+
+    if (op == OP_EQ) { let b=pop(&stack,&sp); let a=pop(&stack,&sp); push(&stack,&sp, select(0,1,a==b)); continue; }
+    if (op == OP_NE) { let b=pop(&stack,&sp); let a=pop(&stack,&sp); push(&stack,&sp, select(0,1,a!=b)); continue; }
+    if (op == OP_LT) { let b=pop(&stack,&sp); let a=pop(&stack,&sp); push(&stack,&sp, select(0,1,a<b)); continue; }
+    if (op == OP_LE) { let b=pop(&stack,&sp); let a=pop(&stack,&sp); push(&stack,&sp, select(0,1,a<=b)); continue; }
+    if (op == OP_GT) { let b=pop(&stack,&sp); let a=pop(&stack,&sp); push(&stack,&sp, select(0,1,a>b)); continue; }
+    if (op == OP_GE) { let b=pop(&stack,&sp); let a=pop(&stack,&sp); push(&stack,&sp, select(0,1,a>=b)); continue; }
+
+    if (op == OP_JMP) {
+      if (pc >= codeLen) { break; }
+      pc = u32(codeOut[pc]);
+      continue;
+    }
+    if (op == OP_JZ) {
+      if (pc >= codeLen) { break; }
+      let tgt = u32(codeOut[pc]);
+      pc = pc + 1u;
+      let c = pop(&stack, &sp);
+      if (c == 0) { pc = tgt; }
+      continue;
+    }
+
+    if (op == OP_RETURN) {
+      out[idx] = pop(&stack, &sp);
+      return;
+    }
+
+    break;
+  }
+
+  out[idx] = 0;
+}`;
+
+    let devicePromise = null;
+
+    runBtn.addEventListener('click', async () => {
+        outEl.textContent = '';
+        setStatus('', '');
+        runBtn.disabled = true;
+
+        try {
+            if (!devicePromise) devicePromise = initWebGPU();
+            const device = await devicePromise;
+
+            const srcText = el('src').value;
+            const outLen = Math.max(1, Math.min(4096, parseInt(el('n').value || '256', 10)));
+
+            // Encode to UTF-8 bytes
+            const bytes = new TextEncoder().encode(srcText);
+            if (bytes.byteLength > MAX_SRC_BYTES) {
+                throw new Error(`Source too large: ${bytes.byteLength} bytes (max ${MAX_SRC_BYTES})`);
+            }
+
+            // Pack bytes into u32 words for WGSL-friendly access
+            const words = new Uint32Array(ceilDiv(bytes.byteLength, 4));
+            for (let i = 0; i < bytes.byteLength; i++) {
+                words[i >> 2] |= (bytes[i] & 0xFF) << ((i & 3) * 8);
+            }
+
+            // Buffers
+            const srcBuf = device.createBuffer({
+                size: Math.max(4, words.byteLength),
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            });
+            device.queue.writeBuffer(srcBuf, 0, words);
+
+            const codeBuf = device.createBuffer({
+                size: MAX_CODE_WORDS * 4,
+                usage: GPUBufferUsage.STORAGE,
+            });
+
+            // metaBuf: [codeLen, status, errByteOffset, errTokKind]
+            const metaBuf = device.createBuffer({
+                size: 16,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+            });
+
+            const outBuf = device.createBuffer({
+                size: outLen * 4,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+            });
+
+            const cuBuf = device.createBuffer({
+                size: 8,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+            device.queue.writeBuffer(cuBuf, 0, new Uint32Array([bytes.byteLength, 0]));
+
+            // run uniforms: (codeLen filled later) but we'll just set codeLen = MAX_CODE_WORDS for now;
+            // interpreter will use ru.codeLen, so we need actual codeLen.
+            // We solve this by running a tiny "meta readback" after compile OR by doing a second pass that reads meta[0].
+            // Easiest: do a third uniform buffer update after reading meta. Still "compiler on GPU"; CPU just reads codeLen.
+            const ruBuf = device.createBuffer({
+                size: 8,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+
+            // Readbacks
+            const metaReadback = device.createBuffer({
+                size: 16,
+                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+            });
+            const outReadback = device.createBuffer({
+                size: outLen * 4,
+                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+            });
+
+            const module = device.createShaderModule({ code: wgsl });
+            const compilePipe = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'compiler' } });
+            const runPipe     = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'run' } });
+
+            // Bind group layout is the same for both entry points (same @group/@binding set)
+            const bindGroupCompile = device.createBindGroup({
+                layout: compilePipe.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: srcBuf } },   // used by compiler
+                    { binding: 1, resource: { buffer: codeBuf } },  // used by compiler
+                    { binding: 2, resource: { buffer: metaBuf } },  // used by compiler
+                    { binding: 4, resource: { buffer: cuBuf } },    // used by compiler
+                ],
+            });
+
+            const bindGroupRun = device.createBindGroup({
+                layout: runPipe.getBindGroupLayout(0),
+                entries: [
+                    { binding: 1, resource: { buffer: codeBuf } },  // used by run
+                    { binding: 2, resource: { buffer: metaBuf } },  // used by run
+                    { binding: 3, resource: { buffer: outBuf } },   // used by run
+                    { binding: 5, resource: { buffer: ruBuf } },    // used by run
+                ],
+            });
+
+            // Pass 1: compile
+            {
+                const enc = device.createCommandEncoder();
+                const pass = enc.beginComputePass();
+                pass.setPipeline(compilePipe);
+                pass.setBindGroup(0, bindGroupCompile);
+                pass.dispatchWorkgroups(1);
+                pass.end();
+                enc.copyBufferToBuffer(metaBuf, 0, metaReadback, 0, 16);
+                device.queue.submit([enc.finish()]);
+            }
+
+            await metaReadback.mapAsync(GPUMapMode.READ);
+            const metaArr = new Int32Array(metaReadback.getMappedRange().slice(0));
+            metaReadback.unmap();
+
+            const codeLen = metaArr[0] | 0;
+            const status = metaArr[1] | 0;
+            const errByte = metaArr[2] | 0;
+            const errTok  = metaArr[3] | 0;
+
+            if (status !== 0) {
+                throw new Error(
+                  `GPU compile failed: status=${status} ` +
+                  `(1=LEX,2=PARSE,3=CODE_OVER,4=VAR_OVER,5=UNDECL,6=EXPR_OVER,7=CTRL_OVER) ` +
+                  `at byte=${errByte} tok=${errTok}`
+                );
+            }
+            if (codeLen <= 0 || codeLen > MAX_CODE_WORDS) {
+                throw new Error(`Bad codeLen from GPU compile: ${codeLen}`);
+            }
+
+            // Update run uniforms with exact codeLen/outLen
+            device.queue.writeBuffer(ruBuf, 0, new Uint32Array([codeLen >>> 0, outLen >>> 0]));
+
+            setStatus(`Compiled on GPU: codeLen=${codeLen} words. Running...`, 'ok');
+
+            // Pass 2: run + readback
+            {
+                const enc = device.createCommandEncoder();
+                const pass = enc.beginComputePass();
+                pass.setPipeline(runPipe);
+                pass.setBindGroup(0, bindGroupRun);
+                pass.dispatchWorkgroups(ceilDiv(outLen, 64));
+                pass.end();
+                enc.copyBufferToBuffer(outBuf, 0, outReadback, 0, outLen * 4);
+                device.queue.submit([enc.finish()]);
+            }
+
+            await outReadback.mapAsync(GPUMapMode.READ);
+            const res = new Int32Array(outReadback.getMappedRange().slice(0));
+            outReadback.unmap();
+
+            outEl.textContent = Array.from(res).join(',');
+            setStatus(`Done. (x=0..${outLen-1})`, 'ok');
+
+        } catch (e) {
+            console.error(e);
+            setStatus(String(e?.message || e), 'err');
+        } finally {
+            runBtn.disabled = false;
+        }
+    });
+</script>
+</body>
+</html>
