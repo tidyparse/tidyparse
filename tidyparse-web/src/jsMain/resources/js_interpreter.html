@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="utf-8" />
-    <title>WebGPU String→Bytecode→Run (GPU compiler + interpreter)</title>
+    <title>WebGPU interpreter</title>
     <style>
         body { font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 18px; }
         textarea { width: 100%; height: 340px; box-sizing: border-box; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
@@ -16,7 +16,7 @@
     </style>
 </head>
 <body>
-<h2>GPU-based (JS+i32 compiler + interpreter): String → Int buffer</h2>
+<h2>WebGPU (JS+i32 compiler + interpreter): String → Int buffer</h2>
 
 <textarea id="src">// x will be the thread ID
 let n = x + 1;
@@ -35,64 +35,62 @@ return steps;</textarea>
 
 <div class="row">
     <button id="run">Run</button>
-    <label>Outputs:
-        <input id="n" type="number" min="1" value="113382" />
-    </label>
+    <label>Outputs: <input id="n" type="number" min="1" value="113382" /></label>
     <span id="status"></span>
 </div>
 
 <script type="module">
-    function el(id) { return document.getElementById(id); }
-    const statusEl = el('status');
-    const runBtn = el('run');
+function el(id) { return document.getElementById(id); }
+const statusEl = el('status');
+const runBtn = el('run');
 
-    function setStatus(msg, cls) {
-        statusEl.textContent = msg;
-        statusEl.className = cls || '';
-    }
+function setStatus(msg, cls) {
+    statusEl.textContent = msg;
+    statusEl.className = cls || '';
+}
 
-    async function initWebGPU() {
-        if (!navigator.gpu) throw new Error("WebGPU not available (need a WebGPU-capable browser, secure context).");
-        const adapter = await navigator.gpu.requestAdapter();
-        if (!adapter) throw new Error("No WebGPU adapter found.");
-        return await adapter.requestDevice();
-    }
+async function initWebGPU() {
+    if (!navigator.gpu) throw new Error("WebGPU not available (need a WebGPU-capable browser, secure context).");
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) throw new Error("No WebGPU adapter found.");
+    return await adapter.requestDevice();
+}
 
-    function ceilDiv(a, b) { return Math.floor((a + b - 1) / b); }
+function ceilDiv(a, b) { return Math.floor((a + b - 1) / b); }
 
-    // Tunables for demo. For many-program scaling, make these per-program strides.
-    const MAX_SRC_BYTES   = 100 * 1024; // per program
-    const MAX_CODE_WORDS  = 65536;      // i32 words of bytecode (per program)
-    const MAX_OUT_LEN     = 10000000;   // max number of outputs (x=0..MAX_OUT_LEN-1)
-    const MAX_VARS        = 64;
-    const MAX_STACK       = 64;
-    const MAX_EXPR_TOKS   = 512;        // expression token budget inside compiler
-    const MAX_CTRL_STACK  = 64;         // nested if/while blocks
+// Tunables for demo. For many-program scaling, make these per-program strides.
+const MAX_SRC_BYTES  = 100 * 1024; // per program
+const MAX_CODE_WORDS = 65536;      // i32 words of bytecode (per program)
+const MAX_OUT_LEN    = 10000000;   // max number of outputs (x=0..MAX_OUT_LEN-1)
+const MAX_VARS       = 64;
+const MAX_STACK      = 64;
+const MAX_EXPR_TOKS  = 512;        // expression token budget inside compiler
+const MAX_CTRL_STACK = 64;         // nested if/while blocks
 
-    // Shared ISA between compiler and interpreter
-    const OP = {
-        PUSH_IMM: 1,
-        PUSH_INPUT: 2,
-        LOAD: 3,
-        STORE: 4,
-        ADD: 5,
-        MUL: 6,
-        SUB: 7,
-        DIV: 8,
-        MOD: 9,
-        EQ: 10,
-        NE: 11,
-        LT: 12,
-        LE: 13,
-        GT: 14,
-        GE: 15,
-        JMP: 16,
-        JZ: 17,
-        RETURN: 18,
-    };
+// Shared ISA between compiler and interpreter
+const OP = {
+    PUSH_IMM: 1,
+    PUSH_INPUT: 2,
+    LOAD: 3,
+    STORE: 4,
+    ADD: 5,
+    MUL: 6,
+    SUB: 7,
+    DIV: 8,
+    MOD: 9,
+    EQ: 10,
+    NE: 11,
+    LT: 12,
+    LE: 13,
+    GT: 14,
+    GE: 15,
+    JMP: 16,
+    JZ: 17,
+    RETURN: 18
+};
 
-    // One WGSL module with two entry points: compile + run
-    const wgsl = /* wgsl */`
+// One WGSL module with two entry points: compile + run
+const wgsl = /* wgsl */`
 struct CompileUniforms {
   srcLen : u32,
   _pad0  : u32,
@@ -103,9 +101,9 @@ struct RunUniforms {
   outLen  : u32,
 };
 
-@group(0) @binding(0) var<storage, read> src : array<u32>;          // bytes packed in u32s (little-endian)
+@group(0) @binding(0) var<storage, read> src : array<u32>;           // bytes packed in u32s (little-endian)
 @group(0) @binding(1) var<storage, read_write> codeOut : array<i32>; // bytecode words
-@group(0) @binding(2) var<storage, read_write> metaBuf : array<i32>;    // metaBuf[0]=codeLen, metaBuf[1]=status (0 ok)
+@group(0) @binding(2) var<storage, read_write> metaBuf : array<i32>; // metaBuf[0]=codeLen, metaBuf[1]=status (0 ok)
 @group(0) @binding(3) var<storage, read_write> out : array<i32>;     // outputs
 @group(0) @binding(4) var<uniform> cu : CompileUniforms;
 @group(0) @binding(5) var<uniform> ru : RunUniforms;
@@ -115,24 +113,24 @@ const MAX_STACK      : u32 = ${MAX_STACK}u;
 const MAX_EXPR_TOKS  : u32 = ${MAX_EXPR_TOKS}u;
 const MAX_CTRL_STACK : u32 = ${MAX_CTRL_STACK}u;
 
-const OP_PUSH_IMM   : i32 = ${OP.PUSH_IMM};
-const OP_PUSH_INPUT : i32 = ${OP.PUSH_INPUT};
-const OP_LOAD       : i32 = ${OP.LOAD};
-const OP_STORE      : i32 = ${OP.STORE};
-const OP_ADD        : i32 = ${OP.ADD};
-const OP_MUL        : i32 = ${OP.MUL};
-const OP_SUB        : i32 = ${OP.SUB};
-const OP_DIV        : i32 = ${OP.DIV};
-const OP_MOD        : i32 = ${OP.MOD};
-const OP_EQ         : i32 = ${OP.EQ};
-const OP_NE         : i32 = ${OP.NE};
-const OP_LT         : i32 = ${OP.LT};
-const OP_LE         : i32 = ${OP.LE};
-const OP_GT         : i32 = ${OP.GT};
-const OP_GE         : i32 = ${OP.GE};
-const OP_JMP        : i32 = ${OP.JMP};
-const OP_JZ         : i32 = ${OP.JZ};
-const OP_RETURN     : i32 = ${OP.RETURN};
+const OP_PUSH_IMM    : i32 = ${OP.PUSH_IMM};
+const OP_PUSH_INPUT  : i32 = ${OP.PUSH_INPUT};
+const OP_LOAD        : i32 = ${OP.LOAD};
+const OP_STORE       : i32 = ${OP.STORE};
+const OP_ADD         : i32 = ${OP.ADD};
+const OP_MUL         : i32 = ${OP.MUL};
+const OP_SUB         : i32 = ${OP.SUB};
+const OP_DIV         : i32 = ${OP.DIV};
+const OP_MOD         : i32 = ${OP.MOD};
+const OP_EQ          : i32 = ${OP.EQ};
+const OP_NE          : i32 = ${OP.NE};
+const OP_LT          : i32 = ${OP.LT};
+const OP_LE          : i32 = ${OP.LE};
+const OP_GT          : i32 = ${OP.GT};
+const OP_GE          : i32 = ${OP.GE};
+const OP_JMP         : i32 = ${OP.JMP};
+const OP_JZ          : i32 = ${OP.JZ};
+const OP_RETURN      : i32 = ${OP.RETURN};
 
 // --- Token kinds ---
 const TK_EOF    : i32 = 0;
@@ -184,13 +182,9 @@ fn read_u8(i: u32) -> u32 {
   return (word >> sh) & 255u;
 }
 
-fn is_ws(c: u32) -> bool {
-  return c == 32u || c == 9u || c == 10u || c == 13u;
-}
+fn is_ws(c: u32) -> bool { return c == 32u || c == 9u || c == 10u || c == 13u; }
 fn is_digit(c: u32) -> bool { return c >= 48u && c <= 57u; }
-fn is_alpha(c: u32) -> bool {
-  return (c >= 65u && c <= 90u) || (c >= 97u && c <= 122u) || (c == 95u);
-}
+fn is_alpha(c: u32) -> bool { return (c >= 65u && c <= 90u) || (c >= 97u && c <= 122u) || (c == 95u); }
 fn is_alnum(c: u32) -> bool { return is_alpha(c) || is_digit(c); }
 
 // 32-bit FNV-1a hash
@@ -395,9 +389,7 @@ fn var_find_or_add(h: u32, varHash: ptr<function, array<u32, ${MAX_VARS}>>, varC
 }
 
 fn var_find(h: u32, varHash: ptr<function, array<u32, ${MAX_VARS}>>, varCount: u32) -> i32 {
-  for (var i: u32 = 0u; i < varCount; i = i + 1u) {
-    if ((*varHash)[i] == h) { return i32(i); }
-  }
+  for (var i: u32 = 0u; i < varCount; i = i + 1u) { if ((*varHash)[i] == h) { return i32(i); } }
   return -1;
 }
 
@@ -912,205 +904,171 @@ fn run(@builtin(global_invocation_id) gid: vec3<u32>) {
   out[idx] = 0;
 }`;
 
-    let devicePromise = null;
+let devicePromise = null;
 
-    runBtn.addEventListener('click', async () => {
-        setStatus('', '');
-        runBtn.disabled = true;
+runBtn.addEventListener('click', async () => {
+    setStatus('', '');
+    runBtn.disabled = true;
 
-        try {
-            if (!devicePromise) devicePromise = initWebGPU();
-            const device = await devicePromise;
+    try {
+        if (!devicePromise) devicePromise = initWebGPU();
+        const device = await devicePromise;
 
-            const srcText = el('src').value;
-            const outLen = Math.max(1, Math.min(MAX_OUT_LEN, parseInt(el('n').value || '256', 10)));
-            el('n').max = String(MAX_OUT_LEN);
+        const srcText = el('src').value;
+        const outLen = Math.max(1, Math.min(MAX_OUT_LEN, parseInt(el('n').value || '256', 10)));
+        el('n').max = String(MAX_OUT_LEN);
 
-            // Encode to UTF-8 bytes
-            const bytes = new TextEncoder().encode(srcText);
-            if (bytes.byteLength > MAX_SRC_BYTES) {
-                throw new Error(`Source too large: ${bytes.byteLength} bytes (max ${MAX_SRC_BYTES})`);
-            }
+        // Encode to UTF-8 bytes
+        const bytes = new TextEncoder().encode(srcText);
+        if (bytes.byteLength > MAX_SRC_BYTES) throw new Error(`Source too large: ${bytes.byteLength} bytes (max ${MAX_SRC_BYTES})`);
 
-            // Pack bytes into u32 words for WGSL-friendly access
-            const words = new Uint32Array(ceilDiv(bytes.byteLength, 4));
-            for (let i = 0; i < bytes.byteLength; i++) {
-                words[i >> 2] |= (bytes[i] & 0xFF) << ((i & 3) * 8);
-            }
-
-            // Buffers
-            const srcBuf = device.createBuffer({
-                size: Math.max(4, words.byteLength),
-                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-            });
-            device.queue.writeBuffer(srcBuf, 0, words);
-
-            const codeBuf = device.createBuffer({
-                size: MAX_CODE_WORDS * 4,
-                usage: GPUBufferUsage.STORAGE,
-            });
-
-            // metaBuf: [codeLen, status, errByteOffset, errTokKind]
-            const metaBuf = device.createBuffer({
-                size: 16,
-                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
-            });
-
-            const outBuf = device.createBuffer({
-                size: outLen * 4,
-                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
-            });
-
-            const cuBuf = device.createBuffer({
-                size: 8,
-                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-            });
-            device.queue.writeBuffer(cuBuf, 0, new Uint32Array([bytes.byteLength, 0]));
-
-            // run uniforms: (codeLen filled later) but we'll just set codeLen = MAX_CODE_WORDS for now;
-            // interpreter will use ru.codeLen, so we need actual codeLen.
-            // We solve this by running a tiny "meta readback" after compile OR by doing a second pass that reads meta[0].
-            // Easiest: do a third uniform buffer update after reading meta. Still "compiler on GPU"; CPU just reads codeLen.
-            const ruBuf = device.createBuffer({
-                size: 8,
-                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-            });
-
-            // Readbacks
-            const metaReadback = device.createBuffer({
-                size: 16,
-                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-            });
-            const outReadback = device.createBuffer({
-                size: outLen * 4,
-                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-            });
-
-            const module = device.createShaderModule({ code: wgsl });
-            const compilePipe = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'compiler' } });
-            const runPipe     = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'run' } });
-
-            // Bind group layout is the same for both entry points (same @group/@binding set)
-            const bindGroupCompile = device.createBindGroup({
-                layout: compilePipe.getBindGroupLayout(0),
-                entries: [
-                    { binding: 0, resource: { buffer: srcBuf } },   // used by compiler
-                    { binding: 1, resource: { buffer: codeBuf } },  // used by compiler
-                    { binding: 2, resource: { buffer: metaBuf } },  // used by compiler
-                    { binding: 4, resource: { buffer: cuBuf } },    // used by compiler
-                ],
-            });
-
-            const bindGroupRun = device.createBindGroup({
-                layout: runPipe.getBindGroupLayout(0),
-                entries: [
-                    { binding: 1, resource: { buffer: codeBuf } },  // used by run
-                    { binding: 2, resource: { buffer: metaBuf } },  // used by run
-                    { binding: 3, resource: { buffer: outBuf } },   // used by run
-                    { binding: 5, resource: { buffer: ruBuf } },    // used by run
-                ],
-            });
-
-            // Pass 1: compile
-            const t0GpuRun = performance.now();
-            {
-                const enc = device.createCommandEncoder();
-                const pass = enc.beginComputePass();
-                pass.setPipeline(compilePipe);
-                pass.setBindGroup(0, bindGroupCompile);
-                pass.dispatchWorkgroups(1);
-                pass.end();
-                enc.copyBufferToBuffer(metaBuf, 0, metaReadback, 0, 16);
-                device.queue.submit([enc.finish()]);
-            }
-
-            await metaReadback.mapAsync(GPUMapMode.READ);
-            const metaArr = new Int32Array(metaReadback.getMappedRange().slice(0));
-            metaReadback.unmap();
-            const t1GpuRun = performance.now();
-
-            const codeLen = metaArr[0] | 0;
-            const status = metaArr[1] | 0;
-            const errByte = metaArr[2] | 0;
-            const errTok  = metaArr[3] | 0;
-
-            if (status !== 0) throw new Error(
-                `GPU compile failed: status=${status} ` +
-                `(1=LEX,2=PARSE,3=CODE_OVER,4=VAR_OVER,5=UNDECL,6=EXPR_OVER,7=CTRL_OVER) ` +
-                `at byte=${errByte} tok=${errTok}`
-            );
-            if (codeLen <= 0 || codeLen > MAX_CODE_WORDS)
-                throw new Error(`Bad codeLen from GPU compile: ${codeLen}`);
-
-            // Update run uniforms with exact codeLen/outLen
-            device.queue.writeBuffer(ruBuf, 0, new Uint32Array([codeLen >>> 0, outLen >>> 0]));
-
-            setStatus(`Compiled on GPU: codeLen=${codeLen} words. Running...`, 'ok');
-
-            // Pass 2: run + readback
-            {
-                const enc = device.createCommandEncoder();
-                const pass = enc.beginComputePass();
-                pass.setPipeline(runPipe);
-                pass.setBindGroup(0, bindGroupRun);
-                pass.dispatchWorkgroups(ceilDiv(outLen, 64));
-                pass.end();
-                enc.copyBufferToBuffer(outBuf, 0, outReadback, 0, outLen * 4);
-                device.queue.submit([enc.finish()]);
-            }
-
-            await device.queue.onSubmittedWorkDone();
-            const t2GpuRun = performance.now();
-
-            await outReadback.mapAsync(GPUMapMode.READ);
-            const res = new Int32Array(outReadback.getMappedRange().slice(0));
-            outReadback.unmap();
-
-            // CPU baseline
-            const { out: cpuOut, ms: cpuMs } = cpuRun(srcText, outLen);
-
-            // Compare
-            let mismatch = -1;
-            for (let i = 0; i < outLen; i++) {
-                if ((res[i] | 0) !== (cpuOut[i] | 0)) { mismatch = i; break; }
-            }
-            const matchStr = (mismatch === -1) ? "MATCH ✅" : `MISMATCH ❌ (x=${mismatch})`;
-
-            const gpuCompileMs = (t1GpuRun - t0GpuRun);
-            const gpuRunMs = (t2GpuRun - t1GpuRun);
-
-            setStatus(
-                `Done. (x=0..${outLen - 1}) | ${matchStr} | GPU compile ${gpuCompileMs.toFixed(2)} ms | GPU run ${gpuRunMs.toFixed(2)} ms | CPU ${cpuMs.toFixed(2)} ms`,
-                mismatch === -1 ? "ok" : "err"
-            );
-        } catch (e) {
-            console.error(e);
-            setStatus(String(e?.message || e), 'err');
-        } finally {
-            runBtn.disabled = false;
-        }
-    });
-
-    function buildStrictJSFragmentFunction(srcText) {
-        const fnBody = `"use strict";\n${srcText}\n`;
-        return new Function("x", fnBody);
-    }
-
-    function cpuRun(srcText, outLen) {
-        const f = buildStrictJSFragmentFunction(srcText);
-
-        const t0 = performance.now();
-        const out = new Int32Array(outLen);
-
-        for (let x = 0; x < outLen; x++) {
-            let y = 0;
-            try { y = f(x) | 0; } catch (e) { y = -999999; }
-            out[x] = y;
+        // Pack bytes into u32 words for WGSL-friendly access
+        const words = new Uint32Array(ceilDiv(bytes.byteLength, 4));
+        for (let i = 0; i < bytes.byteLength; i++) {
+            words[i >> 2] |= (bytes[i] & 0xFF) << ((i & 3) * 8);
         }
 
-        const t1 = performance.now();
-        return { out, ms: (t1 - t0) };
+        // Buffers
+        const srcBuf = device.createBuffer({ size: Math.max(4, words.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        device.queue.writeBuffer(srcBuf, 0, words);
+
+        const codeBuf = device.createBuffer({ size: MAX_CODE_WORDS * 4, usage: GPUBufferUsage.STORAGE });
+
+        // metaBuf: [codeLen, status, errByteOffset, errTokKind]
+        const metaBuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+        const outBuf = device.createBuffer({ size: outLen * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+        const cuBuf = device.createBuffer({ size: 8, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        device.queue.writeBuffer(cuBuf, 0, new Uint32Array([bytes.byteLength, 0]));
+
+        // run uniforms: (codeLen filled later) but we'll just set codeLen = MAX_CODE_WORDS for now;
+        // interpreter will use ru.codeLen, so we need actual codeLen.
+        // We solve this by running a tiny "meta readback" after compile OR by doing a second pass that reads meta[0].
+        const ruBuf = device.createBuffer({ size: 8, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+        // Readbacks
+        const metaReadback = device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+        const outReadback = device.createBuffer({ size: outLen * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+
+        const module = device.createShaderModule({ code: wgsl });
+        const compilePipe = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'compiler' } });
+        const runPipe     = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'run' } });
+
+        // Bind group layout is the same for both entry points (same @group/@binding set)
+        const bindGroupCompile = device.createBindGroup({
+            layout: compilePipe.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: srcBuf } },
+                { binding: 1, resource: { buffer: codeBuf } },
+                { binding: 2, resource: { buffer: metaBuf } },
+                { binding: 4, resource: { buffer: cuBuf } },
+            ],
+        });
+
+        const bindGroupRun = device.createBindGroup({
+            layout: runPipe.getBindGroupLayout(0),
+            entries: [
+                { binding: 1, resource: { buffer: codeBuf } },
+                { binding: 2, resource: { buffer: metaBuf } },
+                { binding: 3, resource: { buffer: outBuf } },
+                { binding: 5, resource: { buffer: ruBuf } },
+            ],
+        });
+
+        // Pass 1: compile
+        const t0GpuRun = performance.now();
+        {
+            const enc = device.createCommandEncoder();
+            const pass = enc.beginComputePass();
+            pass.setPipeline(compilePipe);
+            pass.setBindGroup(0, bindGroupCompile);
+            pass.dispatchWorkgroups(1);
+            pass.end();
+            enc.copyBufferToBuffer(metaBuf, 0, metaReadback, 0, 16);
+            device.queue.submit([enc.finish()]);
+        }
+
+        await metaReadback.mapAsync(GPUMapMode.READ);
+        const metaArr = new Int32Array(metaReadback.getMappedRange().slice(0));
+        metaReadback.unmap();
+        const t1GpuRun = performance.now();
+
+        const codeLen = metaArr[0] | 0;
+        const status = metaArr[1] | 0;
+        const errByte = metaArr[2] | 0;
+        const errTok  = metaArr[3] | 0;
+
+        if (status !== 0) throw new Error(
+            `GPU compile failed: status=${status} ` +
+            `(1=LEX,2=PARSE,3=CODE_OVER,4=VAR_OVER,5=UNDECL,6=EXPR_OVER,7=CTRL_OVER) ` +
+            `at byte=${errByte} tok=${errTok}`
+        );
+        if (codeLen <= 0 || codeLen > MAX_CODE_WORDS) throw new Error(`Bad codeLen from GPU compile: ${codeLen}`);
+
+        // Update run uniforms with exact codeLen/outLen
+        device.queue.writeBuffer(ruBuf, 0, new Uint32Array([codeLen >>> 0, outLen >>> 0]));
+
+        setStatus(`Compiled on GPU: codeLen=${codeLen} words. Running...`, 'ok');
+
+        // Pass 2: run + readback
+        {
+            const enc = device.createCommandEncoder();
+            const pass = enc.beginComputePass();
+            pass.setPipeline(runPipe);
+            pass.setBindGroup(0, bindGroupRun);
+            pass.dispatchWorkgroups(ceilDiv(outLen, 64));
+            pass.end();
+            enc.copyBufferToBuffer(outBuf, 0, outReadback, 0, outLen * 4);
+            device.queue.submit([enc.finish()]);
+        }
+
+        await device.queue.onSubmittedWorkDone();
+        const t2GpuRun = performance.now();
+
+        await outReadback.mapAsync(GPUMapMode.READ);
+        const res = new Int32Array(outReadback.getMappedRange().slice(0));
+        outReadback.unmap();
+
+        // CPU baseline
+        const { out: cpuOut, ms: cpuMs } = cpuRun(srcText, outLen);
+
+        // Compare
+        let mismatch = -1;
+        for (let i = 0; i < outLen; i++) { if ((res[i] | 0) !== (cpuOut[i] | 0)) { mismatch = i; break; } }
+        const matchStr = (mismatch === -1) ? "MATCH ✅" : `MISMATCH ❌ (x=${mismatch})`;
+
+        const gpuCompileMs = (t1GpuRun - t0GpuRun);
+        const gpuRunMs = (t2GpuRun - t1GpuRun);
+
+        setStatus(
+            `Done. (x=0..${outLen - 1}) | ${matchStr} | GPU compile ${gpuCompileMs.toFixed(2)} ms | ` +
+            `GPU run ${gpuRunMs.toFixed(2)} ms | CPU ${cpuMs.toFixed(2)} ms`,
+            mismatch === -1 ? "ok" : "err"
+        );
+    } catch (e) {
+        console.error(e);
+        setStatus(String(e?.message || e), 'err');
+    } finally {
+        runBtn.disabled = false;
     }
+});
+
+function buildStrictJSFragmentFunction(srcText) { return new Function("x", `"use strict";\n${srcText}\n`); }
+
+function cpuRun(srcText, outLen) {
+    const f = buildStrictJSFragmentFunction(srcText);
+
+    const t0 = performance.now();
+    const out = new Int32Array(outLen);
+
+    for (let x = 0; x < outLen; x++) {
+        let y = 0;
+        try { y = f(x) | 0; } catch (e) { y = -999999; }
+        out[x] = y;
+    }
+
+    const t1 = performance.now();
+    return { out, ms: (t1 - t0) };
+}
 </script>
 </body>
 </html>
