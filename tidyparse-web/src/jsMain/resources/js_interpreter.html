@@ -36,17 +36,14 @@ return steps;</textarea>
 <div class="row">
     <button id="run">Run</button>
     <label>Outputs:
-        <input id="n" type="number" min="1" max="4096" value="256" />
+        <input id="n" type="number" min="1" value="113382" />
     </label>
     <span id="status"></span>
 </div>
 
-<pre id="out"></pre>
-
 <script type="module">
     function el(id) { return document.getElementById(id); }
     const statusEl = el('status');
-    const outEl = el('out');
     const runBtn = el('run');
 
     function setStatus(msg, cls) {
@@ -66,6 +63,7 @@ return steps;</textarea>
     // Tunables for demo. For many-program scaling, make these per-program strides.
     const MAX_SRC_BYTES   = 100 * 1024; // per program
     const MAX_CODE_WORDS  = 65536;      // i32 words of bytecode (per program)
+    const MAX_OUT_LEN     = 10000000;   // max number of outputs (x=0..MAX_OUT_LEN-1)
     const MAX_VARS        = 64;
     const MAX_STACK       = 64;
     const MAX_EXPR_TOKS   = 512;        // expression token budget inside compiler
@@ -917,7 +915,6 @@ fn run(@builtin(global_invocation_id) gid: vec3<u32>) {
     let devicePromise = null;
 
     runBtn.addEventListener('click', async () => {
-        outEl.textContent = '';
         setStatus('', '');
         runBtn.disabled = true;
 
@@ -926,7 +923,8 @@ fn run(@builtin(global_invocation_id) gid: vec3<u32>) {
             const device = await devicePromise;
 
             const srcText = el('src').value;
-            const outLen = Math.max(1, Math.min(4096, parseInt(el('n').value || '256', 10)));
+            const outLen = Math.max(1, Math.min(MAX_OUT_LEN, parseInt(el('n').value || '256', 10)));
+            el('n').max = String(MAX_OUT_LEN);
 
             // Encode to UTF-8 bytes
             const bytes = new TextEncoder().encode(srcText);
@@ -1014,6 +1012,7 @@ fn run(@builtin(global_invocation_id) gid: vec3<u32>) {
             });
 
             // Pass 1: compile
+            const t0GpuRun = performance.now();
             {
                 const enc = device.createCommandEncoder();
                 const pass = enc.beginComputePass();
@@ -1028,22 +1027,20 @@ fn run(@builtin(global_invocation_id) gid: vec3<u32>) {
             await metaReadback.mapAsync(GPUMapMode.READ);
             const metaArr = new Int32Array(metaReadback.getMappedRange().slice(0));
             metaReadback.unmap();
+            const t1GpuRun = performance.now();
 
             const codeLen = metaArr[0] | 0;
             const status = metaArr[1] | 0;
             const errByte = metaArr[2] | 0;
             const errTok  = metaArr[3] | 0;
 
-            if (status !== 0) {
-                throw new Error(
-                  `GPU compile failed: status=${status} ` +
-                  `(1=LEX,2=PARSE,3=CODE_OVER,4=VAR_OVER,5=UNDECL,6=EXPR_OVER,7=CTRL_OVER) ` +
-                  `at byte=${errByte} tok=${errTok}`
-                );
-            }
-            if (codeLen <= 0 || codeLen > MAX_CODE_WORDS) {
+            if (status !== 0) throw new Error(
+                `GPU compile failed: status=${status} ` +
+                `(1=LEX,2=PARSE,3=CODE_OVER,4=VAR_OVER,5=UNDECL,6=EXPR_OVER,7=CTRL_OVER) ` +
+                `at byte=${errByte} tok=${errTok}`
+            );
+            if (codeLen <= 0 || codeLen > MAX_CODE_WORDS)
                 throw new Error(`Bad codeLen from GPU compile: ${codeLen}`);
-            }
 
             // Update run uniforms with exact codeLen/outLen
             device.queue.writeBuffer(ruBuf, 0, new Uint32Array([codeLen >>> 0, outLen >>> 0]));
@@ -1062,13 +1059,30 @@ fn run(@builtin(global_invocation_id) gid: vec3<u32>) {
                 device.queue.submit([enc.finish()]);
             }
 
+            await device.queue.onSubmittedWorkDone();
+            const t2GpuRun = performance.now();
+
             await outReadback.mapAsync(GPUMapMode.READ);
             const res = new Int32Array(outReadback.getMappedRange().slice(0));
             outReadback.unmap();
 
-            outEl.textContent = Array.from(res).join(',');
-            setStatus(`Done. (x=0..${outLen-1})`, 'ok');
+            // CPU baseline
+            const { out: cpuOut, ms: cpuMs } = cpuRun(srcText, outLen);
 
+            // Compare
+            let mismatch = -1;
+            for (let i = 0; i < outLen; i++) {
+                if ((res[i] | 0) !== (cpuOut[i] | 0)) { mismatch = i; break; }
+            }
+            const matchStr = (mismatch === -1) ? "MATCH ✅" : `MISMATCH ❌ (x=${mismatch})`;
+
+            const gpuCompileMs = (t1GpuRun - t0GpuRun);
+            const gpuRunMs = (t2GpuRun - t1GpuRun);
+
+            setStatus(
+                `Done. (x=0..${outLen - 1}) | ${matchStr} | GPU compile ${gpuCompileMs.toFixed(2)} ms | GPU run ${gpuRunMs.toFixed(2)} ms | CPU ${cpuMs.toFixed(2)} ms`,
+                mismatch === -1 ? "ok" : "err"
+            );
         } catch (e) {
             console.error(e);
             setStatus(String(e?.message || e), 'err');
@@ -1076,6 +1090,27 @@ fn run(@builtin(global_invocation_id) gid: vec3<u32>) {
             runBtn.disabled = false;
         }
     });
+
+    function buildStrictJSFragmentFunction(srcText) {
+        const fnBody = `"use strict";\n${srcText}\n`;
+        return new Function("x", fnBody);
+    }
+
+    function cpuRun(srcText, outLen) {
+        const f = buildStrictJSFragmentFunction(srcText);
+
+        const t0 = performance.now();
+        const out = new Int32Array(outLen);
+
+        for (let x = 0; x < outLen; x++) {
+            let y = 0;
+            try { y = f(x) | 0; } catch (e) { y = -999999; }
+            out[x] = y;
+        }
+
+        const t1 = performance.now();
+        return { out, ms: (t1 - t0) };
+    }
 </script>
 </body>
 </html>
