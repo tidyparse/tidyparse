@@ -65,4 +65,8 @@ class TestTidy {
     log("Total $name repairs: $totalResults")
     log("Total $name matches: $totalMatches")
   }
+
+  // TODO: test parity between GPU- and CPU- versions
+  // TODO: implement and test GPU-based hole completion
+  // TODO: allow hole completion w/ Brozozowski decoding
 }
