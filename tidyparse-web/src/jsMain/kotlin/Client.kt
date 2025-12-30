@@ -94,7 +94,8 @@ suspend fun defaultSetup() {
 
   inputField.addEventListener("input", { jsEditor.run { continuation { handleInput() } } })
   inputField.addEventListener("input", { jsEditor.redecorateLines() })
-  exSelector.addEventListener("change", { MainScope().async { fetchSelectedExample() } })
+  exSelector.addEventListener("change",
+    { MainScope().async { fetchSelectedExample(); jsEditor.getLatestCFG(); jsEditor.redecorateLines() } })
 
   inputField.addEventListener("keydown", { event -> jsEditor.navUpdate(event as KeyboardEvent) })
   mincheck.addEventListener("change", { jsEditor.minimize = mincheck.checked })
