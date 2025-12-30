@@ -82,6 +82,7 @@ suspend fun headlessSetup() {
 
 suspend fun defaultSetup() {
   log("Starting Tidyparse/CFG")
+  inputField.scrollTop = inputField.scrollHeight.toDouble();
 
   fetchSelectedExample()
   jsEditor.getLatestCFG()

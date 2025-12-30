@@ -62,8 +62,6 @@ u {
 #tidyparse-input {
     resize: none;
     outline: none;
-    direction: rtl;
-    text-align: left;
 }
 
 #tidyparse-output {
