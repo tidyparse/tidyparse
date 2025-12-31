@@ -102,8 +102,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
                            ledBuffer: Int, ngrams: GPUBuffer?, codePoints: IntArray): List<String> {
   val t0 = TimeSource.Monotonic.markNow()
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
-  log("FSA(|Q|=${numStates}, |δ|=${fsa.transit.size}), " +
-          "CFG(|Σ|=${cfg.terminals.size}, |V|=${numNTs}, |P|=${cfg.nonterminalProductions.size})")
+  log("FSA(|Q|=${numStates}, |δ|=${fsa.transit.size}), ${cfg.calcStats()}")
 
 //log("Time to load buffer: ${t0.elapsedNow()} (${input.size * 4} bytes)")
 

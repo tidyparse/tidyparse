@@ -177,3 +177,6 @@ mark {
     color: transparent !important;
     caret-color: white;
 }
+
+.spacer { display: inline; background-color: gray; }
+.spacer::before { content: "\00a0"; white-space: pre; }

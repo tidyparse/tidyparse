@@ -159,7 +159,7 @@ filtered = [x for x in common if x in words]
     function htmlToPlaintext(html) {
         const tmp = document.createElement("div");
         tmp.innerHTML = html;
-        return (tmp.textContent || tmp.innerText || "").trim().replace(" ", "");
+        return (tmp.textContent || tmp.innerText || "").trim();
     }
 
     function fixedHtmlHint(cm) {

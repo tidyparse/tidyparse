@@ -14,8 +14,7 @@ data class PyCodeSnippet(val rawCode: String) {
    * Returns just the ANTLR "names" of the lexed tokens, e.g. "NAME", "FOR", "IN", etc.
    * (matching the Python3Lexer vocabulary).
    */
-  fun lexedTokens(): String =
-    tokens.joinToString(" ") { Python3Lexer.VOCABULARY.getDisplayName(it.type) }
+  fun lexedTokens(): String = tokens.joinToString(" ") { Python3Lexer.VOCABULARY.getDisplayName(it.type) }
       .replace("'", "").replace("NEWLINE", "") + " NEWLINE"
 
   private enum class Paint { NONE, GREEN, ORANGE, GRAY }
@@ -74,12 +73,10 @@ data class PyCodeSnippet(val rawCode: String) {
     return sb.toString()
   }
 
-  private fun paint(ts: Pair<Paint, String>): String {
-    return when (ts.first) {
-      Paint.GREEN -> """<span style="color: green">${ts.second.escapeHTML()}</span>"""
-      Paint.GRAY -> """<span style="background-color: gray"><span class="noselect"> </span></span>"""
-      Paint.ORANGE -> """<span style="color: orange">${ts.second.escapeHTML()}</span>"""
-      Paint.NONE -> ts.second.escapeHTML()
-    }
+  private fun paint(ts: Pair<Paint, String>): String = when (ts.first) {
+    Paint.GREEN -> """<span style="color: green">${ts.second.escapeHTML()}</span>"""
+    Paint.GRAY -> """<span class="spacer"></span>"""
+    Paint.ORANGE -> """<span style="color: orange">${ts.second.escapeHTML()}</span>"""
+    Paint.NONE -> ts.second.escapeHTML()
   }
 }
