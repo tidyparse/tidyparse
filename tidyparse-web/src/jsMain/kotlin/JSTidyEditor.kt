@@ -52,6 +52,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     val context = getApplicableContext()
     if (context.isEmpty()) return
     log("Applicable context:\n$context")
+
     val tokens = context.tokenizeByWhitespace()
 
     val cfg =
@@ -106,7 +107,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
   enum class SelectorAction { ENTER, ARROW_DOWN, ARROW_UP, TAB }
 
-  private fun Int.toSelectorAction(): SelectorAction? = when (this) {
+  fun Int.toSelectorAction(): SelectorAction? = when (this) {
     13 -> SelectorAction.ENTER
     40 -> SelectorAction.ARROW_DOWN
     38 -> SelectorAction.ARROW_UP
@@ -116,7 +117,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
   open fun formatCode(code: String): String = code
 
-  fun navUpdate(event: KeyboardEvent) {
+  open fun navUpdate(event: KeyboardEvent) {
     val key = event.keyCode.toSelectorAction() ?: return
     if (key == SelectorAction.TAB) { event.preventDefault(); handleTab(); return }
     val currentText = rawDisplayHTML()

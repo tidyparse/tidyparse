@@ -5,6 +5,7 @@ import ai.hypergraph.tidyparse.*
 import kotlinx.browser.window
 import kotlinx.coroutines.*
 import org.w3c.dom.*
+import org.w3c.dom.events.KeyboardEvent
 import web.gpu.GPUBuffer
 import kotlin.math.ln
 import kotlin.time.TimeSource
@@ -31,14 +32,27 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     fun decorate() {
       if (currentHash != hashIter) return
       val decCFG = getLatestCFG()
-      preparseParseableLines(decCFG, readEditorText()) {
-        PyCodeSnippet(it).lexedTokens().replace("|", "OR") in decCFG.language
+
+      val text = readEditorText()
+      val invalid = LinkedHashMap<Int, String>()
+
+      val lines = text.lines()
+      for ((ln, rawLine) in lines.withIndex()) {
+        val trimmed = rawLine.trim()
+        if (trimmed.isEmpty() || trimmed.startsWith("#")) continue
+
+        val ok = PyCodeSnippet(trimmed).lexedTokens().replace("|", "OR") in decCFG.language
+
+        if (!ok) invalid[ln] = "Unparseable (line ${ln + 1})"
       }
-      if (currentHash == hashIter) pyDecorator.fullDecorate(decCFG)
+
+      pyDecorator.setInvalidLines(invalid)
+
+      if (currentHash != hashIter) return
+      pyDecorator.fullDecorate(decCFG)
     }
 
     continuation { decorate() }
-//    log("Redecorated in ${timer.elapsedNow()}")
   }
 
   companion object {
@@ -100,11 +114,21 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
   fun String.replacePythonKeywords() =
     replace("OR", "|").replace("not_in", "not in").replace("is_not", "is not")
 
+  override fun navUpdate(event: KeyboardEvent) {
+    val key = event.keyCode.toSelectorAction() ?: return
+    val hasStub = stubMatcher.find(currentLine(), 0) != null
+    if (key == SelectorAction.TAB && hasStub) { event.preventDefault(); handleTab(); return }
+  }
+
+  val cme by lazy { js("window.cmEditor") }
+  override fun setCaretPosition(range: IntRange) =
+    cme.setSelection(cme.posFromIndex(range.first), cme.posFromIndex(range.last))
+
   override fun handleInput() {
     window.asDynamic().COMPLETIONS = arrayOf<String>()
     val t0 = TimeSource.Monotonic.markNow()
     val currentLine = currentLine().also { log("Current line is: $it") }
-    if (currentLine.isBlank()) return
+    if (currentLine.isBlank() || currentLine.trimStart().startsWith("#")) return
     val pcs = PyCodeSnippet(currentLine)
     val tokens = pcs.lexedTokens().tokenizeByWhitespace().map { if (it == "|") "OR" else it }
 
@@ -137,7 +161,6 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
         (if (gpuAvailable) {
           log("Repairing on GPU...")
-          println("CFG: $cfg")
           repairCode(cfg, tokens, if (minimize) 0 else LED_BUFFER, ngramTensor).asSequence()
         } else {
           log("Repairing on CPU...")

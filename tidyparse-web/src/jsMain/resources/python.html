@@ -42,6 +42,7 @@
     </style>
     <!-- CodeMirror 5 -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/lint/lint.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/hint/show-hint.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/material-darker.min.css">
     <style>
@@ -79,6 +80,8 @@
         }
 
         .CodeMirror-hint span { color: inherit; }
+
+        .CodeMirror-gutter.cm-warn-gutter { width: 14px; }
     </style>
 </head>
 
@@ -88,6 +91,7 @@
 <div id="content">
     <textarea id="tidyparse-input" spellcheck="false"># Try modifying one of the malformed lines in the editor below
 # Works best on Chrome (tested 143.0.7499.170+arm64), the WebGPU logo should appear in the lower right corner if enabled
+# Invalid lines are marked with ⚠️ in the gutter
 x = 1 -
 x = 1 + 1
 
@@ -143,11 +147,11 @@ filtered = [x for x in common if x in words]
 <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/python/python.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/hint/show-hint.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/lint/lint.min.js"></script>
 <script src="https://cdn.jsdelivr.net/pyodide/v0.27.5/full/pyodide.js"></script>
 
 <script>
     // ---- HTML-rendered completions + replace whole line from first non-whitespace ----
-
     function firstNonWhitespaceCh(lineStr) {
         const m = lineStr.match(/^\s*/);
         return m ? m[0].length : 0;
@@ -188,11 +192,11 @@ filtered = [x for x in common if x in words]
     const editor = CodeMirror.fromTextArea(ta, {
         mode: "python",
         theme: "material-darker",
+        gutters: ["CodeMirror-linenumbers", "cm-warn-gutter"],
         lineNumbers: true,
         indentUnit: 4,
         tabSize: 4,
         indentWithTabs: false,
-        extraKeys: { "Ctrl-Space": (cm) => cm.showHint({ hint: fixedHtmlHint, completeSingle: false }) }
     });
 
     function syncTextareaAndEvents() {

@@ -4,10 +4,11 @@ import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.kaliningraph.types.PlatformVars
-import ai.hypergraph.tidyparse.MAX_DISP_RESULTS
 import kotlinx.browser.*
 import kotlinx.coroutines.*
 import org.w3c.dom.*
+import org.w3c.dom.events.Event
+import org.w3c.dom.events.EventListener
 import org.w3c.dom.events.KeyboardEvent
 import org.w3c.fetch.RequestInit
 import kotlin.js.Promise
@@ -118,6 +119,7 @@ suspend fun pythonSetup() {
 
   jsPyEditor.getLatestCFG()
 //    LED_BUFFER = maxEdits.value.toInt()
+  jsPyEditor.redecorateLines()
 
   loadNgrams()
   log("Loaded ngrams")
@@ -132,7 +134,7 @@ suspend fun pythonSetup() {
 
   inputField.addEventListener("input", { jsPyEditor.run { continuation { handleInput() } } })
   inputField.addEventListener("input", { jsPyEditor.redecorateLines() })
-  inputField.addEventListener("keydown", { event -> jsPyEditor.navUpdate(event as KeyboardEvent) })
+  jsPyEditor.cme.on("keydown") { _: dynamic, e: dynamic -> jsPyEditor.navUpdate(e) }
 
 //  jsPyEditor.minimize = mincheck.checked
 //  mincheck.addEventListener("change", { jsPyEditor.minimize = mincheck.checked })
@@ -144,7 +146,7 @@ suspend fun pythonSetup() {
 
 val exSelector by lazy { document.getElementById("ex-selector") as HTMLSelectElement }
 val decorator by lazy { TextareaDecorator(inputField, parser) }
-val pyDecorator by lazy { PyTextareaDecorator(inputField, parser = parser) }
+val pyDecorator by lazy { PyTextareaDecorator(jsPyEditor.cme, parser) }
 val jsEditor by lazy { JSTidyEditor(inputField, outputField) }
 val jsPyEditor by lazy { JSTidyPyEditor(inputField, outputField) }
 val inputField by lazy { document.getElementById("tidyparse-input") as HTMLTextAreaElement }

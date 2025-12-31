@@ -108,15 +108,9 @@ fun cnfSetup() {
   document.body?.appendChild(overlay)
 
   // Wire keystrokes to the CNF editor (parse/complete/repair)
-  cnfInputField.addEventListener("input", {
-    jsCnfEditor.run { continuation { handleInput() } }
-  })
-  cnfInputField.addEventListener("input", {
-    jsCnfEditor.redecorateLines()
-  })
-  cnfInputField.addEventListener("keydown", { e ->
-    jsCnfEditor.navUpdate(e as KeyboardEvent)
-  })
+  cnfInputField.addEventListener("input", { jsCnfEditor.run { continuation { handleInput() } } })
+  cnfInputField.addEventListener("input", { jsCnfEditor.redecorateLines() })
+  cnfInputField.addEventListener("keydown", { e -> jsCnfEditor.navUpdate(e as KeyboardEvent) })
 
 // Optional: read initial settings and keep LED buffer in sync
   val ledBuffSel = document.getElementById("led-buffer") as? HTMLInputElement

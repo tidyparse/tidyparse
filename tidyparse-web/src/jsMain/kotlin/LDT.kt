@@ -77,109 +77,68 @@ open class TextareaDecorator(val inputField: HTMLTextAreaElement, private val pa
     }
 }
 
-/**
- * CodeMirror squiggle-only decorator.
- *
- * - Does NOT do token coloring (CodeMirror handles highlighting).
- * - Only applies squiggly underline marks.
- * - Subclasses TextareaDecorator without mutating the real DOM (dummy textarea trick).
- *
- * Drive it by setting [isLineInvalid] (or [invalidLines]) before calling quick/fullDecorate.
- */
-
-class PyTextareaDecorator(
-  private val realInput: HTMLTextAreaElement,
-  private val cm: dynamic = window.asDynamic().tidyCm,
-  parser: Parser
-) : TextareaDecorator(
+class PyTextareaDecorator(private val cm: dynamic, parser: Parser) : TextareaDecorator(
   inputField = (document.createElement("textarea") as HTMLTextAreaElement),
   parser = parser
 ) {
-  private val marks = mutableListOf<dynamic>()
+  private val GUTTER_ID = "cm-warn-gutter"
 
-  /** Preferred: set this from your editor logic (fast, no re-parsing here). */
-  var isLineInvalid: (Int, String) -> Boolean = { _, _ -> false }
-
-  /** Optional convenience: if you already have a set of invalid line numbers. */
-  var invalidLines: Set<Int>? = null
-
-  private fun clearMarks() {
-    if (cm == null) { marks.clear(); return }
-    try {
-      cm.operation {
-        for (m in marks) try { m.clear() } catch (_: dynamic) {}
-        marks.clear()
-      }
-    } catch (_: dynamic) {
-      marks.clear()
+  fun tidyLintObj(): dynamic {
+    val w = window.asDynamic()
+    if (w.__tidyLint == null) {
+      w.__tidyLint = js("({ version: 0, lines: new Map() })")
     }
+    return w.__tidyLint
   }
 
-  private fun squiggleWholeLine(lineNo: Int, line: String) {
-    if (line.isEmpty()) return
-    val doc = cm.getDoc()
-    val from = js("({line: lineNo, ch: 0})")
-    val to = js("({line: lineNo, ch: line.length})")
-    val opts = js("({className: 'cm-squiggle'})")
-    val m = doc.markText(from, to, opts)
-    marks.add(m)
+  fun setInvalidLines(lines: Map<Int, String>) {
+    val o = tidyLintObj()
+    o.version = (o.version as Int) + 1
+    o.lines.clear()
+    lines.forEach { (ln, msg) -> o.lines.set(ln, msg) }
   }
 
-  private fun shouldSquiggle(lineNo: Int, line: String): Boolean {
-    invalidLines?.let { return lineNo in it }
-    return isLineInvalid(lineNo, line)
-  }
+  private fun lintCache(): dynamic = tidyLintObj()
 
-  /** Decorate only viewport lines (fast). */
-  override fun quickDecorate() {
+  private fun clearGutterMarkers() {
     if (cm == null) return
-    clearMarks()
-
-    val doc = cm.getDoc()
-    val vp = cm.getViewport() // {from: Int, to: Int}
-    val fromLine = (vp.from as Int)
-    val toLineExcl = (vp.to as Int)
-
-    cm.operation {
-      for (ln in fromLine until toLineExcl) {
-        val line = doc.getLine(ln) as String
-        if (shouldSquiggle(ln, line)) squiggleWholeLine(ln, line)
-      }
-    }
-  }
-
-  /** Decorate all lines (slower). */
-  override fun fullDecorate(cfg: CFG) {
-    if (cm == null) return
-    clearMarks()
-
     val doc = cm.getDoc()
     val n = doc.lineCount() as Int
-
-    cm.operation {
-      for (ln in 0 until n) {
-        val line = doc.getLine(ln) as String
-        if (shouldSquiggle(ln, line)) squiggleWholeLine(ln, line)
-      }
-    }
+    cm.operation { for (ln in 0 until n) { cm.setGutterMarker(ln, GUTTER_ID, null) } }
   }
 
-  /**
-   * Optional: if you later want squiggles on *ranges* (e.g., token spans, columns),
-   * call this directly and skip full/quickDecorate.
-   */
-  fun setSquiggleRanges(ranges: List<Triple<Int, Int, Int>>) {
-    // Triple(lineNo, fromCh, toChExclusive)
+  private fun setWarnMarker(lineNo: Int, message: String) {
+    val marker = document.createElement("div") as HTMLElement
+    marker.className = "CodeMirror-lint-marker CodeMirror-lint-marker-warning"
+    marker.setAttribute("title", message) // tooltip
+    cm.setGutterMarker(lineNo, GUTTER_ID, marker)
+  }
+
+  override fun fullDecorate(cfg: CFG) {
     if (cm == null) return
-    clearMarks()
-    val doc = cm.getDoc()
+
+    try {
+      val gutters = (cm.getOption("gutters") as Array<dynamic>).toMutableList()
+      if (!gutters.contains(GUTTER_ID)) {
+        gutters.add(GUTTER_ID)
+        cm.setOption("gutters", gutters.toTypedArray())
+      }
+    } catch (_: dynamic) {}
+
+    clearGutterMarkers()
+
+    val cache = lintCache() ?: return
+    val lines = cache.lines ?: return
+
     cm.operation {
-      for ((ln, a, b) in ranges) {
-        if (b <= a) continue
-        val from = js("({line: ln, ch: a})")
-        val to = js("({line: ln, ch: b})")
-        val opts = js("({className: 'cm-squiggle'})")
-        marks.add(doc.markText(from, to, opts))
+      val it = lines.entries()
+      while (true) {
+        val step = it.next()
+        if (step.done as Boolean) break
+        val entry = step.value
+        val ln = (entry[0] as Int)
+        val msg = (entry[1] as String)
+        setWarnMarker(ln, msg)
       }
     }
   }
