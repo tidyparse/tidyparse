@@ -49,7 +49,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
       pyDecorator.setInvalidLines(invalid)
 
       if (currentHash != hashIter) return
-      pyDecorator.fullDecorate(decCFG)
+      pyDecorator.fullDecorate()
     }
 
     continuation { decorate() }

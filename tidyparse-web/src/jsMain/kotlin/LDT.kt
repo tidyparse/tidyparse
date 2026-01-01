@@ -77,17 +77,12 @@ open class TextareaDecorator(val inputField: HTMLTextAreaElement, private val pa
     }
 }
 
-class PyTextareaDecorator(private val cm: dynamic, parser: Parser) : TextareaDecorator(
-  inputField = (document.createElement("textarea") as HTMLTextAreaElement),
-  parser = parser
-) {
+class PyTextareaDecorator(private val cm: dynamic) {
   private val GUTTER_ID = "cm-warn-gutter"
 
   fun tidyLintObj(): dynamic {
     val w = window.asDynamic()
-    if (w.__tidyLint == null) {
-      w.__tidyLint = js("({ version: 0, lines: new Map() })")
-    }
+    if (w.__tidyLint == null) w.__tidyLint = js("({ version: 0, lines: new Map() })")
     return w.__tidyLint
   }
 
@@ -114,7 +109,7 @@ class PyTextareaDecorator(private val cm: dynamic, parser: Parser) : TextareaDec
     cm.setGutterMarker(lineNo, GUTTER_ID, marker)
   }
 
-  override fun fullDecorate(cfg: CFG) {
+  fun fullDecorate() {
     if (cm == null) return
 
     try {

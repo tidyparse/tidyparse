@@ -51,7 +51,7 @@ fun main() {
     PlatformVars.PLATFORM_CALLER_STACKTRACE_DEPTH = 4
   }
 
-  MainScope().async {
+  MainScope().launch {
     if (window["REPAIR_MODE"] == "headless") headlessSetup()
     else if (window["PROGRAMMING_LANG"] == "cnf") cnfSetup()
     else if (window["PROGRAMMING_LANG"] == "python") pythonSetup()
@@ -95,8 +95,7 @@ suspend fun defaultSetup() {
 
   inputField.addEventListener("input", { jsEditor.run { continuation { handleInput() } } })
   inputField.addEventListener("input", { jsEditor.redecorateLines() })
-  exSelector.addEventListener("change",
-    { MainScope().async { fetchSelectedExample(); jsEditor.getLatestCFG(); jsEditor.redecorateLines() } })
+  exSelector.addEventListener("change", { MainScope().launch { fetchSelectedExample(); jsEditor.getLatestCFG(); jsEditor.redecorateLines() } })
 
   inputField.addEventListener("keydown", { event -> jsEditor.navUpdate(event as KeyboardEvent) })
   mincheck.addEventListener("change", { jsEditor.minimize = mincheck.checked })
@@ -123,11 +122,10 @@ suspend fun pythonSetup() {
 
   loadNgrams()
   log("Loaded ngrams")
-  MainScope().async {
+  MainScope().launch {
     val t0 = TimeSource.Monotonic.markNow()
     tryBootstrappingGPU(true)
-    if (gpuAvailable)
-      log("Loaded n-grams into ${jsPyEditor.ngramTensor.size / 1000000}mb GPU buffer in ${t0.elapsedNow()}")
+    if (gpuAvailable) log("Loaded n-grams into ${jsPyEditor.ngramTensor.size / 1000000}mb GPU buffer in ${t0.elapsedNow()}")
   }
 
   TIMEOUT_MS = 1000
@@ -146,7 +144,7 @@ suspend fun pythonSetup() {
 
 val exSelector by lazy { document.getElementById("ex-selector") as HTMLSelectElement }
 val decorator by lazy { TextareaDecorator(inputField, parser) }
-val pyDecorator by lazy { PyTextareaDecorator(jsPyEditor.cme, parser) }
+val pyDecorator by lazy { PyTextareaDecorator(jsPyEditor.cme) }
 val jsEditor by lazy { JSTidyEditor(inputField, outputField) }
 val jsPyEditor by lazy { JSTidyPyEditor(inputField, outputField) }
 val inputField by lazy { document.getElementById("tidyparse-input") as HTMLTextAreaElement }
