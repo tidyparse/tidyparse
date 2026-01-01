@@ -57,7 +57,11 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         bp_count, bp_write,                      // Backpointer addressing
         ls_dense, ls_cdf,                        // Language size estimation
         build_root_sizes, enum_words_wor,        // Enumeration and decoding
-        markov_score, select_top_k, gather_top_k // Reranking and truncation
+        markov_score, select_top_k, gather_top_k,// Reranking and truncation
+
+//        init_particles_v2,
+//        decode_step_v2,
+//        pack_particles_v2
       ).forEach { it.bind() }
 //      benchmarkWGPU() // TODO: remove for deployment
 //      benchmarkWGPURepair()
@@ -77,6 +81,7 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
   } else print("GPU not detected.")
 }
 
+
 suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VALUE, ngrams: GPUBuffer? = null): List<String> {
   val t0 = TimeSource.Monotonic.markNow()
   val fsa: FSA = makeLevFSA(code, MAX_LEV_RAD)
@@ -90,6 +95,7 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
 //  log("Initial nonzeros: ${dpIn.count { it != 0 }}")
 
   log("PREPROCESSING TOOK: ${t0.elapsedNow()}") // ~230ms
+//  val words = repairPipelineV2(cfg, fsa, ledBuffer, ngrams, codePoints)
   val words = repairPipeline(cfg, fsa, ledBuffer, ngrams, codePoints)
 //  val distinctWords = words.distinct()
 //  log("Distinct: ${distinctWords.size} words")
@@ -1561,7 +1567,7 @@ fun tmToInt(tm: String, cfg: CFG): Int = when (tm) {
   else      -> cfg.tmMap[tm]!! + FIRST_TID
 }
 
-private val SCALE = 10_000.0
+const val SCALE = 10_000.0
 fun Map<List<String>, Double>.toGpuHash(norm: Double = values.sum(), cfg: CFG): Map<List<UInt>, UInt> =
   mapValues { (_, p) -> (-ln(p / norm) * SCALE).roundToInt().coerceAtLeast(0).toUInt() }
     .mapKeys { (gram, _) -> gram.map { tmToInt(it, cfg).toUInt() } }
