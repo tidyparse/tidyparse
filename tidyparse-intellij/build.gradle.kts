@@ -7,8 +7,8 @@ import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 plugins {
   kotlin("jvm")
-  id("org.jetbrains.intellij.platform") version "2.9.0"
-  id("org.jetbrains.changelog") version "2.4.0"
+  id("org.jetbrains.intellij.platform") version "2.10.5"
+  id("org.jetbrains.changelog") version "2.5.0"
 }
 
 repositories {

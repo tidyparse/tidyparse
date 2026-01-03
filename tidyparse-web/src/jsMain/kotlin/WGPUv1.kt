@@ -23,6 +23,8 @@ import kotlin.js.Promise
 import kotlin.math.*
 import kotlin.reflect.KProperty
 import kotlin.time.TimeSource
+import kotlin.js.Promise as KPromise
+
 
 lateinit var gpu: GPUDevice
 var gpuAvailable = false
@@ -1256,19 +1258,16 @@ class Shader constructor(val src: String) {
   lateinit var name: String
   lateinit var pipeline: GPUComputePipeline
 
-  suspend fun bind() {
-    pipeline = try {
-      gpu.createComputePipelineAsync(
-        GPUComputePipelineDescriptor(
-          layout = "auto",
-          compute = GPUProgrammableStage(
-            module = gpu.createShaderModule(GPUShaderModuleDescriptor(label = name, code = src)),
-            entryPoint = "main"
-          )
-        )
-      ).await()
-    } catch (e: Throwable) { e.printStackTrace(); throw e }
-  }
+  @OptIn(ExperimentalWasmJsInterop::class)
+  suspend fun bind() = gpu.createComputePipelineAsync(
+    GPUComputePipelineDescriptor(
+      layout = "auto",
+      compute = GPUProgrammableStage(
+        module = gpu.createShaderModule(GPUShaderModuleDescriptor(label = name, code = src)),
+        entryPoint = "main"
+      )
+    )
+  ).unsafeCast<KPromise<GPUComputePipeline>>().await().also { pipeline = it }
 
   operator fun getValue(tr: Any?, property: KProperty<*>): Shader = this.also { name = property.name }
 
@@ -1287,7 +1286,7 @@ class Shader constructor(val src: String) {
       val cmd = gpu.createCommandEncoder()
       cmd.copyBufferToBuffer(source = this, sourceOffset = 0.0, destination = readDst, destinationOffset = 0.0, size = size)
       gpu.queue.submit(arrayOf(cmd.finish()))
-      (readDst.mapAsync(1) as Promise<*>).await()
+      readDst.mapAsync(1).unsafeCast<Promise<*>>().await()
       val t = Int32Array(readDst.getMappedRange()).asList().toIntArray()
       readDst.destroy()
 //      log("Read ${size.toInt()} bytes in ${t0.elapsedNow()}")
@@ -1308,7 +1307,7 @@ class Shader constructor(val src: String) {
         )
       }
       gpu.queue.submit(arrayOf(encoder.finish()))
-      (stagingBuffer.mapAsync(1) as Promise<*>).await()
+      stagingBuffer.mapAsync(1).unsafeCast<Promise<*>>().await()
       val t = Int32Array(stagingBuffer.getMappedRange())
         .asList().toIntArray().toList().also { stagingBuffer.destroy() }
       log("Read ${indices.size}/${size.toInt()} bytes in ${t0.elapsedNow()}")
