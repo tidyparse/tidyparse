@@ -26,6 +26,8 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
   override fun getLatestCFG(): CFG = pythonStatementCNFAllProds.apply { cfg = this }
 
+  private val lineParseCache = HashMap<String, Boolean>()
+
   override fun redecorateLines(cfg: CFG) {
     val currentHash = ++hashIter
 
@@ -41,7 +43,9 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
         val trimmed = rawLine.trim()
         if (trimmed.isEmpty() || trimmed.startsWith("#")) continue
 
-        val ok = PyCodeSnippet(trimmed).lexedTokens().replace("|", "OR") in decCFG.language
+        val ok = lineParseCache.getOrPut(trimmed) {
+          PyCodeSnippet(trimmed).lexedTokens().replace("|", "OR") in decCFG.language
+        }
 
         if (!ok) invalid[ln] = "Unparseable (line ${ln + 1})"
       }

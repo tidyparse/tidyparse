@@ -7,10 +7,12 @@ import Shader.Companion.packMetadata
 import Shader.Companion.readIndices
 import Shader.Companion.readInts
 import Shader.Companion.toGPUBuffer
+import Shader.Companion.writeU32
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.types.cache
 import ai.hypergraph.tidyparse.MAX_DISP_RESULTS
+import ai.hypergraph.tidyparse.pause
 import js.array.asList
 import js.buffer.*
 import js.typedarrays.Int32Array
@@ -180,48 +182,56 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
   build_root_sizes(dpBuf, bpCountBuf, bpOffsetBuf, cdfBuf, tmBuf, rootSizes, idxUniBuf)((numRoots + 255) / 256)
 
   val rootCDF = Shader.prefixSumGPU(rootSizes, numRoots)
+  suspend fun langIntSize(): Long { // Overapproximation to L_∩ since we are counting trees, not words
+    fun u(x: Int) = x.toUInt().toLong()
+    val last = numRoots - 1
+    val lastSize = if (numRoots > 0) rootSizes.readIndices(listOf(last))[0] else 0
+    val lastCDF = if (numRoots > 0) rootCDF.readIndices(listOf(last))[0] else 0
+    val total = if (numRoots > 0) u(lastCDF) + u(lastSize) else 0L
+    return total
+  }
 
-  val outBuf = GPUBuffer(MAX_SAMPLES * maxRepairLen * 4, STCPSD)
+  val langIntSize = langIntSize()
+  val toDecode = minOf(MAX_SAMPLES.toLong(), langIntSize).toInt()
+  val pct = toDecode.toDouble() * 100.0 / langIntSize.toDouble().coerceAtLeast(1.0)
+  log("Langauge saturation: $pct% ($toDecode/$langIntSize)")
+
+  idxUniBuf.writeU32(wordIndex = 5, value = toDecode)
+
+  val outBuf = GPUBuffer(toDecode * maxRepairLen * 4, STCPSD)
   enum_words_wor(
     dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf,
     cdfBuf /*ls_sparse*/, tmBuf, idxUniBuf, rootSizes, rootCDF, outBuf
-  )(DISPATCH_GROUP_SIZE_X, (MAX_SAMPLES + DISPATCH_GROUP_SIZE_X - 1) / DISPATCH_GROUP_SIZE_X)
+  )(DISPATCH_GROUP_SIZE_X, (toDecode + DISPATCH_GROUP_SIZE_X - 1) / DISPATCH_GROUP_SIZE_X)
 
-  return (if (ngrams != null) ngramDecoder(outBuf, ngrams, maxRepairLen, cfg)
-  else uniformDeocder(outBuf, rootSizes, rootCDF, numRoots, cfg, maxRepairLen)).also {
+  return (if (ngrams != null) ngramDecoder(outBuf, ngrams,  maxRepairLen, cfg, toDecode)
+  else uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)).also {
     listOf(outBuf, rootSizes, rootCDF, metaBuf, dpBuf, idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf)
     .forEach(GPUBuffer::destroy)
   }
 }
 
-suspend fun uniformDeocder(outBuf: GPUBuffer, rootSizes: GPUBuffer, rootCDF: GPUBuffer, numRoots: Int, cfg: CFG, maxRepairLen: Int): List<String> {
+suspend fun uniformDecoder(outBuf: GPUBuffer, cfg: CFG, maxRepairLen: Int, samplesToDecode: Int): List<String> {
   val t3 = TimeSource.Monotonic.markNow()
   val res = mutableMapOf<Int, MutableSet<String>>()
   val allResults = outBuf.readInts()
-//  log("sample_words_wor invocation took: ${t3.elapsedNow()}")
-  val rootSizesI32 = rootSizes.readInts()
-  val rootCDFI32 = rootCDF.readInts()
-  fun u(x: Int) = x.toUInt().toLong()
-  val last = numRoots - 1
-  val total = if (numRoots > 0) u(rootCDFI32[last]) + u(rootSizesI32[last]) else 0L
-  val decodeN = minOf(MAX_SAMPLES.toLong(), total).toInt()
 
-  for (i in 0 until decodeN) {
+  for (i in 0 until samplesToDecode) {
     val t = allResults.decodePacket(i, cfg.tmLst, maxRepairLen) ?: continue
     res.getOrPut(t.first) { mutableSetOf() }.add(t.second)
+    pause(100000)
   }
   res.forEach { log("Δ=${it.key} -> |L|=${it.value.size}") }
   log("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
-  return res.map { it.value.toList() }.flatten()
+  return res.map { pause(100000); it.value.toList() }.flatten()
 }
 
-suspend fun ngramDecoder(outBuf: GPUBuffer, ngrams: GPUBuffer, maxRepairLen: Int, cfg: CFG): MutableList<String> {
-  val k = 10 * MAX_DISP_RESULTS
-  val topK = scoreSelectGather(packets = outBuf, ngrams = ngrams, maxSamples = MAX_SAMPLES, stride = maxRepairLen, k = k)
+suspend fun ngramDecoder(outBuf: GPUBuffer, ngrams: GPUBuffer, maxRepairLen: Int, cfg: CFG, samplesToDecode: Int): MutableList<String> {
+  val topK = scoreSelectGather(packets = outBuf, ngrams = ngrams, maxSamples = samplesToDecode, stride = maxRepairLen, k = TOP_K_SAMP)
 
   val t4 = TimeSource.Monotonic.markNow()
   val result = mutableListOf<String>()
-  for (i in 0 until k) result.add(topK.decodePacket(i, cfg.tmLst, maxRepairLen)?.second ?: continue)
+  for (i in 0 until TOP_K_SAMP) result.add(topK.decodePacket(i, cfg.tmLst, maxRepairLen)?.second ?: continue)
   log("Decoded ${result.distinct().size} unique words out of ${result.size} in ${t4.elapsedNow()}")
   return result
 }
@@ -888,7 +898,8 @@ val prefix_sum_p2 by Shader("""$PFX_SUM_PARAMS
 // Longest word WGSL can handle. If ~2^9<MAX_WORD_LEN, pipeline breaks some on architectures
 const val MAX_WORD_LEN = 512
 const val MAX_LEV_RAD = 5
-const val MAX_SAMPLES = 550_000
+const val MAX_SAMPLES = 2_000_000 // Maximum number of samples to draw before reranking
+const val TOP_K_SAMP = 10 * MAX_DISP_RESULTS // Maximum results to sample, some of which may be displayed to the user
 const val DISPATCH_GROUP_SIZE_X = 65_535
 // Length of the packet header in each repair buffer
 const val PKT_HDR_LEN = 2 // [levenshtein distance, Markov probability]
@@ -1278,6 +1289,11 @@ class Shader constructor(val src: String) {
         GPUBindGroupEntry(binding = index, resource = jsObject { buffer = buf })
       }.toTypedArray()
       return gpu.createBindGroup(GPUBindGroupDescriptor(label = label, layout = getBindGroupLayout(0), entries = ent))
+    }
+
+    fun GPUBuffer.writeU32(wordIndex: Int, value: Int) {
+      val tmp = Int32Array<ArrayBuffer>(1).apply { set(arrayOf(value), 0) }
+      gpu.queue.writeBuffer(this, (wordIndex * 4).toDouble(), tmp)
     }
 
     suspend fun GPUBuffer.readInts(): IntArray {

@@ -50,15 +50,12 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     val t0 = TimeSource.Monotonic.markNow()
     val caretInGrammar = caretInGrammar()
     val context = getApplicableContext()
-    if (context.isEmpty()) return
     log("Applicable context:\n$context")
 
     val tokens = context.tokenizeByWhitespace()
+    if (tokens.isEmpty()) return
 
-    val cfg =
-      if (caretInGrammar)
-        CFGCFG(names = tokens.filter { it !in setOf("->", "|") }.toSet())
-      else getLatestCFG()
+    val cfg = if (caretInGrammar) CFGCFG(names = tokens.filter { it !in setOf("->", "|") }.toSet()) else getLatestCFG()
 
     if (cfg.isEmpty()) return
 
