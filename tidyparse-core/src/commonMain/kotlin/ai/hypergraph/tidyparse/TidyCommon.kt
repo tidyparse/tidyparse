@@ -153,9 +153,7 @@ suspend fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
 
     val next = iter.next()
     totalResults++
-    if (next.isNotEmpty() && next !in results) {
-//      println("Found: $next")
-      results.add(next)
+    if (next.isNotEmpty() && results.add(next)) {
       val score = metric(next.tokenizeByWhitespace())
       if (topNResults.size < resultsToPost || score < topNResults.last().second) {
         val html = customDiff(next)
