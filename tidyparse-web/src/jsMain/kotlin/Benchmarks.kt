@@ -1,19 +1,31 @@
 import Shader.Companion.GPUBuffer
 import Shader.Companion.bindBuffers
-import Shader.Companion.readInts
 import Shader.Companion.toGPUBuffer
-import ai.hypergraph.kaliningraph.parsing.contains
-import ai.hypergraph.kaliningraph.parsing.language
-import ai.hypergraph.kaliningraph.parsing.makeLevFSA
+import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
-import web.gpu.GPUBuffer
-import web.gpu.GPUCommandEncoder
+import js.array.asList
+import js.typedarrays.Int32Array
+import kotlinx.coroutines.await
+import web.gpu.*
 import web.performance.performance
+import kotlin.js.Promise
 import kotlin.math.sqrt
 import kotlin.random.Random
-import kotlin.time.TimeSource
-import kotlin.time.measureTimedValue
+import kotlin.time.*
+
+suspend fun GPUBuffer.readInts(): IntArray {
+//      val t0 = TimeSource.Monotonic.markNow()
+  val readDst = GPUBuffer(size.toInt(), GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
+  val cmd = gpu.createCommandEncoder()
+  cmd.copyBufferToBuffer(source = this, sourceOffset = 0.0, destination = readDst, destinationOffset = 0.0, size = size)
+  gpu.queue.submit(arrayOf(cmd.finish()))
+  readDst.mapAsync(1).unsafeCast<Promise<*>>().await()
+  val t = Int32Array(readDst.getMappedRange()).asList().toIntArray()
+  readDst.destroy()
+//      log("Read ${size.toInt()} bytes in ${t0.elapsedNow()}")
+  return t
+}
 
 suspend fun benchmarkReach() {
   val code = "NAME = [ ( STRING , NAME ) , , ( NAME , NAME ) , ( NAME , NAME ) , ( NAME , NAME ) , , ( NAME , NAME ) ] NEWLINE"

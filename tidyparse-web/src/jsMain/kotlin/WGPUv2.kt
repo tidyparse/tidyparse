@@ -2,7 +2,6 @@ import GPUBufferUsage.STCPSD
 import Shader.Companion.GPUBuffer
 import Shader.Companion.packMetadata
 import Shader.Companion.readIndices
-import Shader.Companion.readInts
 import Shader.Companion.toGPUBuffer
 import ai.hypergraph.kaliningraph.automata.FSA
 import ai.hypergraph.kaliningraph.automata.NEG_STR_LIT
@@ -527,7 +526,7 @@ suspend fun repairPipelineV2(
   val outBuf = GPUBuffer(maxParticles * maxWordLen * 4L, STCPSD)
   pack_particles_v2(partMeta, partWord, outBuf, prmBuf)((maxParticles + 255) / 256)
 
-  val ints = outBuf.readInts()
+  val ints = outBuf.readInt32Array()
   val res = ArrayList<String>(MAX_DISP_RESULTS)
   for (i in 0 until maxParticles) {
     val pkt = ints.decodePacket(i, cfg.tmLst, maxWordLen) ?: continue

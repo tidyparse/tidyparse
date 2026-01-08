@@ -5,7 +5,6 @@ import Shader.Companion.GPUBuffer
 import Shader.Companion.buildLanguageSizeBuf
 import Shader.Companion.packMetadata
 import Shader.Companion.readIndices
-import Shader.Companion.readInts
 import Shader.Companion.toGPUBuffer
 import Shader.Companion.writeU32
 import ai.hypergraph.kaliningraph.automata.*
@@ -207,23 +206,44 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
   return (if (ngrams != null) ngramDecoder(outBuf, ngrams,  maxRepairLen, cfg, toDecode)
   else uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)).also {
     listOf(outBuf, rootSizes, rootCDF, metaBuf, dpBuf, idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf)
-    .forEach(GPUBuffer::destroy)
+      .forEach(GPUBuffer::destroy)
   }
 }
 
 suspend fun uniformDecoder(outBuf: GPUBuffer, cfg: CFG, maxRepairLen: Int, samplesToDecode: Int): List<String> {
   val t3 = TimeSource.Monotonic.markNow()
   val res = mutableMapOf<Int, MutableSet<String>>()
-  val allResults = outBuf.readInts()
+  val allResults: Int32Array<ArrayBuffer> = outBuf.readInt32Array()
 
   for (i in 0 until samplesToDecode) {
     val t = allResults.decodePacket(i, cfg.tmLst, maxRepairLen) ?: continue
     res.getOrPut(t.first) { mutableSetOf() }.add(t.second)
-    pause(100000)
+    pause(100_000)
   }
   res.forEach { log("Δ=${it.key} -> |L|=${it.value.size}") }
   log("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
-  return res.map { pause(100000); it.value.toList() }.flatten()
+
+  val out = ArrayList<String>(res.values.sumOf { it.size })
+  for (set in res.values) { pause(100_000); out.addAll(set) }
+  return out
+}
+
+suspend fun GPUBuffer.readInt32Array(): Int32Array<ArrayBuffer> {
+  val readDst = GPUBuffer(size.toInt(), GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
+
+  val cmd = gpu.createCommandEncoder()
+  cmd.copyBufferToBuffer(this, 0.0, readDst, 0.0, size)
+  gpu.queue.submit(arrayOf(cmd.finish()))
+
+  readDst.mapAsync(GPUBufferUsage.MAP_READ).unsafeCast<Promise<*>>().await()
+
+  val mapped = readDst.getMappedRange()
+  val copied = mapped.slice(0, mapped.byteLength)
+
+  readDst.unmap()
+  readDst.destroy()
+
+  return Int32Array(copied)
 }
 
 suspend fun ngramDecoder(outBuf: GPUBuffer, ngrams: GPUBuffer, maxRepairLen: Int, cfg: CFG, samplesToDecode: Int): MutableList<String> {
@@ -231,35 +251,36 @@ suspend fun ngramDecoder(outBuf: GPUBuffer, ngrams: GPUBuffer, maxRepairLen: Int
 
   val t4 = TimeSource.Monotonic.markNow()
   val result = mutableListOf<String>()
-  for (i in 0 until TOP_K_SAMP) result.add(topK.decodePacket(i, cfg.tmLst, maxRepairLen)?.second ?: continue)
+  for (i in 0 until TOP_K_SAMP)
+    result.add(topK.decodePacket(i, cfg.tmLst, maxRepairLen)?.second ?: continue)
   log("Decoded ${result.distinct().size} unique words out of ${result.size} in ${t4.elapsedNow()}")
   return result
 }
 
 // Returns Levenshtein distance and string repair
-fun IntArray.decodePacket(idx: Int, tm: List<String>, pktLen: Int): Pair<Int, String>? {
-  var cur: StringBuilder? = null
+fun Int32Array<ArrayBuffer>.decodePacket(idx: Int, tm: List<String>, pktLen: Int): Pair<Int, String>? {
   val base = idx * pktLen + PKT_HDR_LEN // skip header cells
 
-  for (j in 0 until pktLen - PKT_HDR_LEN) {
-    val tok = this[base + j] and 0xFF
-    if (tok != 0) {
-      if (cur == null) cur = StringBuilder()
-      if (cur.isNotEmpty()) cur.append(' ')
-      cur.append(tm[tok - 1])
-    } else break
+  var cur: StringBuilder? = null
+  var wroteAny = false
+
+  for (j in 0 until (pktLen - PKT_HDR_LEN)) {
+    val tok = (this[base + j] and 0xFF)
+    if (tok == 0) break
+    if (!wroteAny) cur = StringBuilder().also { wroteAny = true } else cur!!.append(' ')
+    cur.append(tm[tok - 1])
   }
 
-  return if (!cur.isNullOrEmpty()) this[base - PKT_HDR_LEN] to cur.toString() else null
+  return if (wroteAny) { this[base - PKT_HDR_LEN] to cur!!.toString() } else null
 }
 
 suspend fun scoreSelectGather(
-  packets          : GPUBuffer,
-  ngrams           : GPUBuffer,
-  maxSamples       : Int,
-  stride           : Int,
-  k                : Int
-): IntArray {
+  packets    : GPUBuffer,
+  ngrams     : GPUBuffer,
+  maxSamples : Int,
+  stride     : Int,
+  k          : Int
+): Int32Array<ArrayBuffer> {
   val t0 = TimeSource.Monotonic.markNow()
   val threads = DISPATCH_GROUP_SIZE_X
   val groupsY = (maxSamples + threads - 1) / threads
@@ -289,8 +310,8 @@ suspend fun scoreSelectGather(
 //  log("Gather in ${t0.elapsedNow()}")
 
 //  t0 = TimeSource.Monotonic.markNow()
-  val topK = bestBuf.readInts()
-  log("Score/select/gather read ${topK.size} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
+  val topK = bestBuf.readInt32Array()
+  log("Score/select/gather read ${topK.length} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
 
   listOf(prmBuf, idxBuf, scrBuf, bestBuf).forEach(GPUBuffer::destroy)
   return topK
@@ -1296,19 +1317,6 @@ class Shader constructor(val src: String) {
       gpu.queue.writeBuffer(this, (wordIndex * 4).toDouble(), tmp)
     }
 
-    suspend fun GPUBuffer.readInts(): IntArray {
-//      val t0 = TimeSource.Monotonic.markNow()
-      val readDst = GPUBuffer(size.toInt(), GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
-      val cmd = gpu.createCommandEncoder()
-      cmd.copyBufferToBuffer(source = this, sourceOffset = 0.0, destination = readDst, destinationOffset = 0.0, size = size)
-      gpu.queue.submit(arrayOf(cmd.finish()))
-      readDst.mapAsync(1).unsafeCast<Promise<*>>().await()
-      val t = Int32Array(readDst.getMappedRange()).asList().toIntArray()
-      readDst.destroy()
-//      log("Read ${size.toInt()} bytes in ${t0.elapsedNow()}")
-      return t
-    }
-
     suspend fun GPUBuffer.readIndices(indices: List<Int>): List<Int> {
       val t0 = TimeSource.Monotonic.markNow()
       val stagingBuffer = GPUBuffer(indices.size * 4L, GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
@@ -1483,7 +1491,7 @@ class Shader constructor(val src: String) {
       val changesBuf = 0.toGPUBuffer()
       cfl_mul_upper(dpIn, metaBuf, changesBuf)(numStates, numStates, numNTs)
 //      log(dpIn.readInts().toLaTeX(numStates, numNTs))
-      val changesThisRound = changesBuf.readInts()[0]
+      val changesThisRound = changesBuf.readIndices(listOf(0))[0]
       changesBuf.destroy()
       if (changesThisRound == prevValue) break
       prevValue = changesThisRound
@@ -1502,7 +1510,7 @@ class Shader constructor(val src: String) {
     for (round in 0..<states) {
       val changesBuf = 0.toGPUBuffer()
       dag_reach(input, changesBuf)(states, states)
-      val changesThisRound = changesBuf.readInts()[0]
+      val changesThisRound = changesBuf.readIndices(listOf(0))[0]
       changesBuf.destroy()
       if (changesThisRound == prevValue) break
       prevValue = changesThisRound
