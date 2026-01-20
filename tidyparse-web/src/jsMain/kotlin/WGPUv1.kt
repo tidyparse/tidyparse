@@ -54,7 +54,7 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         prefix_sum_p1, prefix_sum_p2,      // ADT storage utils
         sparse_load, sparse_mat_load,      // Matrix loading utils
 
-        init_chart,
+        init_chart, init_chart_line,
         dag_reach, mdpt_count, mdpt_write,       // Graph reachability
         cfl_mul_upper,                           // Matrix exponentiation
         bp_count, bp_write,                      // Backpointer addressing
@@ -84,6 +84,104 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
   } else print("GPU not detected.")
 }
 
+suspend fun completeCode(cfg: CFG, porous: List<String>, ngrams: GPUBuffer? = null): List<String> {
+  val t0 = TimeSource.Monotonic.markNow()
+
+  val fsa: FSA = makePorousFSA(porous)
+  val codePoints = porousToCodePoints(cfg, porous)
+
+  log("Made porousFSA(|Q|=${fsa.numStates}, width=${fsa.width}) in ${t0.elapsedNow()}")
+
+  return completePipeline(cfg, fsa, ngrams, codePoints)
+    .also { log("Received: ${it.size} completions in ${t0.elapsedNow()} (round trip)") }
+}
+
+suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints: IntArray): List<String> {
+  val t0 = TimeSource.Monotonic.markNow()
+  val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
+  log("Porous FSA(|Q|=$numStates), ${cfg.calcStats()}")
+
+  val metaBuf = packMetadata(cfg, fsa)
+
+  val tmBuf   = cfg.termBuf
+  val wordBuf = codePoints.toGPUBuffer()
+  val totalSize = numStates * numStates * numNTs
+
+  val dpBuf = Shader.createParseChart(STCPSD, totalSize)
+
+  init_chart_line(dpBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+  log("Chart construction took: ${t0.elapsedNow()}")
+
+  cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpBuf, metaBuf)
+  log("Matrix closure reached in: ${t0.elapsedNow()}")
+
+  val startNT = cfg.bindex[START_SYMBOL]
+
+  // For a chain, finalIdxs should contain just the end state (n,0)
+  val allStartIds = fsa.finalIdxsq.map { it * numNTs + startNT }
+    .let { it.zip(dpBuf.readIndices(it)) }
+    .filter { (_, v) -> v != 0 }
+    .map { it.first }
+
+  if (allStartIds.isEmpty()) {
+    log("No valid completion found: dpComplete has no entries in final states!")
+    listOf(metaBuf, dpBuf).forEach(GPUBuffer::destroy)
+    return emptyList()
+  }
+
+  val startIdxs = allStartIds.flatMap { listOf(it, 0) }
+  val maxRepairLen = fsa.width + 10
+  if (MAX_WORD_LEN < maxRepairLen) {
+    log("Max completion length exceeded $MAX_WORD_LEN ($maxRepairLen)")
+    listOf(metaBuf, dpBuf).forEach(GPUBuffer::destroy)
+    return emptyList()
+  }
+
+  val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNTs, dpBuf, metaBuf)
+
+  val lsDense  = buildLanguageSizeBuf(numStates, numNTs, dpBuf, metaBuf, tmBuf)
+  val totalExp = bpStorageBuf.size.toInt() / (2 * 4)
+  val cdfBuf   = GPUBuffer(totalExp * 4, STCPSD)
+  ls_cdf(dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+  lsDense.destroy()
+
+  val numRoots  = startIdxs.size / 2
+  val rootSizes = GPUBuffer(numRoots * 4, STCPSD)
+
+  val idxUniBuf = packStruct(
+    listOf(0, maxRepairLen, numNTs, numStates, DISPATCH_GROUP_SIZE_X, MAX_SAMPLES),
+    startIdxs.toGPUBuffer()
+  )
+
+  build_root_sizes(dpBuf, bpCountBuf, bpOffsetBuf, cdfBuf, tmBuf, rootSizes, idxUniBuf)((numRoots + 255) / 256)
+  val rootCDF = Shader.prefixSumGPU(rootSizes, numRoots)
+
+  suspend fun langIntSize(): Long {
+    fun u(x: Int) = x.toUInt().toLong()
+    val last = numRoots - 1
+    val lastSize = if (numRoots > 0) rootSizes.readIndices(listOf(last))[0] else 0
+    val lastCDF  = if (numRoots > 0) rootCDF.readIndices(listOf(last))[0] else 0
+    return if (numRoots > 0) u(lastCDF) + u(lastSize) else 0L
+  }
+
+  val langSize = langIntSize()
+  val toDecode = 100_000
+  idxUniBuf.writeU32(wordIndex = 5, value = toDecode)
+
+  val outBuf = GPUBuffer(toDecode * maxRepairLen * 4, STCPSD)
+  enum_words_wor(
+    dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf,
+    cdfBuf, tmBuf, idxUniBuf, rootSizes, rootCDF, outBuf
+  )(DISPATCH_GROUP_SIZE_X, (toDecode + DISPATCH_GROUP_SIZE_X - 1) / DISPATCH_GROUP_SIZE_X)
+
+  return (
+    if (ngrams != null) ngramDecoder(outBuf, ngrams, maxRepairLen, cfg, toDecode)
+    else uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)
+  ).also {
+    listOf(outBuf, rootSizes, rootCDF, metaBuf, dpBuf, idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf)
+      .forEach(GPUBuffer::destroy)
+  }
+}
 
 suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VALUE, ngrams: GPUBuffer? = null): List<String> {
   val t0 = TimeSource.Monotonic.markNow()
@@ -140,7 +238,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
 
   val t1 = TimeSource.Monotonic.markNow()
   val startNT     = cfg.bindex[START_SYMBOL]
-  val allStartIds = fsa.finalIdxs.map { it * numNTs + startNT }
+  val allStartIds = fsa.levFinalIdxs.map { it * numNTs + startNT }
     .let { it.zip(dpBuf.readIndices(it)) }.filter { (_, v) -> v != 0 }.map { it.first }
 
   if (!allStartIds.isEmpty()) { log("Valid parse found: dpComplete has ${allStartIds.size} start indices") }
@@ -337,6 +435,9 @@ fn getEditDist(i : u32) -> u32 { return idx_uni.startIndices[i * 2 + 1]; }
 
 //language=wgsl
 const val TM_DECODING_HELPERS = """
+const LIT_ALL : u32 = 0x7ffffffeu;
+const NEG_BIT : u32 = $NEG_STR_LIT;
+
 // Let Σ_A denote the subset of Σ s.t. for all a ∈ Σ_A ⊢ (A -> a) ∈ P
 fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + nt]; } // |Σ_A|
 // Offsets of the nonterminal in the following Map<...> structure
@@ -345,6 +446,9 @@ fn get_offsets(nt : u32) -> u32    { return terminals.payload[terminals.offsets_
 fn get_all_tms(i : u32) -> u32     { return terminals.payload[terminals.all_tms_offset + i];     } // σ → TM‑id
 // Counts the number of terminals directly generated by a unit-nonterminal entry in the parse chart
 fn count_tms(val: u32, unit_nt: u32) -> u32 {
+    // Wildcard: allow any terminal in Σ_A
+    if (val == LIT_ALL) { return get_nt_tm_lens(unit_nt); }
+    
     let hasLiteral = ((val >> 1u) != 0u);             // bit‑packed literal present?
     let negLit     = (val & $NEG_STR_LIT) != 0u;      // negative‑literal flag
     let litCount   = select(0u,
@@ -405,18 +509,33 @@ fn getGrammarSymbol(index: u32) -> u32 { return cs.payload[cs.grammarFlattenedOf
 fn getGrammarOffset(index: u32) -> u32 { return cs.payload[cs.grammarOffsetsOffset + index]; }"""
 
 //language=wgsl
-const val WGSL_LANG_SIZE = """
+const val SAT_ARTH = """
+const SAT_MAX: u32 = 0xffffffffu;
+
+fn sat_add(a: u32, b: u32) -> u32 {
+  let c = a + b;
+  return select(c, SAT_MAX, c < a); // overflow iff wrapped
+}
+
+fn sat_mul(a: u32, b: u32) -> u32 {
+  if (a == 0u || b == 0u) { return 0u; }
+  return select(a * b, SAT_MAX, a > (SAT_MAX / b));
+}"""
+
+//language=wgsl
+const val WGSL_LANG_SIZE = """$SAT_ARTH
 fn langSize(dpIdx: u32, numNTs: u32) -> u32 {
-  let val    = dp_in[dpIdx];
-  let nt     = dpIdx % numNTs;
+  let val = dp_in[dpIdx];
+  let nt  = dpIdx % numNTs;
 
   let litCount = count_tms(val, nt);
 
   let expCnt = bp_count[dpIdx];
   if (expCnt == 0u) { return litCount; }
-  let base   = bp_offset[dpIdx];
-  let last   = ls_sparse[base + expCnt - 1u];
-  return litCount + last;
+  let base = bp_offset[dpIdx];
+  let last = ls_sparse[base + expCnt - 1u];
+
+  return sat_add(litCount, last);
 }
 """
 
@@ -500,9 +619,6 @@ fn unrank_to_coords(rank_idx: u32, max_j_idx: u32, max_i_idx: u32) -> u32 {
 }
 
 fn letter_at(idx : u32, wd_len : u32) -> u32 { return select(word[idx], 0xffffffffu, idx >= wd_len); }
-
-const LIT_ALL : u32 = 0x7ffffffeu;
-const NEG_BIT : u32 = $NEG_STR_LIT;
 
 fn encode_pos_literal(A_nt_idx : u32, sigma_token : u32) -> u32 {
     if (sigma_token == 0xffffffffu) { return 0u; }
@@ -598,6 +714,51 @@ const MAX_J_IDX_CONST : u32 = ${MAX_LEV_RAD}u; // Max index for j (edit distance
     }
 
     if (should_write_to_dp_in) { dp_in[dpIdx] = encoded_predicate_val; }
+}""")
+
+//language=wgsl
+val init_chart_line by Shader("""$CFL_STRUCT $TERM_STRUCT
+@group(0) @binding(0) var<storage, read_write>     dp_in : array<u32>;
+@group(0) @binding(1) var<storage, read>            word : array<u32>;
+@group(0) @binding(2) var<storage, read>              cs : CFLStruct;
+@group(0) @binding(3) var<storage, read>       terminals : Terminals;
+
+fn letter_at(idx : u32, wd_len : u32) -> u32 { return select(word[idx], 0xffffffffu, idx >= wd_len); }
+
+fn encode_pos_literal(A_nt_idx : u32, sigma_token : u32) -> u32 {
+    if (sigma_token == 0xffffffffu) { return 0u; }
+    let ntLen = get_nt_tm_lens(A_nt_idx);
+    let ntOff = get_offsets(A_nt_idx);
+    for (var k : u32 = 0u; k < ntLen; k = k + 1u) {
+        if (get_all_tms(ntOff + k) == sigma_token) { return ((k + 1u) << 1u); }
+    }
+    return 0u;
+}
+
+@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+    let q1 = gid.x;
+    let q2 = gid.y;
+    let A  = gid.z;
+
+    if (q2 != q1 + 1u) { return; } // only adjacent edges in the chain
+
+    let nts   = cs.numNonterminals;
+    let dpIdx = q1 * cs.numStates * nts + q2 * nts + A;
+
+    let wd_len = arrayLength(&word);
+    let tok    = letter_at(q1, wd_len);
+
+    let ntLen = get_nt_tm_lens(A);
+
+    // Hole => allow any terminal in Σ_A (wildcard)
+    if (tok == 0xffffffffu) {
+        if (ntLen > 0u) { dp_in[dpIdx] = LIT_ALL; }
+        return;
+    }
+
+    // Fixed token => only that literal
+    let enc = encode_pos_literal(A, tok);
+    if (enc != 0u) { dp_in[dpIdx] = enc; }
 }""")
 
 //language=wgsl
@@ -750,7 +911,7 @@ val bp_write by Shader("""$CFL_STRUCT
 }""")
 
 //language=wgsl
-val ls_dense by Shader("""$CFL_STRUCT $TERM_STRUCT
+val ls_dense by Shader("""$CFL_STRUCT $TERM_STRUCT $SAT_ARTH
 struct SpanUni { span : u32 };
 @group(0) @binding(0) var<storage, read>           dp_in : array<u32>;
 @group(0) @binding(1) var<storage, read_write>  ls_dense : array<u32>;
@@ -786,14 +947,14 @@ struct SpanUni { span : u32 };
             let idxMC = m*snt + c*NT + C;
 
             // only add if both children are present
-            if (dp_in[idxBM] != 0u && dp_in[idxMC] != 0u) { total += ls_dense[idxBM] * ls_dense[idxMC]; }
+            if (dp_in[idxBM] != 0u && dp_in[idxMC] != 0u) { total = sat_add(total, sat_mul(ls_dense[idxBM], ls_dense[idxMC])); }
         }
     }
     ls_dense[dpIdx] = max(total, 1u);  // total==0 should not happen, but guard anyway
 }""")
 
 //language=wgsl
-val ls_cdf by Shader("""$CFL_STRUCT $TERM_STRUCT
+val ls_cdf by Shader("""$CFL_STRUCT $TERM_STRUCT $SAT_ARTH
 @group(0) @binding(0) var<storage, read>             dp_in : array<u32>;
 @group(0) @binding(1) var<storage, read>          ls_dense : array<u32>;
 @group(0) @binding(2) var<storage, read>         bp_offset : array<u32>;
@@ -823,8 +984,8 @@ val ls_cdf by Shader("""$CFL_STRUCT $TERM_STRUCT
             let idxMC = m*snt + c*NT + C;
 
             if (dp_in[idxBM] != 0u && dp_in[idxMC] != 0u) {
-                acc += ls_dense[idxBM] * ls_dense[idxMC];
-                ls_sparse[outPos] = acc + litCount;
+                acc = sat_add(acc, sat_mul(ls_dense[idxBM], ls_dense[idxMC]));
+                ls_sparse[outPos] = sat_add(acc, litCount);
                 outPos += 1u;
             }
         }
@@ -833,7 +994,7 @@ val ls_cdf by Shader("""$CFL_STRUCT $TERM_STRUCT
 
 const val PFX_SUM_PARAMS = """struct PrefixSumUni { n : u32, numBlocks : u32, threads : u32 };"""
 // language=wgsl
-val prefix_sum_p1 by Shader("""$PFX_SUM_PARAMS
+val prefix_sum_p1 by Shader("""$PFX_SUM_PARAMS $SAT_ARTH
 @group(0) @binding(0) var<storage, read>         inputBuf : array<u32>;
 @group(0) @binding(1) var<storage, read_write>  outputBuf : array<u32>;
 @group(0) @binding(2) var<storage, read_write>  blockSums : array<u32>;
@@ -865,7 +1026,7 @@ var<workgroup> tile: array<u32, WORKGROUP_SIZE>;
     while (offset < WORKGROUP_SIZE) {
         // index = (lid+1)*offset*2 - 1
         let idx = ((lid + 1u) * offset * 2u) - 1u;
-        if (idx < WORKGROUP_SIZE) { tile[idx] = tile[idx] + tile[idx - offset]; }
+        if (idx < WORKGROUP_SIZE) { tile[idx] = sat_add(tile[idx], tile[idx - offset]); }
         workgroupBarrier();
         offset = offset * 2u;
     }
@@ -886,7 +1047,7 @@ var<workgroup> tile: array<u32, WORKGROUP_SIZE>;
         if (idx < WORKGROUP_SIZE) {
             let tmp = tile[idx - offset];
             tile[idx - offset] = tile[idx];
-            tile[idx] = tile[idx] + tmp;
+            tile[idx] = sat_add(tile[idx], tmp);
         }
         workgroupBarrier();
         offset = offset / 2u;
@@ -897,7 +1058,7 @@ var<workgroup> tile: array<u32, WORKGROUP_SIZE>;
 }""")
 
 //language=wgsl
-val prefix_sum_p2 by Shader("""$PFX_SUM_PARAMS
+val prefix_sum_p2 by Shader("""$PFX_SUM_PARAMS $SAT_ARTH
 @group(0) @binding(0) var<storage, read_write>          dataBuf : array<u32>;
 @group(0) @binding(1) var<storage, read>       scannedBlockSums : array<u32>;
 @group(0) @binding(2) var<uniform>                    prefixUni : PrefixSumUni;
@@ -913,7 +1074,7 @@ val prefix_sum_p2 by Shader("""$PFX_SUM_PARAMS
     if (gid >= prefixUni.n) { return; }
 
     let offset = scannedBlockSums[block];
-    dataBuf[gid] = dataBuf[gid] + offset;
+    dataBuf[gid] = sat_add(dataBuf[gid], offset);
 }""")
 
 // Longest word WGSL can handle. If ~2^9<MAX_WORD_LEN, pipeline breaks some on architectures
@@ -983,18 +1144,29 @@ fn binarySearchCDF(base: u32, len: u32, needle: u32) -> u32 {
 }
 
 fn decodeLiteral(
-  dpIdx: u32, // gives NT via modulo
-  litEnc: u32,
-  negLit: bool,
-  variant: u32,
+  dpIdx: u32,
+  val: u32,
+  variant: u32, // must be < litCount(dpIdx)
   word: ptr<function, array<u32, ${MAX_WORD_LEN}u>>,
   wLen: ptr<function, u32>
 ) {
   let nt    = dpIdx % idx_uni.numNonterminals;
   let ntLen = get_nt_tm_lens(nt);
+  if (ntLen == 0u) { return; }
   let ntOff = get_offsets(nt);
+
+  // wildcard: choose variant mod |Σ_A|
+  if (val == LIT_ALL) {
+    (*word)[*wLen] = get_all_tms(ntOff + (variant % ntLen)) + 1u;
+    *wLen = *wLen + 1u;
+    return;
+  }
+
+  let negLit = (val & NEG_MASK) != 0u;
+  let litEnc = (val >> 1u) & 0x1fffffffu;
+
   if (negLit) {
-    if (ntLen == 0u) { return; }
+    // exclude the (litEnc-1)th terminal from Σ_A
     let excl = litEnc - 1u;
     let idx  = select(variant, variant + 1u, variant >= excl);
     (*word)[*wLen] = get_all_tms(ntOff + idx) + 1u;
@@ -1004,6 +1176,90 @@ fn decodeLiteral(
 
 struct Frame { dp: u32, rk: u32 }
 
+// ---------- Feistel permutation helpers (for WOR-by-rank when total not saturated) ----------
+fn ceil_pow2_even(x: u32) -> u32 {
+  // returns smallest even k such that 2^k >= x, capped at 32
+  var k: u32 = 0u;
+  var p: u32 = 1u;
+  while (p < x && k < 32u) { p = p << 1u; k = k + 1u; }
+  if ((k & 1u) == 1u) { k = k + 1u; }
+  return min(k, 32u);
+}
+
+// 4-round Feistel permutation over k bits (k even, <= 32)
+fn feistel_perm(x: u32, seed: u32, k_even: u32) -> u32 {
+  let h: u32 = k_even >> 1u;
+  let mask: u32 = (1u << h) - 1u;
+
+  var l: u32 = x & mask;
+  var r: u32 = (x >> h) & mask;
+
+  for (var round: u32 = 0u; round < 4u; round = round + 1u) {
+    let f: u32 = ((r * 0x9e3779b9u) ^ (seed + round * 0x7f4a7c15u)) & mask;
+    let nl: u32 = r;
+    let nr: u32 = l ^ f;
+    l = nl; r = nr;
+  }
+
+  return (r << h) | l;
+}
+
+// Permute sid into [0,total) via cycle-walking on [0, 2^k).
+// IMPORTANT: handle k=32 without ever computing (1u<<32).
+fn permute_in_range(sid: u32, seed: u32, total: u32) -> u32 {
+  let k_even: u32 = ceil_pow2_even(total);
+
+  var x: u32 = sid;
+
+  // If k < 32, we can mask into [0,2^k)
+  if (k_even < 32u) {
+    let m: u32 = 1u << k_even;
+    let mask: u32 = m - 1u;
+    x = sid & mask;
+  }
+
+  loop {
+    x = feistel_perm(x, seed, k_even);
+    if (x < total) { return x; }
+    // cycle-walk continues
+  }
+}
+
+// ---------- RNG helpers (used when saturation makes rank/CDF meaningless) ----------
+fn mix32(x: u32) -> u32 {
+  var z = x + 0x9e3779b9u;
+  z = (z ^ (z >> 16u)) * 0x85ebca6bu;
+  z = (z ^ (z >> 13u)) * 0xc2b2ae35u;
+  return z ^ (z >> 16u);
+}
+
+fn rng_next(state: ptr<function, u32>) -> u32 {
+  var x = *state;
+  x ^= x << 13u;
+  x ^= x >> 17u;
+  x ^= x << 5u;
+  *state = x;
+  return x;
+}
+
+fn rand_bounded(state: ptr<function, u32>, bound: u32) -> u32 {
+  if (bound == 0u) { return 0u; }
+  let threshold = (0xffffffffu - bound + 1u) % bound;
+  loop {
+    let r = rng_next(state);
+    if (r >= threshold) { return r % bound; }
+  }
+}
+
+// ---------- Utility: write an empty packet (so failures don't leave garbage) ----------
+fn write_empty_packet(sid: u32, levDist: u32) {
+  let stride  = idx_uni.maxWordLen;
+  let outBase = sid * stride;
+  sampled[outBase + 0u] = levDist;
+  sampled[outBase + 1u] = 0u;
+  if (PKT_HDR_LEN < stride) { sampled[outBase + PKT_HDR_LEN] = 0u; }
+}
+
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
   let sid = gid.x + gid.y * idx_uni.threads;
   if (sid >= idx_uni.max_samples) { return; }
@@ -1011,73 +1267,140 @@ struct Frame { dp: u32, rk: u32 }
   let numRoots = idx_uni.numStartIndices / 2u;
   if (numRoots == 0u) { return; }
 
-  // total = lastCDF + lastSize
-  let last = numRoots - 1u;
-  let total = root_cdf[last] + root_sizes[last];
-  if (sid >= total) { return; } // strict WOR
+  let lastRoot = numRoots - 1u;
+  let total    = sat_add(root_cdf[lastRoot], root_sizes[lastRoot]);
+  if (total == 0u) { return; }
 
-  // Global rank → root via binary search over root_cdf/root_sizes
+  // strict WOR bound (for non-saturated total, this is meaningful; for SAT_MAX it just caps very late)
+  if (sid >= total) { return; }
+
+  let runSeed: u32 = atomicLoad(&idx_uni.targetCnt) ^ 0xA511E9B3u;
+
+  let prk: u32 = permute_in_range(sid, runSeed, total);
+
+  // Root selection by (root_cdf, root_sizes)
   var rLo: u32 = 0u;
   var rHi: u32 = numRoots;
   loop {
     if (rLo + 1u >= rHi) { break; }
-    let mid = (rLo + rHi) >> 1u;
+    let mid  = (rLo + rHi) >> 1u;
     let base = root_cdf[mid];
-    if (sid < base) { rHi = mid; } else {
+
+    if (prk < base) {
+      rHi = mid;
+    } else {
       let size = root_sizes[mid];
-      if (sid < base + size) { rLo = mid; rHi = mid + 1u; break; }
+      let end  = sat_add(base, size);
+      if (prk < end) { rLo = mid; rHi = mid + 1u; break; }
       rLo = mid + 1u;
     }
   }
-  let rootIdx = rLo;
+
+  let rootIdx = min(rLo, lastRoot);
   let base    = root_cdf[rootIdx];
-  var rk      = sid - base;               // rank within chosen root
+  var rk      = prk - base;         // rank within chosen root
   let dpRoot  = getStartIdx(rootIdx);
   let levDist = getEditDist(rootIdx);
 
+  var rng: u32 = mix32(runSeed ^ sid ^ prk);
   // DFS decode by rank (without replacement by construction)
   var stack : array<Frame, ${MAX_WORD_LEN}u>;
   var top   : u32 = 0u;
   stack[top] = Frame(dpRoot, rk); top++;
 
-  var word  : array<u32, ${MAX_WORD_LEN}u>;
-  var wLen  : u32 = 0u;
+  var word : array<u32, ${MAX_WORD_LEN}u>;
+  var wLen : u32 = 0u;
 
   loop {
     if (top == 0u) { break; }
     top = top - 1u;
-    var fr = stack[top];
-    var d  = fr.dp;
+
+    let fr = stack[top];
+    let d  = fr.dp;
     rk     = fr.rk;
 
-    let val    = dp_in[d];
-    let nt     = d % idx_uni.numNonterminals;
-    let negLit   = (val & $NEG_STR_LIT) != 0u;
+    let val      = dp_in[d];
+    if (val == 0u) { write_empty_packet(sid, levDist); return; }
+
+    let nt       = d % idx_uni.numNonterminals;
     let litCount = count_tms(val, nt);
 
-    let expCnt = bp_count[d];
-    let tot    = litCount + select(0u, ls_sparse[bp_offset[d] + expCnt - 1u], expCnt != 0u);
-    rk = rk % tot;
+    let expCnt   = bp_count[d];
+    let base2    = bp_offset[d];
+    let lastCDF  = select(0u, ls_sparse[base2 + expCnt - 1u], expCnt != 0u);
+    let tot      = sat_add(litCount, lastCDF);
+
+    if (tot == 0u) { write_empty_packet(sid, levDist); return; }
+
+    // ---- Saturation-aware fallback ----
+    // If the expansion CDF is saturated, binarySearchCDF collapses to the first production.
+    // Switch to RNG-driven choice to restore diversity.
+    if (lastCDF == SAT_MAX && expCnt != 0u) {
+      // choose literal vs expansion (roughly proportional to litCount vs expCnt)
+      let pickLit = (litCount != 0u) && (rand_bounded(&rng, sat_add(litCount, expCnt)) < litCount);
+
+      if (pickLit) {
+        let v = rand_bounded(&rng, litCount);
+        decodeLiteral(d, val, v, &word, &wLen);
+        continue;
+      }
+
+      // choose expansion uniformly among expCnt
+      let rel      = rand_bounded(&rng, expCnt);
+      let choiceIx = base2 + rel;
+
+      let left  = bp_storage[2u * choiceIx + 0u];
+      let right = bp_storage[2u * choiceIx + 1u];
+
+      let sizeR = langSize(right, idx_uni.numNonterminals);
+      let sizeL = langSize(left,  idx_uni.numNonterminals);
+
+      var rkL: u32 = 0u;
+      var rkR: u32 = 0u;
+
+      // If child sizes are unusable (0 or saturated), just generate bounded ranks
+      if (sizeR == 0u || sizeL == 0u || sizeR == SAT_MAX || sizeL == SAT_MAX) {
+        rkL = rand_bounded(&rng, 1u << 16u);
+        rkR = rand_bounded(&rng, 1u << 16u);
+      } else {
+        let prod   = sat_mul(sizeL, sizeR);
+        let inside = rand_bounded(&rng, prod);
+        rkL = inside / sizeR;
+        rkR = inside % sizeR;
+      }
+
+      stack[top] = Frame(right, rkR); top++;
+      stack[top] = Frame(left,  rkL); top++;
+      continue;
+    }
+
+    // ---- Normal rank/CDF path (non-saturated) ----
+    if (rk >= tot) { rk = rk % tot; }
 
     if (rk < litCount) {
-      decodeLiteral(d, (val >> 1u) & 0x1fffffffu, negLit, rk, &word, &wLen);
+      decodeLiteral(d, val, rk, &word, &wLen);
       continue;
     }
     rk = rk - litCount;
 
-    let base2    = bp_offset[d];
+    if (expCnt == 0u) { write_empty_packet(sid, levDist); return; }
     let choiceIx = binarySearchCDF(base2, expCnt, rk);
-    let prevCDF  = select(0u, ls_sparse[choiceIx - 1u], choiceIx != base2);
-    let inside   = rk - prevCDF;
 
-    let left  = bp_storage[2u * choiceIx + 0u];
-    let right = bp_storage[2u * choiceIx + 1u];
+    // if choiceIx == base2+expCnt, rk was out of range; clamp to last
+    let cIx = select(choiceIx, base2 + expCnt - 1u, choiceIx >= base2 + expCnt);
+
+    let prevCDF = select(0u, ls_sparse[cIx - 1u], cIx != base2);
+    let inside  = rk - prevCDF;
+
+    let left  = bp_storage[2u * cIx + 0u];
+    let right = bp_storage[2u * cIx + 1u];
 
     let sizeR = langSize(right, idx_uni.numNonterminals);
-    let rkL   = inside / sizeR;
-    let rkR   = inside % sizeR;
+    if (sizeR == 0u) { write_empty_packet(sid, levDist); return; }
 
-    // Push right first, then left, to keep left-to-right DFS order
+    let rkL = inside / sizeR;
+    let rkR = inside % sizeR;
+
     stack[top] = Frame(right, rkR); top++;
     stack[top] = Frame(left,  rkL); top++;
   }
@@ -1087,17 +1410,11 @@ struct Frame { dp: u32, rk: u32 }
   let outBase = sid * stride;
 
   sampled[outBase + 0u] = levDist;
-  sampled[outBase + 1u] = 0u; // optional, keep deterministic before markov_score
+  sampled[outBase + 1u] = 0u; // markov_score fills later
 
-  for (var i = 0u; i < wLen && i + PKT_HDR_LEN < stride; i = i + 1u) { sampled[outBase + PKT_HDR_LEN + i] = word[i]; }
-
-  // CRITICAL: write a terminator so the CPU decoder stops correctly
+  for (var i = 0u; i < wLen && (PKT_HDR_LEN + i) < stride; i = i + 1u) { sampled[outBase + PKT_HDR_LEN + i] = word[i]; }
+  // terminator
   if (PKT_HDR_LEN + wLen < stride) { sampled[outBase + PKT_HDR_LEN + wLen] = 0u; }
-//  let stride = idx_uni.maxWordLen;
-//  let outBase = sid * stride;
-//  sampled[outBase + 0u] = levDist; // distance
-  // sampled[outBase + 1u] left for score; will be filled by markov_score
-//  for (var i = 0u; i < wLen && i + PKT_HDR_LEN < stride; i = i + 1u) { sampled[outBase + PKT_HDR_LEN + i] = word[i]; }
 }""".trimIndent())
 
 //language=wgsl
@@ -1180,8 +1497,6 @@ val select_top_k by Shader("""$SAMPLER_PARAMS
 @group(0) @binding(1) var<storage, read>        packets : array<u32>;
 @group(0) @binding(2) var<storage, read_write>   topIdx : array<atomic<u32>>;
 @group(0) @binding(3) var<storage, read_write> topScore : array<atomic<u32>>;
-
-const UINT_MAX : u32 = 0xFFFFFFFFu;
 
 @compute @workgroup_size(256) fn main(
     @builtin(workgroup_id)        workgroup_id : vec3<u32>,
@@ -1422,7 +1737,7 @@ class Shader constructor(val src: String) {
       /** Memory layout: [CFL_STRUCT] */ val metaBuf = packStruct(
         constants = listOf(fsa.numStates, cfg.nonterminals.size),
         // FSA Encoding
-        allFSAPairsFlattened, allFSAPairsOffsets, fsa.finalIdxs.toGPUBuffer(),
+        allFSAPairsFlattened, allFSAPairsOffsets, fsa.levFinalIdxs.toGPUBuffer(),
         // CFG Encoding
         grammarFlattened, grammarOffsets
       )

@@ -84,7 +84,7 @@ fun main() {
     val samples = GPUBridge.repairPipeline(
       levFSA.byteFormat(cfg).also { println("Initial nonzeros: ${it.size / 4}") },
       allFSAPairsFlattened, allFSAPairsOffsets,
-      levFSA.finalIdxs.toIntArray(), levFSA.finalIdxs.size,
+      levFSA.levFinalIdxs.toIntArray(), levFSA.levFinalIdxs.size,
       numStates, maxWordLen, maxSamples
     )
 

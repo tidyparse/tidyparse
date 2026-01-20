@@ -452,7 +452,7 @@ suspend fun repairPipelineV2(
   // ---- roots (same logic you already had) ----
   val t1 = TimeSource.Monotonic.markNow()
   val startNT = cfg.bindex[START_SYMBOL]
-  val allStartIds = fsa.finalIdxs
+  val allStartIds = fsa.levFinalIdxs
     .map { it * numNTs + startNT }
     .let { it.zip(dpBuf.readIndices(it)) }
     .filter { (_, v) -> v != 0 }

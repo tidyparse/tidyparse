@@ -5,7 +5,6 @@ import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.LED_BUFFER
 import ai.hypergraph.kaliningraph.repair.TIMEOUT_MS
-import ai.hypergraph.kaliningraph.repair.minimizeFix
 import kotlinx.coroutines.*
 import kotlin.math.absoluteValue
 import kotlin.time.TimeSource
@@ -15,10 +14,10 @@ val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
 abstract class TidyEditor {
   // TODO: eliminate this completely
   open var cfg: CFG = setOf()
-  var grammarFileCache: String = ""
+  var grammarFileCache: Int = 0
   var cache = mutableMapOf<Int, String>()
   var currentWorkHash = 0
-  var minimize = false
+  var epsilons = true
   var ntStubs = true
 
   abstract fun readDisplayText(): Σᐩ
@@ -37,13 +36,18 @@ abstract class TidyEditor {
 
   open fun getLatestCFG(): CFG {
     val grammar: String = getGrammarText()
+    val hash = grammar.hashCode() + listOf(ntStubs, epsilons).hashCode()
     return try {
-      if (grammar != grammarFileCache || cfg.isEmpty()) {
-        grammar.also { grammarFileCache = it }
+      if (hash != grammarFileCache || cfg.isEmpty()) {
+        grammar.also { grammarFileCache = hash }
           .parseCFG(validate = true)
-          .let { if (ntStubs) it else it.noNonterminalStubs }
-          .also { cfg = it }
-      } else cfg
+          .let {
+            if (!ntStubs && !epsilons) it.noEpsilonOrNonterminalStubs
+            else if (!ntStubs) it.noNonterminalStubs
+            else if (!epsilons) it.noEpsilon
+            else it
+          }.also { cfg = it }
+      } else { cfg }
     } catch (e: Exception) {
       writeDisplayText("<html><body><pre>${e.message!!}</pre></body></html>")
       emptySet()
@@ -81,7 +85,7 @@ abstract class TidyEditor {
     var hasHole = false
     val abstractUnk = tokens.map { if (it in cfg.terminals) it else { hasHole = true; "_" } }
 
-    val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, minimize, ntStubs).hashCode()
+    val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, epsilons, ntStubs).hashCode()
     val workHash = abstractUnk.hashCode() + cfg.hashCode() + settingsHash.hashCode()
     if (workHash == currentWorkHash) return
     currentWorkHash = workHash
@@ -126,10 +130,7 @@ abstract class TidyEditor {
     recognizer: (String) -> Boolean = { it in cfg.language },
     postCompletionSummary: () -> String = { "." },
     reason: String = "Generic completions:\n\n"
-  ) = let {
-    if (!minimize || "_" in origTks) it
-    else it.flatMap { minimizeFix(origTks, it.tokenizeByWhitespace()) { recognizer(this) } }
-  }.enumerateCompletionsInteractively(
+  ) = enumerateCompletionsInteractively(
     metric = metric,
     shouldContinue = shouldContinue,
     postResults = { writeDisplayText("$invalidPrefix$it") },

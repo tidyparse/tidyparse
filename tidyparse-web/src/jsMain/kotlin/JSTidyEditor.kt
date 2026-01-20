@@ -62,7 +62,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     var containsUnkTok = false
     val abstractUnk = tokens.map { if (it in cfg.terminals) it else { containsUnkTok = true; "_" } }
 
-    val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, minimize, ntStubs).hashCode()
+    val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, epsilons, ntStubs).hashCode()
     val workHash = abstractUnk.hashCode() + cfg.hashCode() + settingsHash.hashCode()
     if (workHash == currentWorkHash) return
     currentWorkHash = workHash
@@ -78,19 +78,21 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
       else -> Scenario.REPAIR
     }
 
+    fun List<Σᐩ>.stripEpsilon() = asSequence().map { it.replace("ε", "").tokenizeByWhitespace().joinToString(" ") }
+
     runningJob = MainScope().launch {
       when (scenario) {
         Scenario.STUB -> cfg.enumNTSmall(tokens[0].stripStub()).take(100)
-        Scenario.COMPLETION -> cfg.enumSeqSmart(tokens)
+        Scenario.COMPLETION ->
+          if (!gpuAvailable) cfg.enumSeqSmart(tokens)
+          else completeCode(cfg, tokens).stripEpsilon()
         Scenario.PARSEABLE -> {
           val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
           writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it }); null
         }
         Scenario.REPAIR ->
-          if (gpuAvailable)
-            repairCode(cfg, tokens, if (minimize) 0 else LED_BUFFER).asSequence()
-              .map { it.replace("ε", "").tokenizeByWhitespace().joinToString(" ") }
-          else sampleGREUntilTimeout(tokens, cfg)
+          if (!gpuAvailable) sampleGREUntilTimeout(tokens, cfg)
+          else repairCode(cfg, tokens, LED_BUFFER).stripEpsilon()
       }?.enumerateInteractively(workHash, tokens,
         reason = scenario.reason, postCompletionSummary = { ", ${t0.elapsedNow()} latency." })
     }

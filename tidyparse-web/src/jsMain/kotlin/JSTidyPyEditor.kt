@@ -141,7 +141,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     var containsUnk = false
     val abstractUnk = tokens.map { if (it in cfg.terminals) it else { containsUnk = true; "_" } }
 
-    val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, minimize).hashCode()
+    val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, epsilons).hashCode()
     val workHash = abstractUnk.hashCode() + cfg.hashCode() + settingsHash
     if (workHash == currentWorkHash) return
     currentWorkHash = workHash
@@ -165,7 +165,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
         (if (gpuAvailable) {
           log("Repairing on GPU...")
-          repairCode(cfg, tokens, if (minimize) 0 else LED_BUFFER, ngramTensor).asSequence()
+          repairCode(cfg, tokens, LED_BUFFER, ngramTensor).asSequence()
         } else {
           log("Repairing on CPU...")
           metric = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() }

@@ -46,7 +46,7 @@ class JSTidyCNFEditor(
     var containsUnkTok = false
     val abstractUnk = tokens.map { if (it in cfg.terminals) it else { containsUnkTok = true; "_" } }
 
-    val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, minimize, ntStubs).hashCode()
+    val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, epsilons, ntStubs).hashCode()
     val workHash = abstractUnk.hashCode() + cfg.hashCode() + settingsHash.hashCode()
     if (workHash == currentWorkHash) return
     currentWorkHash = workHash
@@ -85,7 +85,7 @@ class JSTidyCNFEditor(
         Scenario.PARSEABLE -> writeDisplayText(parsedPrefix.dropLast(8).also { cache[workHash] = it })
         Scenario.REPAIR ->
           (if (gpuAvailable)
-            repairCode(cfg, tokens, if (minimize) 0 else LED_BUFFER).asSequence()
+            repairCode(cfg, tokens, LED_BUFFER).asSequence()
               .map { it.replace("ε", "").tokenizeByWhitespace().joinToString(" ") }
           else sampleGREUntilTimeout(tokens, cfg)).enumerateInteractively(
             workHash = workHash,

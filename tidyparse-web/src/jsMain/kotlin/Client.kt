@@ -7,8 +7,6 @@ import ai.hypergraph.kaliningraph.types.PlatformVars
 import kotlinx.browser.*
 import kotlinx.coroutines.*
 import org.w3c.dom.*
-import org.w3c.dom.events.Event
-import org.w3c.dom.events.EventListener
 import org.w3c.dom.events.KeyboardEvent
 import org.w3c.fetch.RequestInit
 import kotlin.js.Promise
@@ -90,7 +88,7 @@ suspend fun defaultSetup() {
   jsEditor.redecorateLines()
   LED_BUFFER = ledBuffSel.value.toInt()
   TIMEOUT_MS = timeout.value.toInt()
-  jsEditor.minimize = mincheck.checked
+  jsEditor.epsilons = epscheck.checked
   jsEditor.ntStubs = ntscheck.checked
 
   inputField.addEventListener("input", { jsEditor.run { continuation { handleInput() } } })
@@ -98,7 +96,7 @@ suspend fun defaultSetup() {
   exSelector.addEventListener("change", { MainScope().launch { fetchSelectedExample(); jsEditor.getLatestCFG(); jsEditor.redecorateLines() } })
 
   inputField.addEventListener("keydown", { event -> jsEditor.navUpdate(event as KeyboardEvent) })
-  mincheck.addEventListener("change", { jsEditor.minimize = mincheck.checked })
+  epscheck.addEventListener("change", { log("Changed check"); jsEditor.epsilons = epscheck.checked; log("Checked: ${jsEditor.epsilons}") })
   ntscheck.addEventListener("change", {
     jsEditor.ntStubs = ntscheck.checked
     try {
@@ -149,7 +147,7 @@ val jsEditor by lazy { JSTidyEditor(inputField, outputField) }
 val jsPyEditor by lazy { JSTidyPyEditor(inputField, outputField) }
 val inputField by lazy { document.getElementById("tidyparse-input") as HTMLTextAreaElement }
 val outputField by lazy { document.getElementById("tidyparse-output") as Node }
-val mincheck by lazy { document.getElementById("minimize-checkbox") as HTMLInputElement }
+val epscheck by lazy { document.getElementById("epsilon-checkbox") as HTMLInputElement }
 val ntscheck by lazy { document.getElementById("ntstubs-checkbox") as HTMLInputElement }
 val timeout by lazy { document.getElementById("timeout") as HTMLInputElement }
 val ledBuffSel by lazy { document.getElementById("led-buffer") as HTMLInputElement }
