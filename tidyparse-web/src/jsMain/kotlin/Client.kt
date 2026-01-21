@@ -187,18 +187,18 @@ suspend fun initPyodide() = try {
   log(jsPyEditor.getOutput("1+"))
 } catch (e: Exception) { log("Error during Pyodide initialization: ${e.message}") }
 
+private fun Element.scrollIntoViewCompat() {
+  val opts = js("({ block: 'end', inline: 'nearest', behavior: 'auto' })")
+  try { this.asDynamic().scrollIntoView(opts) } catch (_: dynamic) { this.scrollIntoView(false) }
+}
+
 suspend fun fetchSelectedExample() {
-  if (exSelector.value.endsWith(".html")) {
-    window.location.href = exSelector.value
-    return
-  }
+  if (exSelector.value.endsWith(".html")) { window.location.href = exSelector.value; return }
   val response = window.fetch(exSelector.value).await()
   if (response.ok) {
     val text = response.text().await()
-    inputField.apply {
-      value = text
-      window.setTimeout({scrollIntoView(js("{ behavior: 'instant', block: 'end' }"))}, 1)
-    }
+    inputField.value = text
+    window.requestAnimationFrame { (inputField as Element).scrollIntoViewCompat() }
     jsEditor.redecorateLines()
   } else console.error("Failed to load file: ${response.status}")
 }

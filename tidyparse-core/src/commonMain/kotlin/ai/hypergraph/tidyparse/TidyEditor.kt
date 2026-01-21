@@ -6,7 +6,6 @@ import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.LED_BUFFER
 import ai.hypergraph.kaliningraph.repair.TIMEOUT_MS
 import kotlinx.coroutines.*
-import kotlin.math.absoluteValue
 import kotlin.time.TimeSource
 
 val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
@@ -123,8 +122,7 @@ abstract class TidyEditor {
     workHash: Int,
     origTks: List<String>,
     timer: TimeSource.Monotonic.ValueTimeMark = TimeSource.Monotonic.markNow(),
-    metric: (List<String>) -> Int = { levenshtein(origTks, it) * 7919 +
-        (origTks.sumOf { it.length } - it.sumOf { it.length }).absoluteValue },
+    metric: (List<String>) -> Int = levAndLenMetric(origTks),
     shouldContinue: () -> Boolean = { currentWorkHash == workHash && timer.hasTimeLeft() },
     customDiff: (String) -> String = { levenshteinAlign(origTks.joinToString(" "), it).paintDiffs() },
     recognizer: (String) -> Boolean = { it in cfg.language },

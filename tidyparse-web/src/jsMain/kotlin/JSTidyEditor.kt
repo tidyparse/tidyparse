@@ -92,7 +92,9 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
           if (!gpuAvailable) sampleGREUntilTimeout(tokens, cfg)
           else repairCode(cfg, tokens, LED_BUFFER).stripEpsilon()
       }?.enumerateInteractively(workHash, tokens,
-        reason = scenario.reason, postCompletionSummary = { ", ${t0.elapsedNow()} latency." })
+        metric = if (scenario == Scenario.REPAIR) levAndLenMetric(tokens) else ({0}),
+        reason = scenario.reason, postCompletionSummary = { ", ${t0.elapsedNow()} latency." }
+      )
     }
   }
 
