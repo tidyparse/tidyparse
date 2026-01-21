@@ -110,7 +110,7 @@ suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints:
   val dpBuf = Shader.createParseChart(STCPSD, totalSize)
 
   init_chart_line(dpBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
-  log("Chart construction took: ${t0.elapsedNow()}")
+  log("Chart construction took: ${t0.elapsedNow()} / dpBuf: ${dpBuf.size} bytes")
 
   cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpBuf, metaBuf)
   log("Matrix closure reached in: ${t0.elapsedNow()}")
@@ -1719,20 +1719,18 @@ class Shader constructor(val src: String) {
 
     suspend fun packMetadata(cfg: CFG, fsa: FSA): GPUBuffer {
       val t0 = TimeSource.Monotonic.markNow()
-      val grammarFlattened = cfg.vindex.map { it.toList() }.flatten().toGPUBuffer()
-      val grammarOffsets = cfg.vindex.map { it.size }.fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toGPUBuffer()
+
+      val (gFlat, gOff)    = cfg.grammarEncoding.let { it.flat to it.offsets }
+      val grammarFlattened = gFlat.toGPUBuffer(STCPSD)
+      val grammarOffsets   = gOff.toGPUBuffer(STCPSD)
+
       log("Encoded grammar in ${t0.elapsedNow()}")
 
-      val (reachBuf: GPUBuffer, entries: Int) = dag_reach.invokeDAGFixpoint(fsa)
-
+      val (reachBuf, _) = dag_reach.invokeDAGFixpoint(fsa)
       log("DAG fixpoint in ${t0.elapsedNow()}")
-//    val (allFSAPairsFlattened, allFSAPairsOffsets) = //fsa.midpoints.prefixScan()
-//        reachBuf.readInts().sparsifyReachabilityMatrix().prefixScan()
-      //  TODO: enforce exact equivalence?
-      val (allFSAPairsFlattened, allFSAPairsOffsets) = buildMidpointsGPU(fsa.numStates, reachBuf)
-//      log("Flat midpoints in ${t0.elapsedNow()} : ${allFSAPairsFlattened.size} # ${allFSAPairsOffsets.size}")
 
-      log("Sparse reachability took ${t0.elapsedNow()} / (${4 *(allFSAPairsFlattened.size + allFSAPairsOffsets.size)} bytes)")
+      val (allFSAPairsFlattened, allFSAPairsOffsets) = buildMidpointsGPU(fsa.numStates, reachBuf)
+      log("Sparse reachability took ${t0.elapsedNow()} / (${4 * (allFSAPairsFlattened.size + allFSAPairsOffsets.size)} bytes)")
 
       /** Memory layout: [CFL_STRUCT] */ val metaBuf = packStruct(
         constants = listOf(fsa.numStates, cfg.nonterminals.size),
@@ -1792,6 +1790,8 @@ class Shader constructor(val src: String) {
 
         ls_dense(dpIn, lsDenseBuf, metaBuf, tmBuf, spanBuf)(nStates - span, 1, nNT)
       }
+
+      log("Size of lsDenseBuf: ${lsDenseBuf.size} bytes  (|Q|=$nStates, |V|=$nNT)")
       return lsDenseBuf
     }
   }
