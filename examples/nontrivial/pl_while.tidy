@@ -6,7 +6,7 @@ LHS -> ID | ID . ID | ID [ EXP ] | ( LHS )
 IFS -> ID = if ( BEXP ) { EXP } else { EXP } | if ( BEXP ) { STM+ } else { STM+ } | if ( BEXP ) { STM+ }
 EXP -> ID | NUM | STR | LIT | EXP + EXP | EXP - EXP | EXP * EXP | EXP / EXP | EXP % EXP | ( EXP ) | ID ( ) | ID ( ARGS ) | EXP . ID | EXP [ EXP ] | BEXP
 ARGS -> EXP | EXP , ARGS
-BEXP -> EXP == EXP | EXP != EXP | BEXP && BEXP | BEXP or BEXP | ( BEXP ) | ! BEXP | LIT
+BEXP -> EXP == EXP | EXP != EXP | EXP < EXP | BEXP && BEXP | BEXP or BEXP | ( BEXP ) | ! BEXP | LIT
 LIT -> true | false
 ---
 
@@ -15,8 +15,6 @@ ID = NUM ;
 ID = _ _ _ ;
 
 _ _ _ <LIT> _ ID ) _ _ _
-
-<LIT> ( <LIT> + ID )
 
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
@@ -32,4 +30,4 @@ while ( ID == NUM { ID ID + NUM ; } }
 
 ID = if ( ID == true ) { ID ( true ) } else { false < true }
 
-ID = if ( ID == true ) { ID ( true )  } else { false ; true }
+ID = if ( ID == true ) { ID ( true ) } else { false ; true }

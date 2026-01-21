@@ -39,7 +39,7 @@
 
    • Any line in the CFG that does not contain <span style="color: gray; ">-></span> is ignored.
 
-   • Tidyparse adds ε-productions, {V} <span style="color: gray; ">-></span> ε {V} <span style="color: gray; ">|</span> {V} ε, and
+   • Tidyparse can add ε-productions, {V} <span style="color: gray; ">-></span> ε {V} <span style="color: gray; ">|</span> {V} ε or
      literals {V} <span style="color: gray; ">-></span> &lt;V&gt; for each nonterminal, V, in the CFG.
 
    • If the grammar contains no nonterminal named <span style="color: green; ">START</span>, then
@@ -58,7 +58,7 @@
     </select>
   <label>Generation timeout:<input id="timeout" type="number" value="300" min="100" step="100" style="margin-left: 0.4em; margin-right: 0.4em; width: 5em" >ms</label><div style="margin-right: 3em"></div>
   <label for="epsilon-checkbox">Add ε-productions&nbsp;</label>
-  <input type="checkbox" id="epsilon-checkbox" checked>
+  <input type="checkbox" id="epsilon-checkbox">
 </div>
 <div id="confrow2">
   <div id="gpuAvail" style="margin-right: 330px; margin-top:-45px"></div>

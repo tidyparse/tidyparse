@@ -17,7 +17,7 @@ abstract class TidyEditor {
   var grammarFileCache: Int = 0
   var cache = mutableMapOf<Int, String>()
   var currentWorkHash = 0
-  var epsilons = true
+  var epsilons = false
   var ntStubs = true
 
   abstract fun readDisplayText(): Σᐩ
