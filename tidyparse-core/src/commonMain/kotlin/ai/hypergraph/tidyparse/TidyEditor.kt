@@ -133,7 +133,8 @@ abstract class TidyEditor {
   ) = enumerateCompletionsInteractively(
     metric = metric,
     shouldContinue = shouldContinue,
-    postResults = { writeDisplayText("$invalidPrefix$it") },
+//    postResults = { writeDisplayText("$invalidPrefix$it") },
+    postResults = { /*Now fast enough where intermediate progress should be unnecessary*/ },
     finally = {
       if (currentWorkHash == workHash) writeDisplayText("$reason$it".also { cache[workHash] = it })
       println("Enumeration completed in ${timer.elapsedNow().inWholeMilliseconds}ms")

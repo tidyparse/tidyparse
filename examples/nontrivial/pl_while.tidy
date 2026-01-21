@@ -1,12 +1,13 @@
 START -> STM+
 STM+ -> STM+ ; STM | STM
- STM -> ID = EXP | IFS | while ( BEXP ) { STM+ } | STM ; | EXP ;
- IFS -> ID = if ( BEXP ) { EXP } else { EXP }
- IFS -> if ( BEXP ) { STM+ } else { STM+ } | if ( BEXP ) { STM+ }
- EXP -> ID | NUM | EXP + EXP | ( EXP ) | ID ( ) | ID ( ARGS ) | BEXP
+STM -> ASGN | IFS | while ( BEXP ) { STM+ } | for ( ASGN ; BEXP ; ASGN ) { STM+ } | { STM+ } | { } | return EXP ; | break | continue | STM ; | EXP ;
+ASGN -> LHS = EXP | LHS += EXP | LHS -= EXP | LHS *= EXP | LHS /= EXP | LHS %= EXP
+LHS -> ID | ID . ID | ID [ EXP ] | ( LHS )
+IFS -> ID = if ( BEXP ) { EXP } else { EXP } | if ( BEXP ) { STM+ } else { STM+ } | if ( BEXP ) { STM+ }
+EXP -> ID | NUM | STR | LIT | EXP + EXP | EXP - EXP | EXP * EXP | EXP / EXP | EXP % EXP | ( EXP ) | ID ( ) | ID ( ARGS ) | EXP . ID | EXP [ EXP ] | BEXP
 ARGS -> EXP | EXP , ARGS
-BEXP -> EXP == EXP | EXP < EXP | ( BEXP ) | LIT | ! BEXP
- LIT -> true | false
+BEXP -> EXP == EXP | EXP != EXP | BEXP && BEXP | BEXP or BEXP | ( BEXP ) | ! BEXP | LIT
+LIT -> true | false
 ---
 
 ID = NUM ;
@@ -17,9 +18,11 @@ _ _ _ <LIT> _ ID ) _ _ _
 
 <LIT> ( <LIT> + ID )
 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
 if ( ID < NUM ) { ID = ID ; } else { ID = ID + NUM ; }
 
-if ( ID < NUM ) { ID = ID ; } else { ID = ID + NUM ;
+if ( ID < NUM ) { ID = ID ; } else { ID = ID + NUM ; ID = ID }
 
 while ( ID == NUM ) { ID = ID + NUM ; }
 
@@ -29,4 +32,4 @@ while ( ID == NUM { ID ID + NUM ; } }
 
 ID = if ( ID == true ) { ID ( true ) } else { false < true }
 
-ID = if ( ID == true ) { ID ( true ) } else { false ; true }
+ID = if ( ID == true ) { ID ( true )  } else { false ; true }
