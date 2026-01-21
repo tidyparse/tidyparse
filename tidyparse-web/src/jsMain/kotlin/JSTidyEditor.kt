@@ -78,8 +78,6 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
       else -> Scenario.REPAIR
     }
 
-    fun List<Σᐩ>.stripEpsilon() = asSequence().map { it.replace("ε", "").tokenizeByWhitespace().joinToString(" ") }
-
     runningJob = MainScope().launch {
       when (scenario) {
         Scenario.STUB -> cfg.enumNTSmall(tokens[0].stripStub()).take(100)

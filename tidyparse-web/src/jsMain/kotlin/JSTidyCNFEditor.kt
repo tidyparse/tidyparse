@@ -74,14 +74,16 @@ class JSTidyCNFEditor(
     runningJob = MainScope().launch {
       when (scenario) {
         Scenario.STUB -> cfg.enumNTSmall(tokens[0].stripStub()).take(100)
-        Scenario.COMPLETION -> cfg.enumSeqSmartSuspendable(tokens, suspender = { pause() })
-          .take(100)
-          .enumerateInteractively(
-            workHash = workHash,
-            origTks = tokens,
-            reason = scenario.reason,
-            postCompletionSummary = { ", ${t0.elapsedNow()} latency." }
-          )
+        Scenario.COMPLETION ->
+          (if (!gpuAvailable) cfg.enumSeqSmartSuspendable(tokens, suspender = { pause() })
+          else completeCode(cfg, tokens).stripEpsilon())
+            .take(200)
+            .enumerateInteractively(
+              workHash = workHash,
+              origTks = tokens,
+              reason = scenario.reason,
+              postCompletionSummary = { ", ${t0.elapsedNow()} latency." }
+            )
         Scenario.PARSEABLE -> writeDisplayText(parsedPrefix.dropLast(8).also { cache[workHash] = it })
         Scenario.REPAIR ->
           (if (gpuAvailable)
@@ -189,6 +191,8 @@ fun cnfSetup() {
   document.addEventListener("keydown", { e ->
     if ((e as KeyboardEvent).key == "Escape" && window.asDynamic().tidySelectedFile != undefined) hide()
   })
+
+  MainScope().launch { tryBootstrappingGPU(true) }
 }
 
 private fun buildCnfModal(): HTMLDivElement {

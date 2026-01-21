@@ -1,3 +1,5 @@
+import ai.hypergraph.kaliningraph.parsing.Σᐩ
+import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import kotlinx.browser.window
 import kotlin.time.TimeSource
 
@@ -29,6 +31,8 @@ fun IntArray.toLaTeX(numStates: Int, numNTs: Int): String {
   \end{tikzpicture}
   """.trimIndent()
 }
+
+fun List<Σᐩ>.stripEpsilon() = asSequence().map { it.replace("ε", "").tokenizeByWhitespace().joinToString(" ") }
 
 var lastTimeMeasurement: TimeSource.Monotonic.ValueTimeMark? = null
 var DEBUG_SUFFIX = ""
