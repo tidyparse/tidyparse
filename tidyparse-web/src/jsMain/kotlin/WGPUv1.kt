@@ -53,8 +53,8 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
       listOf(
         prefix_sum_p1, prefix_sum_p2,      // ADT storage utils
         sparse_load, sparse_mat_load,      // Matrix loading utils
-
-        init_chart, init_chart_line,
+        active_nt_count,                         // Debugging
+        init_chart, init_chart_line,             // LA chart initialization
         dag_reach, mdpt_count, mdpt_write,       // Graph reachability
         cfl_mul_upper,                           // Matrix exponentiation
         bp_count, bp_write,                      // Backpointer addressing
@@ -115,13 +115,12 @@ suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints:
   cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpBuf, metaBuf)
   log("Matrix closure reached in: ${t0.elapsedNow()}")
 
+//  logActiveNTGrid(dpBuf, numStates, numNTs, limit = minOf(48, numStates)) // pick your window
+
   val startNT = cfg.bindex[START_SYMBOL]
 
   // For a chain, finalIdxs should contain just the end state (n,0)
-  val allStartIds = fsa.finalIdxsq.map { it * numNTs + startNT }
-    .let { it.zip(dpBuf.readIndices(it)) }
-    .filter { (_, v) -> v != 0 }
-    .map { it.first }
+  val allStartIds = listOf(fsa.finalIdxsq[0] * numNTs + startNT)
 
   if (allStartIds.isEmpty()) {
     log("No valid completion found: dpComplete has no entries in final states!")
@@ -129,7 +128,7 @@ suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints:
     return emptyList()
   }
 
-  val startIdxs = allStartIds.flatMap { listOf(it, 0) }
+  val startIdxs = allStartIds + 0
   val maxRepairLen = fsa.width + 10
   if (MAX_WORD_LEN < maxRepairLen) {
     log("Max completion length exceeded $MAX_WORD_LEN ($maxRepairLen)")
@@ -231,6 +230,8 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
 
   cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpBuf, metaBuf)
   log("Matrix closure reached in: ${t0.elapsedNow()}")
+
+//  logActiveNTGrid(dpBuf, numStates, numNTs, limit = minOf(48, numStates))
 
 //  dpBuf.readInts().filter { it != 0 }.map { it.toString(2) }
 //    .groupingBy { it }.eachCount().entries.sortedBy { it.key }.joinToString("\n") { (a, b) -> "$a => $b" }
