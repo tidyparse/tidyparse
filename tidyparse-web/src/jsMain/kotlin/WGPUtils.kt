@@ -169,3 +169,56 @@ suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints:
         .forEach(GPUBuffer::destroy)
     }
 }
+
+const val MAX_SUFF_LEN = 20
+
+// Checks whether there is a forward completion in the language of the CFG
+suspend fun checkSuffix(cfg: CFG, tokens: List<String>): List<Int> {
+  val t0 = TimeSource.Monotonic.markNow()
+
+  val porousTks = tokens + List(MAX_SUFF_LEN) { "_" }
+  val fsa: FSA = makePorousFSA(porousTks)
+  val codePoints = porousToCodePoints(cfg, porousTks)
+
+  log("Made porousFSA(|Q|=${fsa.numStates}, width=${fsa.width}) in ${t0.elapsedNow()}")
+
+  return checkSuffixPipeline(cfg, fsa, codePoints).also { log("Checked suffix completions in ${t0.elapsedNow()} (round trip)") }
+}
+
+suspend fun checkSuffixPipeline(cfg: CFG, fsa: FSA, codePoints: IntArray): List<Int> {
+  val t0 = TimeSource.Monotonic.markNow()
+  val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
+  log("Porous FSA(|Q|=$numStates), ${cfg.calcStats()}")
+
+  val metaBuf = packMetadata(cfg, fsa)
+
+  val tmBuf   = cfg.termBuf
+  val wordBuf = codePoints.toGPUBuffer()
+  val totalSize = numStates * numStates * numNTs
+
+  val dpBuf = Shader.createParseChart(STCPSD, totalSize)
+
+  init_chart_line(dpBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+  log("Chart construction took: ${t0.elapsedNow()} / dpBuf: ${dpBuf.size} bytes")
+
+  cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpBuf, metaBuf)
+  log("Matrix closure reached in: ${t0.elapsedNow()}")
+
+  val startNT = cfg.bindex[START_SYMBOL]
+
+  val baseLen = codePoints.size - MAX_SUFF_LEN
+  val queryIndices = ArrayList<Int>(MAX_SUFF_LEN + 1)
+
+  for (k in 0..MAX_SUFF_LEN) {
+    val targetState = baseLen + k
+    val flatIndex = targetState * numNTs + startNT
+    queryIndices.add(flatIndex)
+  }
+
+  val reachability = dpBuf.readIndices(queryIndices)
+
+  val listSuffixes = reachability.withIndex().filter { it.value != 0 }.map { it.index }
+
+  listOf(metaBuf, dpBuf, wordBuf).forEach(GPUBuffer::destroy)
+  return listSuffixes
+}

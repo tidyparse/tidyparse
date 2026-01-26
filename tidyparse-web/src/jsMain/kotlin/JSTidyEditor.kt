@@ -85,8 +85,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
         HOLE_MARKER in tokens -> Scenario.COMPLETION
 //        !containsUnkTok && forwardCompletion?.isValidContinuation(tokens) == true -> Scenario.FORWARD_COMPLETION
         // This scenario can be handled much more elegantly using coalegbra and incremental decoding
-        !containsUnkTok && tokens in cfg.language -> Scenario.PARSEABLE
-        !containsUnkTok && cfg.admitsPrefix(tokens) -> Scenario.SUFFIX_COMPLETION
+        !containsUnkTok -> handleSuffixCheck(cfg, tokens)
         else -> Scenario.REPAIR
       }
 
@@ -95,7 +94,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
         Scenario.COMPLETION ->
           if (!gpuAvailable) cfg.enumSeqSmart(tokens)
           else completeCode(cfg, tokens).stripEpsilon()
-        Scenario.SUFFIX_COMPLETION -> cfg.enumSuffixes(tokens, MAX_DISP_RESULTS)
+        Scenario.SUFFIX_COMPLETION -> handleSuffix(cfg, tokens)
         Scenario.PARSEABLE -> {
           val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
           writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it }); null
@@ -113,6 +112,25 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
       )
     }
   }
+
+  var suffixLenCache: List<Int> = emptyList()
+  suspend fun handleSuffixCheck(cfg: CFG, tokens: List<Σᐩ>): Scenario =
+    if (gpuAvailable) {
+      val suffixLens = checkSuffix(cfg, tokens).also { suffixLenCache = it }
+      println("Using GPU suffix lens: $suffixLenCache")
+      if (suffixLens.isEmpty()) Scenario.REPAIR
+      else if (suffixLens[0] == 0) Scenario.PARSEABLE
+      else Scenario.SUFFIX_COMPLETION
+    } else {
+      val suffixLens = cfg.admitsPrefix(tokens).toList().also { suffixLenCache = it }
+      println("Using CPU suffix lens: $suffixLenCache")
+      if (suffixLens[0] == 0) Scenario.PARSEABLE
+      else if (suffixLens[0] > 0) Scenario.SUFFIX_COMPLETION
+      else Scenario.REPAIR
+    }
+
+  fun handleSuffix(cfg: CFG, tokens: List<Σᐩ>): Sequence<Σᐩ> =
+    cfg.enumSuffixes(tokens, MAX_DISP_RESULTS * 10, suffixLenCache)
 
   var hashIter = 0
 
