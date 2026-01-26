@@ -188,7 +188,8 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
   }
 
   val langIntSize = langIntSize()
-  val toDecode = minOf(MAX_SAMPLES.toLong(), langIntSize).toInt()
+  val maxSamples = if (ngrams != null) MAX_SAMPLES.toLong() else 40_000
+  val toDecode = minOf(maxSamples, langIntSize).toInt()
   val pct = toDecode.toDouble() * 100.0 / langIntSize.toDouble().coerceAtLeast(1.0)
   log("Langauge saturation: $pct% ($toDecode/$langIntSize)")
 

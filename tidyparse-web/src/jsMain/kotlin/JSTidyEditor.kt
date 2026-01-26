@@ -19,6 +19,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     private fun HTMLTextAreaElement.lineBounds() = getLineStartIdx()..getEndOfLineIdx()
     private fun HTMLTextAreaElement.getCurrentLine() =
       value.substring(0, getEndOfLineIdx()).substringAfterLast("\n")
+    private fun HTMLTextAreaElement.getText(range: IntRange) = value.substring(range)
 
     fun HTMLTextAreaElement.overwriteCurrentLineWith(region: IntRange, text: String) {
       value = buildString {
@@ -41,6 +42,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
   override fun readEditorText(): Σᐩ = editor.value
   override fun getCaretPosition(): IntRange = editor.selectionStart!!..editor.selectionEnd!!
   override fun setCaretPosition(range: IntRange) = editor.setSelectionRange(range.first, range.last)
+  fun caretInMiddle() = editor.getText(getCaretPosition().first..getLineBounds().last).trim().isNotEmpty()
   private fun rawDisplayHTML() = (outputField as HTMLDivElement).innerHTML
   override fun readDisplayText(): Σᐩ = output.textContent ?: ""
   override fun writeDisplayText(s: Σᐩ) { (outputField as HTMLDivElement).innerHTML = s }
@@ -115,7 +117,10 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
   var suffixLenCache: List<Int> = emptyList()
   suspend fun handleSuffixCheck(cfg: CFG, tokens: List<Σᐩ>): Scenario =
-    if (gpuAvailable) {
+    if (caretInMiddle()) { // Skip suffix completion if the caret is within line
+      if (gpuAvailable) { if (checkSuffix(cfg, tokens, 0).let { it.isNotEmpty() && it[0] == 0 }) Scenario.PARSEABLE else Scenario.REPAIR }
+      else if (tokens in cfg.language) Scenario.PARSEABLE else Scenario.REPAIR
+    } else if (gpuAvailable) {
       val suffixLens = checkSuffix(cfg, tokens).also { suffixLenCache = it }
       println("Using GPU suffix lens: $suffixLenCache")
       if (suffixLens.isEmpty()) Scenario.REPAIR

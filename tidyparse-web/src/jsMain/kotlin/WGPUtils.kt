@@ -170,22 +170,20 @@ suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints:
     }
 }
 
-const val MAX_SUFF_LEN = 20
-
 // Checks whether there is a forward completion in the language of the CFG
-suspend fun checkSuffix(cfg: CFG, tokens: List<String>): List<Int> {
+suspend fun checkSuffix(cfg: CFG, tokens: List<String>, suffixLen: Int = 20): List<Int> {
   val t0 = TimeSource.Monotonic.markNow()
 
-  val porousTks = tokens + List(MAX_SUFF_LEN) { "_" }
+  val porousTks = tokens + List(suffixLen) { "_" }
   val fsa: FSA = makePorousFSA(porousTks)
   val codePoints = porousToCodePoints(cfg, porousTks)
 
   log("Made porousFSA(|Q|=${fsa.numStates}, width=${fsa.width}) in ${t0.elapsedNow()}")
 
-  return checkSuffixPipeline(cfg, fsa, codePoints).also { log("Checked suffix completions in ${t0.elapsedNow()} (round trip)") }
+  return checkSuffixPipeline(cfg, fsa, suffixLen, codePoints).also { log("Checked suffix completions in ${t0.elapsedNow()} (round trip)") }
 }
 
-suspend fun checkSuffixPipeline(cfg: CFG, fsa: FSA, codePoints: IntArray): List<Int> {
+suspend fun checkSuffixPipeline(cfg: CFG, fsa: FSA, suffixLen: Int, codePoints: IntArray): List<Int> {
   val t0 = TimeSource.Monotonic.markNow()
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   log("Porous FSA(|Q|=$numStates), ${cfg.calcStats()}")
@@ -206,10 +204,10 @@ suspend fun checkSuffixPipeline(cfg: CFG, fsa: FSA, codePoints: IntArray): List<
 
   val startNT = cfg.bindex[START_SYMBOL]
 
-  val baseLen = codePoints.size - MAX_SUFF_LEN
-  val queryIndices = ArrayList<Int>(MAX_SUFF_LEN + 1)
+  val baseLen = codePoints.size - suffixLen
+  val queryIndices = ArrayList<Int>(suffixLen + 1)
 
-  for (k in 0..MAX_SUFF_LEN) {
+  for (k in 0..suffixLen) {
     val targetState = baseLen + k
     val flatIndex = targetState * numNTs + startNT
     queryIndices.add(flatIndex)
