@@ -109,13 +109,15 @@ abstract class TidyEditor {
           writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it }); null
         }
         Scenario.REPAIR -> sampleGREUntilTimeout(tokens, cfg)
+        else -> sequenceOf<Σᐩ>().also { println("Unhandled scenario: $scenario") }
       }?.enumerateInteractively(workHash, tokens, reason = scenario.reason)
     }
   }
 
   enum class Scenario(val reason: String) {
     STUB(stubGenPrefix), COMPLETION(holeGenPrefix),
-    PARSEABLE(parsedPrefix), REPAIR(invalidPrefix)
+    PARSEABLE(parsedPrefix), REPAIR(invalidPrefix),
+    SUFFIX_COMPLETION(fwdCplPrefix)
   }
 
   protected suspend fun Sequence<String>.enumerateInteractively(

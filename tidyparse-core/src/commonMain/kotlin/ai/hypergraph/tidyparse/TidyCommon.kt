@@ -139,8 +139,7 @@ suspend fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
     var i = 0
     if (!iter.hasNext() || !shouldContinue()) {
 //      if (!iter.hasNext() || !shouldContinue() || postImmediately) {
-      val throughput = (results.size /
-          (startTime.elapsedNow().toDouble(SECONDS) + 0.001)).round(3)
+      val throughput = (results.size / (startTime.elapsedNow().toDouble(SECONDS) + 0.001)).round(3)
       val summary = "~$throughput res/s"
       val moreResults = (results.size - topNResults.size)
         .let { if (it == 0) "\n\n" else "\n\n...$it more, " }
@@ -281,6 +280,7 @@ fun updateProgress(query: Σᐩ, editor: TidyEditor) {
 fun Σᐩ.sanitized(terminals: Set<Σᐩ>): Σᐩ =
   tokenizeByWhitespace().joinToString(" ") { if (it in terminals) it else "_" }
 
+const val fwdCplPrefix = "-> Forward completion, possible fixes:\n\n"
 const val parsedPrefix = "✅ Current line parses! Tree:\n\n"
 const val invalidPrefix = "❌ Current line invalid, possible fixes:\n\n"
 const val stubGenPrefix = "&lt;/&gt; Stub generation, possible completions:\n\n"

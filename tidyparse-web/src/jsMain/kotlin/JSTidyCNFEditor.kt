@@ -67,7 +67,7 @@ class JSTidyCNFEditor(
       Scenario.REPAIR -> writeDisplayText("Searching for repairs... (please be patient)")
       Scenario.COMPLETION -> writeDisplayText("Generating completions... (please be patient)")
       Scenario.STUB -> writeDisplayText("Stub completion...")
-      else -> {}
+      else -> log("Unhandled scenario: $scenario")
     }
 
     var i = 0; suspend fun pause(freq: Int = 3) { if (i++ % freq == 0) { delay(50.nanoseconds) }}
@@ -96,6 +96,7 @@ class JSTidyCNFEditor(
             reason = scenario.reason,
             postCompletionSummary = { ", ${t0.elapsedNow()} latency." }
           )
+        else -> Unit.also { log("Skipping $scenario, unimplemented") }
       }
     }
   }

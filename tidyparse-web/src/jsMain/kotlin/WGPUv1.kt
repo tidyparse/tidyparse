@@ -61,10 +61,6 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         ls_dense, ls_cdf,                        // Language size estimation
         build_root_sizes, enum_words_wor,        // Enumeration and decoding
         markov_score, select_top_k, gather_top_k,// Reranking and truncation
-
-//        init_particles_v2,
-//        decode_step_v2,
-//        pack_particles_v2
       ).forEach { it.bind() }
 //      benchmarkWGPU() // TODO: remove for deployment
 //      benchmarkWGPURepair()
@@ -82,104 +78,6 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
       setAttribute("height", "35")
     })
   } else print("GPU not detected.")
-}
-
-suspend fun completeCode(cfg: CFG, porous: List<String>, ngrams: GPUBuffer? = null): List<String> {
-  val t0 = TimeSource.Monotonic.markNow()
-
-  val fsa: FSA = makePorousFSA(porous)
-  val codePoints = porousToCodePoints(cfg, porous)
-
-  log("Made porousFSA(|Q|=${fsa.numStates}, width=${fsa.width}) in ${t0.elapsedNow()}")
-
-  return completePipeline(cfg, fsa, ngrams, codePoints)
-    .also { log("Received: ${it.size} completions in ${t0.elapsedNow()} (round trip)") }
-}
-
-suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints: IntArray): List<String> {
-  val t0 = TimeSource.Monotonic.markNow()
-  val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
-  log("Porous FSA(|Q|=$numStates), ${cfg.calcStats()}")
-
-  val metaBuf = packMetadata(cfg, fsa)
-
-  val tmBuf   = cfg.termBuf
-  val wordBuf = codePoints.toGPUBuffer()
-  val totalSize = numStates * numStates * numNTs
-
-  val dpBuf = Shader.createParseChart(STCPSD, totalSize)
-
-  init_chart_line(dpBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
-  log("Chart construction took: ${t0.elapsedNow()} / dpBuf: ${dpBuf.size} bytes")
-
-  cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpBuf, metaBuf)
-  log("Matrix closure reached in: ${t0.elapsedNow()}")
-
-//  logActiveNTGrid(dpBuf, numStates, numNTs, limit = minOf(48, numStates)) // pick your window
-
-  val startNT = cfg.bindex[START_SYMBOL]
-
-  // For a chain, finalIdxs should contain just the end state (n,0)
-  val allStartIds = listOf(fsa.finalIdxsq[0] * numNTs + startNT)
-
-  if (allStartIds.isEmpty()) {
-    log("No valid completion found: dpComplete has no entries in final states!")
-    listOf(metaBuf, dpBuf).forEach(GPUBuffer::destroy)
-    return emptyList()
-  }
-
-  val startIdxs = allStartIds + 0
-  val maxRepairLen = fsa.width + 10
-  if (MAX_WORD_LEN < maxRepairLen) {
-    log("Max completion length exceeded $MAX_WORD_LEN ($maxRepairLen)")
-    listOf(metaBuf, dpBuf).forEach(GPUBuffer::destroy)
-    return emptyList()
-  }
-
-  val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNTs, dpBuf, metaBuf)
-
-  val lsDense  = buildLanguageSizeBuf(numStates, numNTs, dpBuf, metaBuf, tmBuf)
-  val totalExp = bpStorageBuf.size.toInt() / (2 * 4)
-  val cdfBuf   = GPUBuffer(totalExp * 4, STCPSD)
-  ls_cdf(dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
-  lsDense.destroy()
-
-  val numRoots  = startIdxs.size / 2
-  val rootSizes = GPUBuffer(numRoots * 4, STCPSD)
-
-  val idxUniBuf = packStruct(
-    listOf(0, maxRepairLen, numNTs, numStates, DISPATCH_GROUP_SIZE_X, MAX_SAMPLES),
-    startIdxs.toGPUBuffer()
-  )
-
-  build_root_sizes(dpBuf, bpCountBuf, bpOffsetBuf, cdfBuf, tmBuf, rootSizes, idxUniBuf)((numRoots + 255) / 256)
-  val rootCDF = Shader.prefixSumGPU(rootSizes, numRoots)
-
-  suspend fun langIntSize(): Long {
-    fun u(x: Int) = x.toUInt().toLong()
-    val last = numRoots - 1
-    val lastSize = if (numRoots > 0) rootSizes.readIndices(listOf(last))[0] else 0
-    val lastCDF  = if (numRoots > 0) rootCDF.readIndices(listOf(last))[0] else 0
-    return if (numRoots > 0) u(lastCDF) + u(lastSize) else 0L
-  }
-
-  val langSize = langIntSize()
-  val toDecode = 100_000
-  idxUniBuf.writeU32(wordIndex = 5, value = toDecode)
-
-  val outBuf = GPUBuffer(toDecode * maxRepairLen * 4, STCPSD)
-  enum_words_wor(
-    dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf,
-    cdfBuf, tmBuf, idxUniBuf, rootSizes, rootCDF, outBuf
-  )(DISPATCH_GROUP_SIZE_X, (toDecode + DISPATCH_GROUP_SIZE_X - 1) / DISPATCH_GROUP_SIZE_X)
-
-  return (
-    if (ngrams != null) ngramDecoder(outBuf, ngrams, maxRepairLen, cfg, toDecode)
-    else uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)
-  ).also {
-    listOf(outBuf, rootSizes, rootCDF, metaBuf, dpBuf, idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf)
-      .forEach(GPUBuffer::destroy)
-  }
 }
 
 suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VALUE, ngrams: GPUBuffer? = null): List<String> {

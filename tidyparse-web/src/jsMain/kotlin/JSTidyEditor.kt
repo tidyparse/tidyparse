@@ -46,6 +46,16 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
   override fun writeDisplayText(s: Σᐩ) { (outputField as HTMLDivElement).innerHTML = s }
   override fun writeDisplayText(s: (Σᐩ) -> Σᐩ) = writeDisplayText(s(readDisplayText()))
 
+  // TODO: define coalgebraically using prefix closure //prefix == tokens.dropLast(1) && tokens.last() in nextTerms
+  data class SuffixCompletion(val prefix: List<Σᐩ>, val nextTerms: Set<Σᐩ>)
+//  fun sampleForward(tokens: List<Σᐩ>, cfg: CFG): Sequence<Σᐩ> = cfg.enumSuffixes(tokens)
+//  fun isValidContinuation(tokens: List<Σᐩ>, cfg: CFG): Boolean = tokens in cfg.admitsPrefix(tokens)
+//  fun ForwardCompletion?.seed(tokens: List<Σᐩ>) =
+//    if (this == null) ForwardCompletion(tokens, emptySet())
+//    else if (cfg.isEmpty() || nextTerms.isEmpty()) ForwardCompletion(tokens, emptySet())
+//    else TODO()
+//  var forwardCompletion: ForwardCompletion? = null
+
   override fun handleInput() {
     val t0 = TimeSource.Monotonic.markNow()
     val caretInGrammar = caretInGrammar()
@@ -69,21 +79,23 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
     if (workHash in cache) return writeDisplayText(cache[workHash]!!)
 
-    runningJob?.cancel()
+    runningJob = MainScope().also { runningJob?.cancel() }.launch {
+      val scenario = when {
+        tokens.size == 1 && stubMatcher.matches(tokens[0]) -> Scenario.STUB
+        HOLE_MARKER in tokens -> Scenario.COMPLETION
+//        !containsUnkTok && forwardCompletion?.isValidContinuation(tokens) == true -> Scenario.FORWARD_COMPLETION
+        // This scenario can be handled much more elegantly using coalegbra and incremental decoding
+        !containsUnkTok && tokens in cfg.language -> Scenario.PARSEABLE
+        !containsUnkTok && cfg.admitsPrefix(tokens) -> Scenario.SUFFIX_COMPLETION
+        else -> Scenario.REPAIR
+      }
 
-    val scenario = when {
-      tokens.size == 1 && stubMatcher.matches(tokens[0]) -> Scenario.STUB
-      HOLE_MARKER in tokens -> Scenario.COMPLETION
-      !containsUnkTok && tokens in cfg.language -> Scenario.PARSEABLE
-      else -> Scenario.REPAIR
-    }
-
-    runningJob = MainScope().launch {
       when (scenario) {
         Scenario.STUB -> cfg.enumNTSmall(tokens[0].stripStub()).take(100)
         Scenario.COMPLETION ->
           if (!gpuAvailable) cfg.enumSeqSmart(tokens)
           else completeCode(cfg, tokens).stripEpsilon()
+        Scenario.SUFFIX_COMPLETION -> cfg.enumSuffixes(tokens, MAX_DISP_RESULTS)
         Scenario.PARSEABLE -> {
           val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
           writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it }); null
@@ -92,7 +104,11 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
           if (!gpuAvailable) sampleGREUntilTimeout(tokens, cfg)
           else repairCode(cfg, tokens, LED_BUFFER).stripEpsilon()
       }?.enumerateInteractively(workHash, tokens,
-        metric = if (scenario == Scenario.REPAIR) levAndLenMetric(tokens) else ({0}),
+        metric = when (scenario) {
+          Scenario.REPAIR -> levAndLenMetric(tokens)
+          Scenario.SUFFIX_COMPLETION -> ({ it.size })
+          else -> ({ 0 })
+        },
         reason = scenario.reason, postCompletionSummary = { ", ${t0.elapsedNow()} latency." }
       )
     }
