@@ -170,8 +170,8 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
           .substringAfter(".) ").replace("\\s+".toRegex(), " ").trim()
         overwriteRegion(getCaretPosition().takeIf { it.last - it.first > 0 } ?: getLineBounds(), selection)
         redecorateLines()
-        continuation { handleInput() }
         continuation { handleTab() }
+        continuation { handleInput() }
 
         return
       }
