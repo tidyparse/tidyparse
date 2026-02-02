@@ -29,16 +29,29 @@ suspend fun logActiveNTGrid(
   val groupsY = (numStates + 7) / 8
   active_nt_count(dpBuf, countsBuf, uniBuf)(groupsX, groupsY, 1)
 
-  val idxs = ArrayList<Int>(limit * limit)
-  for (r in 0 until limit) for (c in 0 until limit) idxs.add(r * numStates + c)
-  val vals = countsBuf.readIndices(idxs)
+  val allIndices = (0 until numStates * numStates).toList()
+  val allVals = countsBuf.readIndices(allIndices)
+
+  val totalActiveNTs = allVals.fold(0L) { acc, i -> acc + i }
+  val totalUTCells = (numStates.toLong() * (numStates - 1)) / 2
+  val maxPossibleActive = totalUTCells * numNTs
+
+  val sparsity = if (maxPossibleActive > 0) { (totalActiveNTs.toDouble() / maxPossibleActive) * 100 } else 0.0
+
+  val previewIdxs = ArrayList<Int>(limit * limit)
+  for (r in 0 until limit) for (c in 0 until limit) previewIdxs.add(r * numStates + c)
+  val previewVals = countsBuf.readIndices(previewIdxs)
 
   val w = numNTs.toString().length.coerceAtLeast(2)
   val sb = StringBuilder()
+
+  sb.append("--- UT Sparsity: ${sparsity.toString().take(8)}% ")
+  sb.append("($totalActiveNTs / $maxPossibleActive active NTs) ---\n")
+
   sb.append("Active NTs per cell (k/$numNTs), showing ${limit}x$limit (upper triangle):\n")
   for (r in 0 until limit) {
     for (c in 0 until limit) {
-      val k = vals[r * limit + c]
+      val k = previewVals[r * limit + c]
       if (c <= r) sb.append(" ".repeat(w)).append("  ")
       else sb.append(k.toString().padStart(w, ' ')).append("  ")
     }
@@ -103,7 +116,7 @@ suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints:
   cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpBuf, metaBuf)
   log("Matrix closure reached in: ${t0.elapsedNow()}")
 
-//  logActiveNTGrid(dpBuf, numStates, numNTs, limit = minOf(48, numStates)) // pick your window
+//  logActiveNTGrid(dpBuf, numStates, numNTs, limit = minOf(48, numStates))
 
   val startNT = cfg.bindex[START_SYMBOL]
 
