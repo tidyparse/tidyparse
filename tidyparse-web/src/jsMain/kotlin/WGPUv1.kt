@@ -61,6 +61,7 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         ls_dense, ls_cdf,                        // Language size estimation
         build_root_sizes, enum_words_wor,        // Enumeration and decoding
         markov_score, select_top_k, gather_top_k,// Reranking and truncation
+//      expand_chart, r1_update_feats, r1_combine, r1_project, compress_chart
       ).forEach { it.bind() }
 //      benchmarkWGPU() // TODO: remove for deployment
 //      benchmarkWGPURepair()
@@ -127,6 +128,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA,
 //  val dpBuf = dpInSparse.toGPUBufferSparse(GPUBufferUsage.STCPSD, numStates * rowCoeff, rowCoeff, colCoeff)
 
   cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpBuf, metaBuf)
+//  invokeCFLFixpointFast(cfg, numStates, numNTs, dpBuf, metaBuf)
   log("Matrix closure reached in: ${t0.elapsedNow()}")
 
 //  logActiveNTGrid(dpBuf, numStates, numNTs, limit = minOf(48, numStates))

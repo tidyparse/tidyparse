@@ -1,5 +1,5 @@
-S -> S + S | S * S | S - S | S / S | ( S )
-S -> N | V
+START -> START + START | START * START | START - START | START / START | ( START )
+START -> N | V
 N -> 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7
 V -> X | Y | Z
 
@@ -7,6 +7,6 @@ V -> X | Y | Z
 
 2 + 3 + ( 4 + 5 + ( 4 ) + 5 * 6 +
 
-2 + _ + _ ( _ <S> _ _ _ ) _ _ _ 2 _ _ 1 _ _ _ _ _
+2 + _ + _ ( _ <START> _ _ _ ) _ _ _ 2 _ _ 1 _ _ _ _ _
 
 2 + 3 + 4 + 5 +

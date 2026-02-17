@@ -1,3 +1,4 @@
+START -> expr
 expr -> λ binders . expr | app_expr
 app_expr -> simple_expr | app_expr simple_expr
 simple_expr -> name | ( expr )

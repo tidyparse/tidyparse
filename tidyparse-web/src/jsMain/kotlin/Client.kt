@@ -119,7 +119,6 @@ suspend fun pythonSetup() {
   jsPyEditor.redecorateLines()
 
   loadNgrams()
-  log("Loaded ngrams")
   MainScope().launch {
     val t0 = TimeSource.Monotonic.markNow()
     tryBootstrappingGPU(true)

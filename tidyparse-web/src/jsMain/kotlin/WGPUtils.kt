@@ -5,14 +5,19 @@ import Shader.Companion.packMetadata
 import Shader.Companion.readIndices
 import Shader.Companion.toGPUBuffer
 import Shader.Companion.writeU32
+import ai.hypergraph.kaliningraph.automata.AFSA
 import ai.hypergraph.kaliningraph.automata.FSA
+import ai.hypergraph.kaliningraph.automata.TSA
 import ai.hypergraph.kaliningraph.parsing.CFG
 import ai.hypergraph.kaliningraph.parsing.START_SYMBOL
 import ai.hypergraph.kaliningraph.parsing.bindex
 import ai.hypergraph.kaliningraph.parsing.calcStats
-import ai.hypergraph.kaliningraph.parsing.makePorousFSA
 import ai.hypergraph.kaliningraph.parsing.nonterminals
-import ai.hypergraph.kaliningraph.parsing.porousToCodePoints
+import ai.hypergraph.kaliningraph.parsing.rankOneDecomposition
+import ai.hypergraph.kaliningraph.parsing.tmMap
+import ai.hypergraph.kaliningraph.types.cache
+import js.buffer.*
+import js.typedarrays.Int32Array
 import web.gpu.GPUBuffer
 import kotlin.time.TimeSource
 
@@ -232,4 +237,370 @@ suspend fun checkSuffixPipeline(cfg: CFG, fsa: FSA, suffixLen: Int, codePoints: 
 
   listOf(metaBuf, dpBuf, wordBuf).forEach(GPUBuffer::destroy)
   return listSuffixes
+}
+
+fun makePorousFSA(tokens: List<String>): FSA {
+  val n = tokens.size
+  val digits = (n + 1).toString().length
+
+  fun pd(i: Int) = i.toString().padStart(digits, '0')
+  fun st(i: Int) = "q_${pd(i)}/${pd(0)}"
+
+  val arcs: TSA = (0 until n).map { i ->
+    val lbl = tokens[i]
+    Triple(st(i), lbl, st(i + 1))
+  }.toSet()
+
+  val initialStates = setOf(st(0))
+  val finalStates   = setOf(st(n))
+
+  return AFSA(arcs, initialStates, finalStates)
+    .also { it.width = n; it.height = 0; it.levString = tokens }
+}
+
+private const val HOLE_SENTINEL_INT: Int = -1 // 0xFFFF_FFFFu on GPU
+
+fun porousToCodePoints(cfg: CFG, porous: List<String>): IntArray =
+  IntArray(porous.size) { i ->
+    val t = porous[i]
+    if (t == "_") HOLE_SENTINEL_INT
+    else cfg.tmMap[t] ?: error("Unknown token '$t' (not in cfg.tmMap)")
+  }
+
+/**
+ * LOW-RANK CFG-NFA TENSOR INTERSECTION EXPERIMENT
+ */
+
+//language=wgsl
+val RANK1_STRUCT = """
+struct Rank1Data {
+    K: u32, numWords: u32, pad1: u32, pad2: u32,
+    u_off: u32, u_len: u32,
+    v_off: u32, v_len: u32,
+    w_off: u32, w_len: u32,
+    payload: array<u32>
+};
+fn getU(k: u32, w: u32) -> u32 { return r1.payload[r1.u_off + k * r1.numWords + w]; }
+fn getV(k: u32, w: u32) -> u32 { return r1.payload[r1.v_off + k * r1.numWords + w]; }
+fn getW(k: u32, w: u32) -> u32 { return r1.payload[r1.w_off + k * r1.numWords + w]; }
+"""
+
+//language=wgsl
+val r1_update_feats by Shader("""
+$RANK1_STRUCT
+struct Params { N: u32, featWords: u32 }; 
+@group(0) @binding(0) var<storage, read>       packed_dp : array<u32>;
+@group(0) @binding(1) var<storage, read_write> row_feats : array<atomic<u32>>; // Use atomic for ORing
+@group(0) @binding(2) var<storage, read_write> col_feats : array<atomic<u32>>; 
+@group(0) @binding(3) var<storage, read>              r1 : Rank1Data;
+@group(0) @binding(4) var<uniform>                   uni : Params;
+
+@compute @workgroup_size(16, 16) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let p = gid.x;
+    let q = gid.y;
+    if (p >= uni.N || q >= uni.N) { return; }
+
+    let cellIdx = (p * uni.N + q) * r1.numWords;
+    
+    for (var k = 0u; k < r1.K; k++) {
+        // 1. Check U
+        var matchU = false;
+        for (var w = 0u; w < r1.numWords; w++) {
+            if ((packed_dp[cellIdx + w] & getU(k, w)) != 0u) { matchU = true; break; }
+        }
+        if (matchU) {
+            let fw = q / 32u;
+            let fb = q % 32u;
+            let idx = p * r1.K * uni.featWords + k * uni.featWords + fw;
+            atomicOr(&row_feats[idx], (1u << fb));
+        }
+
+        // 2. Check V
+        var matchV = false;
+        for (var w = 0u; w < r1.numWords; w++) {
+            if ((packed_dp[cellIdx + w] & getV(k, w)) != 0u) { matchV = true; break; }
+        }
+        if (matchV) {
+            let fw = p / 32u;
+            let fb = p % 32u;
+            let idx = q * r1.K * uni.featWords + k * uni.featWords + fw;
+            atomicOr(&col_feats[idx], (1u << fb));
+        }
+    }
+}
+""")
+
+//language=wgsl
+val r1_project by Shader("""
+$RANK1_STRUCT
+struct Params { N: u32, featWords: u32 };
+@group(0) @binding(0) var<storage, read>       packed_dp : array<u32>;
+@group(0) @binding(1) var<storage, read_write> row_feats : array<u32>; // [K][N][Words]
+@group(0) @binding(2) var<storage, read_write> col_feats : array<u32>; // [K][N][Words]
+@group(0) @binding(3) var<storage, read>              r1 : Rank1Data;
+@group(0) @binding(4) var<uniform>                   uni : Params;
+
+// Thread (idx, k) builds the entire bit-vector for Row 'idx' and Col 'idx' for component 'k'
+@compute @workgroup_size(16, 16) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x; // Represents Row p (for Left) and Col q (for Right)
+    let k   = gid.y; // Component index
+    if (idx >= uni.N || k >= r1.K) { return; }
+
+    let N = uni.N;
+    // Base offset for this (k, idx) pair in the feature matrices
+    let featBase = (k * N + idx) * uni.featWords;
+
+    // Loop through the chart words to build the bit-vector locally
+    for (var fw = 0u; fw < uni.featWords; fw++) {
+        var l_bits = 0u; // Accumulator for RowFeats[idx][k]
+        var r_bits = 0u; // Accumulator for ColFeats[idx][k]
+        
+        let bitOffset = fw * 32u;
+        
+        for (var b = 0u; b < 32u; b++) {
+            let j = bitOffset + b; // The 'scanning' coordinate
+            if (j >= N) { break; }
+
+            // 1. Build Row Feature: Does DP[idx, j] match U_k?
+            let dpIdx_L = (idx * N + j) * r1.numWords;
+            var matchL = false;
+            for (var w = 0u; w < r1.numWords; w++) {
+                if ((packed_dp[dpIdx_L + w] & getU(k, w)) != 0u) { matchL = true; break; }
+            }
+            if (matchL) { l_bits |= (1u << b); }
+
+            // 2. Build Col Feature: Does DP[j, idx] match V_k?
+            // Note: Accessing DP in column-major fashion (Row j, Col idx)
+            let dpIdx_R = (j * N + idx) * r1.numWords;
+            var matchR = false;
+            for (var w = 0u; w < r1.numWords; w++) {
+                if ((packed_dp[dpIdx_R + w] & getV(k, w)) != 0u) { matchR = true; break; }
+            }
+            if (matchR) { r_bits |= (1u << b); }
+        }
+
+        // Write once, non-atomically. Each thread owns this memory slot.
+        row_feats[featBase + fw] = l_bits;
+        col_feats[featBase + fw] = r_bits;
+    }
+}
+""")
+
+//language=wgsl
+val r1_combine by Shader("""
+$RANK1_STRUCT
+struct Params { N: u32, featWords: u32 };
+struct AtomicFlag { changed: atomic<u32> };
+
+@group(0) @binding(0) var<storage, read_write> packed_dp : array<u32>;
+@group(0) @binding(1) var<storage, read>       row_feats : array<u32>;
+@group(0) @binding(2) var<storage, read>       col_feats : array<u32>;
+@group(0) @binding(3) var<storage, read>              r1 : Rank1Data;
+@group(0) @binding(4) var<uniform>                   uni : Params;
+@group(0) @binding(5) var<storage, read_write>      flag : AtomicFlag;
+
+@compute @workgroup_size(16, 16) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let p = gid.x;
+    let q = gid.y;
+    if (p >= uni.N || q >= uni.N) { return; }
+
+    let cellBase = (p * uni.N + q) * r1.numWords;
+    var changedLocal = false;
+
+    for (var k = 0u; k < r1.K; k++) {
+        // Intersect: row_feats[k][p] AND col_feats[k][q]
+        // Layout: [K][N][Words]
+        let rfBase = (k * uni.N + p) * uni.featWords;
+        let cfBase = (k * uni.N + q) * uni.featWords;
+        
+        var overlap = false;
+        for (var fw = 0u; fw < uni.featWords; fw++) {
+            if ((row_feats[rfBase + fw] & col_feats[cfBase + fw]) != 0u) {
+                overlap = true; break;
+            }
+        }
+
+        if (overlap) {
+            for (var w = 0u; w < r1.numWords; w++) {
+                let mask = getW(k, w);
+                // Check if adding new bits
+                if ((packed_dp[cellBase + w] & mask) != mask) {
+                    packed_dp[cellBase + w] |= mask;
+                    changedLocal = true;
+                }
+            }
+        }
+    }
+    
+    if (changedLocal) { atomicStore(&flag.changed, 1u); }
+}
+""")
+
+//language=wgsl
+val compress_chart by Shader("""
+struct Params { numStates: u32, numNTs: u32, numWords: u32 };
+@group(0) @binding(0) var<storage, read>       exploded : array<u32>;
+@group(0) @binding(1) var<storage, read_write>   packed : array<u32>;
+@group(0) @binding(2) var<uniform>                  uni : Params;
+
+@compute @workgroup_size(256) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let numCells = uni.numStates * uni.numStates;
+    let idx = gid.x + gid.y * 65535u;
+    if (idx >= numCells) { return; }
+
+    let r = idx / uni.numStates;
+    let c = idx % uni.numStates;
+
+    // Base offset in Exploded: (r * N + c) * NT
+    let explBase = idx * uni.numNTs;
+    // Base offset in Packed:   (r * N + c) * Words
+    let packBase = idx * uni.numWords;
+
+    // Naive bit packing
+    for (var w = 0u; w < uni.numWords; w++) {
+        var wordVal = 0u;
+        for (var b = 0u; b < 32u; b++) {
+            let nt = w * 32u + b;
+            if (nt < uni.numNTs) {
+                // Check if exploded[explBase + nt] is active (non-zero)
+                if (exploded[explBase + nt] != 0u) {
+                    wordVal |= (1u << b);
+                }
+            }
+        }
+        packed[packBase + w] = wordVal;
+    }
+}
+""")
+
+//language=wgsl
+val expand_chart by Shader("""
+struct Params { numStates: u32, numNTs: u32, numWords: u32 };
+@group(0) @binding(0) var<storage, read>         packed : array<u32>;
+@group(0) @binding(1) var<storage, read_write> exploded : array<u32>;
+@group(0) @binding(2) var<uniform>                  uni : Params;
+
+@compute @workgroup_size(256) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let numCells = uni.numStates * uni.numStates;
+    let idx = gid.x + gid.y * 65535u;
+    if (idx >= numCells) { return; }
+
+    let explBase = idx * uni.numNTs;
+    let packBase = idx * uni.numWords;
+
+    for (var nt = 0u; nt < uni.numNTs; nt++) {
+        let w = nt / 32u;
+        let b = nt % 32u;
+        let isSet = (packed[packBase + w] & (1u << b)) != 0u;
+        
+        if (isSet) { exploded[explBase + nt] |= 1u; }
+    }
+}
+""")
+
+fun LongArray.toIntArray32(): IntArray {
+  val res = IntArray(size * 2)
+  for (i in indices) {
+    val l = this[i]
+    res[i * 2]     = l.toUInt().toInt()         // Low 32 bits
+    res[i * 2 + 1] = (l shr 32).toUInt().toInt() // High 32 bits
+  }
+  return res
+}
+
+val CFG.rank1Buf: GPUBuffer by cache {
+  val components = rankOneDecomposition
+  val K = components.size
+  // Calculate 32-bit words per mask.
+  val numWords = ((nonterminals.size + 63) / 64) * 2
+
+  val flatU = IntArray(K * numWords)
+  val flatV = IntArray(K * numWords)
+  val flatW = IntArray(K * numWords)
+
+  for (k in 0 until K) {
+    val comp = components[k]
+    val u32 = comp.U.toIntArray32()
+    val v32 = comp.V.toIntArray32()
+    val w32 = comp.W.toIntArray32()
+
+    // Use Kotlin's copyInto
+    val len = u32.size.coerceAtMost(numWords)
+    u32.copyInto(flatU, destinationOffset = k * numWords, startIndex = 0, endIndex = len)
+    v32.copyInto(flatV, destinationOffset = k * numWords, startIndex = 0, endIndex = len)
+    w32.copyInto(flatW, destinationOffset = k * numWords, startIndex = 0, endIndex = len)
+  }
+
+  /* Memory Layout: [K, numWords, 0, 0 | U... | V... | W... ] */
+  val header = listOf(K, numWords, 0, 0)
+
+  packStruct(
+    header,
+    flatU.toGPUBuffer(STCPSD),
+    flatV.toGPUBuffer(STCPSD),
+    flatW.toGPUBuffer(STCPSD)
+  )
+}
+
+suspend fun invokeCFLFixpointFast(cfg: CFG, numStates: Int, numNTs: Int, dpIn: GPUBuffer, metaBuf: GPUBuffer) {
+  val t0 = TimeSource.Monotonic.markNow()
+
+  // --- 1. Setup Buffers ---
+  val packWords = (numNTs + 31) / 32
+  val featWords = (numStates + 31) / 32
+  val K         = cfg.rankOneDecomposition.size
+
+  // Compact Chart Buffer
+  val packedBuf = GPUBuffer(numStates * numStates * packWords * 4, STCPSD)
+  val uniBuf    = intArrayOf(numStates, numNTs, packWords)
+    .toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
+
+  // Compress Initial State (Literals -> Packed Bits)
+  compress_chart(dpIn, packedBuf, uniBuf)((numStates * numStates + 255) / 256)
+
+  // Feature Buffers: Size [K][N][featWords]
+  // Note: We do NOT need to clear these every round because r1_project overwrites them completely.
+  val featBufSize = K * numStates * featWords * 4
+  val rowFeats    = GPUBuffer(featBufSize, STCPSD)
+  val colFeats    = GPUBuffer(featBufSize, STCPSD)
+
+  val rank1Buf = cfg.rank1Buf
+  val r1Uni    = intArrayOf(numStates, featWords)
+    .toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
+
+  val flagBuf  = 0.toGPUBuffer()
+  val zeroFlag = Int32Array<ArrayBuffer>(1).apply { set(arrayOf(0), 0) }
+
+  // --- 2. Fixpoint Loop ---
+  // Project: Threads (N, K)
+  val projX = (numStates + 15) / 16
+  val projY = (K + 15) / 16
+  // Combine: Threads (N, N)
+  val combX = (numStates + 15) / 16
+  val combY = (numStates + 15) / 16
+
+  var rounds = 0
+  while (rounds < numStates) {
+    // Reset convergence flag
+    gpu.queue.writeBuffer(flagBuf, 0.0, zeroFlag)
+
+    // Step A: Project (Gather Features) - No Atomics
+    r1_project(packedBuf, rowFeats, colFeats, rank1Buf, r1Uni)(projX, projY)
+
+    // Step B: Combine (Gemm-like update)
+    r1_combine(packedBuf, rowFeats, colFeats, rank1Buf, r1Uni, flagBuf)(combX, combY)
+
+    // Check convergence
+    if (flagBuf.readIndices(listOf(0))[0] == 0) break
+    rounds++
+  }
+
+  // --- 3. Expand Result ---
+  // Ensure we use the FIXED expand_chart kernel that sets LSB |= 1u
+  expand_chart(packedBuf, dpIn, uniBuf)((numStates * numStates + 255) / 256)
+
+  // Cleanup
+  listOf(packedBuf, rowFeats, colFeats, uniBuf, r1Uni, flagBuf).forEach { it.destroy() }
+
+  log("GPU Rank-1 Fixpoint converged in $rounds rounds, ${t0.elapsedNow()}")
 }

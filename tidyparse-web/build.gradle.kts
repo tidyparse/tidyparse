@@ -52,7 +52,7 @@ kotlin {
     val jsMain by getting {
       dependencies {
         implementation(project(":tidyparse-core"))
-        implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2026.1.0")
+        implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2026.2.13")
       }
     }
 
@@ -158,9 +158,9 @@ tasks {
       val buildDir = webProject.layout.buildDirectory.asFile.get().resolve("kotlin-webpack/js/productionExecutable/")
       val resourcesDir = webProject.file("src/jsMain/resources")
 
-      exec { commandLine("open", buildDir.absolutePath) }
-      exec { commandLine("open", resourcesDir.absolutePath) }
-      exec { commandLine("open", "https://github.com/tidyparse/tidyparse.github.io/upload/main") }
+      ProcessBuilder("open", buildDir.absolutePath).start()
+      ProcessBuilder("open", resourcesDir.absolutePath).start()
+      ProcessBuilder("open", "https://github.com/tidyparse/tidyparse.github.io/upload/main").start()
     }
   }
 }
