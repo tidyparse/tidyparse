@@ -126,7 +126,7 @@ suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints:
   val startNT = cfg.bindex[START_SYMBOL]
 
   // For a chain, finalIdxs should contain just the end state (n,0)
-  val allStartIds = listOf(fsa.finalIdxsq[0] * numNTs + startNT)
+  val allStartIds = listOf(fsa.finalIdxs[0] * numNTs + startNT)
 
   if (allStartIds.isEmpty()) {
     log("No valid completion found: dpComplete has no entries in final states!")
