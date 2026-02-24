@@ -12,8 +12,8 @@ import ai.hypergraph.kaliningraph.parsing.CFG
 import ai.hypergraph.kaliningraph.parsing.START_SYMBOL
 import ai.hypergraph.kaliningraph.parsing.bindex
 import ai.hypergraph.kaliningraph.parsing.calcStats
+import ai.hypergraph.kaliningraph.parsing.greedyTricliqueCover
 import ai.hypergraph.kaliningraph.parsing.nonterminals
-import ai.hypergraph.kaliningraph.parsing.rankOneDecomposition
 import ai.hypergraph.kaliningraph.parsing.tmMap
 import ai.hypergraph.kaliningraph.types.cache
 import js.buffer.*
@@ -509,7 +509,7 @@ fun LongArray.toIntArray32(): IntArray {
 }
 
 val CFG.rank1Buf: GPUBuffer by cache {
-  val components = rankOneDecomposition
+  val components = greedyTricliqueCover
   val K = components.size
   // Calculate 32-bit words per mask.
   val numWords = ((nonterminals.size + 63) / 64) * 2
@@ -548,7 +548,7 @@ suspend fun invokeCFLFixpointFast(cfg: CFG, numStates: Int, numNTs: Int, dpIn: G
   // --- 1. Setup Buffers ---
   val packWords = (numNTs + 31) / 32
   val featWords = (numStates + 31) / 32
-  val K         = cfg.rankOneDecomposition.size
+  val K         = cfg.greedyTricliqueCover.size
 
   // Compact Chart Buffer
   val packedBuf = GPUBuffer(numStates * numStates * packWords * 4, STCPSD)
