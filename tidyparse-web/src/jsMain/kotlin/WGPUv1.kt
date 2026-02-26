@@ -61,7 +61,6 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         ls_dense, ls_cdf,                        // Language size estimation
         build_root_sizes, enum_words_wor,        // Enumeration and decoding
         markov_score, select_top_k, gather_top_k,// Reranking and truncation
-//      expand_chart, r1_update_feats, r1_combine, r1_project, compress_chart
       ).forEach { it.bind() }
 //      benchmarkWGPU() // TODO: remove for deployment
 //      benchmarkWGPURepair()
