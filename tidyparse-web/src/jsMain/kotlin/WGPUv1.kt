@@ -557,7 +557,6 @@ if (A + 1u < NT) { endGC = getGrammarOffset(A + 1u); } else { endGC = cs.grammar
 """
 
 //language=wgsl
-//language=wgsl
 val init_chart by Shader("""$CFL_STRUCT $TERM_STRUCT $ACTIVE_NT_HELPERS
 @group(0) @binding(0) var<storage, read_write>         dp_in : array<u32>;
 @group(0) @binding(1) var<storage, read_write>    active_nts : array<atomic<u32>>;
