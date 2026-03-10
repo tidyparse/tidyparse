@@ -51,16 +51,25 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
     gpu.addEventListener(EventType("uncapturederror"), { e: dynamic -> log("Uncaptured: ${e.error.message}") })
     try {
       listOf(
-        prefix_sum_p1, prefix_sum_p2,      // ADT storage utils
-        sparse_load, sparse_mat_load,      // Matrix loading utils
-        active_nt_count,                         // Debugging
-        init_chart, init_chart_line,             // LA chart initialization
-        dag_reach, mdpt_count, mdpt_write,       // Graph reachability
-        cfl_mul_upper,                           // Matrix exponentiation
-        bp_count, bp_write,                      // Backpointer addressing
-        ls_dense, ls_cdf,                        // Language size estimation
-        build_root_sizes, enum_words_wor,        // Enumeration and decoding
-        markov_score, select_top_k, gather_top_k,// Reranking and truncation
+        prefix_sum_p1, prefix_sum_p2,
+        sparse_load, sparse_mat_load,
+        active_nt_count,
+        init_chart, init_chart_line,
+        dag_reach, mdpt_count, mdpt_write,
+        cfl_mul_upper,
+        bp_count, bp_write,
+        ls_dense, ls_cdf,
+        build_root_sizes, enum_words_wor,
+        markov_score, select_top_k, gather_top_k,
+
+        // V2
+        frontier_init_v2,
+        frontier_count_succ_v2,
+        frontier_write_exact_v2,
+        frontier_parent_weights_v2,
+        frontier_sampled_step_v2,
+        frontier_pack_packets_v2,
+        markov_score_v2
       ).forEach { it.bind() }
 //      benchmarkWGPU() // TODO: remove for deployment
 //      benchmarkWGPURepair()
@@ -1878,14 +1887,16 @@ class Shader constructor(val src: String) {
     }
   }
 
-  operator fun invoke(vararg inputs: GPUBuffer): DispatchStrategy =
-    gpu.createCommandEncoder().let { gce ->
+  operator fun invoke(vararg inputs: GPUBuffer): DispatchStrategy {
+    check(::pipeline.isInitialized) { "Shader '$name' was used before bind()" }
+    return gpu.createCommandEncoder().let { gce ->
       gce.beginComputePass().let { gcpe ->
         gcpe.setPipeline(pipeline)
         gcpe.setBindGroup(0, pipeline.bindBuffers("$name.buffers", *inputs))
-        return DispatchStrategy(gce, gcpe)
+        DispatchStrategy(gce, gcpe)
       }
     }
+  }
 }
 
 // constants   = [c0,c1,…]
