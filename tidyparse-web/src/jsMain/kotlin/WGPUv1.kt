@@ -101,111 +101,169 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
   return words.also { log("Received: ${words.size} words in ${t0.elapsedNow()} (round trip)") }
 }
 
-suspend fun repairPipeline(cfg: CFG, fsa: FSA,
-//                           dpInSparse: IntArray,
-                           ledBuffer: Int, ngrams: GPUBuffer?, codePoints: IntArray): List<String> {
+suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer?, codePoints: IntArray): List<String> {
   val t0 = TimeSource.Monotonic.markNow()
+  val timings = linkedMapOf<String, Int>()
+  fun mark(step: String, started: kotlin.time.TimeMark) {
+    timings[step] = started.elapsedNow().inWholeMilliseconds.toInt()
+  }
+
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
-  log("FSA(|Q|=${numStates}, |δ|=${fsa.transit.size}), ${cfg.calcStats()}")
+  log("FSA(|Q|=$numStates, |δ|=${fsa.transit.size}), ${cfg.calcStats()}")
 
-//log("Time to load buffer: ${t0.elapsedNow()} (${input.size * 4} bytes)")
-
+  val metaT = TimeSource.Monotonic.markNow()
   val metaBuf = packMetadata(cfg, fsa)
+  mark("pack metadata", metaT)
+  log("Packed metadata in ${timings["pack metadata"]}ms")
 
-  val tmBuf     = cfg.termBuf
-  val wordBuf   = codePoints.toGPUBuffer()
-  val totalSize = numStates * numStates * numNTs
+  val tmBuf       = cfg.termBuf
+  val wordBuf     = codePoints.toGPUBuffer()
+  val totalSize   = numStates * numStates * numNTs
+  val activeWords = (numNTs + 31) ushr 5
+
   val dpBuf     = Shader.createParseChart(STCPSD, totalSize)
-  init_chart(dpBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+  val activeBuf = GPUBuffer((numStates * numStates * activeWords * 4).toLong(), STCPSD)
 
-  log("Chart construction took: ${t0.elapsedNow()}")
+  log(
+    "Buffers: dp=${dpBuf.size}B (${totalSize} cells), " +
+        "active=${activeBuf.size}B (${activeWords} words/cell), " +
+        "word=${wordBuf.size}B, tm=${tmBuf.size}B"
+  )
 
-//   log(dpBuf.readInts().toLaTeX(numStates, numNTs))
+  val initT = TimeSource.Monotonic.markNow()
+  init_chart(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+  mark("init chart", initT)
+  log("Chart construction took: ${timings["init chart"]}ms")
 
-// val rowCoeff = numStates * numNTs
-//  val colCoeff = numNTs
-//  val dpBuf = dpInSparse.toGPUBufferSparse(GPUBufferUsage.STCPSD, numStates * rowCoeff, rowCoeff, colCoeff)
+  val closureT = TimeSource.Monotonic.markNow()
+  cfl_mul_upper.invokeCFLFixpoint(numStates, dpBuf, activeBuf, metaBuf)
+  mark("matrix closure", closureT)
+  log("Matrix closure reached in: ${timings["matrix closure"]}ms")
 
-  cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpBuf, metaBuf)
-//  invokeCFLFixpointFast(cfg, numStates, numNTs, dpBuf, metaBuf)
-  log("Matrix closure reached in: ${t0.elapsedNow()}")
-
-//  logActiveNTGrid(dpBuf, numStates, numNTs, limit = minOf(48, numStates))
-
-//  dpBuf.readInts().filter { it != 0 }.map { it.toString(2) }
-//    .groupingBy { it }.eachCount().entries.sortedBy { it.key }.joinToString("\n") { (a, b) -> "$a => $b" }
-//    .also { log(it) }
-
-  val t1 = TimeSource.Monotonic.markNow()
+  val rootsT = TimeSource.Monotonic.markNow()
   val startNT     = cfg.bindex[START_SYMBOL]
   val allStartIds = fsa.levFinalIdxs.map { it * numNTs + startNT }
-    .let { it.zip(dpBuf.readIndices(it)) }.filter { (_, v) -> v != 0 }.map { it.first }
+    .let { it.zip(dpBuf.readIndices(it)) }
+    .filter { (_, v) -> v != 0 }
+    .map { it.first }
+  mark("read roots", rootsT)
 
-  if (!allStartIds.isEmpty()) { log("Valid parse found: dpComplete has ${allStartIds.size} start indices") }
-  else return emptyList<String>().also { log("No valid parse found: dpComplete has no entries in final states!") }
+  if (allStartIds.isEmpty()) {
+    timings.logTimingsToJSConsole()
+    listOf(activeBuf, wordBuf, tmBuf, metaBuf, dpBuf).forEach(GPUBuffer::destroy)
+    return emptyList<String>().also { log("No valid parse found: dpComplete has no entries in final states!") }
+  }
 
+  log("Valid parse found: dpComplete has ${allStartIds.size} start indices")
+
+  val bpT = TimeSource.Monotonic.markNow()
   val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNTs, dpBuf, metaBuf)
-  log("Built backpointers in ${t1.elapsedNow()}")
+  mark("build backpointers", bpT)
+  val totalExp = bpStorageBuf.size.toInt() / (2 * 4)
+  log("Built backpointers in ${timings["build backpointers"]}ms | expansions=$totalExp")
 
   val t2 = TimeSource.Monotonic.markNow()
   val statesToDist = allStartIds.map { it to fsa.idsToCoords[(it - startNT) / numNTs]!!.second }
-  val led = statesToDist.minOf { it.second } // Language edit distance
+  val led = statesToDist.minOf { it.second }
 
-  val startIdxs = statesToDist.filter { it.second in (led..(led + ledBuffer)) }
-    .map { listOf(it.first, it.second) }.sortedBy { it[1] }.also { log("Start indices (LED=$led): $it") }.flatten()
+  val startIdxs = statesToDist
+    .filter { it.second in (led..(led + ledBuffer)) }
+    .map { listOf(it.first, it.second) }
+    .sortedBy { it[1] }
+    .also {
+      log(
+        "Start indices: total=${it.size}, roots=${it.size}, LED=$led, " +
+            "window=[${led}, ${led + ledBuffer}]"
+      )
+    }
+    .flatten()
+
+  mark("filter roots", t2)
 
   val maxRepairLen = fsa.width + fsa.height + 10
+  if (MAX_WORD_LEN < maxRepairLen) {
+    timings.logTimingsToJSConsole()
+    listOf(activeBuf, wordBuf, tmBuf, metaBuf, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf)
+      .forEach(GPUBuffer::destroy)
+    return emptyList<String>().also {
+      log("Max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)")
+    }
+  }
 
-  if (MAX_WORD_LEN < maxRepairLen) return emptyList<String>()
-    .also { log("Max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)") }
+  val lsDenseT = TimeSource.Monotonic.markNow()
+  val lsDense = buildLanguageSizeBuf(numStates, numNTs, dpBuf, metaBuf, tmBuf)
+  mark("build ls dense", lsDenseT)
+  log("Built lsDense in ${timings["build ls dense"]}ms (${lsDense.size}B)")
 
-  val lsDense  = buildLanguageSizeBuf(numStates, numNTs, dpBuf, metaBuf, tmBuf)
-  val totalExp = bpStorageBuf.size.toInt() / (2 * 4)
-//  log("Total expansions: $totalExp")
-  val cdfBuf   = GPUBuffer(totalExp * 4, STCPSD)
-
+  val cdfT = TimeSource.Monotonic.markNow()
+  val cdfBuf = GPUBuffer(totalExp * 4, STCPSD)
   ls_cdf(dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
-
   lsDense.destroy()
-
-  log("Pairing function construction took: ${t2.elapsedNow()}")
+  mark("build cdf", cdfT)
+  log("Pairing function construction took: ${timings["build cdf"]}ms (${cdfBuf.size}B)")
 
   val numRoots = startIdxs.size / 2
   val rootSizes = GPUBuffer(numRoots * 4, STCPSD)
 
   /** Memory layout: [IDX_UNIFORM_STRUCT] */
-  val idxUniBuf = packStruct(listOf(0, maxRepairLen, numNTs, numStates, DISPATCH_GROUP_SIZE_X, MAX_SAMPLES), startIdxs.toGPUBuffer())
+  val idxUniBuf = packStruct(
+    listOf(0, maxRepairLen, numNTs, numStates, DISPATCH_GROUP_SIZE_X, MAX_SAMPLES),
+    startIdxs.toGPUBuffer()
+  )
 
+  val rootSizeT = TimeSource.Monotonic.markNow()
   build_root_sizes(dpBuf, bpCountBuf, bpOffsetBuf, cdfBuf, tmBuf, rootSizes, idxUniBuf)((numRoots + 255) / 256)
+  mark("build root sizes", rootSizeT)
+  log("Built root sizes in ${timings["build root sizes"]}ms | roots=$numRoots")
 
+  val rootCdfT = TimeSource.Monotonic.markNow()
   val rootCDF = Shader.prefixSumGPU(rootSizes, numRoots)
-  suspend fun langIntSize(): Long { // Overapproximation to L_∩ since we are counting trees, not words
+  mark("prefix root cdf", rootCdfT)
+  log("Built root CDF in ${timings["prefix root cdf"]}ms (${rootCDF.size}B)")
+
+  val langSizeT = TimeSource.Monotonic.markNow()
+  suspend fun langIntSize(): Long {
     fun u(x: Int) = x.toUInt().toLong()
     val last = numRoots - 1
     val lastSize = if (numRoots > 0) rootSizes.readIndices(listOf(last))[0] else 0
     val lastCDF = if (numRoots > 0) rootCDF.readIndices(listOf(last))[0] else 0
-    val total = if (numRoots > 0) u(lastCDF) + u(lastSize) else 0L
-    return total
+    return if (numRoots > 0) u(lastCDF) + u(lastSize) else 0L
   }
 
   val langIntSize = langIntSize()
+  mark("read lang size", langSizeT)
+
   val maxSamples = if (ngrams != null) MAX_SAMPLES.toLong() else 40_000
   val toDecode = minOf(maxSamples, langIntSize).toInt()
   val pct = toDecode.toDouble() * 100.0 / langIntSize.toDouble().coerceAtLeast(1.0)
-  log("Langauge saturation: $pct% ($toDecode/$langIntSize)")
+  log("Language saturation: $pct% ($toDecode/$langIntSize), maxRepairLen=$maxRepairLen")
 
   idxUniBuf.writeU32(wordIndex = 5, value = toDecode)
 
+  val enumT = TimeSource.Monotonic.markNow()
   val outBuf = GPUBuffer(toDecode * maxRepairLen * 4, STCPSD)
   enum_words_wor(
     dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf,
-    cdfBuf /*ls_sparse*/, tmBuf, idxUniBuf, rootSizes, rootCDF, outBuf
+    cdfBuf, tmBuf, idxUniBuf, rootSizes, rootCDF, outBuf
   )(DISPATCH_GROUP_SIZE_X, (toDecode + DISPATCH_GROUP_SIZE_X - 1) / DISPATCH_GROUP_SIZE_X)
+  mark("enumerate", enumT)
+  log("Enumerated $toDecode samples in ${timings["enumerate"]}ms (${outBuf.size}B)")
 
-  return (if (ngrams != null) ngramDecoder(outBuf, ngrams,  maxRepairLen, cfg, toDecode)
-  else uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)).also {
-    listOf(outBuf, rootSizes, rootCDF, metaBuf, dpBuf, idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf)
-      .forEach(GPUBuffer::destroy)
+  val decodeT = TimeSource.Monotonic.markNow()
+  val result =
+    if (ngrams != null) ngramDecoder(outBuf, ngrams, maxRepairLen, cfg, toDecode)
+    else uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)
+  mark("decode", decodeT)
+
+  timings["total"] = t0.elapsedNow().inWholeMilliseconds.toInt()
+  timings.logTimingsToJSConsole()
+  log("repairPipeline completed in ${timings["total"]}ms")
+
+  return result.also {
+    listOf(
+      outBuf, rootSizes, rootCDF, metaBuf, dpBuf, activeBuf, wordBuf,
+      idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf
+    ).forEach(GPUBuffer::destroy)
   }
 }
 
@@ -245,6 +303,7 @@ suspend fun GPUBuffer.readInt32Array(): Int32Array<ArrayBuffer> {
   return Int32Array(copied)
 }
 
+// TODO: Switch to MRF-based sampler? https://aclanthology.org/H92-1028.pdf
 suspend fun ngramDecoder(outBuf: GPUBuffer, ngrams: GPUBuffer, maxRepairLen: Int, cfg: CFG, samplesToDecode: Int): MutableList<String> {
   val topK = scoreSelectGather(packets = outBuf, ngrams = ngrams, maxSamples = samplesToDecode, stride = maxRepairLen, k = TOP_K_SAMP)
 
@@ -362,6 +421,15 @@ fn count_tms(val: u32, unit_nt: u32) -> u32 {
 """
 
 //language=wgsl
+const val ACTIVE_NT_HELPERS = """
+fn activeWord(nt: u32) -> u32 { return nt >> 5u; }
+fn activeMask(nt: u32) -> u32 { return 1u << (nt & 31u); }
+fn activeBase(r: u32, c: u32) -> u32 { return (r * cs.numStates + c) * cs.activeWords; }
+fn isActiveAt(base: u32, nt: u32) -> bool { return (atomicLoad(&active_nts[base + activeWord(nt)]) & activeMask(nt)) != 0u; }
+fn setActiveAt(base: u32, nt: u32) { _ = atomicOr(&active_nts[base + activeWord(nt)], activeMask(nt)); }
+"""
+
+//language=wgsl
 const val IDX_UNIFORM_STRUCT = """
 struct IndexUniforms {  // Indices of all accepting states in the parse chart
     targetCnt       : atomic<u32>,  // global counter (LFSR advances on host)
@@ -392,14 +460,17 @@ $TM_DECODING_HELPERS
 """
 
 //language=wgsl
+//language=wgsl
 const val CFL_STRUCT = """struct CFLStruct { // Carries metadata about the CFL + NFA intersection
-             numStates : u32,      numNonterminals : u32,
+             numStates : u32,      numNonterminals : u32,          activeWords : u32,
 
            mdptsOffset : u32,            mdptsSize : u32,
     mdptsOffsetsOffset : u32,     mdptsOffsetsSize : u32,
     acceptStatesOffset : u32,     acceptStatesSize : u32,
 grammarFlattenedOffset : u32, grammarFlattenedSize : u32,
   grammarOffsetsOffset : u32,   grammarOffsetsSize : u32,
+leftAdjFlattenedOffset : u32, leftAdjFlattenedSize : u32,
+  leftAdjOffsetsOffset : u32,   leftAdjOffsetsSize : u32,
 
                payload : array<u32>
 };
@@ -407,7 +478,10 @@ grammarFlattenedOffset : u32, grammarFlattenedSize : u32,
          fn getMdpt(index: u32) -> u32 { return cs.payload[cs.mdptsOffset + index]; }
    fn getMdptOffset(index: u32) -> u32 { return cs.payload[cs.mdptsOffsetsOffset + index]; }
 fn getGrammarSymbol(index: u32) -> u32 { return cs.payload[cs.grammarFlattenedOffset + index]; }
-fn getGrammarOffset(index: u32) -> u32 { return cs.payload[cs.grammarOffsetsOffset + index]; }"""
+fn getGrammarOffset(index: u32) -> u32 { return cs.payload[cs.grammarOffsetsOffset + index]; }
+
+fn getLeftAdjSymbol(index: u32) -> u32 { return cs.payload[cs.leftAdjFlattenedOffset + index]; }
+fn getLeftAdjOffset(index: u32) -> u32 { return cs.payload[cs.leftAdjOffsetsOffset + index]; }"""
 
 //language=wgsl
 const val SAT_ARTH = """
@@ -458,19 +532,38 @@ else { pairOffsetNext = cs.mdptsSize; }
 """
 
 //language=text
-const val PREAMBLE = """
+const val CELL_PREAMBLE = """
 let r = gid.x;
 let c = gid.y;
 if (c <= r) { return; }
+let N   = cs.numStates;
+let NT  = cs.numNonterminals;
+let snt = N * NT;
+let aoi            = r*N + c + 1u;
+let pairOffset     = getMdptOffset(aoi - 1u);
+var pairOffsetNext : u32;
+if (aoi < cs.mdptsOffsetsSize) { pairOffsetNext = getMdptOffset(aoi); }
+else { pairOffsetNext = cs.mdptsSize; }
+"""
+
+//language=text
+const val PREAMBLE = """
+$CELL_PREAMBLE
 let A = gid.z;
-$SHORT_PREAMBLE"""
+let dpIdx   = r*snt + c*NT + A;
+let startGC = getGrammarOffset(A);
+var endGC: u32;
+if (A + 1u < NT) { endGC = getGrammarOffset(A + 1u); } else { endGC = cs.grammarFlattenedSize; }
+"""
 
 //language=wgsl
-val init_chart by Shader("""$CFL_STRUCT $TERM_STRUCT
-@group(0) @binding(0) var<storage, read_write>     dp_in : array<u32>;
-@group(0) @binding(1) var<storage, read>            word : array<u32>;
-@group(0) @binding(2) var<storage, read>              cs : CFLStruct;
-@group(0) @binding(3) var<storage, read>       terminals : Terminals;
+//language=wgsl
+val init_chart by Shader("""$CFL_STRUCT $TERM_STRUCT $ACTIVE_NT_HELPERS
+@group(0) @binding(0) var<storage, read_write>         dp_in : array<u32>;
+@group(0) @binding(1) var<storage, read_write>    active_nts : array<atomic<u32>>;
+@group(0) @binding(2) var<storage, read>              word : array<u32>;
+@group(0) @binding(3) var<storage, read>                cs : CFLStruct;
+@group(0) @binding(4) var<storage, read>         terminals : Terminals;
 
 fn pack_rc(row_j: u32, col_i: u32) -> u32 { return (row_j << 16u) | (col_i & 0xffffu); }
 fn unpack_row_j(packed: u32) -> u32 { return packed >> 16u; }
@@ -554,8 +647,8 @@ const MAX_J_IDX_CONST : u32 = ${MAX_LEV_RAD}u; // Max index for j (edit distance
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let q1_rank = gid.x;
     let q2_rank = gid.y;
-    let A_idx  = gid.z;
-    let nts = cs.numNonterminals;
+    let A_idx   = gid.z;
+    let nts     = cs.numNonterminals;
 
     let dpIdx = q1_rank * cs.numStates * nts + q2_rank * nts + A_idx;
 
@@ -606,7 +699,7 @@ const MAX_J_IDX_CONST : u32 = ${MAX_LEV_RAD}u; // Max index for j (edit distance
     else if (dj >= 1 && di == dj + 1) {
         let d_val = u32(dj);
         if (i1 + d_val < current_word_len) {
-            if ( (i1 + d_val + 1u <= current_word_len) && (j1 + d_val <= MAX_J_IDX_CONST) ) {
+            if ((i1 + d_val + 1u <= current_word_len) && (j1 + d_val <= MAX_J_IDX_CONST)) {
                 let s_char = letter_at(i1 + d_val, current_word_len);
                 encoded_predicate_val = encode_pos_literal(A_idx, s_char);
                 if (encoded_predicate_val != 0u) { should_write_to_dp_in = true; }
@@ -614,15 +707,20 @@ const MAX_J_IDX_CONST : u32 = ${MAX_LEV_RAD}u; // Max index for j (edit distance
         }
     }
 
-    if (should_write_to_dp_in) { dp_in[dpIdx] = encoded_predicate_val; }
+    if (should_write_to_dp_in) {
+        dp_in[dpIdx] = encoded_predicate_val;
+        setActiveAt(activeBase(q1_rank, q2_rank), A_idx);
+    }
 }""")
 
 //language=wgsl
-val init_chart_line by Shader("""$CFL_STRUCT $TERM_STRUCT
-@group(0) @binding(0) var<storage, read_write>     dp_in : array<u32>;
-@group(0) @binding(1) var<storage, read>            word : array<u32>;
-@group(0) @binding(2) var<storage, read>              cs : CFLStruct;
-@group(0) @binding(3) var<storage, read>       terminals : Terminals;
+//language=wgsl
+val init_chart_line by Shader("""$CFL_STRUCT $TERM_STRUCT $ACTIVE_NT_HELPERS
+@group(0) @binding(0) var<storage, read_write>         dp_in : array<u32>;
+@group(0) @binding(1) var<storage, read_write>    active_nts : array<atomic<u32>>;
+@group(0) @binding(2) var<storage, read>              word : array<u32>;
+@group(0) @binding(3) var<storage, read>                cs : CFLStruct;
+@group(0) @binding(4) var<storage, read>         terminals : Terminals;
 
 fn letter_at(idx : u32, wd_len : u32) -> u32 { return select(word[idx], 0xffffffffu, idx >= wd_len); }
 
@@ -653,13 +751,13 @@ fn encode_pos_literal(A_nt_idx : u32, sigma_token : u32) -> u32 {
 
     // Hole => allow any terminal in Σ_A (wildcard)
     if (tok == 0xffffffffu) {
-        if (ntLen > 0u) { dp_in[dpIdx] = LIT_ALL; }
+        if (ntLen > 0u) { dp_in[dpIdx] = LIT_ALL; setActiveAt(activeBase(q1, q2), A); }
         return;
     }
 
     // Fixed token => only that literal
     let enc = encode_pos_literal(A, tok);
-    if (enc != 0u) { dp_in[dpIdx] = enc; }
+    if (enc != 0u) { dp_in[dpIdx] = enc; setActiveAt(activeBase(q1, q2), A); }
 }""")
 
 //language=wgsl
@@ -721,33 +819,60 @@ val mdpt_write by Shader("""struct Uni { n : u32 };
 }""")
 
 //language=wgsl
-val cfl_mul_upper by Shader("""$CFL_STRUCT
+//language=wgsl
+val cfl_mul_upper by Shader("""$CFL_STRUCT $ACTIVE_NT_HELPERS
 struct AtomicChange { count: atomic<u32> };
 
-@group(0) @binding(0) var<storage, read_write>    dp_in : array<u32>;
-@group(0) @binding(1) var<storage, read>             cs : CFLStruct;
-@group(0) @binding(2) var<storage, read_write>  changes : AtomicChange;
+@group(0) @binding(0) var<storage, read_write>         dp_in : array<u32>;
+@group(0) @binding(1) var<storage, read_write>    active_nts : array<atomic<u32>>;
+@group(0) @binding(2) var<storage, read>                cs : CFLStruct;
+@group(0) @binding(3) var<storage, read_write>     changes : AtomicChange;
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-    $PREAMBLE
-    
-    let dpVal = dp_in[dpIdx];
-    if (dpVal != 0) {
-        atomicAdd(&changes.count, 1u);
-        if ((dpVal & 0x01) != 0) { return; }
-    }
+    $CELL_PREAMBLE
 
-    for (var pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx++) {
-        let mdpt = getMdpt(pairIdx); for (var g = startGC; g < endGC; g+= 2u) {
-            let B = getGrammarSymbol(g); let C = getGrammarSymbol(g + 1u);
+    let tgtBase = activeBase(r, c);
 
-            let idxBM = r*snt + mdpt*NT + B;
-            let idxMC = mdpt*snt + c*NT + C;
+    for (var pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx = pairIdx + 1u) {
+        let m = getMdpt(pairIdx);
 
-            if ((dp_in[idxBM] != 0) && (dp_in[idxMC] != 0)) {
-                dp_in[dpIdx] |= 0x01;
-                atomicAdd(&changes.count, 1u);
-                return;
+        let leftBase  = activeBase(r, m);
+        let rightBase = activeBase(m, c);
+
+        for (var w = 0u; w < cs.activeWords; w = w + 1u) {
+            var bits = atomicLoad(&active_nts[leftBase + w]);
+
+            loop {
+                if (bits == 0u) { break; }
+
+                let bit = firstTrailingBit(bits);
+                if (bit == 0xffffffffu) { break; }
+
+                let B = (w << 5u) + bit;
+                bits = bits & (bits - 1u);
+
+                if (B >= NT) { continue; }
+
+                let startLA = getLeftAdjOffset(B);
+                var endLA: u32;
+                if (B + 1u < cs.leftAdjOffsetsSize) { endLA = getLeftAdjOffset(B + 1u); }
+                else { endLA = cs.leftAdjFlattenedSize; }
+
+                for (var g = startLA; g < endLA; g = g + 2u) {
+                    let C = getLeftAdjSymbol(g);
+                    let A = getLeftAdjSymbol(g + 1u);
+
+                    if (!isActiveAt(rightBase, C)) { continue; }
+
+                    let dpIdx = r * snt + c * NT + A;
+                    let old = dp_in[dpIdx];
+
+                    if ((old & 0x01u) == 0u) {
+                        dp_in[dpIdx] = old | 0x01u;
+                        setActiveAt(tgtBase, A);
+                        atomicAdd(&changes.count, 1u);
+                    }
+                }
             }
         }
     }
@@ -1621,9 +1746,15 @@ class Shader constructor(val src: String) {
     suspend fun packMetadata(cfg: CFG, fsa: FSA): GPUBuffer {
       val t0 = TimeSource.Monotonic.markNow()
 
-      val (gFlat, gOff)    = cfg.grammarEncoding.let { it.flat to it.offsets }
+      val (gFlat, gOff) = cfg.grammarEncoding.let { it.flat to it.offsets }
       val grammarFlattened = gFlat.toGPUBuffer(STCPSD)
-      val grammarOffsets   = gOff.toGPUBuffer(STCPSD)
+      val grammarOffsets = gOff.toGPUBuffer(STCPSD)
+
+      val (lFlat, lOff) = cfg.leftAdjEncoding
+      val leftAdjFlattened = lFlat.toGPUBuffer(STCPSD)
+      val leftAdjOffsets = lOff.toGPUBuffer(STCPSD)
+
+      val activeWords = (cfg.nonterminals.size + 31) ushr 5
 
       log("Encoded grammar in ${t0.elapsedNow()}")
 
@@ -1633,12 +1764,12 @@ class Shader constructor(val src: String) {
       val (allFSAPairsFlattened, allFSAPairsOffsets) = buildMidpointsGPU(fsa.numStates, reachBuf)
       log("Sparse reachability took ${t0.elapsedNow()} / (${4 * (allFSAPairsFlattened.size + allFSAPairsOffsets.size)} bytes)")
 
-      /** Memory layout: [CFL_STRUCT] */ val metaBuf = packStruct(
-        constants = listOf(fsa.numStates, cfg.nonterminals.size),
-        // FSA Encoding
+      /** Memory layout: [CFL_STRUCT] */
+      val metaBuf = packStruct(
+        constants = listOf(fsa.numStates, cfg.nonterminals.size, activeWords),
         allFSAPairsFlattened, allFSAPairsOffsets, fsa.levFinalIdxs.toGPUBuffer(),
-        // CFG Encoding
-        grammarFlattened, grammarOffsets
+        grammarFlattened, grammarOffsets,
+        leftAdjFlattened, leftAdjOffsets
       )
 
       log("Packed metadata in ${t0.elapsedNow()}")
@@ -1698,20 +1829,23 @@ class Shader constructor(val src: String) {
   }
 
   // Invocation strategies: eliminates some of the ceremony of calling a GSL shader
-  suspend fun invokeCFLFixpoint(numStates: Int, numNTs: Int, dpIn: GPUBuffer, metaBuf: GPUBuffer) {
+  suspend fun invokeCFLFixpoint(
+    numStates: Int,
+    dpIn: GPUBuffer,
+    activeBuf: GPUBuffer,
+    metaBuf: GPUBuffer
+  ) {
     var t0 = TimeSource.Monotonic.markNow()
-
     var prevValue = -1
 
     for (round in 0..<numStates) {
       val changesBuf = 0.toGPUBuffer()
-      cfl_mul_upper(dpIn, metaBuf, changesBuf)(numStates, numStates, numNTs)
-//      log(dpIn.readInts().toLaTeX(numStates, numNTs))
+      cfl_mul_upper(dpIn, activeBuf, metaBuf, changesBuf)(numStates, numStates)
       val changesThisRound = changesBuf.readIndices(listOf(0))[0]
       changesBuf.destroy()
       if (changesThisRound == prevValue) break
       prevValue = changesThisRound
-      log("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}, ⌈log(|Q|*|V|)⌉=${ceil(log2(numStates * numNTs.toDouble()))}")
+      log("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
       t0 = TimeSource.Monotonic.markNow()
     }
   }

@@ -437,16 +437,18 @@ suspend fun repairPipelineV2(
   log("FSA(|Q|=$numStates, |δ|=${fsa.transit.size}), ${cfg.calcStats()}")
 
   val metaBuf = packMetadata(cfg, fsa)
-  val tmBuf   = cfg.termBuf
-  val wordBuf = codePoints.toGPUBuffer()
+  val tmBuf       = cfg.termBuf
+  val wordBuf     = codePoints.toGPUBuffer()
+  val totalSize   = numStates * numStates * numNTs
+  val activeWords = (numNTs + 31) ushr 5
 
-  val totalSize = numStates * numStates * numNTs
   val dpBuf     = Shader.createParseChart(STCPSD, totalSize)
+  val activeBuf = GPUBuffer((numStates * numStates * activeWords * 4).toLong(), STCPSD)
 
-  init_chart(dpBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+  init_chart(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
   log("Chart construction took: ${t0.elapsedNow()}")
 
-  cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpBuf, metaBuf)
+  cfl_mul_upper.invokeCFLFixpoint(numStates, dpBuf, activeBuf, metaBuf)
   log("Matrix closure reached in: ${t0.elapsedNow()}")
 
   // ---- roots (same logic you already had) ----

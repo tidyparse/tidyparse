@@ -11,17 +11,18 @@ import web.gpu.GPUBuffer
 import kotlin.time.TimeSource
 
 suspend fun logActiveNTGrid(
-  dpBuf: GPUBuffer,
+  activeBuf: GPUBuffer,
   numStates: Int,
   numNTs: Int,
   limit: Int = minOf(32, numStates)
 ) {
+  val activeWords = (numNTs + 31) ushr 5
   val countsBuf = Shader.GPUBuffer(numStates.toLong() * numStates * 4L, GPUBufferUsage.STCPSD)
-  val uniBuf = intArrayOf(numStates, numNTs).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
+  val uniBuf = intArrayOf(numStates, activeWords).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
 
   val groupsX = (numStates + 7) / 8
   val groupsY = (numStates + 7) / 8
-  active_nt_count(dpBuf, countsBuf, uniBuf)(groupsX, groupsY, 1)
+  active_nt_count(activeBuf, countsBuf, uniBuf)(groupsX, groupsY, 1)
 
   val allIndices = (0 until numStates * numStates).toList()
   val allVals = countsBuf.readIndices(allIndices)
@@ -30,10 +31,12 @@ suspend fun logActiveNTGrid(
   val totalUTCells = (numStates.toLong() * (numStates - 1)) / 2
   val maxPossibleActive = totalUTCells * numNTs
 
-  val sparsity = if (maxPossibleActive > 0) { (totalActiveNTs.toDouble() / maxPossibleActive) * 100 } else 0.0
+  val sparsity =
+    if (maxPossibleActive > 0) (totalActiveNTs.toDouble() / maxPossibleActive) * 100.0
+    else 0.0
 
   val previewIdxs = ArrayList<Int>(limit * limit)
-  for (r in 0 until limit) for (c in 0 until limit) previewIdxs.add(r * numStates + c)
+  for (r in 0 until limit) for (c in 0 until limit) previewIdxs += r * numStates + c
   val previewVals = countsBuf.readIndices(previewIdxs)
 
   val w = numNTs.toString().length.coerceAtLeast(2)
@@ -59,25 +62,27 @@ suspend fun logActiveNTGrid(
 
 //language=wgsl
 val active_nt_count by Shader("""
-struct Uni { n: u32, nt: u32 };
+struct Uni { n: u32, activeWords: u32 };
 
-@group(0) @binding(0) var<storage, read>       dp_in  : array<u32>;
-@group(0) @binding(1) var<storage, read_write> outCnt : array<u32>; // length n*n
-@group(0) @binding(2) var<uniform>             uni    : Uni;
+@group(0) @binding(0) var<storage, read>       active_nts : array<u32>;
+@group(0) @binding(1) var<storage, read_write> outCnt     : array<u32>; // length n*n
+@group(0) @binding(2) var<uniform>             uni        : Uni;
 
 @compute @workgroup_size(8,8,1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let r = gid.x;
   let c = gid.y;
   let n = uni.n;
-  let nt = uni.nt;
+  let aw = uni.activeWords;
+
   if (r >= n || c >= n) { return; }
   if (c <= r) { outCnt[r*n + c] = 0u; return; }
-  let base = r * n * nt + c * nt;
+
+  let base = (r * n + c) * aw;
   var k: u32 = 0u;
-  for (var a: u32 = 0u; a < nt; a = a + 1u) { if (dp_in[base + a] != 0u) { k = k + 1u; } }
+  for (var w: u32 = 0u; w < aw; w = w + 1u) { k += countOneBits(active_nts[base + w]); }
   outCnt[r*n + c] = k;
-}""".trimIndent())
+}""")
 
 suspend fun completeCode(cfg: CFG, porous: List<String>, ngrams: GPUBuffer? = null): List<String> {
   val t0 = TimeSource.Monotonic.markNow()
@@ -98,36 +103,42 @@ suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints:
 
   val metaBuf = packMetadata(cfg, fsa)
 
-  val tmBuf   = cfg.termBuf
-  val wordBuf = codePoints.toGPUBuffer()
-  val totalSize = numStates * numStates * numNTs
+  val tmBuf       = cfg.termBuf
+  val wordBuf     = codePoints.toGPUBuffer()
+  val totalSize   = numStates * numStates * numNTs
+  val activeWords = (numNTs + 31) ushr 5
 
-  val dpBuf = Shader.createParseChart(STCPSD, totalSize)
+  val dpBuf     = Shader.createParseChart(STCPSD, totalSize)
+  val activeBuf = GPUBuffer((numStates * numStates * activeWords * 4).toLong(), STCPSD)
 
-  init_chart_line(dpBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
-  log("Chart construction took: ${t0.elapsedNow()} / dpBuf: ${dpBuf.size} bytes")
+  init_chart_line(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+  log("Chart construction took: ${t0.elapsedNow()}")
 
-  cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpBuf, metaBuf)
+  cfl_mul_upper.invokeCFLFixpoint(numStates, dpBuf, activeBuf, metaBuf)
   log("Matrix closure reached in: ${t0.elapsedNow()}")
 
-//  logActiveNTGrid(dpBuf, numStates, numNTs, limit = minOf(48, numStates))
+//  logActiveNTGrid(activeBuf, numStates, numNTs, limit = minOf(48, numStates))
 
   val startNT = cfg.bindex[START_SYMBOL]
+  val rootQuery = fsa.finalIdxs.map { it * numNTs + startNT }
 
-  // For a chain, finalIdxs should contain just the end state (n,0)
-  val allStartIds = listOf(fsa.finalIdxs[0] * numNTs + startNT)
+  val allStartIds = rootQuery
+    .zip(dpBuf.readIndices(rootQuery))
+    .filter { (_, v) -> v != 0 }
+    .map { it.first }
 
   if (allStartIds.isEmpty()) {
     log("No valid completion found: dpComplete has no entries in final states!")
-    listOf(metaBuf, dpBuf).forEach(GPUBuffer::destroy)
+    listOf(activeBuf, metaBuf, dpBuf, wordBuf).forEach(GPUBuffer::destroy)
     return emptyList()
   }
 
-  val startIdxs = allStartIds + 0
+  val startIdxs = allStartIds.flatMap { listOf(it, 0) }
   val maxRepairLen = fsa.width + 10
+
   if (MAX_WORD_LEN < maxRepairLen) {
     log("Max completion length exceeded $MAX_WORD_LEN ($maxRepairLen)")
-    listOf(metaBuf, dpBuf).forEach(GPUBuffer::destroy)
+    listOf(activeBuf, metaBuf, dpBuf, wordBuf).forEach(GPUBuffer::destroy)
     return emptyList()
   }
 
@@ -136,6 +147,7 @@ suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints:
   val lsDense  = buildLanguageSizeBuf(numStates, numNTs, dpBuf, metaBuf, tmBuf)
   val totalExp = bpStorageBuf.size.toInt() / (2 * 4)
   val cdfBuf   = GPUBuffer(totalExp * 4, STCPSD)
+
   ls_cdf(dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
   lsDense.destroy()
 
@@ -150,15 +162,6 @@ suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints:
   build_root_sizes(dpBuf, bpCountBuf, bpOffsetBuf, cdfBuf, tmBuf, rootSizes, idxUniBuf)((numRoots + 255) / 256)
   val rootCDF = Shader.prefixSumGPU(rootSizes, numRoots)
 
-  suspend fun langIntSize(): Long {
-    fun u(x: Int) = x.toUInt().toLong()
-    val last = numRoots - 1
-    val lastSize = if (numRoots > 0) rootSizes.readIndices(listOf(last))[0] else 0
-    val lastCDF  = if (numRoots > 0) rootCDF.readIndices(listOf(last))[0] else 0
-    return if (numRoots > 0) u(lastCDF) + u(lastSize) else 0L
-  }
-
-//  val langSize = langIntSize()
   val toDecode = 100_000
   idxUniBuf.writeU32(wordIndex = 5, value = toDecode)
 
@@ -172,8 +175,10 @@ suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints:
       if (ngrams != null) ngramDecoder(outBuf, ngrams, maxRepairLen, cfg, toDecode)
       else uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)
       ).also {
-      listOf(outBuf, rootSizes, rootCDF, metaBuf, dpBuf, idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf)
-        .forEach(GPUBuffer::destroy)
+      listOf(
+        outBuf, rootSizes, rootCDF, metaBuf, dpBuf, activeBuf, wordBuf,
+        idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf
+      ).forEach(GPUBuffer::destroy)
     }
 }
 
@@ -197,34 +202,33 @@ suspend fun checkSuffixPipeline(cfg: CFG, fsa: FSA, suffixLen: Int, codePoints: 
 
   val metaBuf = packMetadata(cfg, fsa)
 
-  val tmBuf   = cfg.termBuf
-  val wordBuf = codePoints.toGPUBuffer()
-  val totalSize = numStates * numStates * numNTs
+  val tmBuf       = cfg.termBuf
+  val wordBuf     = codePoints.toGPUBuffer()
+  val totalSize   = numStates * numStates * numNTs
+  val activeWords = (numNTs + 31) ushr 5
 
-  val dpBuf = Shader.createParseChart(STCPSD, totalSize)
+  val dpBuf     = Shader.createParseChart(STCPSD, totalSize)
+  val activeBuf = GPUBuffer((numStates * numStates * activeWords * 4).toLong(), STCPSD)
 
-  init_chart_line(dpBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
-  log("Chart construction took: ${t0.elapsedNow()} / dpBuf: ${dpBuf.size} bytes")
+  init_chart_line(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+  log("Chart construction took: ${t0.elapsedNow()}")
 
-  cfl_mul_upper.invokeCFLFixpoint(numStates, numNTs, dpBuf, metaBuf)
+  cfl_mul_upper.invokeCFLFixpoint(numStates, dpBuf, activeBuf, metaBuf)
   log("Matrix closure reached in: ${t0.elapsedNow()}")
 
   val startNT = cfg.bindex[START_SYMBOL]
 
   val baseLen = codePoints.size - suffixLen
   val queryIndices = ArrayList<Int>(suffixLen + 1)
-
   for (k in 0..suffixLen) {
     val targetState = baseLen + k
-    val flatIndex = targetState * numNTs + startNT
-    queryIndices.add(flatIndex)
+    queryIndices += targetState * numNTs + startNT
   }
 
   val reachability = dpBuf.readIndices(queryIndices)
-
   val listSuffixes = reachability.withIndex().filter { it.value != 0 }.map { it.index }
 
-  listOf(metaBuf, dpBuf, wordBuf).forEach(GPUBuffer::destroy)
+  listOf(activeBuf, metaBuf, dpBuf, wordBuf).forEach(GPUBuffer::destroy)
   return listSuffixes
 }
 
@@ -255,3 +259,55 @@ fun porousToCodePoints(cfg: CFG, porous: List<String>): IntArray =
     if (t == "_") HOLE_SENTINEL_INT
     else cfg.tmMap[t] ?: error("Unknown token '$t' (not in cfg.tmMap)")
   }
+
+fun Map<String, Int>.logTimingsToJSConsole() {
+  val totalMs = this["total"]?.coerceAtLeast(0)
+  val bodyRows = entries
+    .asSequence()
+    .filter { it.key != "total" }
+    .map { (k, v) -> k.ifBlank { "<unnamed>" } to v.coerceAtLeast(0) }
+    .sortedByDescending { it.second }
+    .toList()
+
+  val total = totalMs ?: bodyRows.sumOf { it.second }.coerceAtLeast(1)
+  val maxMs = bodyRows.maxOf { it.second }.coerceAtLeast(1)
+
+  val maxLabel = 28
+  val barWidth = 36
+
+  fun String.compactLabel(): String =
+    replace(Regex("\\s+"), " ")
+      .let { if (it.length <= maxLabel) it else it.take(maxLabel - 1) + "…" }
+
+  fun Int.bar(): String {
+    val n = ((this.toDouble() / maxMs) * barWidth).toInt().coerceIn(1, barWidth)
+    return "#".repeat(n)
+  }
+
+  val rowTexts = bodyRows.map { (label, ms) ->
+    val pct = (100.0 * ms / total.coerceAtLeast(1)).toInt()
+    buildString {
+      append(label.compactLabel().padEnd(maxLabel))
+      append(" |")
+      append(ms.bar().padEnd(barWidth))
+      append("| ")
+      append(ms.toString().padStart(6))
+      append(" ms  ")
+      append(pct.toString().padStart(3))
+      append('%')
+    }
+  }
+
+  val titleText = "─ Timings (${bodyRows.size} steps, total=${total}ms) "
+  val contentWidth = maxOf(titleText.length, rowTexts.maxOf { it.length })
+
+  val plot = buildString {
+    appendLine("┌" + titleText.padEnd(contentWidth, '─') + "┐")
+    rowTexts.forEach { row ->
+      appendLine("│" + row.padEnd(contentWidth, ' ') + "│")
+    }
+    appendLine("└" + "─".repeat(contentWidth) + "┘")
+  }
+
+  println(plot)
+}
