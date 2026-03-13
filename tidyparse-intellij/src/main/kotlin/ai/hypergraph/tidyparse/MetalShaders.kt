@@ -49,7 +49,7 @@ fun main() {
         System.arraycopy(this, 0, prefix, 1, size)
         Arrays.parallelPrefix(prefix) { a, b -> a + b }
       }
-    mapIndexed { p, outer -> outer.mapIndexed { q, inner -> inner.filter { it in (p + 1)..<q } } }.flatten()
+    flatMapIndexed { p, outer -> outer.mapIndexed { q, inner -> inner.filter { it in (p + 1)..<q } } }
       .let { it.flatten().toIntArray() to it.map { it.size }.toIntArray().parallelPrefixSizes() }
   }.also { println("Completed prefix scan in: ${it.duration}") }.value
 
@@ -378,11 +378,11 @@ kernel void prefix_sum_p2(
   ): ByteArray =
     Memory(maxWordLen * maxSamples.toLong()).also { outMem ->
       nativeBridge.repairPipeline(
-        dp_in = Memory(2L * dpIn.size).apply { write(0, dpIn.toShortArray(), 0, dpIn.size) },
+        dp_in = dpIn.toNativeMemory(),
         dp_out = outMem,
-        allFSAPairs = Memory(4L * mdpts.size).apply { write(0, mdpts, 0, mdpts.size) },
-        allFSAPairsOffsets = Memory(4L * mdptsOffsets.size).apply { write(0, mdptsOffsets, 0, mdptsOffsets.size) },
-        acceptStates =  Memory(4L * acceptStatesSize).apply { write(0, acceptStates, 0, acceptStates.size) },
+        allFSAPairs = mdpts.toNativeMemory(),
+        allFSAPairsOffsets = mdptsOffsets.toNativeMemory(),
+        acceptStates = acceptStates.toNativeMemory(),
         acceptStatesSize = acceptStatesSize,
         dpSize = dpIn.size,
         numStates = numStates,
@@ -392,6 +392,9 @@ kernel void prefix_sum_p2(
         maxSamples = maxSamples
       )
     }.getByteArray(0, maxWordLen * maxSamples)
+
+  private fun IntArray.toNativeMemory(): Memory = Memory(4L * size).apply { write(0, this@toNativeMemory, 0, size) }
+  private fun UShortArray.toNativeMemory(): Memory = Memory(2L * size).apply { write(0, toShortArray(), 0, size) }
 
   interface NativeBridge : Library {
     fun setup(numNts: Int, startIdx: Int, s: String)
@@ -432,6 +435,7 @@ kernel void prefix_sum_p2(
     let pairsOffBuf = device.makeBuffer(bytes: allFSAPairsOffsets, length: ao * stride, options: [])!
     
     // Stage 2: Seek the binary CFL closure
+    let startTime = DispatchTime.now()
     bufA = iterateFixpoint(
         bufA: bufA, 
         pairsBuf: pairsBuf, 
@@ -440,6 +444,8 @@ kernel void prefix_sum_p2(
         allPairsSize: ap,
         allPairsOffsetsSize: ao
     )
+    let psTimeMs = Double(DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds) / 1_000_000
+    print("Fixpoint found in \(psTimeMs) ms"); fflush(stdout)
 
     // Stage 3: Reconstruct parse forest
     let (bpCountBuf, bpOffsetBuf, bpStorageBuf) = buildBackpointers(
@@ -735,7 +741,7 @@ private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 
   }
 
   private fun genFlattenedBinaryProds(cfg: CFG): String {
-    val grammarFlattened = cfg.vindex.map { it.toList() }.flatten().toIntArray()
+    val grammarFlattened = cfg.vindex.flatMap { it.toList() }.toIntArray()
     val grammarOffsets = cfg.vindex.map { it.size }.fold(listOf(0)) { acc, it -> acc + (acc.last() + it) }.toIntArray()
     return """constant int vilen=${grammarFlattened.size}; constant int volen=${grammarOffsets.size};
               constant int constant vidx[]={${grammarFlattened.joinToString(",")}};
@@ -760,8 +766,7 @@ private var device: MTLDevice!, queue: MTLCommandQueue!, numNonterminals: Int = 
   private fun buildNative(dir: String, dylib: File, swiftSrc: String) {
     val clock = TimeSource.Monotonic.markNow()
     val path = File("$dir/MetalBridge.swift").apply { writeText(swiftSrc) }.path
-    ("xcrun swiftc -emit-library $path -o ${dylib.absolutePath} -module-name M " +
-        "-Xlinker -install_name -Xlinker @rpath/${dylib.path}")
+    ("xcrun swiftc -emit-library $path -o ${dylib.absolutePath} -module-name M -Xlinker -install_name -Xlinker @rpath/${dylib.path}")
       .run { ProcessBuilder(split(" ")).inheritIO().start().waitFor() }
       .also { if (it != 0) error("Failed to build Swift bridging code!") }
     File("$dir/.swiftHash").writeText(swiftSrc.hashCode().toString())
