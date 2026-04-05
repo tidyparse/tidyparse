@@ -133,4 +133,9 @@ tasks {
     mainClass.set("ai.hypergraph.tidyparse.MetalRASPKt")
     classpath = sourceSets["main"].runtimeClasspath + swiftGenerator
   }
+
+  val jvmRASP by registering(JavaExec::class) {
+    mainClass.set("ai.hypergraph.tidyparse.JvmRASPKt")
+    classpath = sourceSets["main"].runtimeClasspath + swiftGenerator
+  }
 }

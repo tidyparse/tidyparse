@@ -50,7 +50,7 @@ fun main() {
   println("Packed $TOTAL_RASP_VMS RASP programs in ${packTimer.elapsedNow()}")
 
   val elapsedNs = measureNanoTime {
-    val ok = NativeMetal.bridge.metalRunHypervisor(
+    val ok = metalBridge().metalRunHypervisor(
       RASP_MSL,
       "run_hypervisor",
       TOTAL_RASP_VMS,
@@ -120,8 +120,6 @@ private fun printStepHistogram(vmWords: IntArray, bucketSize: Int) {
   if (nonHalted > 0) println("  non-halted: $nonHalted")
 }
 
-private data class HaltCandidate(val vm: Int, val steps: Int)
-
 private fun printLongestRunningPrograms(vmWords: IntArray, programSources: Array<String?>, topK: Int) {
   require(topK > 0) { "topK must be positive" }
 
@@ -165,6 +163,31 @@ interface MetalBridge : Library {
     maxSteps: Int,
     vmWords: IntArray,
   ): Int
+}
+
+private fun metalBridge(): MetalBridge {
+  if (!System.getProperty("os.name").startsWith("Mac")) throw Exception("Only works on MacOS")
+  val directory = File("src/main/resources/dlls").also { it.mkdirs() }
+  val swiftFile = directory.resolve("RASPHypervisorBridge.swift")
+  val dylib = directory.resolve("libRASPHypervisorBridge.dylib")
+  val hashFile = directory.resolve(".raspHypervisorHash")
+  val swiftSrc = metalBridgeSwiftSource
+
+  if (!dylib.exists() || !hashFile.exists() || hashFile.readText() != swiftSrc.hashCode().toString()) {
+    swiftFile.writeText(swiftSrc)
+    val exit = ProcessBuilder(
+      "xcrun", "swiftc", "-O", "-emit-library",
+      swiftFile.absolutePath,
+      "-o", dylib.absolutePath,
+      "-module-name", "RASPHypervisorBridgeModule",
+      "-Xlinker", "-install_name",
+      "-Xlinker", "@rpath/${dylib.name}"
+    ).inheritIO().start().waitFor()
+    check(exit == 0) { "Failed to build RASP hypervisor bridge" }
+    hashFile.writeText(swiftSrc.hashCode().toString())
+  }
+
+  return Native.load(dylib.absolutePath, MetalBridge::class.java) as MetalBridge
 }
 
 /** language=swift */
@@ -241,57 +264,19 @@ public func metalRunHypervisor(
   )
   ce.endEncoding()
 
+  let t0 = CFAbsoluteTimeGetCurrent()
   cb.commit()
   cb.waitUntilCompleted()
   if cb.error != nil { return 0 }
+  print(CFAbsoluteTimeGetCurrent() - t0)
+  fflush(stdout)
 
   memcpy(vmWords, buf.contents(), totalBytes)
   return 1
 }"""
 
-internal object NativeMetal {
-  private val nativeBridge: MetalBridge =
-    if (System.getProperty("os.name").startsWith("Mac")) raspHypervisorBridge() else TODO()
-
-  val bridge: MetalBridge get() = nativeBridge
-
-  private fun raspHypervisorBridge(): MetalBridge {
-    val directory = File("src/main/resources/dlls").also { it.mkdirs() }
-    val swiftFile = directory.resolve("RASPHypervisorBridge.swift")
-    val dylib = directory.resolve("libRASPHypervisorBridge.dylib")
-    val swiftSrc = metalBridgeSwiftSource
-
-    if (needsRebuild(dylib, swiftSrc, directory)) buildNative(directory, swiftFile, dylib, swiftSrc)
-    return Native.load(dylib.absolutePath, MetalBridge::class.java) as MetalBridge
-  }
-
-  private fun needsRebuild(dylib: File, swiftSrc: String, dir: File): Boolean {
-    val hashFile = dir.resolve(".raspHypervisorHash")
-    return !dylib.exists() || !hashFile.exists() || hashFile.readText() != swiftSrc.hashCode().toString()
-  }
-
-  private fun buildNative(dir: File, swiftFile: File, dylib: File, swiftSrc: String) {
-    val clock = TimeSource.Monotonic.markNow()
-    swiftFile.writeText(swiftSrc)
-
-    val cmd = listOf(
-      "xcrun", "swiftc", "-O", "-emit-library",
-      swiftFile.absolutePath,
-      "-o", dylib.absolutePath,
-      "-module-name", "RASPHypervisorBridgeModule",
-      "-Xlinker", "-install_name",
-      "-Xlinker", "@rpath/${dylib.name}"
-    )
-
-    val exit = ProcessBuilder(cmd).inheritIO().start().waitFor()
-    check(exit == 0) { "Failed to build RASP hypervisor bridge!" }
-    dir.resolve(".raspHypervisorHash").writeText(swiftSrc.hashCode().toString())
-    println("Finished RASP hypervisor bridge rebuild in ${clock.elapsedNow()}")
-  }
-}
-
 /* language=c++ */
-private const val RASP_MSL: String = """
+private const val RASP_MSL = """
 #include <metal_stdlib>
 using namespace metal;
 
@@ -324,76 +309,68 @@ kernel void run_hypervisor(
 ) {
     if (gid >= p.workers) return;
 
-    const uint rounds = (p.maxSteps + p.quantum - 1u) / p.quantum;
+    for (uint vm = gid; vm < p.vmCount; vm += p.workers) {
+        const uint base = vm * p.vmStride;
 
-    for (uint round = 0u; round < rounds; ++round) {
-        for (uint blockBase = 0u; blockBase < p.vmCount; blockBase += p.workers) {
-            const uint vm = blockBase + gid;
-            if (vm >= p.vmCount) continue;
+        uint halted = buf[base + HALTED];
+        uint steps  = buf[base + STEPS];
+        if (halted != 0u || steps >= p.maxSteps) continue;
 
-            const uint base = vm * p.vmStride;
+        uint pc  = buf[base + PC];
+        uint acc = buf[base + ACC];
 
-            uint halted = buf[base + HALTED];
-            uint steps  = buf[base + STEPS];
-            if (halted != 0u || steps >= p.maxSteps) continue;
+        while (halted == 0u && steps < p.maxSteps) {
+            const uint op  = buf[mem_off(vm, pc, p)];
+            const uint arg = buf[mem_off(vm, pc + 1u, p)];
 
-            uint pc  = buf[base + PC];
-            uint acc = buf[base + ACC];
-            const uint budget = min(p.quantum, p.maxSteps - steps);
+            switch (op) {
+                case 1u: // LOD imm
+                    acc = arg;
+                    pc += 2u;
+                    break;
 
-            for (uint iter = 0u; iter < budget && halted == 0u; ++iter) {
-                const uint op  = buf[mem_off(vm, pc, p)];
-                const uint arg = buf[mem_off(vm, pc + 1u, p)];
+                case 2u: // ADD mem[arg]
+                    acc = acc + buf[mem_off(vm, arg, p)];
+                    pc += 2u;
+                    break;
 
-                switch (op) {
-                    case 1u: // LOD imm
-                        acc = arg;
-                        pc += 2u;
-                        break;
+                case 3u: // MUL mem[arg]
+                    acc = acc * buf[mem_off(vm, arg, p)];
+                    pc += 2u;
+                    break;
 
-                    case 2u: // ADD mem[arg]
-                        acc = acc + buf[mem_off(vm, arg, p)];
-                        pc += 2u;
-                        break;
+                case 4u: // STO mem[arg] <- acc
+                    buf[mem_off(vm, arg, p)] = acc;
+                    pc += 2u;
+                    break;
 
-                    case 3u: // MUL mem[arg]
-                        acc = acc * buf[mem_off(vm, arg, p)];
-                        pc += 2u;
-                        break;
+                case 5u: // BNZ
+                    pc = (acc != 0u) ? arg : (pc + 2u);
+                    break;
 
-                    case 4u: // STO mem[arg] <- acc
-                        buf[mem_off(vm, arg, p)] = acc;
-                        pc += 2u;
-                        break;
-
-                    case 5u: // BNZ
-                        pc = (acc != 0u) ? arg : (pc + 2u);
-                        break;
-
-                    case 7u: { // PRI mem[arg]
-                        uint count = buf[base + OUT_COUNT];
-                        if (count < p.outputWords) {
-                            buf[base + OUT_COUNT + 1u + count] = buf[mem_off(vm, arg, p)];
-                            buf[base + OUT_COUNT] = count + 1u;
-                        }
-                        pc += 2u;
-                        break;
+                case 7u: { // PRI mem[arg]
+                    uint count = buf[base + OUT_COUNT];
+                    if (count < p.outputWords) {
+                        buf[base + OUT_COUNT + 1u + count] = buf[mem_off(vm, arg, p)];
+                        buf[base + OUT_COUNT] = count + 1u;
                     }
-
-                    default: // reserved invalid pair, e.g. 0 0 => HLT
-                        halted = 1u;
-                        break;
+                    pc += 2u;
+                    break;
                 }
 
-                steps += 1u;
+                default: // reserved invalid pair, e.g. 0 0 => HLT
+                    halted = 1u;
+                    break;
             }
 
-            if (steps >= p.maxSteps) halted = 1u;
-
-            buf[base + PC] = pc;
-            buf[base + ACC] = acc;
-            buf[base + STEPS] = steps;
-            buf[base + HALTED] = halted;
+            steps += 1u;
         }
+
+        if (steps >= p.maxSteps) halted = 1u;
+
+        buf[base + PC] = pc;
+        buf[base + ACC] = acc;
+        buf[base + STEPS] = steps;
+        buf[base + HALTED] = halted;
     }
 }"""
