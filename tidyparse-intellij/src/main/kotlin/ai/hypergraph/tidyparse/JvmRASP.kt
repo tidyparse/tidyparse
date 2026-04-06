@@ -75,38 +75,20 @@ fun checkSteps(p: String): Int {
     val arg = mem[(pc + 1) and MEM_MASK]
 
     when (op) {
-      1 -> { // LOD immediate
-        acc = arg
-        pc += 2
-      }
-
-      2 -> { // ADD mem[arg]
-        acc += mem[arg and MEM_MASK]
-        pc += 2
-      }
-
-      3 -> { // MUL mem[arg]
-        acc *= mem[arg and MEM_MASK]
-        pc += 2
-      }
-
-      4 -> { // STO mem[arg] = acc
-        mem[arg and MEM_MASK] = acc
-        pc += 2
-      }
-
-      5 -> { // BNZ arg
-        pc = if (acc != 0) arg else pc + 2
-      }
-
-      7 -> { // PRI mem[arg] -- ignored for step counting
-        pc += 2
-      }
-
-      else -> {
-        // Any invalid opcode is treated as HLT, just like the benchmark.
-        return steps + 1
-      }
+      // LOD immediate
+      1 -> { acc = arg; pc += 2 }
+      // ADD mem[arg]
+      2 -> { acc += mem[arg and MEM_MASK]; pc += 2 }
+      // MUL mem[arg]
+      3 -> { acc *= mem[arg and MEM_MASK]; pc += 2 }
+      // STO mem[arg] = acc
+      4 -> { mem[arg and MEM_MASK] = acc; pc += 2 }
+      // BNZ arg
+      5 -> { pc = if (acc != 0) arg else pc + 2 }
+      // PRI mem[arg] -- ignored for step counting
+      7 -> { pc += 2 }
+      // Any invalid opcode is treated as HLT, just like the benchmark.
+      else -> { return steps + 1 }
     }
 
     steps++
@@ -184,7 +166,7 @@ fun benchmarkPrograms() {
   val sources = mutableListOf<String>()
 
   val cfg = loopyHeapless
-  completeWithSparseGRE(List(100) { "_" }, cfg)!!
+  completeWithSparseGRE(List(90) { "_" }, cfg)!!
     .sampleStrWithoutReplacement(cfg.tmLst).take(TOTAL_PROGRAMS)
     .map { it.replace("scr", "opt") }
     .forEachIndexed { vm, source ->
@@ -194,11 +176,13 @@ fun benchmarkPrograms() {
   writeVmInitialStates(programWords)
 //  readVmInitialStates(file = File("rasp_vms.bin"), vmCount = TOTAL_PROGRAMS)
 
+  System.exit(1)
+
   println("JVM")
   var vmCount = 0
   var totalTime = 0L
-  for (x in 8..8 step 1) {
-    vmCount = x * 100_000
+  for (x in 1..8 step 1) {
+    vmCount = x * 1_000_000
     resetWorkBuffer(programWords, workWords, vmCount)
     val secs = measureNanoTime { runJvmHypervisor(workWords, vmCount) }
     totalTime += secs
