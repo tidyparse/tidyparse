@@ -15,14 +15,15 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.*
 import java.util.stream.IntStream
+import kotlin.streams.asStream
 import kotlin.system.measureNanoTime
 
-private const val TOTAL_PROGRAMS = 8_000_000
+private const val TOTAL_PROGRAMS = 1_000_000
 private const val MAX_BENCHMARK_VMS = 8_000_000
 private const val METAL_RASP_VMS = 100_000
 private const val JVM_RASP_VMS = 100_000
 private const val MAX_CONCURRENT_THREADS = 65_536
-private const val MEM_WORDS = 256
+private const val MEM_WORDS = 255
 private const val OUTPUT_WORDS = 3
 private const val QUANTUM = 1_000
 private const val MAX_STEPS = 1_000_000
@@ -37,7 +38,33 @@ private const val OUT_COUNT = 4
 private const val OUTPUT_STRIDE = OUTPUT_WORDS + 1
 private const val MEM_BASE = 4 + OUTPUT_STRIDE
 private const val VM_STRIDE = 4 + OUTPUT_STRIDE + MEM_WORDS
-private const val MEM_MASK = MEM_WORDS - 1
+
+private const val OPCODE_BITS = 3
+private const val WORD_BITS = 29
+private const val OPCODE_MASK = (1 shl OPCODE_BITS) - 1
+private const val WORD_MASK = (1 shl WORD_BITS) - 1 // 0x1FFFFFFF
+
+private fun initialMemory(program: IntArray): IntArray {
+  require(program.size <= MEM_WORDS) {
+    "Program has ${program.size} packed instructions, exceeds VM memory budget $MEM_WORDS"
+  }
+
+  // c0 = <0, 0, P 0..., 0..., 0...>:
+  // code prefix copied into memory, everything else starts at zero.
+  return IntArray(MEM_WORDS).also { program.copyInto(it) }
+}
+
+private fun normWord(x: Int): Int = x and WORD_MASK
+
+private fun pack(op: Int, arg: Int): Int {
+  require(op in 0..OPCODE_MASK) { "Opcode out of range: $op" }
+  return ((arg and WORD_MASK) shl OPCODE_BITS) or (op and OPCODE_MASK)
+}
+
+private fun opcodeOf(word: Int): Int = word and OPCODE_MASK
+private fun operandOf(word: Int): Int = word ushr OPCODE_BITS
+private fun addWord(x: Int, y: Int): Int = (x + y) and WORD_MASK
+private fun mulWord(x: Int, y: Int): Int = (((x and WORD_MASK).toLong() * (y and WORD_MASK).toLong()) and WORD_MASK.toLong()).toInt()
 
 /*
 ./gradlew jvmRASP
@@ -45,56 +72,45 @@ private const val MEM_MASK = MEM_WORDS - 1
 fun main() {
   checkSteps("""
 fun f0(ipt: W ^ 1) -> W ^ 1 {
-scr[7] = 0;
-opt[0] = 8;
-whl opt[0] {
-opt[0] = opt[0] + opt[0];
-ife ipt[0] { whl opt[0] { opt[0] = 0 } }
-{ whl scr[7] { scr[1] = 2 }; scr[1] = 8 }
-};
-opt[0] = 3
+  scr[7] = 0;
+  opt[0] = 8;
+  whl opt[0] {
+    opt[0] = opt[0] + opt[0];
+    ife ipt[0] { whl opt[0] { opt[0] = 0 } }
+               { whl scr[7] { scr[1] = 2 }; scr[1] = 8 }
+  };
+  opt[0] = 3
 }
-  """.trimIndent()).also { println("steps=$it") }
-  benchmarkPrograms()
+""".trimIndent()).also { println("steps=$it") }
+//  benchmarkPrograms()
 }
 
-fun checkSteps(p: String): Int {
-  val program = p.compileToRASPBytecode()
-  require(program.size <= MEM_WORDS) { "Program has ${program.size} words, exceeds VM memory budget $MEM_WORDS" }
-
-  // Match the benchmark: zero-initialized VM memory, then copy code into memory.
-  val mem = IntArray(MEM_WORDS)
-  program.copyInto(mem)
+fun checkSteps(p: String, upTo: Int = MAX_STEPS, program: IntArray = p.compileToRASPBytecode()): Int {
+  val mem = initialMemory(program)
 
   var pc = 0
   var acc = 0
   var steps = 0
 
-  while (steps < MAX_STEPS) {
-    val op = mem[pc and MEM_MASK]
-    val arg = mem[(pc + 1) and MEM_MASK]
+  while (steps < upTo) {
+    val ins = mem[wrapAddr(pc)]
+    val op = opcodeOf(ins)
+    val arg = operandOf(ins)
 
     when (op) {
-      // LOD immediate
-      1 -> { acc = arg; pc += 2 }
-      // ADD mem[arg]
-      2 -> { acc += mem[arg and MEM_MASK]; pc += 2 }
-      // MUL mem[arg]
-      3 -> { acc *= mem[arg and MEM_MASK]; pc += 2 }
-      // STO mem[arg] = acc
-      4 -> { mem[arg and MEM_MASK] = acc; pc += 2 }
-      // BNZ arg
-      5 -> { pc = if (acc != 0) arg else pc + 2 }
-      // PRI mem[arg] -- ignored for step counting
-      7 -> { pc += 2 }
-      // Any invalid opcode is treated as HLT, just like the benchmark.
-      else -> { return steps + 1 }
+       1 -> { acc = normWord(arg); pc = incPc(pc) }                          // LOD imm
+       2 -> { acc = addWord(acc, mem[wrapAddr(arg)]); pc = incPc(pc) }   // ADD mem[arg]
+       3 -> { acc = mulWord(acc, mem[wrapAddr(arg)]); pc = incPc(pc) }   // MUL mem[arg]
+       4 -> { mem[wrapAddr(arg)] = normWord(acc); pc = incPc(pc) }           // STO mem[arg] = acc
+       5 -> { pc = if (acc != 0) normWord(arg) else incPc(pc) }              // BNZ arg
+       7 -> { pc = incPc(pc) }                                                   // PRI mem[arg]
+       else -> { return steps }                                                  // fixed-point halt
     }
 
     steps++
   }
 
-  error("Program did not halt within $MAX_STEPS steps")
+  return upTo
 }
 
 fun writeVmInitialStates(programWords: IntArray, vmCount: Int = TOTAL_PROGRAMS, file: File = File("rasp_vms.bin")) {
@@ -149,9 +165,7 @@ fun readVmInitialStates(file: File = File("rasp_vms.bin"), vmCount: Int? = null)
       }
 
       val terminator = input.readInt()
-      require(terminator == Int.MAX_VALUE) {
-        "VM $vm: expected terminator ${Int.MAX_VALUE}, got $terminator"
-      }
+      require(terminator == Int.MAX_VALUE) { "VM $vm: expected terminator ${Int.MAX_VALUE}, got $terminator" }
 
       vm++
     }
@@ -160,30 +174,73 @@ fun readVmInitialStates(file: File = File("rasp_vms.bin"), vmCount: Int? = null)
   return programWords
 }
 
-fun benchmarkPrograms() {
-  val programWords = IntArray(TOTAL_PROGRAMS * MEM_WORDS)
-  val workWords = IntArray(MAX_BENCHMARK_VMS * VM_STRIDE)
-  val sources = mutableListOf<String>()
+private data class TopEntry(val steps: Int, val source: String)
 
-  val cfg = loopyHeapless
-  completeWithSparseGRE(List(90) { "_" }, cfg)!!
-    .sampleStrWithoutReplacement(cfg.tmLst).take(TOTAL_PROGRAMS)
-    .map { it.replace("scr", "opt") }
-    .forEachIndexed { vm, source ->
-      sources += source
-      packProgramIntoBuffer(source.compileToRASPBytecode(), programWords, vm)
+private class TopKPrinter(private val k: Int) {
+  private val lock = Any()
+  private val top = mutableListOf<TopEntry>() // descending by steps
+
+  fun offer(steps: Int, source: String) {
+    synchronized(lock) {
+      val before = top.toList()
+
+      // Insert candidate if it belongs in the current top-k
+      if (top.size < k || steps > top.last().steps) {
+        top += TopEntry(steps, source)
+        top.sortByDescending { it.steps }
+        if (top.size > k) top.removeAt(top.lastIndex)
+      } else { return }
+
+      // Only print if the visible top-k actually changed
+      if (top != before) {
+        println("Top-$k so far:")
+        top.forEachIndexed { i, e ->
+          println("${i + 1}.) steps=${e.steps}")
+          println(e.source.prettyPrint())
+          println()
+        }
+        println("-----")
+      }
     }
-  writeVmInitialStates(programWords)
-//  readVmInitialStates(file = File("rasp_vms.bin"), vmCount = TOTAL_PROGRAMS)
+  }
+}
 
-  System.exit(1)
+val CHECKUP = 999_000
+
+fun benchmarkPrograms() {
+  val sampledProgramWords = IntArray(TOTAL_PROGRAMS * MEM_WORDS)
+  val sources = mutableListOf<String>()
+  val cfg = loopyHeapless
+  val top3 = TopKPrinter(5)
+
+  completeWithSparseGRE(List(120) { "_" }, cfg)!!
+    .sampleStrWithoutReplacement(cfg.tmLst).asStream().parallel()
+    .map { it to it.compileToRASPBytecode() }
+//    .filter { it.second.size < 127 }
+    .filter { (source, bytecode) ->
+      val steps = checkSteps(source, CHECKUP, bytecode)
+      if (steps < CHECKUP) { top3.offer(steps, source) }
+      steps > CHECKUP
+    }
+    .limit(TOTAL_PROGRAMS.toLong())
+    .toList()
+    .forEachIndexed { vm, (source, bytecode) ->
+      sources += source
+      packProgramIntoBuffer(bytecode, sampledProgramWords, vm)
+    }
+
+//  writeVmInitialStates(sampledProgramWords)
+//  System.exit(1)
+
+  val workWords = IntArray(MAX_BENCHMARK_VMS * VM_STRIDE)
+//  val programWords = readVmInitialStates(file = File("rasp_vms.bin"), vmCount = TOTAL_PROGRAMS)
 
   println("JVM")
   var vmCount = 0
   var totalTime = 0L
-  for (x in 1..8 step 1) {
+  for (x in 1..1) {
     vmCount = x * 1_000_000
-    resetWorkBuffer(programWords, workWords, vmCount)
+    resetWorkBuffer(sampledProgramWords, workWords, vmCount)
     val secs = measureNanoTime { runJvmHypervisor(workWords, vmCount) }
     totalTime += secs
     println("($x,${"%.1f".format(Locale.US, secs / 1e9)})")
@@ -193,8 +250,7 @@ fun benchmarkPrograms() {
 }
 
 private fun packProgramIntoBuffer(program: IntArray, programWords: IntArray, vm: Int) {
-  require(program.size <= MEM_WORDS) { "Program has ${program.size} words, exceeds VM memory budget $MEM_WORDS" }
-  require(program.size % 2 == 0) { "Program must consist of opcode/operand pairs" }
+  require(program.size <= MEM_WORDS) { "Program has ${program.size} instructions, exceeds VM memory budget $MEM_WORDS" }
   program.copyInto(programWords, vm * MEM_WORDS)
 }
 
@@ -215,47 +271,81 @@ private fun resetWorkBuffer(programWords: IntArray, workWords: IntArray, vmCount
   }
 }
 
+private fun incPc(pc: Int): Int = normWord(pc + 1)
+
+private fun wrapAddr(addr: Int): Int = Math.floorMod(addr, MEM_WORDS)
+
+private fun memIndex(base: Int, addr: Int): Int =
+  base + MEM_BASE + wrapAddr(addr)
+
 private fun runJvmHypervisor(vmWords: IntArray, vmCount: Int) {
   IntStream.range(0, vmCount).parallel().forEach { vm ->
     val base = vm * VM_STRIDE
-    var pc = vmWords[base + PC]
-    var acc = vmWords[base + ACC]
+    var pc = normWord(vmWords[base + PC])
+    var acc = normWord(vmWords[base + ACC])
     var steps = vmWords[base + STEPS]
     var halted = vmWords[base + HALTED] != 0
 
     while (!halted && steps < MAX_STEPS) {
-      val op = vmWords[memIndex(base, pc)]
-      val arg = vmWords[memIndex(base, pc + 1)]
+      val ins = vmWords[memIndex(base, pc)]
+      val op = opcodeOf(ins)
+      val arg = operandOf(ins)
 
       when (op) {
-        1 -> { acc = arg; pc += 2 }
-        2 -> { acc += vmWords[memIndex(base, arg)]; pc += 2 }
-        3 -> { acc *= vmWords[memIndex(base, arg)]; pc += 2 }
-        4 -> { vmWords[memIndex(base, arg)] = acc; pc += 2 }
-        5 -> { pc = if (acc != 0) arg else pc + 2 }
-        7 -> {
+        1 -> { // LOD imm
+          acc = normWord(arg)
+          pc = incPc(pc)
+          steps++
+        }
+
+        2 -> { // ADD mem[arg]
+          acc = addWord(acc, vmWords[memIndex(base, arg)])
+          pc = incPc(pc)
+          steps++
+        }
+
+        3 -> { // MUL mem[arg]
+          acc = mulWord(acc, vmWords[memIndex(base, arg)])
+          pc = incPc(pc)
+          steps++
+        }
+
+        4 -> { // STO mem[arg] = acc
+          vmWords[memIndex(base, arg)] = normWord(acc)
+          pc = incPc(pc)
+          steps++
+        }
+
+        5 -> { // BNZ arg
+          pc = if (acc != 0) normWord(arg) else incPc(pc)
+          steps++
+        }
+
+        7 -> { // PRI mem[arg]
           val count = vmWords[base + OUT_COUNT]
           if (count < OUTPUT_WORDS) {
             vmWords[base + OUT_COUNT + 1 + count] = vmWords[memIndex(base, arg)]
             vmWords[base + OUT_COUNT] = count + 1
           }
-          pc += 2
+          pc = incPc(pc)
+          steps++
         }
-        else -> halted = true
-      }
 
-      steps++
+        else -> {
+          // Fixed-point halt: do not advance pc or steps.
+          halted = true
+        }
+      }
     }
 
     if (steps >= MAX_STEPS) halted = true
-    vmWords[base + PC] = pc
-    vmWords[base + ACC] = acc
+
+    vmWords[base + PC] = normWord(pc)
+    vmWords[base + ACC] = normWord(acc)
     vmWords[base + STEPS] = steps
     vmWords[base + HALTED] = if (halted) 1 else 0
   }
 }
-
-private fun memIndex(base: Int, addr: Int): Int = base + MEM_BASE + (addr and MEM_MASK)
 
 private fun report(name: String, vmWords: IntArray, programSources: Array<String?>, vmCount: Int, elapsedNs: Long) {
   println()
@@ -304,21 +394,14 @@ private fun printStepHistogram(vmWords: IntArray, vmCount: Int, bucketSize: Int)
   }
 
   println("natural-halt histogram (bucketSize=$bucketSize):")
-  for ((start, count) in counts.toSortedMap()) {
-    println("  ${start}-${start + bucketSize}: $count")
-  }
+  for ((start, count) in counts.toSortedMap()) println("  ${start}-${start + bucketSize}: $count")
   if (timedOut > 0) println("  timed-out-at-$MAX_STEPS: $timedOut")
   if (nonHalted > 0) println("  non-halted: $nonHalted")
 }
 
 data class HaltCandidate(val vm: Int, val steps: Int)
 
-private fun printLongestRunningPrograms(
-  vmWords: IntArray,
-  programSources: Array<String?>,
-  vmCount: Int,
-  topK: Int,
-) {
+private fun printLongestRunningPrograms(vmWords: IntArray, programSources: Array<String?>, vmCount: Int, topK: Int) {
   val top = ArrayList<HaltCandidate>(topK)
   var vm = 0
 
@@ -406,10 +489,7 @@ private class PrettyPrinter(source: String) {
   private fun parseBlock(depth: Int): String {
     val stmts = mutableListOf<String>()
     stmts += parseStmt(depth)
-    while (peek() == ";") {
-      take()
-      stmts += parseStmt(depth)
-    }
+    while (peek() == ";") { take(); stmts += parseStmt(depth) }
     return stmts.joinToString(";\n")
   }
 
@@ -461,9 +541,7 @@ private class PrettyPrinter(source: String) {
 
   private fun parseExpr(): String {
     val first = peek()
-    return if (first != null && first.all(Char::isDigit)) {
-      take()
-    } else {
+    return if (first != null && first.all(Char::isDigit)) { take() } else {
       val lhs = parseRef()
       when (peek()) {
         "+", "*" -> {
@@ -476,13 +554,13 @@ private class PrettyPrinter(source: String) {
     }
   }
 
-  private fun parseRef(): String {
-    val base = take()
-    require(base == "ipt" || base == "scr" || base == "opt") { "Expected ipt/scr/opt, got '$base' at token ${i - 1}" }
-    expect("[")
-    val z = takeNumber()
-    expect("]")
-    return "$base[$z]"
+  private fun parseRef(): String = take().let { base ->
+    if (base == "ipt" || base == "scr" || base == "opt") {
+      expect("[")
+      val z = takeNumber()
+      expect("]")
+      "$base[$z]"
+    } else base
   }
 
   private fun parsePlace(): String {
