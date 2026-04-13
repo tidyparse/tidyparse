@@ -195,7 +195,7 @@ private class TopKPrinter(private val k: Int) {
       if (top != before) {
         println("Top-$k so far:")
         top.forEachIndexed { i, e ->
-          println("${i + 1}.) steps=${e.steps}")
+          println("${i + 1}.) steps = ${e.steps}\n")
           println(e.source.prettyPrint())
           println()
         }
