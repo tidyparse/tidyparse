@@ -60,7 +60,7 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         bp_count, bp_write,
         ls_dense, ls_cdf,
         build_root_sizes, enum_words_wor,
-        markov_score, select_top_k, gather_top_k,
+        markov_score, wdfa_score, select_top_k, gather_top_k,
 
         // V2
         frontier_init_v2,
@@ -260,7 +260,8 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer
 
   val decodeT = TimeSource.Monotonic.markNow()
   val result =
-    if (ngrams != null) ngramDecoder(outBuf, ngrams, maxRepairLen, cfg, toDecode)
+    if (wdfa != null) wdfaDecoder(outBuf, wdfa!!.also { log("Using WDFA decoder") }, maxRepairLen, cfg, toDecode)
+    else if (ngrams != null) ngramDecoder(outBuf, ngrams, maxRepairLen, cfg, toDecode)
     else uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)
   mark("decode", decodeT)
 
@@ -324,6 +325,20 @@ suspend fun ngramDecoder(outBuf: GPUBuffer, ngrams: GPUBuffer, maxRepairLen: Int
   return result
 }
 
+suspend fun wdfaDecoder(outBuf: GPUBuffer, wdfa: GPUBuffer, maxRepairLen: Int, cfg: CFG, samplesToDecode: Int): MutableList<String> {
+  val topK = scoreSelectGatherWDFA(
+    packets = outBuf,
+    wdfa = wdfa,
+    maxSamples = samplesToDecode,
+    stride = maxRepairLen,
+    k = TOP_K_SAMP
+  )
+
+  val result = mutableListOf<String>()
+  for (i in 0 until TOP_K_SAMP) { result.add(topK.decodePacket(i, cfg.tmLst, maxRepairLen)?.second ?: continue) }
+  return result
+}
+
 // Returns Levenshtein distance and string repair
 fun Int32Array<ArrayBuffer>.decodePacket(idx: Int, tm: List<String>, pktLen: Int): Pair<Int, String>? {
   val base = idx * pktLen + PKT_HDR_LEN // skip header cells
@@ -379,6 +394,40 @@ suspend fun scoreSelectGather(
 //  t0 = TimeSource.Monotonic.markNow()
   val topK = bestBuf.readInt32Array()
   log("Score/select/gather read ${topK.length} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
+
+  listOf(prmBuf, idxBuf, scrBuf, bestBuf).forEach(GPUBuffer::destroy)
+  return topK
+}
+
+suspend fun scoreSelectGatherWDFA(
+  packets    : GPUBuffer,
+  wdfa       : GPUBuffer,
+  maxSamples : Int,
+  stride     : Int,
+  k          : Int
+): Int32Array<ArrayBuffer> {
+  val t0 = TimeSource.Monotonic.markNow()
+  val threads = DISPATCH_GROUP_SIZE_X
+  val groupsY = (maxSamples + threads - 1) / threads
+
+  val prmBuf = intArrayOf(maxSamples, k, stride, threads)
+    .toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
+
+  wdfa_score(packets, wdfa, prmBuf)(threads, groupsY)
+
+  val totalGroups = (maxSamples + 255) / 256
+  val selGroupsY = (totalGroups + threads - 1) / threads
+
+  val idxBuf = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
+  val scrBuf = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
+
+  select_top_k(prmBuf, packets, idxBuf, scrBuf)(threads, selGroupsY)
+
+  val bestBuf = GPUBuffer(k * stride * 4, STCPSD)
+  gather_top_k(prmBuf, packets, idxBuf, bestBuf)(k)
+
+  val topK = bestBuf.readInt32Array()
+  log("WDFA score/select/gather read ${topK.length} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
 
   listOf(prmBuf, idxBuf, scrBuf, bestBuf).forEach(GPUBuffer::destroy)
   return topK
@@ -564,6 +613,60 @@ let startGC = getGrammarOffset(A);
 var endGC: u32;
 if (A + 1u < NT) { endGC = getGrammarOffset(A + 1u); } else { endGC = cs.grammarFlattenedSize; }
 """
+
+//language=wgsl
+const val WDFA_STRUCT = """
+struct WDFA {
+  magic       : u32,
+  version     : u32,
+  scale       : u32,
+  numStates   : u32,
+  numEdges    : u32,
+  startState  : u32,
+  startCost   : u32,
+  missingCost : u32,
+
+  finalCostOffset : u32, finalCostSize : u32,
+  rowOffsetOffset : u32, rowOffsetSize : u32,
+  edgeTokOffset   : u32, edgeTokSize   : u32,
+  edgeDstOffset   : u32, edgeDstSize   : u32,
+  edgeCostOffset  : u32, edgeCostSize  : u32,
+
+  payload : array<u32>
+};
+
+const WDFA_INF : u32 = 0x3fffffffu;
+const NO_EDGE  : u32 = 0xffffffffu;
+
+fn sat_add_wdfa(a: u32, b: u32) -> u32 {
+  let c = a + b;
+  if (c < a || c > WDFA_INF) { return WDFA_INF; }
+  return c;
+}
+
+fn final_cost(q: u32) -> u32 { return wdfa.payload[wdfa.finalCostOffset + q]; }
+fn row_start(q: u32) -> u32 { return wdfa.payload[wdfa.rowOffsetOffset + q]; }
+fn row_end(q: u32) -> u32 { return wdfa.payload[wdfa.rowOffsetOffset + q + 1u]; }
+fn edge_tok(e: u32) -> u32 { return wdfa.payload[wdfa.edgeTokOffset + e]; }
+fn edge_dst(e: u32) -> u32 { return wdfa.payload[wdfa.edgeDstOffset + e]; }
+fn edge_cost(e: u32) -> u32 { return wdfa.payload[wdfa.edgeCostOffset + e]; }
+
+// Rows are sorted by token id on the Kotlin side.
+fn find_edge(q: u32, tok: u32) -> u32 {
+  var lo = row_start(q);
+  var hi = row_end(q);
+
+  loop {
+    if (lo >= hi) { return NO_EDGE; }
+
+    let mid = (lo + hi) >> 1u;
+    let t = edge_tok(mid);
+
+    if (t == tok) { return mid; }
+    if (tok < t) { hi = mid; }
+    else { lo = mid + 1u; }
+  }
+}"""
 
 //language=wgsl
 val init_chart by Shader("""$CFL_STRUCT $TERM_STRUCT $ACTIVE_NT_HELPERS
@@ -1523,6 +1626,52 @@ fn lookupScore(key: u32) -> u32 {
     }
 
     packets[base + 1u] = score + (packets[base] + 1u) * 10000000u;
+}""")
+
+//language=wgsl
+val wdfa_score by Shader("""$SAMPLER_PARAMS
+$WDFA_STRUCT
+
+@group(0) @binding(0) var<storage, read_write> packets : array<u32>;
+@group(0) @binding(1) var<storage, read>       wdfa    : WDFA;
+@group(0) @binding(2) var<uniform>             prm     : Params;
+
+const PKT_HDR_LEN : u32 = ${PKT_HDR_LEN}u;
+const EDIT_COST_STRIDE : u32 = 10000000u;
+
+@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+  let sid = gid.x + gid.y * prm.threads;
+  if (sid >= prm.maxSamples) { return; }
+
+  let stride = prm.stride;
+  let base = sid * stride;
+
+  var q = wdfa.startState;
+  var cost = wdfa.startCost;
+
+  var pos : u32 = 0u;
+  loop {
+    if (pos >= stride - PKT_HDR_LEN) { break; }
+
+    let tok = packets[base + PKT_HDR_LEN + pos];
+    if (tok == 0u) { break; }
+
+    let e = find_edge(q, tok);
+    if (e == NO_EDGE) {
+      cost = sat_add_wdfa(cost, wdfa.missingCost);
+    } else {
+      cost = sat_add_wdfa(cost, edge_cost(e));
+      q = edge_dst(e);
+    }
+
+    pos = pos + 1u;
+  }
+
+  let fc = final_cost(q);
+  if (fc >= WDFA_INF) { cost = WDFA_INF; } else { cost = sat_add_wdfa(cost, fc); }
+
+  // Preserve the current edit-distance-first ranking convention.
+  packets[base + 1u] = sat_add_wdfa(cost, (packets[base] + 1u) * EDIT_COST_STRIDE);
 }""")
 
 //language=wgsl

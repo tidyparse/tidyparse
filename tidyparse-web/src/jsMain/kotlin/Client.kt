@@ -1,14 +1,19 @@
 @file:OptIn(ExperimentalUnsignedTypes::class)
 
+import GPUBufferUsage.STCPSD
+import Shader.Companion.GPUBuffer
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.kaliningraph.types.PlatformVars
+import js.buffer.ArrayBuffer
+import js.typedarrays.Int32Array
 import kotlinx.browser.*
 import kotlinx.coroutines.*
 import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
 import org.w3c.fetch.RequestInit
+import web.gpu.GPUBuffer
 import kotlin.js.Promise
 import kotlin.time.TimeSource
 
@@ -125,6 +130,8 @@ suspend fun pythonSetup() {
     if (gpuAvailable) log("Loaded n-grams into ${jsPyEditor.ngramTensor.size / 1000000}mb GPU buffer in ${t0.elapsedNow()}")
   }
 
+  loadWDFA()
+
   TIMEOUT_MS = 1000
 
   inputField.addEventListener("input", { jsPyEditor.run { continuation { handleInput() } } })
@@ -150,6 +157,24 @@ val epscheck by lazy { document.getElementById("epsilon-checkbox") as HTMLInputE
 val ntscheck by lazy { document.getElementById("ntstubs-checkbox") as HTMLInputElement }
 val timeout by lazy { document.getElementById("timeout") as HTMLInputElement }
 val ledBuffSel by lazy { document.getElementById("led-buffer") as HTMLInputElement }
+
+var wdfa: GPUBuffer? = null
+suspend fun loadWDFA(file: String = "wdfa.bin") {
+  val t0 = TimeSource.Monotonic.markNow()
+  val response = window.fetch(file).await()
+  if (!response.ok) { log("Failed to load DFA from $file"); error("Failed to load DFA from $file") }
+
+  val ab = response.arrayBuffer().await().unsafeCast<ArrayBuffer>()
+  val ints = Int32Array(ab)
+  val buf = GPUBuffer(byteSize = ints.byteLength, us = STCPSD, data = ints)
+  log("Loaded DFA from $file in ${t0.elapsedNow()}")
+
+  val n = ints[3]
+  val m = ints[4]
+  log("Loaded DFA(|Q|=$n, |δ|=$m) from $file in ${t0.elapsedNow()}")
+
+  wdfa = buf
+}
 
 suspend fun loadNgrams(file: String = "python_4grams.txt") {
   val t0 = TimeSource.Monotonic.markNow()
