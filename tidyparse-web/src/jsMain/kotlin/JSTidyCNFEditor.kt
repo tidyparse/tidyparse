@@ -159,7 +159,7 @@ fun cnfSetup() {
         // Publish to window
         val obj = js("{}")
         obj.file = f; obj.name = f.name; obj.size = f.size
-        obj.type = f.type ?: "text/plain"; obj.url = url
+        obj.type = f.type; obj.url = url
         obj.text = text; obj.bytes = bytes
         window.asDynamic().tidySelectedFile = obj
 

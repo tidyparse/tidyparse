@@ -7,7 +7,7 @@ import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 plugins {
   kotlin("jvm")
-  id("org.jetbrains.intellij.platform") version "2.11.0"
+  id("org.jetbrains.intellij.platform") version "2.16.0"
   id("org.jetbrains.changelog") version "2.5.0"
 }
 
@@ -49,7 +49,7 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
 
 //    bundledPlugins("com.intellij.java")
-    create("IC", "2025.1")
+    intellijIdea("2026.1")
     pluginVerifier()
     testFramework(TestFrameworkType.Platform)
   }

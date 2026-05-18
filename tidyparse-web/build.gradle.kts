@@ -52,14 +52,14 @@ kotlin {
     val jsMain by getting {
       dependencies {
         implementation(project(":tidyparse-core"))
-        implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2026.2.13")
+        implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2026.5.5")
       }
     }
 
     val jsTest by getting {
       dependencies {
         implementation(kotlin("test-js"))
-        implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+        implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
       }
     }
   }

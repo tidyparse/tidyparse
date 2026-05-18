@@ -5,7 +5,6 @@ import Shader.Companion.GPUBuffer
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
-import ai.hypergraph.kaliningraph.types.PlatformVars
 import js.buffer.ArrayBuffer
 import js.typedarrays.Int32Array
 import kotlinx.browser.*
@@ -50,10 +49,6 @@ val parser = Parser(
 
 // ./gradlew :tidyparse-web:jsBrowserDevelopmentRun --continuous
 fun main() {
-  if (window.navigator.userAgent.indexOf("hrome") != -1) {
-    PlatformVars.PLATFORM_CALLER_STACKTRACE_DEPTH = 4
-  }
-
   MainScope().launch {
     if (window["REPAIR_MODE"] == "headless") headlessSetup()
     else if (window["PROGRAMMING_LANG"] == "cnf") cnfSetup()

@@ -14,9 +14,7 @@ version = providers.gradleProperty("pluginVersion")
 kotlin {
   jvm {
     compilerOptions { jvmTarget = JvmTarget.JVM_21 }
-    testRuns["test"].executionTask.configure {
-      useJUnitPlatform()
-    }
+    testRuns["test"].executionTask.configure { useJUnitPlatform() }
   }
 
   js(IR) {
@@ -40,9 +38,8 @@ kotlin {
           exclude(group = "org.logicng")
         }
 
-        // Do not update to 1.9.0 or this will cause a bug
-        api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
-        api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+        api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+        api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
 
         api(libs.antlrKotlinRuntime)
       }
