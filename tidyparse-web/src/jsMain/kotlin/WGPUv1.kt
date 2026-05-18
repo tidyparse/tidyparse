@@ -569,8 +569,7 @@ fn langSize(dpIdx: u32, numNTs: u32) -> u32 {
   let last = ls_sparse[base + expCnt - 1u];
 
   return sat_add(litCount, last);
-}
-"""
+}"""
 
 //language=text
 const val SHORT_PREAMBLE = """
