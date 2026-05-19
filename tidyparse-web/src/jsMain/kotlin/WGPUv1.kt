@@ -10,8 +10,7 @@ import Shader.Companion.writeU32
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.types.cache
-import ai.hypergraph.tidyparse.MAX_DISP_RESULTS
-import ai.hypergraph.tidyparse.pause
+import ai.hypergraph.tidyparse.*
 import js.array.asList
 import js.buffer.*
 import js.typedarrays.Int32Array
@@ -23,7 +22,7 @@ import web.gpu.*
 import kotlin.js.Promise
 import kotlin.math.*
 import kotlin.reflect.KProperty
-import kotlin.time.TimeSource
+import kotlin.time.*
 import kotlin.js.Promise as KPromise
 
 
@@ -51,18 +50,25 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
     gpu.addEventListener(EventType("uncapturederror"), { e: dynamic -> log("Uncaptured: ${e.error.message}") })
     try {
       listOf(
+        // Utils
         prefix_sum_p1, prefix_sum_p2,
+        // Loaders
         sparse_load, sparse_mat_load,
-        active_nt_count,
+        // Automata construction
         init_chart, init_chart_line,
+        // Matrix closure/CFL reachability
         dag_reach, mdpt_count, mdpt_write,
         cfl_mul_upper,
+        // Counting/Enumeration
         bp_count, bp_write,
         ls_dense, ls_cdf,
         build_root_sizes, enum_words_wor,
-        markov_score, wdfa_score, select_top_k, gather_top_k,
+        // Sampling
+        markov_score, wdfa_score, select_top_k, gather_top_k, // rerank_top_k,
+        // Debugging
+        wdfa_score_raw, active_nt_count,
 
-        // V2
+        // V2 (untested)
         frontier_init_v2,
         frontier_count_succ_v2,
         frontier_write_exact_v2,
@@ -113,9 +119,7 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
 suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer?, codePoints: IntArray): List<String> {
   val t0 = TimeSource.Monotonic.markNow()
   val timings = linkedMapOf<String, Int>()
-  fun mark(step: String, started: kotlin.time.TimeMark) {
-    timings[step] = started.elapsedNow().inWholeMilliseconds.toInt()
-  }
+  fun mark(step: String, started: TimeMark) { timings[step] = started.elapsedNow().inWholeMilliseconds.toInt() }
 
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   log("FSA(|Q|=$numStates, |δ|=${fsa.transit.size}), ${cfg.calcStats()}")
@@ -139,10 +143,9 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer
         "word=${wordBuf.size}B, tm=${tmBuf.size}B"
   )
 
-  val initT = TimeSource.Monotonic.markNow()
-  init_chart(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
-  mark("init chart", initT)
-  log("Chart construction took: ${timings["init chart"]}ms")
+  timings["init chart"] = timedGPUIsolated("Init chart") {
+    init_chart(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+  }
 
   val closureT = TimeSource.Monotonic.markNow()
   cfl_mul_upper.invokeCFLFixpoint(numStates, dpBuf, activeBuf, metaBuf)
@@ -184,8 +187,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer
         "Start indices: total=${it.size}, roots=${it.size}, LED=$led, " +
             "window=[${led}, ${led + ledBuffer}]"
       )
-    }
-    .flatten()
+    }.flatten()
 
   mark("filter roots", t2)
 
@@ -204,11 +206,11 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer
   mark("build ls dense", lsDenseT)
   log("Built lsDense in ${timings["build ls dense"]}ms (${lsDense.size}B)")
 
-  val cdfT = TimeSource.Monotonic.markNow()
   val cdfBuf = GPUBuffer(totalExp * 4, STCPSD)
-  ls_cdf(dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+  timings["build cdf"] = timedGPUIsolated("Build CDF") {
+    ls_cdf(dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+  }
   lsDense.destroy()
-  mark("build cdf", cdfT)
   log("Pairing function construction took: ${timings["build cdf"]}ms (${cdfBuf.size}B)")
 
   val numRoots = startIdxs.size / 2
@@ -220,10 +222,9 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer
     startIdxs.toGPUBuffer()
   )
 
-  val rootSizeT = TimeSource.Monotonic.markNow()
-  build_root_sizes(dpBuf, bpCountBuf, bpOffsetBuf, cdfBuf, tmBuf, rootSizes, idxUniBuf)((numRoots + 255) / 256)
-  mark("build root sizes", rootSizeT)
-  log("Built root sizes in ${timings["build root sizes"]}ms | roots=$numRoots")
+  timings["build root sizes"] = timedGPUIsolated("Build root sizes (roots=$numRoots)") {
+    build_root_sizes(dpBuf, bpCountBuf, bpOffsetBuf, cdfBuf, tmBuf, rootSizes, idxUniBuf)((numRoots + 255) / 256)
+  }
 
   val rootCdfT = TimeSource.Monotonic.markNow()
   val rootCDF = Shader.prefixSumGPU(rootSizes, numRoots)
@@ -249,13 +250,15 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer
 
   idxUniBuf.writeU32(wordIndex = 5, value = toDecode)
 
-  val enumT = TimeSource.Monotonic.markNow()
   val outBuf = GPUBuffer(toDecode * maxRepairLen * 4, STCPSD)
-  enum_words_wor(
-    dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf,
-    cdfBuf, tmBuf, idxUniBuf, rootSizes, rootCDF, outBuf
-  )(DISPATCH_GROUP_SIZE_X, (toDecode + DISPATCH_GROUP_SIZE_X - 1) / DISPATCH_GROUP_SIZE_X)
-  mark("enumerate", enumT)
+
+  timings["enumerate"] = timedGPUIsolated("Enumerate") {
+    enum_words_wor(
+      dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf,
+      cdfBuf, tmBuf, idxUniBuf, rootSizes, rootCDF, outBuf
+    )(DISPATCH_GROUP_SIZE_X, (toDecode + DISPATCH_GROUP_SIZE_X - 1) / DISPATCH_GROUP_SIZE_X)
+  }
+
   log("Enumerated $toDecode samples in ${timings["enumerate"]}ms (${outBuf.size}B)")
 
   val decodeT = TimeSource.Monotonic.markNow()
@@ -407,13 +410,15 @@ suspend fun scoreSelectGatherWDFA(
   k          : Int
 ): Int32Array<ArrayBuffer> {
   val t0 = TimeSource.Monotonic.markNow()
+  val timings = linkedMapOf<String, Int>()
+
   val threads = DISPATCH_GROUP_SIZE_X
   val groupsY = (maxSamples + threads - 1) / threads
 
   val prmBuf = intArrayOf(maxSamples, k, stride, threads)
     .toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
 
-  wdfa_score(packets, wdfa, prmBuf)(threads, groupsY)
+  timings["wdfa_score"] = timedGPUIsolated("WDFA score") { wdfa_score(packets, wdfa, prmBuf)(threads, groupsY) }
 
   val totalGroups = (maxSamples + 255) / 256
   val selGroupsY = (totalGroups + threads - 1) / threads
@@ -421,10 +426,11 @@ suspend fun scoreSelectGatherWDFA(
   val idxBuf = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
   val scrBuf = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
 
-  select_top_k(prmBuf, packets, idxBuf, scrBuf)(threads, selGroupsY)
+  timings["select_top_k"] = timedGPUIsolated("Select top-k") { select_top_k(prmBuf, packets, idxBuf, scrBuf)(threads, selGroupsY) }
 
   val bestBuf = GPUBuffer(k * stride * 4, STCPSD)
-  gather_top_k(prmBuf, packets, idxBuf, bestBuf)(k)
+
+  timings["gather_top_k"] = timedGPUIsolated("Gather top-k") { gather_top_k(prmBuf, packets, idxBuf, bestBuf)(k) }
 
   val topK = bestBuf.readInt32Array()
   log("WDFA score/select/gather read ${topK.length} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
@@ -475,8 +481,7 @@ fn count_tms(val: u32, unit_nt: u32) -> u32 {
                                negLit),
                        hasLiteral);
     return litCount;
-}
-"""
+}"""
 
 //language=wgsl
 const val ACTIVE_NT_HELPERS = """
@@ -1214,7 +1219,7 @@ val prefix_sum_p2 by Shader("""$PFX_SUM_PARAMS $SAT_ARTH
 }""")
 
 // Longest word WGSL can handle. If ~2^9<MAX_WORD_LEN, pipeline breaks some on architectures
-const val MAX_WORD_LEN = 512
+const val MAX_WORD_LEN = 128
 const val MAX_LEV_RAD = 5
 const val MAX_SAMPLES = 2_000_000 // Maximum number of samples to draw before reranking
 const val TOP_K_SAMP = 10 * MAX_DISP_RESULTS // Maximum results to sample, some of which may be displayed to the user
@@ -2141,4 +2146,27 @@ fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer 
   log("Done")
 
   return flat.asList().toGPUBuffer()
+}
+
+const val PROFILE_WGPU_KERNELS = true
+
+suspend fun awaitGPUQueue() {
+  gpu.queue.asDynamic()
+    .onSubmittedWorkDone()
+    .unsafeCast<Promise<*>>()
+    .await()
+}
+
+// Measures only the work submitted inside `block`, not older queued work.
+suspend inline fun timedGPUIsolated(label: String, block: () -> Unit): Int {
+  if (PROFILE_WGPU_KERNELS) awaitGPUQueue() // drain previous queued work
+
+  val t = TimeSource.Monotonic.markNow()
+  block()
+
+  if (PROFILE_WGPU_KERNELS) awaitGPUQueue() // wait for this block's submitted work
+
+  val ms = t.elapsedNow().inWholeMilliseconds.toInt()
+  if (PROFILE_WGPU_KERNELS) log("$label in ${ms}ms")
+  return ms
 }

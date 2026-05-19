@@ -122,10 +122,12 @@ suspend fun pythonSetup() {
   MainScope().launch {
     val t0 = TimeSource.Monotonic.markNow()
     tryBootstrappingGPU(true)
-    if (gpuAvailable) log("Loaded n-grams into ${jsPyEditor.ngramTensor.size / 1000000}mb GPU buffer in ${t0.elapsedNow()}")
+    if (gpuAvailable) {
+      log("Loaded n-grams into ${jsPyEditor.ngramTensor.size / 1000000}mb GPU buffer in ${t0.elapsedNow()}")
+      loadWDFA()
+      debugWDFATokenIndexing()
+    }
   }
-
-  loadWDFA()
 
   TIMEOUT_MS = 1000
 

@@ -85,6 +85,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
       val scenario = when {
         tokens.size == 1 && stubMatcher.matches(tokens[0]) -> Scenario.STUB
         HOLE_MARKER in tokens -> Scenario.COMPLETION
+        tokens in cfg.language -> Scenario.PARSEABLE
 //        !containsUnkTok && forwardCompletion?.isValidContinuation(tokens) == true -> Scenario.FORWARD_COMPLETION
         // This scenario can be handled much more elegantly using coalegbra and incremental decoding
         !containsUnkTok -> handleSuffixCheck(cfg, tokens)
@@ -168,6 +169,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
       SelectorAction.ENTER -> {
         val selection = readDisplayText().lines()[currentIdx + 2]
           .substringAfter(".) ").replace("\\s+".toRegex(), " ").trim()
+        log("Selected: $selection / ${selection in cfg.language}")
         overwriteRegion(getCaretPosition().takeIf { it.last - it.first > 0 } ?: getLineBounds(), selection)
         redecorateLines()
         continuation { handleTab() }

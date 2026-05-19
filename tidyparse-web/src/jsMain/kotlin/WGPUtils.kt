@@ -7,6 +7,8 @@ import Shader.Companion.toGPUBuffer
 import Shader.Companion.writeU32
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
+import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
+import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import web.gpu.GPUBuffer
 import kotlin.time.TimeSource
 
@@ -311,3 +313,129 @@ fun Map<String, Int>.logTimingsToJSConsole() {
 
   println(plot)
 }
+
+//language=wgsl
+val wdfa_score_raw by Shader("""$SAMPLER_PARAMS
+$WDFA_STRUCT
+
+@group(0) @binding(0) var<storage, read_write> packets : array<u32>;
+@group(0) @binding(1) var<storage, read>       wdfa    : WDFA;
+@group(0) @binding(2) var<uniform>             prm     : Params;
+
+const PKT_HDR_LEN : u32 = ${PKT_HDR_LEN}u;
+
+@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+  let sid = gid.x + gid.y * prm.threads;
+  if (sid >= prm.maxSamples) { return; }
+
+  let stride = prm.stride;
+  let base = sid * stride;
+
+  var q = wdfa.startState;
+  var cost = wdfa.startCost;
+
+  var pos : u32 = 0u;
+  loop {
+    if (pos >= stride - PKT_HDR_LEN) { break; }
+
+    let tok = packets[base + PKT_HDR_LEN + pos];
+    if (tok == 0u) { break; }
+
+    let e = find_edge(q, tok);
+    if (e == NO_EDGE) {
+      cost = sat_add_wdfa(cost, wdfa.missingCost);
+    } else {
+      cost = sat_add_wdfa(cost, edge_cost(e));
+      q = edge_dst(e);
+    }
+
+    pos = pos + 1u;
+  }
+
+  let fc = final_cost(q);
+  if (fc >= WDFA_INF) {
+    cost = WDFA_INF;
+  } else {
+    cost = sat_add_wdfa(cost, fc);
+  }
+
+  // Apples-to-apples debug score: no edit-distance penalty.
+  packets[base + 1u] = cost;
+}""")
+
+suspend fun debugWDFATokenIndexing(cfg: CFG = pythonStatementCNFAllProds, wdfaBuf: GPUBuffer? = wdfa) {
+  log("Debugging WDFA token indexing...")
+  if (wdfaBuf == null) return log("WDFA rank testing skipped: buffer not loaded")
+
+  val lines = """
+    x = 1 + 1
+    [ i for i in j ]
+    stripped_lines = lambda f : (l.rstrip("\n") for l in f)
+    newlist = [word for word in words if len(word) == 9]
+    Keys = [x for x in d if d[x] == 'a']
+    gen_fun = lambda num: (x for u in range(num) for x in (u*2, u*10, u*u))
+    [2 * x if x > 2 else add_nothing_to_list for x in some_list]
+    lines = [[float(x) for x in line] for line in csv.reader(f)]
+    filtered = [x for x in common if x in words]
+    () + (1, 'a') + (2, 'b') + (3, 'c')
+  """.lines().map { it.trim() }.filter { it.isNotBlank() }
+
+  val packets = IntArray(lines.size * MAX_WORD_LEN)
+  val decoded = mutableListOf<List<String>>()
+
+  lines.forEachIndexed { i, line ->
+    val toks = PyCodeSnippet(line).lexedTokens().tokenizeByWhitespace().filter { it in cfg.terminals }
+
+    decoded += toks
+
+    val base = i * MAX_WORD_LEN
+    packets[base + 0] = 0 // edit distance, ignored by wdfa_score_raw
+    packets[base + 1] = 0 // score filled by wdfa_score_raw
+
+    toks.forEachIndexed { j, tok ->
+      val tid = cfg.tmMap[tok] ?: error("Token not in cfg.tmMap: $tok from $line")
+
+      // Packet convention: 0 = terminator, local terminal i = i + 1.
+      packets[base + PKT_HDR_LEN + j] = tid + 1
+    }
+
+    packets[base + PKT_HDR_LEN + toks.size] = 0
+  }
+
+  val packetBuf = packets.toGPUBuffer(STCPSD)
+  val prmBuf = intArrayOf(
+    lines.size,              // maxSamples
+    lines.size,              // k, unused
+    MAX_WORD_LEN,            // stride
+    DISPATCH_GROUP_SIZE_X
+  ).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
+
+  wdfa_score_raw(packetBuf, wdfaBuf, prmBuf)(DISPATCH_GROUP_SIZE_X, 1)
+
+  val scored = packetBuf.readInt32Array()
+  val rows = lines.indices.map { lines[it] to scored[it * MAX_WORD_LEN + 1].toUInt().toLong() }
+  val sorted = rows.sortedByDescending { it.second }
+
+  log("GPU WDFA sorted order:")
+  sorted.forEachIndexed { rank, row -> log("${rank + 1}. ${row.first} // gpu=${row.second}") }
+
+  val expected = listOf(
+    "gen_fun = lambda num: (x for u in range(num) for x in (u*2, u*10, u*u))",
+    "() + (1, 'a') + (2, 'b') + (3, 'c')",
+    "[2 * x if x > 2 else add_nothing_to_list for x in some_list]",
+    "lines = [[float(x) for x in line] for line in csv.reader(f)]",
+    """stripped_lines = lambda f : (l.rstrip("\n") for l in f)""",
+    "newlist = [word for word in words if len(word) == 9]",
+    "Keys = [x for x in d if d[x] == 'a']",
+    "filtered = [x for x in common if x in words]",
+    "x = 1 + 1",
+    "[ i for i in j ]"
+  )
+
+  val got = sorted.map { it.first }
+  log("GPU WDFA ordering: ${if (got == expected)"PASS" else "FAIL"}")
+
+  packetBuf.destroy()
+  prmBuf.destroy()
+}
+
