@@ -771,7 +771,7 @@ suspend fun repairPipelineV2(
 
   if (allStartIds.isEmpty()) {
     timings["total"] = t0.elapsedNow().inWholeMilliseconds.toInt()
-    timings.logTimingsToJSConsole()
+    timings.logTimesheet()
     listOf(activeBuf, wordBuf, metaBuf, dpBuf).forEach(GPUBuffer::destroy)
     return emptyList<String>().also { log("V2: no valid parse found") }
   }
@@ -789,7 +789,7 @@ suspend fun repairPipelineV2(
   val numRoots = startIdxs.size / 2
   if (numRoots == 0) {
     timings["total"] = t0.elapsedNow().inWholeMilliseconds.toInt()
-    timings.logTimingsToJSConsole()
+    timings.logTimesheet()
     listOf(activeBuf, wordBuf, metaBuf, dpBuf).forEach(GPUBuffer::destroy)
     return emptyList()
   }
@@ -797,7 +797,7 @@ suspend fun repairPipelineV2(
   val maxRepairLen = fsa.width + fsa.height + 10
   if (MAX_WORD_LEN < maxRepairLen) {
     timings["total"] = t0.elapsedNow().inWholeMilliseconds.toInt()
-    timings.logTimingsToJSConsole()
+    timings.logTimesheet()
     listOf(activeBuf, wordBuf, metaBuf, dpBuf).forEach(GPUBuffer::destroy)
     return emptyList<String>().also {
       log("V2: max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)")
@@ -943,10 +943,10 @@ suspend fun repairPipelineV2(
     }
     log("V2 decoded ${r.distinct().size} unique words out of ${r.size} in ${t.elapsedNow()}")
     r.distinct().take(MAX_DISP_RESULTS)
-  } else uniqueDecodePackets(outBuf.readInt32Array(), cfg, maxRepairLen, MAX_DISP_RESULTS)
+  } else uniqueDecodePackets(outBuf.readJSIntArray(), cfg, maxRepairLen, MAX_DISP_RESULTS)
 
   timings["total"] = t0.elapsedNow().inWholeMilliseconds.toInt()
-  timings.logTimingsToJSConsole()
+  timings.logTimesheet()
   log("repairPipelineV2 completed in ${timings["total"]}ms | frontier=${frontierA.count} | exact=$exact")
 
   listOf(outBuf, idxUniBuf, wordBuf, metaBuf, bpMetaBuf, dpBuf, activeBuf).forEach(GPUBuffer::destroy)
@@ -993,7 +993,7 @@ suspend fun scoreSelectGatherV2(
 //  log("Gather in ${t0.elapsedNow()}")
 
 //  t0 = TimeSource.Monotonic.markNow()
-  val topK = bestBuf.readInt32Array()
+  val topK = bestBuf.readJSIntArray()
   log("Score/select/gather read ${topK.length} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
 
   listOf(prmBuf, idxBuf, scrBuf, bestBuf).forEach(GPUBuffer::destroy)

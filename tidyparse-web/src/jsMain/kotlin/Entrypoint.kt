@@ -13,7 +13,6 @@ import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
 import org.w3c.fetch.RequestInit
 import web.gpu.GPUBuffer
-import kotlin.js.Promise
 import kotlin.time.TimeSource
 
 /**
@@ -140,7 +139,7 @@ suspend fun pythonSetup() {
   LED_BUFFER = ledBuffSel.value.toInt()
   ledBuffSel.addEventListener("change", { LED_BUFFER = ledBuffSel.value.toInt() })
 
-  initPyodide()
+  jsPyEditor.initPyodide()
 }
 
 val exSelector by lazy { document.getElementById("ex-selector") as HTMLSelectElement }
@@ -188,25 +187,6 @@ suspend fun loadNgrams(file: String = "python_4grams.txt") {
     log("Loaded ${jsPyEditor.ngrams.size} $n-grams from $file in ${t0.elapsedNow()}")
   } else log("Failed to load ngrams from $file")
 }
-
-suspend fun initPyodide() = try {
-  val scriptTag = (document.querySelector("script[src*='pyodide.js']") as HTMLScriptElement)
-    .getAttribute("src")!!.substringBefore("pyodide.js")
-
-  val config = js("{}")
-  config.indexURL = scriptTag
-  jsPyEditor.pyodide = window.asDynamic().loadPyodide(config).unsafeCast<Promise<*>>().await()
-  jsPyEditor.pyodide.loadPackage("micropip").unsafeCast<Promise<*>>().await()
-
-  val micropip = jsPyEditor.pyodide.pyimport("micropip")
-  micropip.install("black").unsafeCast<Promise<*>>().await()
-
-  val testStr = "1+1"
-  val beautified = jsPyEditor.formatCode(testStr)
-
-  log("Black test => $beautified")
-  log(jsPyEditor.getOutput("1+"))
-} catch (e: Exception) { log("Error during Pyodide initialization: ${e.message}") }
 
 private fun Element.scrollIntoViewCompat() {
   val opts = js("({ block: 'end', inline: 'nearest', behavior: 'auto' })")

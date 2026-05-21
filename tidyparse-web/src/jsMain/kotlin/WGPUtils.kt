@@ -10,6 +10,7 @@ import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import web.gpu.GPUBuffer
+import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
 suspend fun logActiveNTGrid(
@@ -174,14 +175,14 @@ suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints:
   )(DISPATCH_GROUP_SIZE_X, (toDecode + DISPATCH_GROUP_SIZE_X - 1) / DISPATCH_GROUP_SIZE_X)
 
   return (
-      if (ngrams != null) ngramDecoder(outBuf, ngrams, maxRepairLen, cfg, toDecode)
-      else uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)
-      ).also {
-      listOf(
-        outBuf, rootSizes, rootCDF, metaBuf, dpBuf, activeBuf, wordBuf,
-        idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf
-      ).forEach(GPUBuffer::destroy)
-    }
+    if (ngrams != null) ngramDecoder(outBuf, ngrams, maxRepairLen, cfg, toDecode)
+    else uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)
+  ).also {
+    listOf(
+      outBuf, rootSizes, rootCDF, metaBuf, dpBuf, activeBuf, wordBuf,
+      idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf
+    ).forEach(GPUBuffer::destroy)
+  }
 }
 
 // Checks whether there is a forward completion in the language of the CFG
@@ -262,7 +263,10 @@ fun porousToCodePoints(cfg: CFG, porous: List<String>): IntArray =
     else cfg.tmMap[t] ?: error("Unknown token '$t' (not in cfg.tmMap)")
   }
 
-fun Map<String, Int>.logTimingsToJSConsole() {
+var timings = linkedMapOf<String, Int>()
+fun mark(step: String, started: TimeMark) { timings[step] = started.elapsedNow().inWholeMilliseconds.toInt() }
+
+fun Map<String, Int>.logTimesheet() {
   val totalMs = this["total"]?.coerceAtLeast(0)
   val bodyRows = entries
     .asSequence()
@@ -412,7 +416,7 @@ suspend fun debugWDFATokenIndexing(cfg: CFG = pythonStatementCNFAllProds, wdfaBu
 
   wdfa_score_raw(packetBuf, wdfaBuf, prmBuf)(DISPATCH_GROUP_SIZE_X, 1)
 
-  val scored = packetBuf.readInt32Array()
+  val scored = packetBuf.readJSIntArray()
   val rows = lines.indices.map { lines[it] to scored[it * MAX_WORD_LEN + 1].toUInt().toLong() }
   val sorted = rows.sortedByDescending { it.second }
 

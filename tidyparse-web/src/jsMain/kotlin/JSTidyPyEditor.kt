@@ -2,14 +2,14 @@ import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.tidyparse.*
-import kotlinx.browser.window
+import kotlinx.browser.*
 import kotlinx.coroutines.*
 import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
 import web.gpu.GPUBuffer
+import kotlin.js.Promise
 import kotlin.math.ln
 import kotlin.time.TimeSource
-
 
 @ExperimentalUnsignedTypes
 class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val output: Node) : JSTidyEditor(editor, output) {
@@ -75,13 +75,16 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
       .sumOf { ngram -> ln((ngrams[ngram] ?: 1.0) / normalizingConst) }
 
   var pyodide: dynamic? = null
+  var blackFormatFn: dynamic = null
 
+  fun String.sanitizeForPyodideCompiler() = replace("NUMBER",  "1").replace("STRING", "\"\"")
   fun getOutput(code: String): String = try {
     if (pyodide == null) throw Exception("Pyodide not initialized")
-    val src = code.replace("NUMBER",  "1").replace("STRING", "\"\"")
+    val src = code.sanitizeForPyodideCompiler()
 
     val encoded: String = js("btoa")(src) as String
 
+    //language=python
     val pyCode = """
         import sys, traceback, io, base64, textwrap
         _out = io.StringIO()
@@ -98,6 +101,21 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     jsPyEditor.pyodide.runPython(pyCode)
     jsPyEditor.pyodide.globals.get("_result") as String
   } catch (e: dynamic) {""}//{ "Error during compilation: $e".also { log(it) }; "" }
+
+  fun Sequence<String>.filterCompilerErrors(errHst: MutableMap<String, Int>, onSeen: (ok: Boolean) -> Unit): Sequence<String> =
+    filter { s ->
+      val output = getOutput(s)
+      val errorType = output.getErrorType()
+
+      when (errorType) {
+        "" -> true
+        else -> {
+          "$errorType: ${output.getErrorMessage()}"
+            .also { err -> errHst[err] = 1 + errHst.getOrElse(err) { 0 } }
+          false
+        }
+      }.also { ok -> onSeen(ok) }
+    }
 
   private fun String.getErrorType(): String =
     if (isEmpty()) "" else lines().dropLast(1).lastOrNull()?.substringBeforeLast(":")?.substringAfterLast(":1: ") ?: this
@@ -163,6 +181,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
         var metric: (List<String>) -> Int = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() }
 //        var metric: (List<String>) -> Int = { -1 }
 
+        var postProcTimer = TimeSource.Monotonic.markNow()
         (if (gpuAvailable) {
           log("Repairing on GPU...")
           repairCode(cfg, tokens, LED_BUFFER, ngramTensor).asSequence()
@@ -175,25 +194,12 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
           .map { it.dropLast(8).replacePythonKeywords() }
           .distinct().let {
             if (allowCompilerErrors) it.onEach { total++ }
-            else it.filter { s ->
-//              if (total - rejected)
-              val output = getOutput(s)
-              val errorType = output.getErrorType()
-              when (errorType) {
-                "" -> true
-                else -> {
-                  "$errorType: ${output.getErrorMessage()}"
-                    .also { errHst[it] = 1 + errHst.getOrElse(it) {
-//                    log("REPAIR: $s\nERROR: $it")
-                    0 }; }
-                   false
-                }
-              }.also { if (!it) rejected++; total++ }
-            }
+            else it.filterCompilerErrors(errHst = errHst) { ok -> if (!ok) rejected++; total++ }
           }.enumerateInteractively(
             workHash = workHash,
             origTks = tokens.dropLast(1),
-            recognizer = { "$it NEWLINE".replace("|", "OR") in cfg.language },
+//            recognizer = { "$it NEWLINE".replace("|", "OR") in cfg.language },
+            recognizer = { true },
             metric = metric,
             customDiff = {
               val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())
@@ -206,11 +212,31 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
                     .joinToString("\n") { "${it.value.toString().padEnd(pad)}| ${it.key}" }
                 log("Rejection histogram:\n$summary")
               }
+              if (gpuAvailable) { mark("postprocessing", postProcTimer); timings.logTimesheet() }
               ", discarded $rejected/$total, ${t0.elapsedNow()} latency."
-            },
+            }.also { postProcTimer = TimeSource.Monotonic.markNow() },
             reason = invalidPrefix
           )
       }
     }
   }
+
+  suspend fun initPyodide() = try {
+    val scriptTag = (document.querySelector("script[src*='pyodide.js']") as HTMLScriptElement)
+      .getAttribute("src")!!.substringBefore("pyodide.js")
+
+    val config = js("{}")
+    config.indexURL = scriptTag
+    jsPyEditor.pyodide = window.asDynamic().loadPyodide(config).unsafeCast<Promise<*>>().await()
+    jsPyEditor.pyodide.loadPackage("micropip").unsafeCast<Promise<*>>().await()
+
+    val micropip = jsPyEditor.pyodide.pyimport("micropip")
+    micropip.install("black").unsafeCast<Promise<*>>().await()
+
+    val testStr = "1+1"
+    val beautified = jsPyEditor.formatCode(testStr)
+
+    log("Black test => $beautified")
+    log(jsPyEditor.getOutput("1+"))
+  } catch (e: Exception) { log("Error during Pyodide initialization: ${e.message}") }
 }

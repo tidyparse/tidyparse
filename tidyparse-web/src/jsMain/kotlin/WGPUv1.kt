@@ -29,6 +29,7 @@ import kotlin.js.Promise as KPromise
 lateinit var gpu: GPUDevice
 var gpuAvailable = false
 external val navigator: dynamic
+typealias JSIntArray = Int32Array<ArrayBuffer>
 
 /*
   TODO:
@@ -118,8 +119,7 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
 
 suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer?, codePoints: IntArray): List<String> {
   val t0 = TimeSource.Monotonic.markNow()
-  val timings = linkedMapOf<String, Int>()
-  fun mark(step: String, started: TimeMark) { timings[step] = started.elapsedNow().inWholeMilliseconds.toInt() }
+  timings = linkedMapOf()
 
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   log("FSA(|Q|=$numStates, |δ|=${fsa.transit.size}), ${cfg.calcStats()}")
@@ -138,9 +138,9 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer
   val activeBuf = GPUBuffer((numStates * numStates * activeWords * 4).toLong(), STCPSD)
 
   log(
-    "Buffers: dp=${dpBuf.size}B (${totalSize} cells), " +
-        "active=${activeBuf.size}B (${activeWords} words/cell), " +
-        "word=${wordBuf.size}B, tm=${tmBuf.size}B"
+  "Buffers: dp=${dpBuf.size}B (${totalSize} cells), " +
+      "active=${activeBuf.size}B (${activeWords} words/cell), " +
+      "word=${wordBuf.size}B, tm=${tmBuf.size}B"
   )
 
   timings["init chart"] = timedGPUIsolated("Init chart") {
@@ -161,7 +161,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer
   mark("read roots", rootsT)
 
   if (allStartIds.isEmpty()) {
-    timings.logTimingsToJSConsole()
+//    timings.logTimingsToJSConsole()
     listOf(activeBuf, wordBuf, tmBuf, metaBuf, dpBuf).forEach(GPUBuffer::destroy)
     return emptyList<String>().also { log("No valid parse found: dpComplete has no entries in final states!") }
   }
@@ -193,7 +193,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer
 
   val maxRepairLen = fsa.width + fsa.height + 10
   if (MAX_WORD_LEN < maxRepairLen) {
-    timings.logTimingsToJSConsole()
+//    timings.logTimingsToJSConsole()
     listOf(activeBuf, wordBuf, tmBuf, metaBuf, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf)
       .forEach(GPUBuffer::destroy)
     return emptyList<String>().also {
@@ -263,13 +263,13 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer
 
   val decodeT = TimeSource.Monotonic.markNow()
   val result =
-    if (wdfa != null) wdfaDecoder(outBuf, wdfa!!.also { log("Using WDFA decoder") }, maxRepairLen, cfg, toDecode)
+    if (wdfa != null) wdfaDecoder(outBuf, wdfa!!, maxRepairLen, cfg, toDecode)
     else if (ngrams != null) ngramDecoder(outBuf, ngrams, maxRepairLen, cfg, toDecode)
     else uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)
   mark("decode", decodeT)
 
   timings["total"] = t0.elapsedNow().inWholeMilliseconds.toInt()
-  timings.logTimingsToJSConsole()
+//  timings.logTimingsToJSConsole()
   log("repairPipeline completed in ${timings["total"]}ms")
 
   return result.also {
@@ -280,25 +280,8 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer
   }
 }
 
-suspend fun uniformDecoder(outBuf: GPUBuffer, cfg: CFG, maxRepairLen: Int, samplesToDecode: Int): List<String> {
-  val t3 = TimeSource.Monotonic.markNow()
-  val res = mutableMapOf<Int, MutableSet<String>>()
-  val allResults: Int32Array<ArrayBuffer> = outBuf.readInt32Array()
 
-  for (i in 0 until samplesToDecode) {
-    val t = allResults.decodePacket(i, cfg.tmLst, maxRepairLen) ?: continue
-    res.getOrPut(t.first) { mutableSetOf() }.add(t.second)
-    pause(100_000)
-  }
-  res.forEach { log("Δ=${it.key} -> |L|=${it.value.size}") }
-  log("Sampled WOR into ${outBuf.size}-byte buffer in ${t3.elapsedNow()}")
-
-  val out = ArrayList<String>(res.values.sumOf { it.size })
-  for (set in res.values) { pause(100_000); out.addAll(set) }
-  return out
-}
-
-suspend fun GPUBuffer.readInt32Array(): Int32Array<ArrayBuffer> {
+suspend fun GPUBuffer.readJSIntArray(): JSIntArray {
   val readDst = GPUBuffer(size.toInt(), GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
 
   val cmd = gpu.createCommandEncoder()
@@ -316,34 +299,26 @@ suspend fun GPUBuffer.readInt32Array(): Int32Array<ArrayBuffer> {
   return Int32Array(copied)
 }
 
-// TODO: Switch to MRF-based sampler? https://aclanthology.org/H92-1028.pdf
-suspend fun ngramDecoder(outBuf: GPUBuffer, ngrams: GPUBuffer, maxRepairLen: Int, cfg: CFG, samplesToDecode: Int): MutableList<String> {
-  val topK = scoreSelectGather(packets = outBuf, ngrams = ngrams, maxSamples = samplesToDecode, stride = maxRepairLen, k = TOP_K_SAMP)
+suspend fun uniformDecoder(outBuf: GPUBuffer, cfg: CFG, maxRepairLen: Int, samplesToDecode: Int): List<String> {
+  log("Using uniform decoder...")
+  return decodePackets(outBuf.readJSIntArray(), cfg, maxRepairLen, samplesToDecode)
+}
 
-  val t4 = TimeSource.Monotonic.markNow()
-  val result = mutableListOf<String>()
-  for (i in 0 until TOP_K_SAMP)
-    result.add(topK.decodePacket(i, cfg.tmLst, maxRepairLen)?.second ?: continue)
-  log("Decoded ${result.distinct().size} unique words out of ${result.size} in ${t4.elapsedNow()}")
-  return result
+// TODO: Switch to MRF-based sampler? https://aclanthology.org/H92-1028.pdf
+suspend fun ngramDecoder(outBuf: GPUBuffer, ngrams: GPUBuffer, maxRepairLen: Int, cfg: CFG, samplesToDecode: Int): List<String> {
+  log("Using n-gram decoder...")
+  val topK = scoreSelectGather(packets = outBuf, ngrams = ngrams, maxSamples = samplesToDecode, stride = maxRepairLen, k = TOP_K_SAMP)
+  return decodePackets(topK, cfg, maxRepairLen)
 }
 
 suspend fun wdfaDecoder(outBuf: GPUBuffer, wdfa: GPUBuffer, maxRepairLen: Int, cfg: CFG, samplesToDecode: Int): MutableList<String> {
-  val topK = scoreSelectGatherWDFA(
-    packets = outBuf,
-    wdfa = wdfa,
-    maxSamples = samplesToDecode,
-    stride = maxRepairLen,
-    k = TOP_K_SAMP
-  )
-
-  val result = mutableListOf<String>()
-  for (i in 0 until TOP_K_SAMP) { result.add(topK.decodePacket(i, cfg.tmLst, maxRepairLen)?.second ?: continue) }
-  return result
+  log("Using WDFA decoder...")
+  val topK = scoreSelectGatherWDFA(outBuf, wdfa, samplesToDecode, maxRepairLen, TOP_K_SAMP)
+  return decodePackets(topK, cfg, maxRepairLen).toMutableList()
 }
 
 // Returns Levenshtein distance and string repair
-fun Int32Array<ArrayBuffer>.decodePacket(idx: Int, tm: List<String>, pktLen: Int): Pair<Int, String>? {
+fun JSIntArray.decodePacket(idx: Int, tm: List<String>, pktLen: Int): Pair<Int, String>? {
   val base = idx * pktLen + PKT_HDR_LEN // skip header cells
 
   var cur: StringBuilder? = null
@@ -359,13 +334,31 @@ fun Int32Array<ArrayBuffer>.decodePacket(idx: Int, tm: List<String>, pktLen: Int
   return if (wroteAny) { this[base - PKT_HDR_LEN] to cur!!.toString() } else null
 }
 
+fun decodePackets(packets: JSIntArray, cfg: CFG, maxRepairLen: Int, packetCount: Int = packets.length / maxRepairLen): List<String> {
+  val t0 = TimeSource.Monotonic.markNow()
+  val res = linkedMapOf<Int, MutableSet<String>>()
+
+  for (i in 0 until packetCount) {
+    val t = packets.decodePacket(i, cfg.tmLst, maxRepairLen) ?: continue
+    res.getOrPut(t.first) { linkedSetOf() }.add(t.second)
+  }
+
+  res.forEach { (dist, words) -> log("Δ=$dist -> |L|=${words.size}") }
+
+  val out = ArrayList<String>(res.values.sumOf { it.size })
+  for (set in res.values) out.addAll(set)
+
+  log("Decoded ${out.size} unique words from $packetCount packets in ${t0.elapsedNow()}")
+  return out
+}
+
 suspend fun scoreSelectGather(
   packets    : GPUBuffer,
   ngrams     : GPUBuffer,
   maxSamples : Int,
   stride     : Int,
   k          : Int
-): Int32Array<ArrayBuffer> {
+): JSIntArray {
   val t0 = TimeSource.Monotonic.markNow()
   val threads = DISPATCH_GROUP_SIZE_X
   val groupsY = (maxSamples + threads - 1) / threads
@@ -395,7 +388,7 @@ suspend fun scoreSelectGather(
 //  log("Gather in ${t0.elapsedNow()}")
 
 //  t0 = TimeSource.Monotonic.markNow()
-  val topK = bestBuf.readInt32Array()
+  val topK = bestBuf.readJSIntArray()
   log("Score/select/gather read ${topK.length} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
 
   listOf(prmBuf, idxBuf, scrBuf, bestBuf).forEach(GPUBuffer::destroy)
@@ -408,7 +401,7 @@ suspend fun scoreSelectGatherWDFA(
   maxSamples : Int,
   stride     : Int,
   k          : Int
-): Int32Array<ArrayBuffer> {
+): JSIntArray {
   val t0 = TimeSource.Monotonic.markNow()
   val timings = linkedMapOf<String, Int>()
 
@@ -432,7 +425,7 @@ suspend fun scoreSelectGatherWDFA(
 
   timings["gather_top_k"] = timedGPUIsolated("Gather top-k") { gather_top_k(prmBuf, packets, idxBuf, bestBuf)(k) }
 
-  val topK = bestBuf.readInt32Array()
+  val topK = bestBuf.readJSIntArray()
   log("WDFA score/select/gather read ${topK.length} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
 
   listOf(prmBuf, idxBuf, scrBuf, bestBuf).forEach(GPUBuffer::destroy)
@@ -933,7 +926,6 @@ val mdpt_write by Shader("""struct Uni { n : u32 };
     for (var v=0u; v<N; v++) { if (reach[r*N+v]==1u && reach[v*N+c]==1u) { flat_mp[out] = v; out++; } }
 }""")
 
-//language=wgsl
 //language=wgsl
 val cfl_mul_upper by Shader("""$CFL_STRUCT $ACTIVE_NT_HELPERS
 struct AtomicChange { count: atomic<u32> };
@@ -1815,7 +1807,7 @@ class Shader constructor(val src: String) {
     }
 
     fun GPUBuffer.writeU32(wordIndex: Int, value: Int) {
-      val tmp = Int32Array<ArrayBuffer>(1).apply { set(arrayOf(value), 0) }
+      val tmp = JSIntArray(1).apply { set(arrayOf(value), 0) }
       gpu.queue.writeBuffer(this, (wordIndex * 4).toDouble(), tmp)
     }
 
@@ -1872,10 +1864,10 @@ class Shader constructor(val src: String) {
     fun List<Int>.toGPUBuffer(usage: Int = STCPSD): GPUBuffer = toTypedArray().toGPUBuffer(usage)
     fun List<UInt>.toGPUBuffer(usage: Int = STCPSD): GPUBuffer = map { it.toInt() }.toTypedArray().toGPUBuffer(usage)
     fun IntArray.toGPUBuffer(usage: Int = GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST): GPUBuffer =
-      GPUBuffer(size * 4, usage, unsafeCast<Int32Array<ArrayBuffer>>())
+      GPUBuffer(size * 4, usage, unsafeCast<JSIntArray>())
     fun Int.toGPUBuffer(usage: Int = STCPSD): GPUBuffer = intArrayOf(this).toGPUBuffer(usage)
     fun Array<Int>.toGPUBuffer(usage: Int = STCPSD): GPUBuffer =
-      Int32Array<ArrayBuffer>(size).apply { set(this@toGPUBuffer, 0) }
+      JSIntArray(size).apply { set(this@toGPUBuffer, 0) }
         .let { GPUBuffer(byteSize = size * 4, us = usage, data = it) }
 
     // TODO: figure out map/unmap lifetime?
@@ -2077,7 +2069,7 @@ fun packStruct(constants: List<Int> = emptyList(), vararg buffers: GPUBuffer): G
   val metaBuf = GPUBuffer(totalBytes, STCPSD)
 
   // ── upload header (one writeBuffer) ───────────────────────────────────────
-  gpu.queue.writeBuffer(metaBuf, 0.0, Int32Array<ArrayBuffer>(headerInts.size).apply { set(headerInts.toTypedArray(), 0) })
+  gpu.queue.writeBuffer(metaBuf, 0.0, JSIntArray(headerInts.size).apply { set(headerInts.toTypedArray(), 0) })
 
   // ── stitch payloads in place with a single CommandEncoder ────────────────
   val enc = gpu.createCommandEncoder()
