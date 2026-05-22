@@ -113,7 +113,12 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
           else -> ({ 0 })
         },
         reason = scenario.reason, postCompletionSummary = {
-          if (gpuAvailable) { mark("postprocessing", postProcTimer); timings.logTimesheet() }
+          if (gpuAvailable) {
+            mark("postprocessing", postProcTimer);
+            timings["total"] = t0.elapsedNow().inWholeMilliseconds.toInt()
+            log("repairPipeline completed in ${timings["total"]}ms")
+            timings.logTimesheet()
+          }
           ", ${t0.elapsedNow()} latency."
         }.also { postProcTimer = TimeSource.Monotonic.markNow() }
       )

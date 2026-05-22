@@ -137,7 +137,7 @@ abstract class TidyEditor {
     postResults = { /*Now fast enough where intermediate progress should be unnecessary*/ },
     finally = {
       if (currentWorkHash == workHash) writeDisplayText("$reason$it".also { cache[workHash] = it })
-      println("Enumeration completed in ${timer.elapsedNow().inWholeMilliseconds}ms")
+//      println("Enumeration completed in ${timer.elapsedNow().inWholeMilliseconds}ms")
     },
     customDiff = customDiff,
     postCompletionSummary = postCompletionSummary

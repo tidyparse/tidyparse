@@ -4,11 +4,13 @@ import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.tidyparse.*
 import kotlinx.browser.*
 import kotlinx.coroutines.*
+import org.kosat.round
 import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
 import web.gpu.GPUBuffer
 import kotlin.js.Promise
 import kotlin.math.ln
+import kotlin.time.DurationUnit
 import kotlin.time.TimeSource
 
 @ExperimentalUnsignedTypes
@@ -102,25 +104,53 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     jsPyEditor.pyodide.globals.get("_result") as String
   } catch (e: dynamic) {""}//{ "Error during compilation: $e".also { log(it) }; "" }
 
-  fun Sequence<String>.filterCompilerErrors(errHst: MutableMap<String, Int>, onSeen: (ok: Boolean) -> Unit): Sequence<String> =
-    filter { s ->
-      val output = getOutput(s)
-      val errorType = output.getErrorType()
+  suspend fun Sequence<String>.filterCompilerErrors(
+    errHst: MutableMap<String, Int> = mutableMapOf(),
+    window: Int = 16,
+    onSeen: (ok: Boolean) -> Unit = {},
+  ): Sequence<String> = coroutineScope {
+    val pool = try { ensurePyCompileWorkers() }
+    catch (t: Throwable) { log("Pyodide worker pool unavailable: ${t.message ?: t}"); null }
 
-      when (errorType) {
+    val kept = ArrayList<String>()
+    val iterator = iterator()
+    val inFlight = ArrayDeque<Deferred<Pair<String, String>>>()
+
+    fun launchOne() {
+      if (!iterator.hasNext()) return
+      val s = iterator.next()
+      inFlight.addLast(async { s to (pool?.compile(s)?.output ?: getOutput(s)) })
+    }
+
+    repeat(window) { launchOne() }
+
+    while (inFlight.isNotEmpty()) {
+      val (s, output) = inFlight.removeFirst().await()
+      val ok = when (val errorType = output.getErrorType()) {
         "" -> true
         else -> {
-          "$errorType: ${output.getErrorMessage()}"
-            .also { err -> errHst[err] = 1 + errHst.getOrElse(err) { 0 } }
+          "$errorType: ${output.getErrorMessage()}".also { err -> errHst[err] = 1 + errHst.getOrElse(err) { 0 } }
           false
         }
-      }.also { ok -> onSeen(ok) }
+      }
+
+      if (ok) kept.add(s)
+      onSeen(ok)
+
+      launchOne()
     }
+
+    kept.asSequence()
+  }
 
   private fun String.getErrorType(): String =
     if (isEmpty()) "" else lines().dropLast(1).lastOrNull()?.substringBeforeLast(":")?.substringAfterLast(":1: ") ?: this
 
   private fun String.getErrorMessage(): String = substringAfterLast(": ").substringBefore('.').trim()
+
+  suspend fun formatCodeAsync(code: String): String =
+    try { ensurePyCompileWorkers().format(code).also { if (it.startsWith("__BLACK_ERROR__")) log(it) } }
+    catch (t: Throwable) { log("Worker formatting failed: ${t.message ?: t}"); formatCode(code) }
 
   override fun formatCode(code: String): String = try {
     if (pyodide == null) throw Exception("Pyodide not initialized")
@@ -181,42 +211,46 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
         var metric: (List<String>) -> Int = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() }
 //        var metric: (List<String>) -> Int = { -1 }
 
-        var postProcTimer = TimeSource.Monotonic.markNow()
-        (if (gpuAvailable) {
-          log("Repairing on GPU...")
-          repairCode(cfg, tokens, LED_BUFFER, ngramTensor).asSequence()
-        } else {
-          log("Repairing on CPU...")
-          metric = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() }
-          sampleGREUntilTimeout(tokens, cfg)
-        })
-          // Drop NEWLINE (added by default to PyCodeSnippets)
-          .map { it.dropLast(8).replacePythonKeywords() }
-          .distinct().let {
-            if (allowCompilerErrors) it.onEach { total++ }
-            else it.filterCompilerErrors(errHst = errHst) { ok -> if (!ok) rejected++; total++ }
-          }.enumerateInteractively(
-            workHash = workHash,
-            origTks = tokens.dropLast(1),
-//            recognizer = { "$it NEWLINE".replace("|", "OR") in cfg.language },
-            recognizer = { true },
-            metric = metric,
-            customDiff = {
-              val levAlign = levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace())
-              pcs.paintDiff(levAlign) { formatCode(it) }
-            },
-            postCompletionSummary = {
-              if (errHst.isNotEmpty()) {
-                val pad = (errHst.values.maxOrNull()?.toString()?.length ?: 1) + 1
-                val summary = errHst.toMap().entries.sortedBy { -it.component2() }
-                    .joinToString("\n") { "${it.value.toString().padEnd(pad)}| ${it.key}" }
-                log("Rejection histogram:\n$summary")
-              }
-              if (gpuAvailable) { mark("postprocessing", postProcTimer); timings.logTimesheet() }
-              ", discarded $rejected/$total, ${t0.elapsedNow()} latency."
-            }.also { postProcTimer = TimeSource.Monotonic.markNow() },
-            reason = invalidPrefix
-          )
+        val repairs =
+          (if (gpuAvailable) {
+            log("Repairing on GPU...")
+            repairCode(cfg, tokens, LED_BUFFER, ngramTensor).asSequence()
+          } else {
+            log("Repairing on CPU...")
+            metric = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() }
+            sampleGREUntilTimeout(tokens, cfg)
+          }).map { it.dropLast(8).replacePythonKeywords() }.distinct()
+
+        val postProcTimer = TimeSource.Monotonic.markNow()
+        val compilerFilteredRepairs =
+          if (allowCompilerErrors) { repairs.onEach { total++ } }
+          else { repairs.filterCompilerErrors(errHst = errHst) { ok -> if (!ok) rejected++; total++ } }
+
+        compilerFilteredRepairs.enumerateRankedRepairsInteractively(
+          workHash = workHash,
+          metric = metric,
+          render = { _, repairTks ->
+            pcs.paintDiffAsync(levenshteinAlign(tokens.dropLast(1), repairTks)) { formatCodeAsync(it) }
+          },
+          postCompletionSummary = {
+            if (errHst.isNotEmpty()) {
+              val pad = (errHst.values.maxOrNull()?.toString()?.length ?: 1) + 1
+              val summary = errHst.toMap().entries.sortedBy { -it.component2() }
+                .joinToString("\n") { "${it.value.toString().padEnd(pad)}| ${it.key}" }
+              log("Rejection histogram:\n$summary")
+            }
+
+            if (gpuAvailable) {
+              mark("postprocessing", postProcTimer)
+              timings["total"] = t0.elapsedNow().inWholeMilliseconds.toInt()
+              log("repairPipeline completed in ${timings["total"]}ms")
+              timings.logTimesheet()
+            }
+
+            ", discarded $rejected/$total, ${t0.elapsedNow()} latency."
+          },
+          reason = invalidPrefix
+        )
       }
     }
   }
@@ -225,6 +259,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     val scriptTag = (document.querySelector("script[src*='pyodide.js']") as HTMLScriptElement)
       .getAttribute("src")!!.substringBefore("pyodide.js")
 
+    val workerPoolReady = startPyodideWorkers(8)
     val config = js("{}")
     config.indexURL = scriptTag
     jsPyEditor.pyodide = window.asDynamic().loadPyodide(config).unsafeCast<Promise<*>>().await()
@@ -236,7 +271,90 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     val testStr = "1+1"
     val beautified = jsPyEditor.formatCode(testStr)
 
-    log("Black test => $beautified")
+    log("Main-thread Black test => $beautified")
     log(jsPyEditor.getOutput("1+"))
-  } catch (e: Exception) { log("Error during Pyodide initialization: ${e.message}") }
+
+    val pool = workerPoolReady.await()
+    log("Worker compile ready => ${pool.compile("1+").output.getErrorType() == "SyntaxError"}")
+    log("Worker format ready => ${pool.format("x=1") == "x = 1"}")
+  } catch (e: Throwable) { log("Error during Pyodide initialization: ${e.message ?: e.toString()}") }
+
+  private val pyodideIndexURL: String by lazy {
+    (document.querySelector("script[src*='pyodide.js']") as HTMLScriptElement)
+      .getAttribute("src")!!.substringBefore("pyodide.js")
+  }
+
+  private var webWorkerPoolReady: Deferred<WebWorkerPool>? = null
+  fun startPyodideWorkers(nWorkers: Int = 16): Deferred<WebWorkerPool> {
+    webWorkerPoolReady?.let { return it }
+    return MainScope().async {
+      try {
+        WebWorkerPool(workerURL = "webworkers.js", indexURL = pyodideIndexURL, size = nWorkers)
+          .also { it.init(); log("Initialized $nWorkers Web Workers") }
+      } catch (t: Throwable) {
+        webWorkerPoolReady = null
+        log("Failed to initialize Web Workers: ${t.message ?: t}")
+        throw t
+      }
+    }.also { webWorkerPoolReady = it }
+  }
+
+  suspend fun ensurePyCompileWorkers(): WebWorkerPool = startPyodideWorkers().await()
+
+  private data class RankedCompletion(val raw: String, val tokens: List<String>, val score: Int)
+
+  private suspend fun Sequence<String>.enumerateRankedRepairsInteractively(
+    workHash: Int,
+    metric: (List<String>) -> Int,
+    render: suspend (raw: String, tokens: List<String>) -> String,
+    postCompletionSummary: () -> String = { "." },
+    reason: String = "Generic completions:\n\n",
+    resultsToPost: Int = MAX_DISP_RESULTS,
+    timer: TimeSource.Monotonic.ValueTimeMark = TimeSource.Monotonic.markNow(),
+    shouldContinue: () -> Boolean = { currentWorkHash == workHash && timer.hasTimeLeft() },
+  ) {
+    val seen = HashSet<String>()
+    val top = ArrayList<RankedCompletion>(resultsToPost + 1)
+    val iter = iterator()
+    val startTime = TimeSource.Monotonic.markNow()
+
+    while (iter.hasNext() && shouldContinue()) {
+      pause()
+
+      val raw = iter.next()
+      if (raw.isEmpty() || !seen.add(raw)) continue
+
+      val tks = raw.tokenizeByWhitespace()
+      val score = metric(tks)
+
+      if (top.size < resultsToPost || score < top.last().score) {
+        val loc = top.binarySearch { it.score.compareTo(score) }
+        val idx = if (loc < 0) -loc - 1 else loc
+
+        top.add(idx, RankedCompletion(raw, tks, score))
+        if (top.size > resultsToPost) top.removeLast()
+      }
+    }
+
+    val throughput = (seen.size / (startTime.elapsedNow().toDouble(DurationUnit.SECONDS) + 0.001)).round(3)
+
+    val moreResults = (seen.size - top.size).let { if (it == 0) "\n\n" else "\n\n...$it more, " }
+
+    val renderedItems = coroutineScope {
+      top.mapIndexed { i, candidate ->
+        async {
+          val result =
+            "<span style=\"color: gray\" class=\"noselect\">" +
+                "${i.toString().padStart(2)}.) </span>" +
+                render(candidate.raw, candidate.tokens)
+
+          if (i == 0) "<mark>$result</mark>" else result
+        }
+      }.awaitAll()
+    }
+
+    val rendered = renderedItems.joinToString("\n")
+    if (currentWorkHash == workHash) writeDisplayText("$reason$rendered".also { cache[workHash] = it })
+    log("$moreResults~$throughput res/s${postCompletionSummary()}")
+  }
 }

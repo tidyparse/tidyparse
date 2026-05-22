@@ -34,9 +34,7 @@ suspend fun logActiveNTGrid(
   val totalUTCells = (numStates.toLong() * (numStates - 1)) / 2
   val maxPossibleActive = totalUTCells * numNTs
 
-  val sparsity =
-    if (maxPossibleActive > 0) (totalActiveNTs.toDouble() / maxPossibleActive) * 100.0
-    else 0.0
+  val sparsity = if (maxPossibleActive > 0) (totalActiveNTs.toDouble() / maxPossibleActive) * 100.0 else 0.0
 
   val previewIdxs = ArrayList<Int>(limit * limit)
   for (r in 0 until limit) for (c in 0 until limit) previewIdxs += r * numStates + c
@@ -281,14 +279,10 @@ fun Map<String, Int>.logTimesheet() {
   val maxLabel = 28
   val barWidth = 36
 
-  fun String.compactLabel(): String =
-    replace(Regex("\\s+"), " ")
+  fun String.compactLabel(): String = replace(Regex("\\s+"), " ")
       .let { if (it.length <= maxLabel) it else it.take(maxLabel - 1) + "…" }
 
-  fun Int.bar(): String {
-    val n = ((this.toDouble() / maxMs) * barWidth).toInt().coerceIn(1, barWidth)
-    return "#".repeat(n)
-  }
+  fun Int.bar(): String = "#".repeat(((this.toDouble() / maxMs) * barWidth).toInt().coerceIn(1, barWidth))
 
   val rowTexts = bodyRows.map { (label, ms) ->
     val pct = (100.0 * ms / total.coerceAtLeast(1)).toInt()
@@ -309,9 +303,7 @@ fun Map<String, Int>.logTimesheet() {
 
   val plot = buildString {
     appendLine("┌" + titleText.padEnd(contentWidth, '─') + "┐")
-    rowTexts.forEach { row ->
-      appendLine("│" + row.padEnd(contentWidth, ' ') + "│")
-    }
+    rowTexts.forEach { row -> appendLine("│" + row.padEnd(contentWidth, ' ') + "│") }
     appendLine("└" + "─".repeat(contentWidth) + "┘")
   }
 
