@@ -140,6 +140,42 @@ fun cnfSetup() {
   val input = document.getElementById("cnfFileInput") as HTMLInputElement
   val fileName = document.getElementById("cnfFileName") as HTMLSpanElement
 
+  fun loadCnfTextFromSource(name: String, text: String, size: Number = text.length) {
+    try {
+      fileName.textContent = name
+
+      val obj = js("{}")
+      obj.name = name
+      obj.size = size
+      obj.type = "text/plain"
+      obj.url = null
+      obj.text = text
+      obj.bytes = null
+      window.asDynamic().tidySelectedFile = obj
+
+      val init = js("{}")
+      init.detail = obj
+      window.dispatchEvent(js("new CustomEvent('tidy:cnf-loaded', init)") as Event)
+
+      jsCnfEditor.loadCNFFromText(text)
+
+      jsCnfEditor.run { continuation { handleInput() } }
+      jsCnfEditor.redecorateLines()
+
+      log("Loaded ${text.length} bytes from $name")
+      hide()
+      cnfInputField.focus()
+    } catch (e: dynamic) {
+      console.error("Failed to parse CNF:", e)
+    }
+  }
+
+  (document.getElementById("pythonCnfBtn") as HTMLButtonElement)
+    .addEventListener("click", {
+      val text = pythonStatementCNFAllProds.joinToString("\n") { it.pretty() }
+      loadCnfTextFromSource("Python CNF", text)
+    })
+
   input.addEventListener("change", { _ ->
     MainScope().launch {
       try {
@@ -168,23 +204,8 @@ fun cnfSetup() {
         window.dispatchEvent(js("new CustomEvent('tidy:cnf-loaded', init)") as Event)
 
         // Parse + decorate (if you do this here)
-        text?.let {
-          try {
-            jsCnfEditor.loadCNFFromText(it)
-            // Immediately re-run with the active caret context
-            jsCnfEditor.run { continuation { handleInput() } }
-            jsCnfEditor.redecorateLines()
-            log("Loaded ${it.length} bytes from ${obj.name}")
-          } catch (e: dynamic) {
-            console.error("Failed to parse CNF:", e)
-          }
-        }
-      } catch (e: dynamic) {
-        console.error("CNF load error:", e)
-      } finally {
-        hide()
-        document.documentElement?.classList?.remove("cnf-lock-scroll")
-      }
+        text?.let { loadCnfTextFromSource(f.name, it, f.size) }
+      } catch (e: dynamic) { console.error("CNF load error:", e) }
     }
   })
 
@@ -204,47 +225,77 @@ private fun buildCnfModal(): HTMLDivElement {
   }
   val dialog = (document.createElement("div") as HTMLDivElement).apply { className = "cnf-modal__dialog" }
   val header = (document.createElement("div") as HTMLDivElement).apply {
-    className = "cnf-modal__header"; id = "cnfModalTitle"; textContent = "Load a CNF grammar"
+    className = "cnf-modal__header"; id = "cnfModalTitle"; textContent = "Load a context-free grammar (CFG)"
   }
+
   val body = (document.createElement("div") as HTMLDivElement).apply {
     className = "cnf-modal__body"
     innerHTML = """
-    <p><em>CNF file requirements:</em></p>
-    <ul>
-      <li>The start symbol must be named <code>START</code>.</li>
-      <li>Grammar must be in <em>Chomsky Normal Form</em>:
-        <ul>
-          <li>Binary: <code>W -&gt; X Z</code> (with <code>W,X,Z ∈ V</code> nonterminals)</li>
-          <li>Unary (lexical): <code>W -&gt; a</code> (with <code>a ∈ Σ</code> terminal)</li>
-        </ul>
-      </li>
-      <li>One production per line. No alternation (<code>|</code>).</li>
-      <li>Tokens are space-separated; use the literal arrow <code>-&gt;</code>.</li>
-    </ul>
-    <p><em>Example:</em><br><br>
-      <code>START -&gt; EXPR EXPR</code><br>
-      <code>EXPR -&gt; LPAREN EXPR</code><br>
-      <code>LPAREN -&gt; (</code>
-    </p>
-  """.trimIndent()
+      <p>CFG requirements:</p>
+      <ul>
+        <li>The start symbol must be named <code>START</code></li>
+        <li>Grammar must be in <a style="color:white;" href="https://en.wikipedia.org/wiki/Chomsky_normal_form">CNF</a>, i.e., all productions are either:
+          <ul>
+            <li>Binary: <code>W -&gt; X Z</code> (with <code>W, X, Z ∈ V</code> nonterminals), or</li>
+            <li>Unary (lexical): <code>W -&gt; a</code> (with <code>a ∈ Σ</code> terminal)</li>
+          </ul>
+        </li>
+        <li>One production per line, no alternation (<code>|</code>) allowed</li>
+        <li>All tokens are space-separated, no spaces in terminals</li>
+        <li>Custom CFG file has a `.cnf` suffix</li>
+      </ul>
+      <p>Example:<br><br>
+        <code>START -&gt; EXPR EXPR</code><br>
+        <code>EXPR -&gt; LPAREN EXPR</code><br>
+        <code>LPAREN -&gt; (</code>
+      </p>
+    """.trimIndent()
   }
+
   val footer = (document.createElement("div") as HTMLDivElement).apply { className = "cnf-modal__footer" }
+  val leftFooter = (document.createElement("div") as HTMLDivElement).apply { className = "cnf-modal__footer-left" }
+
   val btn = (document.createElement("label") as HTMLLabelElement).apply {
-    className = "cnf-btn"; setAttribute("for","cnfFileInput"); title = "Choose a CNF file"; textContent = "Choose CNF…"
+    className = "cnf-btn"
+    setAttribute("for","cnfFileInput")
+    title = "Choose a CNF file"
+    textContent = "Custom CNF"
   }
+
   val input = (document.createElement("input") as HTMLInputElement).apply {
-    id = "cnfFileInput"; className = "cnf-input"; type = "file"; accept = ".cnf"
+    id = "cnfFileInput"
+    className = "cnf-input"
+    type = "file"
+    accept = ".cnf"
   }
+
   val fileName = (document.createElement("span") as HTMLSpanElement).apply {
-    id = "cnfFileName"; className = "cnf-file-name"; setAttribute("aria-live","polite")
+    id = "cnfFileName"
+    className = "cnf-file-name"
+    setAttribute("aria-live","polite")
     textContent = "No file selected"
   }
+
+  val pythonCnfBtn = (document.createElement("button") as HTMLButtonElement).apply {
+    id = "pythonCnfBtn"
+    className = "cnf-btn cnf-btn--python"
+    type = "button"
+    title = "Load the built-in Python CNF grammar"
+    textContent = "Python CNF"
+  }
+
   btn.appendChild(input)
-  footer.appendChild(btn)
-  footer.appendChild(fileName)
+
+  leftFooter.appendChild(btn)
+  leftFooter.appendChild(fileName)
+
+  footer.appendChild(leftFooter)
+  footer.appendChild(pythonCnfBtn)
+
   dialog.appendChild(header)
   dialog.appendChild(body)
   dialog.appendChild(footer)
   overlay.appendChild(dialog)
+
   return overlay
 }
