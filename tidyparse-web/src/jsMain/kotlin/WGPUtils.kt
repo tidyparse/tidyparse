@@ -184,16 +184,16 @@ suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints:
 }
 
 // Checks whether there is a forward completion in the language of the CFG
-suspend fun checkSuffix(cfg: CFG, tokens: List<String>, suffixLen: Int = 20): List<Int> {
+suspend fun CFG.checkSuffix(tokens: List<String>, suffixLen: Int = 20): List<Int> {
   val t0 = TimeSource.Monotonic.markNow()
 
   val porousTks = tokens + List(suffixLen) { "_" }
   val fsa: FSA = makePorousFSA(porousTks)
-  val codePoints = porousToCodePoints(cfg, porousTks)
+  val codePoints = porousToCodePoints(this, porousTks)
 
   log("Made porousFSA(|Q|=${fsa.numStates}, width=${fsa.width}) in ${t0.elapsedNow()}")
 
-  return checkSuffixPipeline(cfg, fsa, suffixLen, codePoints).also { log("Checked suffix completions in ${t0.elapsedNow()} (round trip)") }
+  return checkSuffixPipeline(this, fsa, suffixLen, codePoints).also { log("Checked suffix completions in ${t0.elapsedNow()} (round trip)") }
 }
 
 suspend fun checkSuffixPipeline(cfg: CFG, fsa: FSA, suffixLen: Int, codePoints: IntArray): List<Int> {

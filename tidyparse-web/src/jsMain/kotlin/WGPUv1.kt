@@ -226,9 +226,9 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer
     build_root_sizes(dpBuf, bpCountBuf, bpOffsetBuf, cdfBuf, tmBuf, rootSizes, idxUniBuf)((numRoots + 255) / 256)
   }
 
-  val rootCdfT = TimeSource.Monotonic.markNow()
+  val rootCDFTime = TimeSource.Monotonic.markNow()
   val rootCDF = Shader.prefixSumGPU(rootSizes, numRoots)
-  mark("prefix root cdf", rootCdfT)
+  mark("prefix root cdf", rootCDFTime)
   log("Built root CDF in ${timings["prefix root cdf"]}ms (${rootCDF.size}B)")
 
   val langSizeT = TimeSource.Monotonic.markNow()

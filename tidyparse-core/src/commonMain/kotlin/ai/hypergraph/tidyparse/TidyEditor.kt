@@ -114,10 +114,12 @@ abstract class TidyEditor {
     }
   }
 
-  enum class Scenario(val reason: String) {
+  enum class Scenario(val reason: String, var data: List<Int>? = null) {
     STUB(stubGenPrefix), COMPLETION(holeGenPrefix),
     PARSEABLE(parsedPrefix), REPAIR(invalidPrefix),
-    SUFFIX_COMPLETION(fwdCplPrefix)
+    SUFFIX_COMPLETION(fwdCplPrefix);
+
+    operator fun invoke(d: List<Int>): Scenario = apply { data = d }
   }
 
   protected suspend fun Sequence<String>.enumerateInteractively(
