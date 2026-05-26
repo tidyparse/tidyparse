@@ -1,7 +1,9 @@
+import JSTidyEditor.SelectorAction.*
 import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.tidyparse.*
+import ai.hypergraph.tidyparse.TidyEditor.Scenario.*
 import kotlinx.browser.window
 import kotlinx.coroutines.*
 import org.w3c.dom.*
@@ -83,33 +85,31 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
     runningJob = MainScope().also { runningJob?.cancel() }.launch {
       val scenario = when {
-        tokens.size == 1 && stubMatcher.matches(tokens[0]) -> Scenario.STUB
-        HOLE_MARKER in tokens -> Scenario.COMPLETION
-//        !containsUnkTok && forwardCompletion?.isValidContinuation(tokens) == true -> Scenario.FORWARD_COMPLETION
+        tokens.size == 1 && stubMatcher.matches(tokens[0]) -> STUB
+        HOLE_MARKER in tokens -> COMPLETION
+//        !containsUnkTok && forwardCompletion?.isValidContinuation(tokens) == true -> FORWARD_COMPLETION
         // This scenario can be handled much more elegantly using coalegbra and incremental decoding
-        tokens in cfg.language -> Scenario.PARSEABLE
+        tokens in cfg.language -> PARSEABLE
         !containsUnkTok -> handleSuffixCheck(cfg.language, tokens)
-        else -> Scenario.REPAIR
+        else -> REPAIR
       }
 
       var postProcTimer = TimeSource.Monotonic.markNow()
       when (scenario) {
-        Scenario.STUB -> cfg.enumNTSmall(tokens[0].stripStub()).take(100)
-        Scenario.COMPLETION ->
-          if (!gpuAvailable) cfg.enumSeqSmart(tokens)
-          else completeCode(cfg, tokens).stripEpsilon()
-        Scenario.SUFFIX_COMPLETION -> cfg.enumSuffixes(tokens, MAX_DISP_RESULTS, scenario.data)
-        Scenario.PARSEABLE -> {
+        STUB -> cfg.enumNTSmall(tokens[0].stripStub()).take(100)
+        COMPLETION -> if (!gpuAvailable) cfg.enumSeqSmart(tokens) else completeCode(cfg, tokens).stripEpsilon()
+        SUFFIX_COMPLETION -> cfg.enumSuffixes(tokens, MAX_DISP_RESULTS, scenario.data)
+        PARSEABLE -> {
           val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
           writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it }); null
         }
-        Scenario.REPAIR ->
+        REPAIR ->
           if (!gpuAvailable) sampleGREUntilTimeout(tokens, cfg)
           else repairCode(cfg, tokens, LED_BUFFER).stripEpsilon()
       }?.enumerateInteractively(workHash, tokens,
         metric = when (scenario) {
-          Scenario.REPAIR -> levAndLenMetric(tokens)
-          Scenario.SUFFIX_COMPLETION -> ({ it.size })
+          REPAIR -> levAndLenMetric(tokens)
+          SUFFIX_COMPLETION -> ({ it.size })
           else -> ({ 0 })
         },
         reason = scenario.reason, postCompletionSummary = {
@@ -127,18 +127,18 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
   suspend fun handleSuffixCheck(cfl: CFL, tokens: List<Σᐩ>): Scenario =
     if (caretInMiddle()) { // Skip suffix completion if the caret is within line
-      if (gpuAvailable) { if (cfl.cfg.checkSuffix(tokens, 0).let { it.isNotEmpty() && it[0] == 0 }) Scenario.PARSEABLE else Scenario.REPAIR }
-      else if (tokens in cfl) Scenario.PARSEABLE else Scenario.REPAIR
+      if (gpuAvailable) { if (cfl.cfg.checkSuffix(tokens, 0).let { it.isNotEmpty() && it[0] == 0 }) PARSEABLE else REPAIR }
+      else if (tokens in cfl) PARSEABLE else REPAIR
     } else if (gpuAvailable) {
       val suffixLens = cfl.cfg.checkSuffix(tokens)
       println("Using GPU suffix lens: $suffixLens")
-      if (suffixLens.isEmpty()) Scenario.REPAIR
-      else Scenario.SUFFIX_COMPLETION(suffixLens)
+      if (suffixLens.isEmpty()) REPAIR
+      else SUFFIX_COMPLETION(suffixLens)
     } else {
       val suffixLens = cfl.admitsPrefix(tokens).toList()
       println("Using CPU suffix lens: $suffixLens")
-      if (suffixLens[0] > 0) Scenario.SUFFIX_COMPLETION(suffixLens)
-      else Scenario.REPAIR
+      if (suffixLens[0] > 0) SUFFIX_COMPLETION(suffixLens)
+      else REPAIR
     }
 
   var hashIter = 0
@@ -150,10 +150,10 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
   enum class SelectorAction { ENTER, ARROW_DOWN, ARROW_UP, TAB }
 
   fun Int.toSelectorAction(): SelectorAction? = when (this) {
-    13 -> SelectorAction.ENTER
-    40 -> SelectorAction.ARROW_DOWN
-    38 -> SelectorAction.ARROW_UP
-    9 -> SelectorAction.TAB
+    13 -> ENTER
+    40 -> ARROW_DOWN
+    38 -> ARROW_UP
+    9 -> TAB
     else -> null
   }
 
@@ -161,7 +161,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
   open fun navUpdate(event: KeyboardEvent) {
     val key = event.keyCode.toSelectorAction() ?: return
-    if (key == SelectorAction.TAB) { event.preventDefault(); handleTab(); return }
+    if (key == TAB) { event.preventDefault(); handleTab(); return }
     val currentText = rawDisplayHTML()
     val lines = currentText.lines()
     val htmlIndex = lines.indexOfFirst { it.startsWith("<mark>") }
@@ -169,7 +169,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     event.preventDefault()
     val currentIdx = lines[htmlIndex].substringBefore(".)").substringAfterLast('>').trim().toInt()
     when (key) {
-      SelectorAction.ENTER -> {
+      ENTER -> {
         val selection = readDisplayText().lines()[currentIdx + 2]
           .substringAfter(".) ").replace("\\s+".toRegex(), " ").trim()
         log("Selected: $selection / ${selection in cfg.language}")
@@ -180,9 +180,9 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
         return
       }
-      SelectorAction.ARROW_DOWN -> selIdx = ModInt(currentIdx, lines.size - 4) + 1
-      SelectorAction.ARROW_UP -> selIdx = ModInt(currentIdx, lines.size - 4) + -1
-      SelectorAction.TAB -> {}
+      ARROW_DOWN -> selIdx = ModInt(currentIdx, lines.size - 4) + 1
+      ARROW_UP -> selIdx = ModInt(currentIdx, lines.size - 4) + -1
+      TAB -> {}
     }
     writeDisplayText(lines.mapIndexed { i, line ->
       if (i == htmlIndex) line.substring(6, line.length - 7)

@@ -516,7 +516,6 @@ $TM_DECODING_HELPERS
 """
 
 //language=wgsl
-//language=wgsl
 const val CFL_STRUCT = """struct CFLStruct { // Carries metadata about the CFL + NFA intersection
              numStates : u32,      numNonterminals : u32,          activeWords : u32,
 
@@ -525,6 +524,9 @@ const val CFL_STRUCT = """struct CFLStruct { // Carries metadata about the CFL +
     acceptStatesOffset : u32,     acceptStatesSize : u32,
 grammarFlattenedOffset : u32, grammarFlattenedSize : u32,
   grammarOffsetsOffset : u32,   grammarOffsetsSize : u32,
+// Grouped closure layout:
+//   leftAdj[B] = flat triples (C, parentWord, parentMask)
+// where parentMask contains all A in parentWord such that A -> B C.
 leftAdjFlattenedOffset : u32, leftAdjFlattenedSize : u32,
   leftAdjOffsetsOffset : u32,   leftAdjOffsetsSize : u32,
 
@@ -536,8 +538,13 @@ leftAdjFlattenedOffset : u32, leftAdjFlattenedSize : u32,
 fn getGrammarSymbol(index: u32) -> u32 { return cs.payload[cs.grammarFlattenedOffset + index]; }
 fn getGrammarOffset(index: u32) -> u32 { return cs.payload[cs.grammarOffsetsOffset + index]; }
 
-fn getLeftAdjSymbol(index: u32) -> u32 { return cs.payload[cs.leftAdjFlattenedOffset + index]; }
-fn getLeftAdjOffset(index: u32) -> u32 { return cs.payload[cs.leftAdjOffsetsOffset + index]; }"""
+// Grouped closure layout:
+//   leftAdj[B] = flat triples (C, parentWord, parentMask)
+fn getLeftAdjOffset(B: u32) -> u32 { return cs.payload[cs.leftAdjOffsetsOffset + B]; }
+fn getLeftAdjC(i: u32) -> u32 { return cs.payload[cs.leftAdjFlattenedOffset + i]; }
+fn getLeftAdjParentWord(i: u32) -> u32 { return cs.payload[cs.leftAdjFlattenedOffset + i + 1u]; }
+fn getLeftAdjParentMask(i: u32) -> u32 { return cs.payload[cs.leftAdjFlattenedOffset + i + 2u]; }
+"""
 
 //language=wgsl
 const val SAT_ARTH = """
@@ -934,10 +941,76 @@ struct AtomicChange { count: atomic<u32> };
 @group(0) @binding(2) var<storage, read>                cs : CFLStruct;
 @group(0) @binding(3) var<storage, read_write>     changes : AtomicChange;
 
+fn setBinaryBitIfNew(dpIdx: u32) -> bool {
+    let old = dp_in[dpIdx];
+    if ((old & 0x01u) == 0u) {
+        dp_in[dpIdx] = old | 0x01u;
+        return true;
+    }
+    return false;
+}
+
+fn flushParentMask(
+    r: u32,
+    c: u32,
+    aw: u32,
+    mask: u32,
+    tgtBase: u32,
+    snt: u32,
+    NT: u32
+) -> u32 {
+    if (mask == 0u || aw >= cs.activeWords) { return 0u; }
+
+    let oldActive = atomicLoad(&active_nts[tgtBase + aw]);
+    let newlyActive = mask & ~oldActive;
+
+    if (newlyActive != 0u) { _ = atomicOr(&active_nts[tgtBase + aw], newlyActive); }
+
+    var localChanges = 0u;
+
+    // Newly active A means dp_in[r,c,A] was zero.
+    var nb = newlyActive;
+    loop {
+        if (nb == 0u) { break; }
+
+        let bit = firstTrailingBit(nb);
+        nb = nb & (nb - 1u);
+
+        if (bit == 0xffffffffu) { break; }
+
+        let A = (aw << 5u) + bit;
+        if (A >= NT) { continue; }
+
+        let dpIdx = r * snt + c * NT + A;
+        dp_in[dpIdx] = 0x01u;
+        localChanges = localChanges + 1u;
+    }
+
+    // Already-active A may still be terminal/literal-only, so add binary bit.
+    var ab = mask & oldActive;
+    loop {
+        if (ab == 0u) { break; }
+
+        let bit = firstTrailingBit(ab);
+        ab = ab & (ab - 1u);
+
+        if (bit == 0xffffffffu) { break; }
+
+        let A = (aw << 5u) + bit;
+        if (A >= NT) { continue; }
+
+        let dpIdx = r * snt + c * NT + A;
+        if (setBinaryBitIfNew(dpIdx)) { localChanges = localChanges + 1u; }
+    }
+
+    return localChanges;
+}
+
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     $CELL_PREAMBLE
 
     let tgtBase = activeBase(r, c);
+    var localChanges = 0u;
 
     for (var pairIdx = pairOffset; pairIdx < pairOffsetNext; pairIdx = pairIdx + 1u) {
         let m = getMdpt(pairIdx);
@@ -946,42 +1019,38 @@ struct AtomicChange { count: atomic<u32> };
         let rightBase = activeBase(m, c);
 
         for (var w = 0u; w < cs.activeWords; w = w + 1u) {
-            var bits = atomicLoad(&active_nts[leftBase + w]);
+            var leftBits = atomicLoad(&active_nts[leftBase + w]);
 
             loop {
-                if (bits == 0u) { break; }
+                if (leftBits == 0u) { break; }
 
-                let bit = firstTrailingBit(bits);
+                let bit = firstTrailingBit(leftBits);
+                leftBits = leftBits & (leftBits - 1u);
+
                 if (bit == 0xffffffffu) { break; }
 
                 let B = (w << 5u) + bit;
-                bits = bits & (bits - 1u);
-
                 if (B >= NT) { continue; }
 
                 let startLA = getLeftAdjOffset(B);
-                var endLA: u32;
-                if (B + 1u < cs.leftAdjOffsetsSize) { endLA = getLeftAdjOffset(B + 1u); }
-                else { endLA = cs.leftAdjFlattenedSize; }
+                let endLA = getLeftAdjOffset(B + 1u);
 
-                for (var g = startLA; g < endLA; g = g + 2u) {
-                    let C = getLeftAdjSymbol(g);
-                    let A = getLeftAdjSymbol(g + 1u);
+                // grouped triples: (C, parentWord, parentMask)
+                for (var g = startLA; g < endLA; g = g + 3u) {
+                    let C = getLeftAdjC(g);
 
                     if (!isActiveAt(rightBase, C)) { continue; }
 
-                    let dpIdx = r * snt + c * NT + A;
-                    let old = dp_in[dpIdx];
+                    let aw = getLeftAdjParentWord(g);
+                    let pm = getLeftAdjParentMask(g);
 
-                    if ((old & 0x01u) == 0u) {
-                        dp_in[dpIdx] = old | 0x01u;
-                        setActiveAt(tgtBase, A);
-                        atomicAdd(&changes.count, 1u);
-                    }
+                    localChanges = localChanges + flushParentMask(r, c, aw, pm, tgtBase, snt, NT);
                 }
             }
         }
     }
+
+    if (localChanges != 0u) { atomicAdd(&changes.count, localChanges); }
 }""")
 
 //language=wgsl
@@ -1898,13 +1967,13 @@ class Shader constructor(val src: String) {
     suspend fun packMetadata(cfg: CFG, fsa: FSA): GPUBuffer {
       val t0 = TimeSource.Monotonic.markNow()
 
-      val (gFlat, gOff) = cfg.grammarEncoding.let { it.flat to it.offsets }
-      val grammarFlattened = gFlat.toGPUBuffer(STCPSD)
-      val grammarOffsets = gOff.toGPUBuffer(STCPSD)
+      val ge = cfg.grammarEncoding
+      val grammarFlattened = ge.flat.toGPUBuffer(STCPSD)
+      val grammarOffsets = ge.offsets.toGPUBuffer(STCPSD)
 
-      val (lFlat, lOff) = cfg.leftAdjEncoding
-      val leftAdjFlattened = lFlat.toGPUBuffer(STCPSD)
-      val leftAdjOffsets = lOff.toGPUBuffer(STCPSD)
+      val gle = cfg.groupedLeftAdjEncoding
+      val leftAdjFlattened = gle.flat.toGPUBuffer(STCPSD)
+      val leftAdjOffsets = gle.offsets.toGPUBuffer(STCPSD)
 
       val activeWords = (cfg.nonterminals.size + 31) ushr 5
 
@@ -1919,9 +1988,13 @@ class Shader constructor(val src: String) {
       /** Memory layout: [CFL_STRUCT] */
       val metaBuf = packStruct(
         constants = listOf(fsa.numStates, cfg.nonterminals.size, activeWords),
-        allFSAPairsFlattened, allFSAPairsOffsets, fsa.levFinalIdxs.toGPUBuffer(),
-        grammarFlattened, grammarOffsets,
-        leftAdjFlattened, leftAdjOffsets
+        allFSAPairsFlattened,
+        allFSAPairsOffsets,
+        fsa.levFinalIdxs.toGPUBuffer(),
+        grammarFlattened,
+        grammarOffsets,
+        leftAdjFlattened,
+        leftAdjOffsets
       )
 
       log("Packed metadata in ${t0.elapsedNow()}")
@@ -1981,24 +2054,18 @@ class Shader constructor(val src: String) {
   }
 
   // Invocation strategies: eliminates some of the ceremony of calling a GSL shader
-  suspend fun invokeCFLFixpoint(
-    numStates: Int,
-    dpIn: GPUBuffer,
-    activeBuf: GPUBuffer,
-    metaBuf: GPUBuffer
-  ) {
+  suspend fun invokeCFLFixpoint(numStates: Int, dpIn: GPUBuffer, activeBuf: GPUBuffer, metaBuf: GPUBuffer) {
     var t0 = TimeSource.Monotonic.markNow()
-    var prevValue = -1
 
     for (round in 0..<numStates) {
       val changesBuf = 0.toGPUBuffer()
       cfl_mul_upper(dpIn, activeBuf, metaBuf, changesBuf)(numStates, numStates)
       val changesThisRound = changesBuf.readIndices(listOf(0))[0]
       changesBuf.destroy()
-      if (changesThisRound == prevValue) break
-      prevValue = changesThisRound
       log("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
       t0 = TimeSource.Monotonic.markNow()
+
+      if (changesThisRound == 0) break
     }
   }
 

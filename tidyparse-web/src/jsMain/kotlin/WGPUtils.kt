@@ -7,11 +7,125 @@ import Shader.Companion.toGPUBuffer
 import Shader.Companion.writeU32
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
+import ai.hypergraph.kaliningraph.parsing.bindex
+import ai.hypergraph.kaliningraph.parsing.leftAdj
+import ai.hypergraph.kaliningraph.parsing.nonterminals
 import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
+import ai.hypergraph.kaliningraph.types.cache
 import web.gpu.GPUBuffer
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
+
+data class GrammarEncoding(val flat: IntArray, val offsets: IntArray)
+// leftAdjGrouped[B] = triples:
+//   (C, parentWord, parentMask)
+// where parentMask contains all A in parentWord such that A -> B C.
+data class GroupedLeftAdjEncoding(val flat: IntArray, val offsets: IntArray)
+
+val CFG.groupedLeftAdjEncoding: GroupedLeftAdjEncoding by cache {
+  val ladj = leftAdj
+  val W = ladj.size
+
+  // For each B, group scalar leftAdj entries by (C, parentWord).
+  // key = (C << 32) | parentWord
+  // value = mask of all parent A bits in that parentWord.
+  val rows = Array(W) { linkedMapOf<Long, Int>() }
+
+  var B = 0
+  while (B < W) {
+    val adj = ladj[B]
+
+    if (adj != null) {
+      val cs = adj.other
+      val asz = adj.aIdx
+
+      var i = 0
+      while (i < cs.size) {
+        val C = cs[i]
+        val A = asz[i]
+
+        val parentWord = A ushr 5
+        val parentMask = 1 shl (A and 31)
+
+        val key =
+          (C.toLong() shl 32) or
+              (parentWord.toLong() and 0xffffffffL)
+
+        rows[B][key] = (rows[B][key] ?: 0) or parentMask
+
+        i++
+      }
+    }
+
+    B++
+  }
+
+  val offsets = IntArray(W + 1)
+  var total = 0
+
+  B = 0
+  while (B < W) {
+    offsets[B] = total
+    total += rows[B].size * 3
+    B++
+  }
+
+  offsets[W] = total
+
+  val flat = IntArray(total)
+  var out = 0
+
+  B = 0
+  while (B < W) {
+    for ((key, mask) in rows[B]) {
+      val C = (key ushr 32).toInt()
+      val parentWord = (key and 0xffffffffL).toInt()
+
+      flat[out++] = C
+      flat[out++] = parentWord
+      flat[out++] = mask
+    }
+
+    B++
+  }
+
+  GroupedLeftAdjEncoding(flat, offsets)
+}
+
+val CFG.grammarEncoding: GrammarEncoding by cache {
+  val W = nonterminals.size
+  val ntIdx = bindex.ntIndices   // Map<Σᐩ, Int>
+
+  val counts = IntArray(W)
+  for ((lhs, rhs) in this) {
+    if (rhs.size != 2) continue
+    val a = ntIdx[lhs] ?: continue
+    val b = ntIdx[rhs[0]] ?: continue
+    val c = ntIdx[rhs[1]] ?: continue
+    counts[a] += 2
+  }
+
+  val offsets = IntArray(W + 1)
+  var acc = 0
+  for (i in 0 until W) { offsets[i] = acc; acc += counts[i] }
+  offsets[W] = acc
+
+  val flat = IntArray(acc)
+  val cur = offsets.copyOf()
+  for ((lhs, rhs) in this) {
+    if (rhs.size != 2) continue
+    val a = ntIdx[lhs] ?: continue
+    val b = ntIdx[rhs[0]] ?: continue
+    val c = ntIdx[rhs[1]] ?: continue
+    val p = cur[a]
+    flat[p] = b
+    flat[p + 1] = c
+    cur[a] = p + 2
+  }
+
+  GrammarEncoding(flat, offsets)
+}
 
 suspend fun logActiveNTGrid(
   activeBuf: GPUBuffer,
