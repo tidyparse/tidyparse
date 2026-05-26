@@ -106,7 +106,8 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
         REPAIR ->
           if (!gpuAvailable) sampleGREUntilTimeout(tokens, cfg)
           else repairCode(cfg, tokens, LED_BUFFER).stripEpsilon()
-      }?.enumerateInteractively(workHash, tokens,
+      }?.let { if (scenario != REPAIR) it.take(MAX_DISP_RESULTS) else it }
+      ?.enumerateInteractively(workHash, tokens,
         metric = when (scenario) {
           REPAIR -> levAndLenMetric(tokens)
           SUFFIX_COMPLETION -> ({ it.size })
@@ -116,7 +117,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
           if (gpuAvailable) {
             mark("postprocessing", postProcTimer);
             timings["total"] = t0.elapsedNow().inWholeMilliseconds.toInt()
-            log("repairPipeline completed in ${timings["total"]}ms")
+            log("Results rendered in ${timings["total"]}ms")
             timings.logTimesheet()
           }
           ", ${t0.elapsedNow()} latency."

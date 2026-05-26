@@ -97,9 +97,10 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
 }
 
 suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VALUE, ngrams: GPUBuffer? = null): List<String> {
-  val t0 = TimeSource.Monotonic.markNow()
+  timings = linkedMapOf()
+  val preprocT = TimeSource.Monotonic.markNow()
   val fsa: FSA = makeLevFSA(code, MAX_LEV_RAD)
-  log("Made levFSA in ${t0.elapsedNow()}")
+  log("Made levFSA in ${preprocT.elapsedNow()}")
 
   // TODO: maybe modify the LevFSA to accommodate unknown tokens?
   val codePoints = IntArray(code.size) { cfg.tmMap[code[it]] ?: 0 }
@@ -108,19 +109,16 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
 //  val dpInSparse = fsa.byteFormat(cfg).toGPUBuffer()
 //  log("Initial nonzeros: ${dpIn.count { it != 0 }}")
 
-  log("PREPROCESSING TOOK: ${t0.elapsedNow()}") // ~230ms
+  mark("preprocessing", preprocT)
 //  val words = repairPipelineV2(cfg, fsa, ledBuffer, ngrams, codePoints)
   val words = repairPipeline(cfg, fsa, ledBuffer, ngrams, codePoints)
 //  val distinctWords = words.distinct()
 //  log("Distinct: ${distinctWords.size} words")
 
-  return words.also { log("Received: ${words.size} words in ${t0.elapsedNow()} (round trip)") }
+  return words.also { log("Received: ${words.size} words in ${preprocT.elapsedNow()} (round trip)") }
 }
 
 suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer?, codePoints: IntArray): List<String> {
-  val t0 = TimeSource.Monotonic.markNow()
-  timings = linkedMapOf()
-
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   log("FSA(|Q|=$numStates, |δ|=${fsa.transit.size}), ${cfg.calcStats()}")
 
@@ -182,12 +180,8 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer
     .filter { it.second in (led..(led + ledBuffer)) }
     .map { listOf(it.first, it.second) }
     .sortedBy { it[1] }
-    .also {
-      log(
-        "Start indices: total=${it.size}, roots=${it.size}, LED=$led, " +
-            "window=[${led}, ${led + ledBuffer}]"
-      )
-    }.flatten()
+    .also { log("Start indices: total=${it.size}, roots=${it.size}, LED=$led, window=[${led}, ${led + ledBuffer}]") }
+    .flatten()
 
   mark("filter roots", t2)
 
@@ -268,10 +262,6 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer
     else uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)
   mark("decode", decodeT)
 
-  timings["total"] = t0.elapsedNow().inWholeMilliseconds.toInt()
-//  timings.logTimingsToJSConsole()
-  log("repairPipeline completed in ${timings["total"]}ms")
-
   return result.also {
     listOf(
       outBuf, rootSizes, rootCDF, metaBuf, dpBuf, activeBuf, wordBuf,
@@ -347,7 +337,6 @@ fun decodePackets(packets: JSIntArray, cfg: CFG, maxRepairLen: Int, packetCount:
 
   val out = ArrayList<String>(res.values.sumOf { it.size })
   for (set in res.values) out.addAll(set)
-
   log("Decoded ${out.size} unique words from $packetCount packets in ${t0.elapsedNow()}")
   return out
 }

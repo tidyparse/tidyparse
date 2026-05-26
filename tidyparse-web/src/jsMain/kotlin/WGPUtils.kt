@@ -13,6 +13,7 @@ import ai.hypergraph.kaliningraph.parsing.nonterminals
 import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.kaliningraph.types.cache
+import ai.hypergraph.tidyparse.MAX_DISP_RESULTS
 import web.gpu.GPUBuffer
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
@@ -200,23 +201,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }""")
 
 suspend fun completeCode(cfg: CFG, porous: List<String>, ngrams: GPUBuffer? = null): List<String> {
-  val t0 = TimeSource.Monotonic.markNow()
+  timings = linkedMapOf()
+  val preprocT = TimeSource.Monotonic.markNow()
 
   val fsa: FSA = makePorousFSA(porous)
   val codePoints = porousToCodePoints(cfg, porous)
 
-  log("Made porousFSA(|Q|=${fsa.numStates}, width=${fsa.width}) in ${t0.elapsedNow()}")
+  log("Made porousFSA(|Q|=${fsa.numStates}, width=${fsa.width}) in ${preprocT.elapsedNow()}")
+  mark("preprocessing", preprocT)
 
   return completePipeline(cfg, fsa, ngrams, codePoints)
-    .also { log("Received: ${it.size} completions in ${t0.elapsedNow()} (round trip)") }
+    .also { log("Received: ${it.size} completions in ${preprocT.elapsedNow()} (round trip)") }
 }
 
 suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints: IntArray): List<String> {
-  val t0 = TimeSource.Monotonic.markNow()
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   log("Porous FSA(|Q|=$numStates), ${cfg.calcStats()}")
 
+  val metaT = TimeSource.Monotonic.markNow()
   val metaBuf = packMetadata(cfg, fsa)
+  mark("pack metadata", metaT)
+  log("Packed metadata in ${timings["pack metadata"]}ms")
 
   val tmBuf       = cfg.termBuf
   val wordBuf     = codePoints.toGPUBuffer()
@@ -226,11 +231,14 @@ suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints:
   val dpBuf     = Shader.createParseChart(STCPSD, totalSize)
   val activeBuf = GPUBuffer((numStates * numStates * activeWords * 4).toLong(), STCPSD)
 
-  init_chart_line(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
-  log("Chart construction took: ${t0.elapsedNow()}")
+  timings["init chart"] = timedGPUIsolated("Init chart") {
+    init_chart_line(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+  }
 
+  val closureT = TimeSource.Monotonic.markNow()
   cfl_mul_upper.invokeCFLFixpoint(numStates, dpBuf, activeBuf, metaBuf)
-  log("Matrix closure reached in: ${t0.elapsedNow()}")
+  mark("matrix closure", closureT)
+  log("Matrix closure reached in: ${timings["matrix closure"]}ms")
 
 //  logActiveNTGrid(activeBuf, numStates, numNTs, limit = minOf(48, numStates))
 
@@ -257,14 +265,23 @@ suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints:
     return emptyList()
   }
 
+  val bpT = TimeSource.Monotonic.markNow()
   val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNTs, dpBuf, metaBuf)
-
-  val lsDense  = buildLanguageSizeBuf(numStates, numNTs, dpBuf, metaBuf, tmBuf)
+  mark("build backpointers", bpT)
   val totalExp = bpStorageBuf.size.toInt() / (2 * 4)
-  val cdfBuf   = GPUBuffer(totalExp * 4, STCPSD)
+  log("Built backpointers in ${timings["build backpointers"]}ms | expansions=$totalExp")
 
-  ls_cdf(dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+  val lsDenseT = TimeSource.Monotonic.markNow()
+  val lsDense = buildLanguageSizeBuf(numStates, numNTs, dpBuf, metaBuf, tmBuf)
+  mark("build ls dense", lsDenseT)
+  log("Built lsDense in ${timings["build ls dense"]}ms (${lsDense.size}B)")
+
+  val cdfBuf = GPUBuffer(totalExp * 4, STCPSD)
+  timings["build cdf"] = timedGPUIsolated("Build CDF") {
+    ls_cdf(dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+  }
   lsDense.destroy()
+  log("Pairing function construction took: ${timings["build cdf"]}ms (${cdfBuf.size}B)")
 
   val numRoots  = startIdxs.size / 2
   val rootSizes = GPUBuffer(numRoots * 4, STCPSD)
@@ -274,22 +291,31 @@ suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints:
     startIdxs.toGPUBuffer()
   )
 
-  build_root_sizes(dpBuf, bpCountBuf, bpOffsetBuf, cdfBuf, tmBuf, rootSizes, idxUniBuf)((numRoots + 255) / 256)
-  val rootCDF = Shader.prefixSumGPU(rootSizes, numRoots)
+  timings["build root sizes"] = timedGPUIsolated("Build root sizes (roots=$numRoots)") {
+    build_root_sizes(dpBuf, bpCountBuf, bpOffsetBuf, cdfBuf, tmBuf, rootSizes, idxUniBuf)((numRoots + 255) / 256)
+  }
 
-  val toDecode = 100_000
+  val rootCDFTime = TimeSource.Monotonic.markNow()
+  val rootCDF = Shader.prefixSumGPU(rootSizes, numRoots)
+  mark("prefix root cdf", rootCDFTime)
+  log("Built root CDF in ${timings["prefix root cdf"]}ms (${rootCDF.size}B)")
+
+  val toDecode = MAX_DISP_RESULTS
   idxUniBuf.writeU32(wordIndex = 5, value = toDecode)
 
   val outBuf = GPUBuffer(toDecode * maxRepairLen * 4, STCPSD)
-  enum_words_wor(
-    dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf,
-    cdfBuf, tmBuf, idxUniBuf, rootSizes, rootCDF, outBuf
-  )(DISPATCH_GROUP_SIZE_X, (toDecode + DISPATCH_GROUP_SIZE_X - 1) / DISPATCH_GROUP_SIZE_X)
+  timings["enumerate"] = timedGPUIsolated("Enumerate") {
+    enum_words_wor(
+      dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf,
+      cdfBuf, tmBuf, idxUniBuf, rootSizes, rootCDF, outBuf
+    )(DISPATCH_GROUP_SIZE_X, (toDecode + DISPATCH_GROUP_SIZE_X - 1) / DISPATCH_GROUP_SIZE_X)
+  }
 
-  return (
-    if (ngrams != null) ngramDecoder(outBuf, ngrams, maxRepairLen, cfg, toDecode)
-    else uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)
-  ).also {
+  val decodeT = TimeSource.Monotonic.markNow()
+  val result = uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)
+  mark("decode", decodeT)
+
+  return result.also {
     listOf(
       outBuf, rootSizes, rootCDF, metaBuf, dpBuf, activeBuf, wordBuf,
       idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf
@@ -325,11 +351,14 @@ suspend fun checkSuffixPipeline(cfg: CFG, fsa: FSA, suffixLen: Int, codePoints: 
   val dpBuf     = Shader.createParseChart(STCPSD, totalSize)
   val activeBuf = GPUBuffer((numStates * numStates * activeWords * 4).toLong(), STCPSD)
 
-  init_chart_line(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
-  log("Chart construction took: ${t0.elapsedNow()}")
+  timings["init chart"] = timedGPUIsolated("Init chart") {
+    init_chart_line(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+  }
 
+  val closureT = TimeSource.Monotonic.markNow()
   cfl_mul_upper.invokeCFLFixpoint(numStates, dpBuf, activeBuf, metaBuf)
-  log("Matrix closure reached in: ${t0.elapsedNow()}")
+  mark("matrix closure", closureT)
+  log("Matrix closure reached in: ${timings["matrix closure"]}ms")
 
   val startNT = cfg.bindex[START_SYMBOL]
 

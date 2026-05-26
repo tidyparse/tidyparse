@@ -243,7 +243,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
             if (gpuAvailable) {
               mark("postprocessing", postProcTimer)
               timings["total"] = t0.elapsedNow().inWholeMilliseconds.toInt()
-              log("repairPipeline completed in ${timings["total"]}ms")
+              log("Results rendered in ${timings["total"]}ms")
               timings.logTimesheet()
             }
 
