@@ -38,6 +38,8 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
   override fun continuation(f: () -> Unit): Any = window.setTimeout(f, 0)
 
+  val instructions = (outputField as HTMLDivElement).innerHTML
+
   override fun getLineBounds(): IntRange = editor.lineBounds()
   override fun currentLine(): Σᐩ = editor.getCurrentLine()
   override fun overwriteRegion(region: IntRange, s: Σᐩ) { editor.overwriteCurrentLineWith(region, s) }
@@ -60,14 +62,17 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 //    else TODO()
 //  var forwardCompletion: ForwardCompletion? = null
 
+  fun restoreInstructions() = writeDisplayText(instructions)
+
   override fun handleInput() {
     val t0 = TimeSource.Monotonic.markNow()
     val caretInGrammar = caretInGrammar()
     val context = getApplicableContext()
     log("Applicable context:\n$context")
+    val suffixEligible = context.endsWith(" ") && !caretInMiddle() && !caretInGrammar
 
     val tokens = context.tokenizeByWhitespace()
-    if (tokens.isEmpty()) return
+    if (tokens.isEmpty()) { restoreInstructions(); return }
 
     val cfg = if (caretInGrammar) CFGCFG(names = tokens.filter { it !in setOf("->", "|") }.toSet()) else getLatestCFG()
 
@@ -78,10 +83,11 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
     val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, epsilons, ntStubs).hashCode()
     val workHash = abstractUnk.hashCode() + cfg.hashCode() + settingsHash.hashCode()
-    if (workHash == currentWorkHash) return
+    if (workHash == currentWorkHash && !suffixEligible) return
     currentWorkHash = workHash
 
-    if (workHash in cache) return writeDisplayText(cache[workHash]!!)
+    val cached = cache[workHash]
+    if (cached != null && (!suffixEligible || cached.startsWith("->"))) return writeDisplayText(cache[workHash]!!)
 
     runningJob = MainScope().also { runningJob?.cancel() }.launch {
       val scenario = when {
@@ -89,7 +95,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
         HOLE_MARKER in tokens -> COMPLETION
 //        !containsUnkTok && forwardCompletion?.isValidContinuation(tokens) == true -> FORWARD_COMPLETION
         // This scenario can be handled much more elegantly using coalegbra and incremental decoding
-        tokens in cfg.language -> PARSEABLE
+        tokens in cfg.language && !suffixEligible -> PARSEABLE
         !containsUnkTok -> handleSuffixCheck(cfg.language, tokens)
         else -> REPAIR
       }
@@ -98,7 +104,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
       when (scenario) {
         STUB -> cfg.enumNTSmall(tokens[0].stripStub()).take(100)
         COMPLETION -> if (!gpuAvailable) cfg.enumSeqSmart(tokens) else completeCode(cfg, tokens).stripEpsilon()
-        SUFFIX_COMPLETION -> cfg.enumSuffixes(tokens, MAX_DISP_RESULTS, scenario.data)
+        SUFFIX_COMPLETION -> cfg.enumSuffixes(tokens, scenario.data).distinct()
         PARSEABLE -> {
           val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
           writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it }); null
@@ -132,12 +138,12 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
       else if (tokens in cfl) PARSEABLE else REPAIR
     } else if (gpuAvailable) {
       val suffixLens = cfl.cfg.checkSuffix(tokens)
-      println("Using GPU suffix lens: $suffixLens")
+      println("Read GPU suffix lens: $suffixLens")
       if (suffixLens.isEmpty()) REPAIR
       else SUFFIX_COMPLETION(suffixLens)
     } else {
       val suffixLens = cfl.admitsPrefix(tokens).toList()
-      println("Using CPU suffix lens: $suffixLens")
+      println("Read CPU suffix lens: $suffixLens")
       if (suffixLens[0] > 0) SUFFIX_COMPLETION(suffixLens)
       else REPAIR
     }
@@ -148,13 +154,16 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
   var selIdx: ModInt = ModInt(2, MAX_DISP_RESULTS)
 
-  enum class SelectorAction { ENTER, ARROW_DOWN, ARROW_UP, TAB }
+  enum class SelectorAction { ENTER, ARROW_DOWN, ARROW_UP, ARROW_RIGHT, TAB, ESCAPE }
 
   fun Int.toSelectorAction(): SelectorAction? = when (this) {
     13 -> ENTER
     40 -> ARROW_DOWN
     38 -> ARROW_UP
+    39 -> ARROW_RIGHT
+//    32 -> SPACE
     9 -> TAB
+    27 -> ESCAPE
     else -> null
   }
 
@@ -163,6 +172,12 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
   open fun navUpdate(event: KeyboardEvent) {
     val key = event.keyCode.toSelectorAction() ?: return
     if (key == TAB) { event.preventDefault(); handleTab(); return }
+    if (key == ARROW_RIGHT) {
+      val dispText = readDisplayText()
+      val mode = dispText.substringBefore("\n")
+      if (!mode.startsWith("-> Forward completion")) return
+    }
+    if (key == ESCAPE) { restoreInstructions(); return }
     val currentText = rawDisplayHTML()
     val lines = currentText.lines()
     val htmlIndex = lines.indexOfFirst { it.startsWith("<mark>") }
@@ -183,7 +198,21 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
       }
       ARROW_DOWN -> selIdx = ModInt(currentIdx, lines.size - 4) + 1
       ARROW_UP -> selIdx = ModInt(currentIdx, lines.size - 4) + -1
+      ARROW_RIGHT -> {
+        val selection = readDisplayText().lines()[currentIdx + 2]
+          .substringAfter(".) ").replace("\\s+".toRegex(), " ").trim()
+
+        val toksToTake = currentLine().tokenizeByWhitespace().size + 1
+        val continuation = selection.tokenizeByWhitespace().take(toksToTake).joinToString(" ")
+        overwriteRegion(getCaretPosition().takeIf { it.last - it.first > 0 } ?: getLineBounds(), continuation)
+        redecorateLines()
+        continuation { handleTab() }
+        continuation { handleInput() }
+
+        return
+      }
       TAB -> {}
+      ESCAPE -> {}
     }
     writeDisplayText(lines.mapIndexed { i, line ->
       if (i == htmlIndex) line.substring(6, line.length - 7)

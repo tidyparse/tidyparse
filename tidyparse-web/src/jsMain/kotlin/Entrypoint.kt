@@ -78,6 +78,9 @@ suspend fun headlessSetup() {
   es.onerror = { if (errors++ > 20) es.close() }
 }
 
+var lastCaretStart = 0
+var lastCaretEnd = 0
+
 suspend fun defaultSetup() {
   log("Starting Tidyparse/CFG")
   inputField.scrollTop = inputField.scrollHeight.toDouble();
@@ -89,10 +92,31 @@ suspend fun defaultSetup() {
   TIMEOUT_MS = timeout.value.toInt()
   jsEditor.epsilons = epscheck.checked
   jsEditor.ntStubs = ntscheck.checked
+  lastCaretStart = inputField.asDynamic().selectionStart as Int
+  lastCaretEnd = inputField.asDynamic().selectionEnd as Int
+
+  inputField.addEventListener("selectionchange", {
+    val start = inputField.asDynamic().selectionStart as Int
+    val end = inputField.asDynamic().selectionEnd as Int
+    val multi = start != end
+
+    if (multi || start == lastCaretStart && end == lastCaretEnd) return@addEventListener
+
+    lastCaretStart = start
+    lastCaretEnd = end
+    jsEditor.run { continuation { handleInput() } }
+  })
 
   inputField.addEventListener("input", { jsEditor.run { continuation { handleInput() } } })
   inputField.addEventListener("input", { jsEditor.redecorateLines() })
-  exSelector.addEventListener("change", { MainScope().launch { fetchSelectedExample(); jsEditor.getLatestCFG(); jsEditor.redecorateLines() } })
+  exSelector.addEventListener("change", { MainScope().launch {
+    jsEditor.restoreInstructions()
+    fetchSelectedExample()
+    lastCaretStart = inputField.asDynamic().selectionStart as Int
+    lastCaretEnd = inputField.asDynamic().selectionEnd as Int
+    jsEditor.getLatestCFG()
+    jsEditor.redecorateLines()
+  } })
 
   inputField.addEventListener("keydown", { event -> jsEditor.navUpdate(event as KeyboardEvent) })
   epscheck.addEventListener("change", { log("Changed check"); jsEditor.epsilons = epscheck.checked; log("Checked: ${jsEditor.epsilons}") })

@@ -19,7 +19,9 @@
 
    • Use the ↑/↓ keys to scroll completions, then ↵ to apply.
 
-   • All tokens must be separated by one or more whitespaces.
+   • Modifying the tail of a valid prefix will enter suffix mode.
+
+   • Press → in suffix mode to accept the selection's next token.
 
    • Invalid snippets are marked with <u>a squiggly underline</u>.
 
@@ -36,14 +38,14 @@
    • <span style="color: blue; ">---</span> and <span style="color: gray; ">-></span> are reserved for the following scenarios:
      • <span style="color: blue; ">---</span> is used to separate the CFG from the test cases.
      • <span style="color: gray; ">-></span> separates the left and right sides of a production.
-
-   • Any line in the CFG that does not contain <span style="color: gray; ">-></span> is ignored.
-
+<!--   • Any line in the CFG that does not contain <span style="color: gray; ">-></span> is ignored.-->
    • Tidyparse can add ε-productions, {V} <span style="color: gray; ">-></span> ε {V} <span style="color: gray; ">|</span> {V} ε or
      literals {V} <span style="color: gray; ">-></span> &lt;V&gt; for each nonterminal, V, in the CFG.
 
    • If the grammar contains no nonterminal named <span style="color: green; ">START</span>, then
      Tidyparse will add <span style="color: green; ">START</span> <span style="color: gray; ">-></span> {V} for every nonterminal, V.
+
+   • Press the [Esc] key to redisplay these tips.
 </div>
 </div>
 <div id="confrow1">
