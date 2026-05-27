@@ -155,21 +155,23 @@ val timeout by lazy { document.getElementById("timeout") as HTMLInputElement }
 val ledBuffSel by lazy { document.getElementById("led-buffer") as HTMLInputElement }
 
 var wdfa: GPUBuffer? = null
+var wdfaNumStates: Int = 0
+var wdfaNumEdges: Int = 0
+
 suspend fun loadWDFA(file: String = "wdfa.bin") {
   val t0 = TimeSource.Monotonic.markNow()
   val response = window.fetch(file).await()
-  if (!response.ok) { log("Failed to load DFA from $file"); error("Failed to load DFA from $file") }
+  if (!response.ok) { "Failed to load WDFA from $file".also { log(it); error(it) } }
 
   val ab = response.arrayBuffer().await().unsafeCast<ArrayBuffer>()
   val ints = Int32Array(ab)
   val buf = GPUBuffer(byteSize = ints.byteLength, us = STCPSD, data = ints)
-  log("Loaded DFA from $file in ${t0.elapsedNow()}")
 
-  val n = ints[3]
-  val m = ints[4]
-  log("Loaded DFA(|Q|=$n, |δ|=$m) from $file in ${t0.elapsedNow()}")
-
+  wdfaNumStates = ints[3]
+  wdfaNumEdges = ints[4]
   wdfa = buf
+
+  log("Loaded WDFA(|Q|=$wdfaNumStates, |δ|=$wdfaNumEdges) from $file in ${t0.elapsedNow()}")
 }
 
 suspend fun loadNgrams(file: String = "python_4grams.txt") {

@@ -313,6 +313,9 @@ suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints:
 
   val decodeT = TimeSource.Monotonic.markNow()
   val result = uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)
+//  val result =
+//    if (wdfa != null) wdfaDecoder(outBuf, wdfa!!, maxRepairLen, cfg, toDecode)
+//    else uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)
   mark("decode", decodeT)
 
   return result.also {
@@ -577,4 +580,3 @@ suspend fun debugWDFATokenIndexing(cfg: CFG = pythonStatementCNFAllProds, wdfaBu
   packetBuf.destroy()
   prmBuf.destroy()
 }
-

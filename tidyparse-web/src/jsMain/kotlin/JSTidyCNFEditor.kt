@@ -77,7 +77,7 @@ class JSTidyCNFEditor(
         Scenario.COMPLETION ->
           (if (!gpuAvailable) cfg.enumSeqSmartSuspendable(tokens, suspender = { pause() })
           else completeCode(cfg, tokens).stripEpsilon())
-            .take(200)
+            .take(MAX_DISP_RESULTS)
             .enumerateInteractively(
               workHash = workHash,
               origTks = tokens,
@@ -140,41 +140,46 @@ fun cnfSetup() {
   val input = document.getElementById("cnfFileInput") as HTMLInputElement
   val fileName = document.getElementById("cnfFileName") as HTMLSpanElement
 
-  fun loadCnfTextFromSource(name: String, text: String, size: Number = text.length) {
-    try {
-      fileName.textContent = name
+  fun installCnfTextSource(name: String, text: String, size: Number = text.length) {
+    fileName.textContent = name
 
-      val obj = js("{}")
-      obj.name = name
-      obj.size = size
-      obj.type = "text/plain"
-      obj.url = null
-      obj.text = text
-      obj.bytes = null
-      window.asDynamic().tidySelectedFile = obj
+    val obj = js("{}")
+    obj.name = name
+    obj.size = size
+    obj.type = "text/plain"
+    obj.url = null
+    obj.text = text
+    obj.bytes = null
+    window.asDynamic().tidySelectedFile = obj
 
-      val init = js("{}")
-      init.detail = obj
-      window.dispatchEvent(js("new CustomEvent('tidy:cnf-loaded', init)") as Event)
+    val init = js("{}")
+    init.detail = obj
+    window.dispatchEvent(js("new CustomEvent('tidy:cnf-loaded', init)") as Event)
 
-      jsCnfEditor.loadCNFFromText(text)
-
-      jsCnfEditor.run { continuation { handleInput() } }
-      jsCnfEditor.redecorateLines()
-
-      log("Loaded ${text.length} bytes from $name")
-      hide()
-      cnfInputField.focus()
-    } catch (e: dynamic) {
-      console.error("Failed to parse CNF:", e)
-    }
+    jsCnfEditor.loadCNFFromText(text)
   }
 
+  fun finishCnfLoad(name: String, text: String) {
+    jsCnfEditor.run { continuation { handleInput() } }
+    jsCnfEditor.redecorateLines()
+
+    log("Loaded ${text.length} bytes from $name")
+    hide()
+    cnfInputField.focus()
+  }
+
+  fun loadCnfTextFromSource(name: String, text: String, size: Number = text.length) = try {
+    installCnfTextSource(name, text, size)
+    finishCnfLoad(name, text)
+  } catch (e: dynamic) { console.error("Failed to parse CNF:", e) }
+
   (document.getElementById("pythonCnfBtn") as HTMLButtonElement)
-    .addEventListener("click", {
-      val text = pythonStatementCNFAllProds.joinToString("\n") { it.pretty() }
-      loadCnfTextFromSource("Python CNF", text)
-    })
+    .addEventListener("click", { MainScope().launch { try {
+        val text = pythonStatementCNFAllProds.joinToString("\n") { it.pretty() }
+        loadCnfTextFromSource("Python CNF", text)
+        loadWDFA("wdfa.bin")
+      } catch (e: dynamic) { console.error("Python CNF / WDFA load error:", e) }
+    }})
 
   input.addEventListener("change", { _ ->
     MainScope().launch {
