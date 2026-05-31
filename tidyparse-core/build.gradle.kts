@@ -43,7 +43,7 @@ kotlin {
 
         api(libs.antlrKotlinRuntime)
       }
-      kotlin { srcDir(layout.buildDirectory.dir("generatedAntlr")) }
+      kotlin.srcDir(layout.buildDirectory.dir("generatedAntlr"))
     }
 
     commonTest { dependencies { implementation(kotlin("test")) } }
@@ -54,8 +54,6 @@ val pkgName = "com.strumenta.antlrkotlin.parsers.generated"
 val outDir = "generatedAntlr/${pkgName.replace(".", "/")}"
 // https://github.com/Strumenta/antlr-kotlin/tree/master?tab=readme-ov-file#gradle-setup
 val generateKotlinGrammarSource = tasks.register<AntlrKotlinTask>("generateKotlinGrammarSource") {
-  dependsOn("cleanGenerateKotlinGrammarSource")
-
   // ANTLR .g4 files are under {example-project}/antlr
   // Only include *.g4 files. This allows tools (e.g., IDE plugins)
   // to generate temporary files inside the base path

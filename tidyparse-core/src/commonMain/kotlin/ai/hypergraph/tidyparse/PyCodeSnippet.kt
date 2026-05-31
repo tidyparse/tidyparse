@@ -1,6 +1,9 @@
+package ai.hypergraph.tidyparse
+
 import ai.hypergraph.kaliningraph.image.escapeHTML
 import com.strumenta.antlrkotlin.parsers.generated.Python3Lexer
-import org.antlr.v4.kotlinruntime.*
+import org.antlr.v4.kotlinruntime.CharStreams
+import org.antlr.v4.kotlinruntime.Token
 
 data class PyCodeSnippet(val rawCode: String) {
   // Keep all tokens, including whitespace/comments. The hidden channel is included by default.
@@ -28,50 +31,10 @@ data class PyCodeSnippet(val rawCode: String) {
    *
    * The patch is given as a list of (oldTokenType?, newTokenType?) pairs.
    */
-  fun paintDiff(levAlignedPatch: List<Pair<String?, String?>>, format: (String) -> String): String {
-// log("TOKENS: ${tokens.map { Python3Lexer.VOCABULARY.getDisplayName(it.type) }}")
-
-    val taggedStr = mutableListOf<Pair<Paint, String>>()
-    var indexInOriginal = 0
-
-    for ((oldToken, newToken) in levAlignedPatch) {
-      when {
-        // (1) Insertions (oldToken == null)
-        oldToken == null && newToken != null -> taggedStr.add(Paint.GREEN to newToken).also { indexInOriginal-- }
-        // (2) Deletions (newToken == null)
-        oldToken != null && newToken == null -> taggedStr.add(Paint.GRAY to "")
-        // (2) Substitutions (oldToken != null && newToken != null && oldToken != newToken)
-        oldToken != null && newToken != null && oldToken != newToken -> taggedStr.add(Paint.ORANGE to newToken)
-        // (5) Match (oldToken == newToken)
-        else -> taggedStr.add(Paint.NONE to tokens[indexInOriginal].text!!)
-      }
-      indexInOriginal++
+  fun paintDiff(levAlignedPatch: List<Pair<String?, String?>>, format: (String) -> String): String =
+    buildTaggedString(levAlignedPatch).let { tagged ->
+      renderTaggedString(tagged, format(tagged.joinToString(" ") { it.second }))
     }
-
-    // This removes newlines, since the input and output are assumed to be a single line
-    val formattedString = format(taggedStr.joinToString(" ") { it.second }).replace(Regex("\\s+"), " ").trim()
-
-    // The basic assumption here is that the formatter will only adjust whitespaces between valid tokens but
-    // this is a heuristic and will probably need to be handled on an ad hoc basis for each programming language.
-    val sb = StringBuilder(); var i = 0; var ti = 0
-    while (i < formattedString.length) {
-//      println("sb: $sb / fs: $formattedString")
-      if (!formattedString[i].isWhitespace()) {
-        while (ti < taggedStr.size && taggedStr[ti].first == Paint.GRAY) sb.append(paint(taggedStr[ti++]))
-        if (ti >= taggedStr.size) break
-        val ts = taggedStr[ti]
-        // Sometimes the formatter will remove non-WS tokens like semicolons so we handle this case individually
-        if (ts.second.startsWith(formattedString[i])) {
-          sb.append(paint(ts))
-          i += ts.second.length
-        } else sb.append(paint(ts.first to ts.second + " "))
-        ti++
-      } else sb.append(formattedString[i++])
-    }
-    while (ti < taggedStr.size) sb.append(paint(taggedStr[ti++]))
-
-    return sb.toString()
-  }
 
   /**
    * Paints a Levenshtein-aligned patch onto the original code, highlighting:
@@ -82,46 +45,47 @@ data class PyCodeSnippet(val rawCode: String) {
    *
    * The patch is given as a list of (oldTokenType?, newTokenType?) pairs.
    */
-
   suspend fun paintDiffAsync(
     levAlignedPatch: List<Pair<String?, String?>>,
     format: suspend (String) -> String
-  ): String {
-// log("TOKENS: ${tokens.map { Python3Lexer.VOCABULARY.getDisplayName(it.type) }}")
+  ): String =
+    buildTaggedString(levAlignedPatch).let { tagged ->
+      renderTaggedString(tagged, format(tagged.joinToString(" ") { it.second }))
+    }
 
+  private fun buildTaggedString(levAlignedPatch: List<Pair<String?, String?>>): List<Pair<Paint, String>> {
     val taggedStr = mutableListOf<Pair<Paint, String>>()
     var indexInOriginal = 0
 
     for ((oldToken, newToken) in levAlignedPatch) {
       when {
-        // (1) Insertions (oldToken == null)
         oldToken == null && newToken != null -> taggedStr.add(Paint.GREEN to newToken).also { indexInOriginal-- }
-        // (2) Deletions (newToken == null)
         oldToken != null && newToken == null -> taggedStr.add(Paint.GRAY to "")
-        // (2) Substitutions (oldToken != null && newToken != null && oldToken != newToken)
         oldToken != null && newToken != null && oldToken != newToken -> taggedStr.add(Paint.ORANGE to newToken)
-        // (5) Match (oldToken == newToken)
         else -> taggedStr.add(Paint.NONE to tokens[indexInOriginal].text!!)
       }
       indexInOriginal++
     }
 
-    // This removes newlines, since the input and output are assumed to be a single line
+    return taggedStr
+  }
+
+  private fun renderTaggedString(taggedStr: List<Pair<Paint, String>>, formattedCode: String): String {
+    // This removes newlines, since the input and output are assumed to be a single line.
     val formattedString =
-      format(taggedStr.joinToString(" ") { it.second })
-        .replace(Regex("\\s+"), " ")
+      formattedCode.replace(Regex("\\s+"), " ")
         .trim()
 
-    // The basic assumption here is that the formatter will only adjust whitespaces between valid tokens but
-    // this is a heuristic and will probably need to be handled on an ad hoc basis for each programming language.
-    val sb = StringBuilder(); var i = 0; var ti = 0
+    // The formatter is expected to only adjust whitespaces between valid tokens. If it removes
+    // non-whitespace tokens, fall back to emitting the aligned token with a trailing space.
+    val sb = StringBuilder()
+    var i = 0
+    var ti = 0
     while (i < formattedString.length) {
-//      println("sb: $sb / fs: $formattedString")
       if (!formattedString[i].isWhitespace()) {
         while (ti < taggedStr.size && taggedStr[ti].first == Paint.GRAY) sb.append(paint(taggedStr[ti++]))
         if (ti >= taggedStr.size) break
         val ts = taggedStr[ti]
-        // Sometimes the formatter will remove non-WS tokens like semicolons so we handle this case individually
         if (ts.second.startsWith(formattedString[i])) {
           sb.append(paint(ts))
           i += ts.second.length
