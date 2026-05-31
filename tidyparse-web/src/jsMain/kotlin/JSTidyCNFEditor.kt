@@ -107,6 +107,7 @@ lateinit var jsCnfEditor: JSTidyCNFEditor
 // ---- Modal + wiring for CNF ----
 fun cnfSetup() {
   initTidyCodeMirror()
+  initSplitLayout()
   jsCnfEditor = JSTidyCNFEditor(cnfInputField, cnfOutputField)
   val overlay = buildCnfModal()
   document.body?.appendChild(overlay)
