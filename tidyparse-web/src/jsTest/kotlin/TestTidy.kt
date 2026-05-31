@@ -1,6 +1,5 @@
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
-import ai.hypergraph.kaliningraph.types.PlatformVars
 import ai.hypergraph.tidyparse.sampleGREUntilTimeout
 import kotlinx.browser.window
 import kotlinx.coroutines.test.runTest
@@ -15,11 +14,7 @@ or
  */
 class TestTidy {
   @BeforeTest
-  fun before() {
-    if (window.navigator.userAgent.indexOf("hrome") != -1)
-      PlatformVars.PLATFORM_CALLER_STACKTRACE_DEPTH = 4
-    DEBUG_SUFFIX = "\n"
-  }
+  fun before() { DEBUG_SUFFIX = "\n" }
 
   val cfg by lazy { vanillaS2PCFG }
   val repairs by lazy {
