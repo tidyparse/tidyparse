@@ -77,8 +77,10 @@ val modifyGeneratedAntlrSources = tasks.register("modifyGeneratedAntlrSources") 
     if (python3LexerFile.exists()) {
       val original = python3LexerFile.readText()
       val modified = original.replace("private ", "") // Override default antlr-kt visibility
-      python3LexerFile.writeText(modified)
-      println("Modified ${python3LexerFile.name}")
+      if (original != modified) {
+        python3LexerFile.writeText(modified)
+        println("Modified ${python3LexerFile.name}")
+      }
     }
   }
 }
