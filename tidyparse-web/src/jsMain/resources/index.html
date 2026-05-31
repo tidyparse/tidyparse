@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <link href='https://fonts.googleapis.com/css?family=JetBrains Mono' rel='stylesheet'>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/material-darker.min.css">
   <link rel="stylesheet" type="text/css" href="index.css">
   <title>Tidyparse</title>
   <link rel="icon" href="/pluginIcon.svg" type="image/svg+xml">
@@ -48,9 +50,10 @@
    • Press the [Esc] key to redisplay these tips.
 </div>
 </div>
-<div id="confrow1">
+<div id="config-panel">
+  <div class="config-input-controls">
     <label for="ex-selector">Editor example:</label>
-    <select id="ex-selector" style="margin-right: 430px; margin-left: 0.4em">
+    <select id="ex-selector">
         <option value="examples/nontrivial/pl_while.tidy">Toy While Language</option>
         <option value="examples/arithmetic/checked/arithmetic.tidy">Checked Arithmetic</option>
         <option value="examples/lambda/lambda_abc.tidy">Lambda Calculus</option>
@@ -58,16 +61,27 @@
         <option value="python.html">Python</option>
         <option value="cnf.html">Custom CNF</option>
     </select>
-  <label>Generation timeout:<input id="timeout" type="number" value="300" min="100" step="100" style="margin-left: 0.4em; margin-right: 0.4em; width: 5em" >ms</label><div style="margin-right: 3em"></div>
-  <label for="epsilon-checkbox">Add ε-productions&nbsp;</label>
-  <input type="checkbox" id="epsilon-checkbox">
+  </div>
+  <div class="config-output-controls config-output-controls--split">
+    <div id="gpuAvail"></div>
+    <div class="config-control-group">
+      <label>Generation timeout:<input id="timeout" type="number" value="300" min="100" step="100">ms</label>
+      <label for="epsilon-checkbox">Add ε-productions&nbsp;</label>
+      <input type="checkbox" id="epsilon-checkbox">
+    </div>
+  </div>
+  <div class="config-input-controls"></div>
+  <div class="config-output-controls">
+    <div class="config-control-group">
+      <label>Max edit distance: <a href="https://en.wikipedia.org/wiki/Edit_distance#Language_edit_distance">LED</a> + <input id="led-buffer" type="number" value="2" min="0" max="3" step="1"></label>
+      <label for="ntstubs-checkbox">Nonterminal stubs&nbsp;</label>
+      <input type="checkbox" id="ntstubs-checkbox" checked>
+    </div>
+  </div>
 </div>
-<div id="confrow2">
-  <div id="gpuAvail" style="margin-right: 330px; margin-top:-45px"></div>
-  <label>Max edit distance: <a href="https://en.wikipedia.org/wiki/Edit_distance#Language_edit_distance">LED</a> + <input id="led-buffer" type="number" value="2" min="0" max="3" step="1" style="margin-right: 0.4em"></label><div style="margin-right: 4.43em"></div>
-  <label for="ntstubs-checkbox">Nonterminal stubs&nbsp;</label>
-  <input type="checkbox" id="ntstubs-checkbox" checked>
-</div>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
+<script src="tidy-codemirror.js"></script>
+<script>window.initTidyCodeMirror();</script>
 <script src="tidyparse-web.js"></script>
 </body>
 </html>

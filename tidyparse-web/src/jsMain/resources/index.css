@@ -2,7 +2,7 @@ body {
     font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
     font-size: 16px;
     background-color: #eee8d5;
-    max-width: 1200px;
+    max-width: 1340px;
     margin: 0px 0px 0px 40px; /* top, right, bottom, left */
     padding: 5px;
     color: #073642;
@@ -11,6 +11,13 @@ body {
     --type-color: LightBlue;
     --no-value-color: Gray;
     --panel-background: #002b36;
+    --editor-background: #212121;
+    --workspace-max-width: 1380px;
+    --workspace-input-column: 62%;
+    --workspace-output-column: 55%;
+    --workspace-gap: 1.5rem;
+    --output-panel-width: 130%;
+    --control-inset: 10px;
 }
 
 h1, p{
@@ -35,12 +42,12 @@ u {
 #content {
     width: 100%;
     padding: 0px;
-    height: 750px;
+    height: 840px;
     display: grid;
-    grid-template-columns: 62% 55%;
+    grid-template-columns: var(--workspace-input-column) var(--workspace-output-column);
     grid-template-rows: 100%;
-    grid-gap: 1.5rem;
-    max-width: 1200px;   /* wider */
+    grid-gap: var(--workspace-gap);
+    max-width: var(--workspace-max-width);   /* wider */
     margin: 0 auto;      /* centered */
 }
 
@@ -64,9 +71,41 @@ u {
     outline: none;
 }
 
+.CodeMirror {
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    border-radius: 10px;
+    background: var(--editor-background);
+    border: 0;
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 16px;
+}
+
+.CodeMirror-lines {
+    padding: 5px 0;
+}
+
+.CodeMirror pre.CodeMirror-line,
+.CodeMirror pre.CodeMirror-line-like {
+    font-family: inherit;
+}
+
+.CodeMirror .cm-red { color: red; }
+.CodeMirror .cm-orange { color: orange; }
+.CodeMirror .cm-yellow { color: yellow; }
+.CodeMirror .cm-green { color: green; }
+.CodeMirror .cm-blue { color: blue; }
+.CodeMirror .cm-gray { color: darkslategray; }
+.CodeMirror .cm-invalid-snippet {
+    text-decoration: #f00 wavy underline;
+    -webkit-text-decoration: underline wavy red;
+}
+
 #tidyparse-output {
-    width: 130%;
+    width: var(--output-panel-width);
     white-space: pre-wrap;
+    background: var(--editor-background);
 }
 
 #tidyparse-output > table {
@@ -92,6 +131,56 @@ u {
 
 #tidyparse-output td.no-value {
     color: var(--no-value-color);
+}
+
+#config-panel {
+    width: 100%;
+    max-width: var(--workspace-max-width);
+    margin: 16px auto 0;
+    padding-bottom: 32px;
+    display: grid;
+    grid-template-columns: var(--workspace-input-column) var(--workspace-output-column);
+    grid-template-rows: auto auto;
+    grid-gap: 0.75rem var(--workspace-gap);
+    align-items: center;
+}
+
+.config-input-controls,
+.config-output-controls,
+.config-control-group {
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+}
+
+.config-input-controls {
+    justify-content: flex-end;
+    box-sizing: border-box;
+    padding-right: var(--control-inset);
+}
+
+.config-output-controls {
+    width: var(--output-panel-width);
+    justify-content: flex-end;
+    box-sizing: border-box;
+    padding: 0 var(--control-inset);
+}
+
+.config-output-controls--split {
+    justify-content: space-between;
+}
+
+#ex-selector {
+    max-width: 24em;
+}
+
+#timeout {
+    margin: 0 0.4em;
+    width: 5em;
+}
+
+#led-buffer {
+    margin-right: 0.4em;
 }
 
 #confrow1, #confrow2 {

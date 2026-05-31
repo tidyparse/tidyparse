@@ -36,17 +36,57 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     }
   }
 
+  protected val codeMirror: dynamic
+    get() = window.asDynamic().cmEditor
+
+  protected fun hasCodeMirror(): Boolean = codeMirror != null && codeMirror != js("undefined")
+
+  private fun cmPos(index: Int): dynamic = codeMirror.posFromIndex(index)
+
+  private fun cmIndex(which: String): Int = codeMirror.indexFromPos(codeMirror.getCursor(which)) as Int
+
   override fun continuation(f: () -> Unit): Any = window.setTimeout(f, 0)
 
   val instructions = (outputField as HTMLDivElement).innerHTML
+  val alphabetHist: MutableMap<String, Int> =
+    readEditorText().tokenizeByWhitespace().groupBy { it }.mapValues { it.value.size }.toMutableMap()
 
-  override fun getLineBounds(): IntRange = editor.lineBounds()
-  override fun currentLine(): Σᐩ = editor.getCurrentLine()
-  override fun overwriteRegion(region: IntRange, s: Σᐩ) { editor.overwriteCurrentLineWith(region, s) }
-  override fun readEditorText(): Σᐩ = editor.value
-  override fun getCaretPosition(): IntRange = editor.selectionStart!!..editor.selectionEnd!!
-  override fun setCaretPosition(range: IntRange) = editor.setSelectionRange(range.first, range.last)
-  fun caretInMiddle() = editor.getText(getCaretPosition().first..getLineBounds().last).trim().isNotEmpty()
+  override fun getLineBounds(): IntRange =
+    if (hasCodeMirror()) {
+      val value = readEditorText()
+      val start = getCaretPosition().first
+      val lineStart = value.lastIndexOf('\n', start - 1).takeIf { it != -1 }?.plus(1) ?: 0
+      val lineEnd = value.indexOf("\n", start).takeIf { it != -1 } ?: value.length
+      lineStart..lineEnd
+    } else editor.lineBounds()
+
+  override fun currentLine(): Σᐩ =
+    if (hasCodeMirror()) {
+      val cursor = codeMirror.getCursor()
+      codeMirror.getLine(cursor.line) as String
+    } else editor.getCurrentLine()
+
+  override fun overwriteRegion(region: IntRange, s: Σᐩ) {
+    if (hasCodeMirror()) {
+      codeMirror.replaceRange(s, cmPos(region.first), cmPos(region.last))
+      setCaretPosition((region.first + s.length).let { it..it })
+      codeMirror.save()
+    } else editor.overwriteCurrentLineWith(region, s)
+  }
+
+  override fun readEditorText(): Σᐩ =
+    if (hasCodeMirror()) codeMirror.getValue() as String else editor.value
+
+  override fun getCaretPosition(): IntRange =
+    if (hasCodeMirror()) cmIndex("from")..cmIndex("to")
+    else editor.selectionStart!!..editor.selectionEnd!!
+
+  override fun setCaretPosition(range: IntRange) {
+    if (hasCodeMirror()) codeMirror.setSelection(cmPos(range.first), cmPos(range.last))
+    else editor.setSelectionRange(range.first, range.last)
+  }
+
+  fun caretInMiddle() = readEditorText().substring(getCaretPosition().first, getLineBounds().last).trim().isNotEmpty()
   private fun rawDisplayHTML() = (outputField as HTMLDivElement).innerHTML
   override fun readDisplayText(): Σᐩ = output.textContent ?: ""
   override fun writeDisplayText(s: Σᐩ) { (outputField as HTMLDivElement).innerHTML = s }
@@ -214,11 +254,11 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
       TAB -> {}
       ESCAPE -> {}
     }
-    writeDisplayText(lines.mapIndexed { i, line ->
-      if (i == htmlIndex) line.substring(6, line.length - 7)
-      else if (i == selIdx.v + 2) "<mark>$line</mark>"
-      else line
-    }.joinToString("\n"))
+    writeDisplayText(lines.mapIndexed { i, line -> when (i) {
+        htmlIndex -> line.substring(6, line.length - 7)
+        selIdx.v + 2 -> "<mark>$line</mark>"
+        else -> line
+    } }.joinToString("\n"))
   }
 
   override fun redecorateLines(cfg: CFG) {

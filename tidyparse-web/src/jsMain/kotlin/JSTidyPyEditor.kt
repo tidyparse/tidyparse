@@ -102,7 +102,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
 
     jsPyEditor.pyodide.runPython(pyCode)
     jsPyEditor.pyodide.globals.get("_result") as String
-  } catch (e: dynamic) {""}//{ "Error during compilation: $e".also { log(it) }; "" }
+  } catch (e: dynamic) { "" } //{ "Error during compilation: $e".also { log(it) }; "" }
 
   suspend fun Sequence<String>.filterCompilerErrors(
     errHst: MutableMap<String, Int> = mutableMapOf(),

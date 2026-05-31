@@ -113,7 +113,9 @@ fun cnfSetup() {
   // Wire keystrokes to the CNF editor (parse/complete/repair)
   cnfInputField.addEventListener("input", { jsCnfEditor.run { continuation { handleInput() } } })
   cnfInputField.addEventListener("input", { jsCnfEditor.redecorateLines() })
-  cnfInputField.addEventListener("keydown", { e -> jsCnfEditor.navUpdate(e as KeyboardEvent) })
+  val cm = window.asDynamic().cmEditor
+  if (cm != null && cm != js("undefined")) cm.on("keydown") { _: dynamic, e: dynamic -> jsCnfEditor.navUpdate(e) }
+  else cnfInputField.addEventListener("keydown", { e -> jsCnfEditor.navUpdate(e as KeyboardEvent) })
 
 // Optional: read initial settings and keep LED buffer in sync
   val ledBuffSel = document.getElementById("led-buffer") as? HTMLInputElement
@@ -165,7 +167,7 @@ fun cnfSetup() {
 
     log("Loaded ${text.length} bytes from $name")
     hide()
-    cnfInputField.focus()
+    if (cm != null && cm != js("undefined")) cm.focus() else cnfInputField.focus()
   }
 
   fun loadCnfTextFromSource(name: String, text: String, size: Number = text.length) = try {

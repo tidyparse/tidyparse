@@ -81,6 +81,11 @@ suspend fun headlessSetup() {
 var lastCaretStart = 0
 var lastCaretEnd = 0
 
+private val cmEditor: dynamic
+  get() = window.asDynamic().cmEditor
+
+private fun hasCmEditor(): Boolean = cmEditor != null && cmEditor != js("undefined")
+
 suspend fun defaultSetup() {
   log("Starting Tidyparse/CFG")
   inputField.scrollTop = inputField.scrollHeight.toDouble();
@@ -118,7 +123,8 @@ suspend fun defaultSetup() {
     jsEditor.redecorateLines()
   } })
 
-  inputField.addEventListener("keydown", { event -> jsEditor.navUpdate(event as KeyboardEvent) })
+  if (hasCmEditor()) cmEditor.on("keydown") { _: dynamic, event: dynamic -> jsEditor.navUpdate(event) }
+  else inputField.addEventListener("keydown", { event -> jsEditor.navUpdate(event as KeyboardEvent) })
   epscheck.addEventListener("change", { log("Changed check"); jsEditor.epsilons = epscheck.checked; log("Checked: ${jsEditor.epsilons}") })
   ntscheck.addEventListener("change", {
     jsEditor.ntStubs = ntscheck.checked
@@ -225,7 +231,11 @@ suspend fun fetchSelectedExample() {
   if (response.ok) {
     val text = response.text().await()
     inputField.value = text
-    window.requestAnimationFrame { (inputField as Element).scrollIntoViewCompat() }
+    if (hasCmEditor()) {
+      cmEditor.setValue(text)
+      cmEditor.save()
+      cmEditor.scrollTo(null, cmEditor.getScrollInfo().height)
+    } else window.requestAnimationFrame { (inputField as Element).scrollIntoViewCompat() }
     jsEditor.redecorateLines()
   } else console.error("Failed to load file: ${response.status}")
 }
