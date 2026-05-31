@@ -1,5 +1,6 @@
 config.set({
     browserDisconnectTimeout: 540000,
+    browserNoActivityTimeout: 540000,
     client: { mocha: { timeout: 540000 } },
     customLaunchers: {
         ChromeSmall: {
