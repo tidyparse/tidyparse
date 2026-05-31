@@ -1,54 +1,62 @@
+private val pyCompileBootstrap = """
+import sys, traceback, io, base64, textwrap, warnings
+
+def _compile_output_b64(encoded):
+    _out = io.StringIO()
+
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    old_showwarning = warnings.showwarning
+
+    def _captured_showwarning(message, category, filename, lineno, file=None, line=None):
+        _out.write(warnings.formatwarning(message, category, filename, lineno, line))
+
+    try:
+        sys.stdout = _out
+        sys.stderr = _out
+        warnings.showwarning = _captured_showwarning
+
+        try:
+            _src = base64.b64decode(encoded).decode('utf-8')
+            _src = _src.replace('NUMBER', '1').replace('STRING', '""')
+            _src = textwrap.dedent(_src)
+            compile(_src, 'test_compile.py', 'exec')
+        except Exception:
+            traceback.print_exc()
+
+        return _out.getvalue()
+    finally:
+        warnings.showwarning = old_showwarning
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+""".trimIndent()
+
+
+private val pyFormatBootstrap = """
+import sys, io, base64, contextlib, traceback
+from black import format_str, FileMode
+
+def _format_output_b64(encoded):
+    src = base64.b64decode(encoded).decode('utf-8')
+    sink = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            pretty_code = format_str(src, mode=FileMode(string_normalization=False))
+        return pretty_code.strip().replace('\n', ' ')
+    except Exception:
+        return '__BLACK_ERROR__ ' + traceback.format_exc().replace('\n', ' ') + ' __SRC__ ' + src
+""".trimIndent()
+
+private fun jsStringLiteral(s: String): String =
+  js("(s) => JSON.stringify(s)")(s) as String
+
+private fun pyodideWorkerSource(): String = """
 let pyodide = null;
 let ready = null;
 let blackReady = null;
 
-const PY_COMPILE_BOOTSTRAP = [
-    "import sys, traceback, io, base64, textwrap, warnings",
-    "",
-    "def _compile_output_b64(encoded):",
-    "    _out = io.StringIO()",
-    "",
-    "    old_stdout = sys.stdout",
-    "    old_stderr = sys.stderr",
-    "    old_showwarning = warnings.showwarning",
-    "",
-    "    def _captured_showwarning(message, category, filename, lineno, file=None, line=None):",
-    "        _out.write(warnings.formatwarning(message, category, filename, lineno, line))",
-    "",
-    "    try:",
-    "        sys.stdout = _out",
-    "        sys.stderr = _out",
-    "        warnings.showwarning = _captured_showwarning",
-    "",
-    "        try:",
-    "            _src = base64.b64decode(encoded).decode('utf-8')",
-    "            _src = _src.replace('NUMBER', '1').replace('STRING', '\"\"')",
-    "            _src = textwrap.dedent(_src)",
-    "            compile(_src, 'test_compile.py', 'exec')",
-    "        except Exception:",
-    "            traceback.print_exc()",
-    "",
-    "        return _out.getvalue()",
-    "    finally:",
-    "        warnings.showwarning = old_showwarning",
-    "        sys.stdout = old_stdout",
-    "        sys.stderr = old_stderr"
-].join("\n");
-
-const PY_FORMAT_BOOTSTRAP = [
-    "import sys, io, base64, contextlib, traceback",
-    "from black import format_str, FileMode",
-    "",
-    "def _format_output_b64(encoded):",
-    "    src = base64.b64decode(encoded).decode('utf-8')",
-    "    sink = io.StringIO()",
-    "    try:",
-    "        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):",
-    "            pretty_code = format_str(src, mode=FileMode(string_normalization=False))",
-    "        return pretty_code.strip().replace('\\n', ' ')",
-    "    except Exception:",
-    "        return '__BLACK_ERROR__ ' + traceback.format_exc().replace('\\n', ' ') + ' __SRC__ ' + src"
-].join("\n");
+const PY_COMPILE_BOOTSTRAP = ${jsStringLiteral(pyCompileBootstrap)};
+const PY_FORMAT_BOOTSTRAP = ${jsStringLiteral(pyFormatBootstrap)};
 
 async function ensureReady(indexURL) {
     if (ready) return ready;
@@ -85,7 +93,6 @@ async function ensureBlackReady() {
 
         pyodide.runPython(PY_FORMAT_BOOTSTRAP);
 
-        // Smoke-test the actual formatter path.
         console.log("[py-worker] black ready:", runFormatNoEnsure("x=1"));
         console.log("[py-worker] ensureBlackReady: done");
     })();
@@ -99,8 +106,6 @@ function runFormatNoEnsure(src) {
     finally { try { pyodide.globals.delete("_encoded"); } catch (_) {} }
 }
 
-
-// Matches the old Kotlin js("btoa")(src) path for ASCII token strings.
 function b64(s) { return btoa(s || ""); }
 
 async function runCompile(src) {
@@ -145,7 +150,7 @@ self.onmessage = async (ev) => {
             return;
         }
 
-        throw new Error("Unknown pyodide_webworkers op: " + op);
+        throw new Error("Unknown pyodide worker op: " + op);
     } catch (e) {
         self.postMessage({
             id,
@@ -156,3 +161,11 @@ self.onmessage = async (ev) => {
         });
     }
 };
+""".trimIndent()
+
+fun createPyodideWorkerURL(): String =
+  js("(source) => URL.createObjectURL(new Blob([source], { type: 'text/javascript' }))")(pyodideWorkerSource()) as String
+
+fun revokePyodideWorkerURL(url: String) {
+  js("(url) => URL.revokeObjectURL(url)")(url)
+}

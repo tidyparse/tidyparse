@@ -88,6 +88,7 @@ private fun hasCmEditor(): Boolean = cmEditor != null && cmEditor != js("undefin
 
 suspend fun defaultSetup() {
   log("Starting Tidyparse/CFG")
+  initTidyCodeMirror()
   inputField.scrollTop = inputField.scrollHeight.toDouble();
 
   fetchSelectedExample()

@@ -289,7 +289,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     webWorkerPoolReady?.let { return it }
     return MainScope().async {
       try {
-        WebWorkerPool(workerURL = "webworkers.js", indexURL = pyodideIndexURL, size = nWorkers)
+        WebWorkerPool(indexURL = pyodideIndexURL, size = nWorkers)
           .also { it.init(); log("Initialized $nWorkers Web Workers") }
       } catch (t: Throwable) {
         webWorkerPoolReady = null

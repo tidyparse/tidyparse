@@ -5,11 +5,12 @@ import kotlinx.coroutines.async
 
 data class PyCompileResult(val output: String)
 
-class WebWorkerPool(private val workerURL: String, private val indexURL: String, size: Int) {
+class WebWorkerPool(private val indexURL: String, size: Int) {
   private class Slot(val worker: dynamic) { val pending = mutableMapOf<Int, CompletableDeferred<dynamic>>() }
 
   private var nextId = 1
   private var nextSlot = 0
+  private val workerURL = createPyodideWorkerURL()
 
   private fun makeWorker(url: String): dynamic = js("(url) => new Worker(url)")(url)
 
@@ -89,5 +90,8 @@ class WebWorkerPool(private val workerURL: String, private val indexURL: String,
     return normalizeBlackOutput(formatted)
   }
 
-  fun terminate() = slots.forEach { it.worker.terminate() }
+  fun terminate() {
+    slots.forEach { it.worker.terminate() }
+    revokePyodideWorkerURL(workerURL)
+  }
 }
