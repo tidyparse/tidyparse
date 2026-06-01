@@ -14,7 +14,10 @@ private const val MAX_INPUT_SHARE = 75.0
 
 fun initSplitLayout() {
   val content = document.getElementById("content") as? HTMLElement ?: return
-  val output = document.getElementById("tidyparse-output") ?: return
+  val output = document.getElementById("tidyparse-output") as? HTMLElement ?: return
+  if (output.parentNode != content) return
+
+  content.classList.add("workspace-split")
   val divider = getOrCreateWorkspaceDivider(content, output)
 
   setInputShare(content, content.inputShareFromDataset() ?: DEFAULT_INPUT_SHARE)

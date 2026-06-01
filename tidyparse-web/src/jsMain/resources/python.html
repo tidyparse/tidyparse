@@ -36,9 +36,21 @@
             max-width: 1400px;
             margin: 20px auto 0;
             padding: 0 10px;
-            justify-content: flex-end;
             margin-right: 0;
         }
+
+        #confrow1 {
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        #gpuAvail {
+            width: 35px;
+            height: 35px;
+            flex: 0 0 35px;
+        }
+
+        #gpuAvail object { display: block; }
     </style>
     <!-- CodeMirror 5 -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css">
@@ -90,7 +102,7 @@
 
 <div id="content">
     <textarea id="tidyparse-input" spellcheck="false"># Try modifying one of the malformed lines in the editor below
-# Works best on Chrome (tested 143.0.7499.170+arm64), the WebGPU logo should appear in the lower right corner if enabled
+# Works best on Chrome (tested 143.0.7499.170+arm64), the WebGPU logo should appear in the lower left corner if enabled
 # Invalid lines are marked with ⚠️ in the gutter
 x = 1 -
 x = 1 + 1
@@ -130,15 +142,12 @@ filtered = [x for x in common if x in words]
 <div id="tidyparse-output" class="panel" style="display:none"></div>
 
 <div title="Minimizes total edits per repair." id="confrow1">
+    <div id="gpuAvail"></div>
     <label>
         Max edit distance:
         <a href="https://en.wikipedia.org/wiki/Edit_distance#Language_edit_distance">LED</a> +
         <input id="led-buffer" type="number" value="2" min="0" max="3" step="1" style="margin-right: 1.2em">
     </label>
-</div>
-
-<div title="Adds nonterminal stubs to CFG." id="confrow2">
-    <div id="gpuAvail" style="margin-right: 270px; margin-top:-48px"></div>
 </div>
 
 <script type="text/javascript">var PROGRAMMING_LANG = "python"</script>

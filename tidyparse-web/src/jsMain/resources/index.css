@@ -35,8 +35,14 @@ u { text-decoration: #f00 wavy underline; }
 
 #content {
     width: 100%;
-    height: var(--workspace-height);
     padding: 0;
+    margin: 0;
+    min-width: 0;
+    min-height: 0;
+}
+
+#content.workspace-split {
+    height: var(--workspace-height);
     flex: 0 0 var(--workspace-height);
     display: grid;
     grid-template-columns:
@@ -45,9 +51,6 @@ u { text-decoration: #f00 wavy underline; }
         minmax(260px, 1fr);
     grid-template-rows: minmax(0, 1fr);
     column-gap: var(--workspace-panel-gap);
-    margin: 0;
-    min-width: 0;
-    min-height: 0;
 }
 
 .panel {
@@ -71,14 +74,14 @@ u { text-decoration: #f00 wavy underline; }
     min-height: 0;
 }
 
-#content > #tidyparse-input,
-#content > .ldt,
-#content > .CodeMirror {
+#content.workspace-split > #tidyparse-input,
+#content.workspace-split > .ldt,
+#content.workspace-split > .CodeMirror {
     grid-column: 1;
     grid-row: 1;
 }
 
-#content > #tidyparse-output {
+#content.workspace-split > #tidyparse-output {
     grid-column: 3;
     grid-row: 1;
 }
@@ -142,7 +145,7 @@ u { text-decoration: #f00 wavy underline; }
     outline-offset: 2px;
 }
 
-#content::before, .workspace-divider::before {
+.workspace-divider::before {
     content: "";
     display: block;
     grid-column: 2;
@@ -217,9 +220,7 @@ u { text-decoration: #f00 wavy underline; }
     padding: 0 var(--control-inset);
 }
 
-.config-output-controls--split {
-    justify-content: space-between;
-}
+.config-output-controls--split { justify-content: space-between; }
 
 .config-number-control {
     display: inline-flex;
@@ -255,6 +256,8 @@ u { text-decoration: #f00 wavy underline; }
     font-size: 0.9em;
 }
 
+.timeout-input__suffix::before { content: "\00a0"; }
+
 #led-buffer {
     box-sizing: border-box;
     width: 3.6em;
@@ -275,9 +278,7 @@ u { text-decoration: #f00 wavy underline; }
     margin-top: 0 !important;
 }
 
-mark {
-    background-color: darkslategray;
-}
+mark { background-color: darkslategray; }
 
 .ldt .red { color: red; }
 .ldt .orange { color: orange; }
