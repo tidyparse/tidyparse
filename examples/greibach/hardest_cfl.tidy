@@ -8,11 +8,11 @@ T -> ( Q S Q ) | ( S Q ) | ( Q S ) | ( S ) | ( Q ) | ( ) | [ Q S Q ] | [ S Q ] |
 
 Q -> L ; R
 
-L -> LP , U | , U | LP , | ,
-LP -> , V LP | , V
+L -> L' , U | , U | L' , | ,
+L' -> , V L' | , V
 
-R -> U , RP | , RP | U , | ,
-RP -> RP V , | V ,
+R -> U , R' | , R' | U , | ,
+R' -> R' V , | V ,
 
 U -> W U | W
 V -> W V | W
