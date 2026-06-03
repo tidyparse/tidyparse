@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tidyparse</title>
+<script>
+  const path = window.location.pathname.replace(/^\/+/, "");
+  const target = path.endsWith(".tidy") ? "/#" + path + window.location.search : "/";
+  window.location.replace(target);
+</script>
+<p>Redirecting to Tidyparse...</p>

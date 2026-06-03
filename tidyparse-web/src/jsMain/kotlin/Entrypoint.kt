@@ -92,7 +92,7 @@ suspend fun defaultSetup() {
   initSplitLayout()
   inputField.scrollTop = inputField.scrollHeight.toDouble();
 
-  fetchSelectedExample()
+  if (!fetchUrlExample()) fetchSelectedExample()
   jsEditor.getLatestCFG()
   jsEditor.redecorateLines()
   LED_BUFFER = ledBuffSel.value.toInt()
@@ -124,6 +124,14 @@ suspend fun defaultSetup() {
     jsEditor.getLatestCFG()
     jsEditor.redecorateLines()
   } })
+  window.addEventListener("hashchange", { MainScope().launch {
+    if (fetchUrlExample()) {
+      lastCaretStart = inputField.asDynamic().selectionStart as Int
+      lastCaretEnd = inputField.asDynamic().selectionEnd as Int
+      jsEditor.getLatestCFG()
+      jsEditor.redecorateLines()
+    }
+  }})
 
   if (hasCmEditor()) cmEditor.on("keydown") { _: dynamic, event: dynamic -> jsEditor.navUpdate(event) }
   else inputField.addEventListener("keydown", { event -> jsEditor.navUpdate(event as KeyboardEvent) })
@@ -227,9 +235,57 @@ private fun Element.scrollIntoViewCompat() {
   try { this.asDynamic().scrollIntoView(opts) } catch (_: dynamic) { this.scrollIntoView(false) }
 }
 
+private fun decodeUrlComponent(value: String): String =
+  try { js("decodeURIComponent(value)") as String } catch (_: dynamic) { value }
+
+private fun directExampleRequest(): String? {
+  val hash = window.location.hash.removePrefix("#")
+  return normalizeExamplePath(hash) ?: normalizeExamplePath(window.location.pathname)
+}
+
+private fun normalizeExamplePath(rawPath: String): String? {
+  var path = decodeUrlComponent(rawPath).trim()
+    .substringBefore("?")
+    .substringBefore("&")
+    .removePrefix("example=")
+    .removePrefix("/")
+
+  if (path.startsWith("http://") || path.startsWith("https://"))
+    path = path.substringAfter("://").substringAfter("/")
+
+  path = path.replace('\\', '/')
+    .removePrefix("/")
+    .removePrefix("./")
+    .replace(Regex("^examples/griebach/"), "examples/greibach/")
+    .replace(Regex("^griebach/"), "greibach/")
+
+  if (!path.endsWith(".tidy") || path.split('/').any { it.isBlank() || it == ".." }) return null
+  return if (path.startsWith("examples/")) path else "examples/$path"
+}
+
+private fun syncExampleSelector(examplePath: String) {
+  val options = exSelector.asDynamic().options
+  for (i in 0 until (options.length as Int))
+    if (options[i].value == examplePath) { exSelector.value = examplePath; return }
+}
+
+private fun updateExampleHash(examplePath: String) {
+  val nextHash = "#$examplePath"
+  if (window.location.hash != nextHash)
+    window.history.asDynamic().replaceState(null, document.title, nextHash)
+}
+
+suspend fun fetchUrlExample(): Boolean =
+  fetchExample(directExampleRequest() ?: return false, syncSelector = true, updateHash = false)
+
 suspend fun fetchSelectedExample() {
-  if (exSelector.value.endsWith(".html")) { window.location.href = exSelector.value; return }
-  val response = window.fetch(exSelector.value).await()
+  val selectedExample = exSelector.value
+  if (selectedExample.endsWith(".html")) { window.location.href = selectedExample; return }
+  fetchExample(selectedExample, syncSelector = false, updateHash = true)
+}
+
+suspend fun fetchExample(examplePath: String, syncSelector: Boolean, updateHash: Boolean): Boolean {
+  val response = window.fetch(examplePath).await()
   if (response.ok) {
     val text = response.text().await()
     inputField.value = text
@@ -238,6 +294,10 @@ suspend fun fetchSelectedExample() {
       cmEditor.save()
       cmEditor.scrollTo(null, cmEditor.getScrollInfo().height)
     } else window.requestAnimationFrame { (inputField as Element).scrollIntoViewCompat() }
+    if (syncSelector) syncExampleSelector(examplePath)
+    if (updateHash) updateExampleHash(examplePath)
     jsEditor.redecorateLines()
-  } else console.error("Failed to load file: ${response.status}")
+    return true
+  } else console.error("Failed to load file '$examplePath': ${response.status}")
+  return false
 }
