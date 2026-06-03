@@ -280,7 +280,7 @@ fun updateProgress(query: Σᐩ, editor: TidyEditor) {
 fun Σᐩ.sanitized(terminals: Set<Σᐩ>): Σᐩ =
   tokenizeByWhitespace().joinToString(" ") { if (it in terminals) it else "_" }
 
-const val fwdCplPrefix = "-> Forward completion, possible fixes:\n\n"
+const val fwdCplPrefix = "-> Forward completion, possible continuations:\n\n"
 const val parsedPrefix = "✅ Current line parses! Tree:\n\n"
 const val invalidPrefix = "❌ Current line invalid, possible fixes:\n\n"
 const val stubGenPrefix = "&lt;/&gt; Stub generation, possible completions:\n\n"

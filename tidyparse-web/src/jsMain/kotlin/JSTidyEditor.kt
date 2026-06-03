@@ -111,10 +111,13 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     log("Applicable context:\n$context")
     val suffixEligible = context.endsWith(" ") && !caretInMiddle() && !caretInGrammar
 
-    val tokens = context.tokenizeByWhitespace()
+    var tokens = context.tokenizeByWhitespace()
     if (tokens.isEmpty()) { restoreInstructions(); return }
 
-    val cfg = if (caretInGrammar) CFGCFG(names = tokens.filter { it !in setOf("->", "|") }.toSet()) else getLatestCFG()
+    val cfg = if (caretInGrammar) {
+      tokens = tokens.map { if (it == "START") "[START]" else it }
+      CFGCFG(names = tokens.filter { it !in setOf("->", "|") }.toSet() + "[START]")
+    } else getLatestCFG()
 
     if (cfg.isEmpty()) return
 
@@ -153,6 +156,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
           if (!gpuAvailable) sampleGREUntilTimeout(tokens, cfg)
           else repairCode(cfg, tokens, LED_BUFFER).stripEpsilon()
       }?.let { if (scenario != REPAIR) it.take(MAX_DISP_RESULTS) else it }
+      ?.let { if (caretInGrammar) it.map { it.replace("[START]", "START") } else it }
       ?.enumerateInteractively(workHash, tokens,
         metric = when (scenario) {
           REPAIR -> levAndLenMetric(tokens)
@@ -211,6 +215,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
   open fun navUpdate(event: KeyboardEvent) {
     val key = event.keyCode.toSelectorAction() ?: return
+    if (key == ENTER && event.shiftKey) return
     if (key == TAB) { event.preventDefault(); handleTab(); return }
     if (key == ARROW_RIGHT) {
       val dispText = readDisplayText()
@@ -269,7 +274,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     fun decorate() {
       if (currentHash != hashIter) return
       val decCFG = getLatestCFG()
-      jsEditor.apply { preparseParseableLines(decCFG, getExampleText()) }
+      jsEditor.apply { preparseParseableLines(decCFG, getExampleText())  }
       if (currentHash == hashIter) decorator.fullDecorate(decCFG)
     }
 
