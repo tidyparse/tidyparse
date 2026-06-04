@@ -15,7 +15,7 @@ buildscript {
   repositories { mavenCentral() }
   dependencies {
     classpath("org.jetbrains.lets-plot:platf-awt-jvm:4.4.1")
-    classpath("org.jetbrains.lets-plot:lets-plot-kotlin-jvm:4.12.1")
+    classpath("org.jetbrains.lets-plot:lets-plot-kotlin-jvm:4.14.0")
   }
 }
 
@@ -52,7 +52,7 @@ kotlin {
     val jsMain by getting {
       dependencies {
         implementation(project(":tidyparse-core"))
-        implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2026.5.5")
+        implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2026.6.1")
       }
     }
 
