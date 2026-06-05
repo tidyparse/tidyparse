@@ -44,7 +44,7 @@ const val smallMem = "{ requiredLimits: { maxBufferSize: 1073741824, maxStorageB
 suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
   val tmpDev = (navigator.gpu as? GPU)?.requestAdapter()?.also {
     gpu = if (needsExtraMemory) it.requestDevice(js(largeMem))
-          else it.requestDevice(js(smallMem))
+    else it.requestDevice(js(smallMem))
   }
 
   if (tmpDev != null) {
@@ -87,22 +87,16 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
     gpuAvailable = true
 
     (document.getElementById("gpuAvail") as? HTMLDivElement)?.appendChild(
-    document.createElement("object").apply {
-      setAttribute("type", "image/svg+xml")
-      setAttribute("data", "/webgpu.svg")
-      setAttribute("width", "35")
-      setAttribute("height", "35")
-    })
+      document.createElement("object").apply {
+        setAttribute("type", "image/svg+xml")
+        setAttribute("data", "/webgpu.svg")
+        setAttribute("width", "35")
+        setAttribute("height", "35")
+      })
   } else print("GPU not detected.")
 }
 
-suspend fun repairCode(
-  cfg: CFG,
-  code: List<String>,
-  ledBuffer: Int = Int.MAX_VALUE,
-  ngrams: GPUBuffer? = null,
-  maxUniformSamples: Int = DEFAULT_UNIFORM_MAX_SAMPLES
-): List<String> {
+suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VALUE, ngrams: GPUBuffer? = null): List<String> {
   timings = linkedMapOf()
   val preprocT = TimeSource.Monotonic.markNow()
   val fsa: FSA = makeLevFSA(code, MAX_LEV_RAD)
@@ -117,21 +111,14 @@ suspend fun repairCode(
 
   mark("preprocessing", preprocT)
 //  val words = repairPipelineV2(cfg, fsa, ledBuffer, ngrams, codePoints)
-  val words = repairPipeline(cfg, fsa, ledBuffer, ngrams, codePoints, maxUniformSamples)
+  val words = repairPipeline(cfg, fsa, ledBuffer, ngrams, codePoints)
 //  val distinctWords = words.distinct()
 //  log("Distinct: ${distinctWords.size} words")
 
   return words.also { log("Received: ${words.size} words in ${preprocT.elapsedNow()} (round trip)") }
 }
 
-suspend fun repairPipeline(
-  cfg: CFG,
-  fsa: FSA,
-  ledBuffer: Int,
-  ngrams: GPUBuffer?,
-  codePoints: IntArray,
-  maxUniformSamples: Int = DEFAULT_UNIFORM_MAX_SAMPLES
-): List<String> {
+suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer?, codePoints: IntArray): List<String> {
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   log("FSA(|Q|=$numStates, |δ|=${fsa.transit.size}), ${cfg.calcStats()}")
 
@@ -149,9 +136,9 @@ suspend fun repairPipeline(
   val activeBuf = GPUBuffer((numStates * numStates * activeWords * 4).toLong(), STCPSD)
 
   log(
-  "Buffers: dp=${dpBuf.size}B (${totalSize} cells), " +
-      "active=${activeBuf.size}B (${activeWords} words/cell), " +
-      "word=${wordBuf.size}B, tm=${tmBuf.size}B"
+    "Buffers: dp=${dpBuf.size}B (${totalSize} cells), " +
+        "active=${activeBuf.size}B (${activeWords} words/cell), " +
+        "word=${wordBuf.size}B, tm=${tmBuf.size}B"
   )
 
   timings["init chart"] = timedGPUIsolated("Init chart") {
@@ -250,7 +237,7 @@ suspend fun repairPipeline(
   val langIntSize = langIntSize()
   mark("read lang size", langSizeT)
 
-  val maxSamples = if (ngrams != null) MAX_SAMPLES.toLong() else maxUniformSamples.coerceAtLeast(0).toLong()
+  val maxSamples = if (ngrams != null) MAX_SAMPLES.toLong() else 40_000
   val toDecode = minOf(maxSamples, langIntSize).toInt()
   val pct = toDecode.toDouble() * 100.0 / langIntSize.toDouble().coerceAtLeast(1.0)
   log("Language saturation: $pct% ($toDecode/$langIntSize), maxRepairLen=$maxRepairLen")
@@ -1284,7 +1271,6 @@ val prefix_sum_p2 by Shader("""$PFX_SUM_PARAMS $SAT_ARTH
 const val MAX_WORD_LEN = 128
 const val MAX_LEV_RAD = 5
 const val MAX_SAMPLES = 2_000_000 // Maximum number of samples to draw before reranking
-const val DEFAULT_UNIFORM_MAX_SAMPLES = 40_000
 const val TOP_K_SAMP = 10 * MAX_DISP_RESULTS // Maximum results to sample, some of which may be displayed to the user
 const val DISPATCH_GROUP_SIZE_X = 65_535
 // Length of the packet header in each repair buffer
