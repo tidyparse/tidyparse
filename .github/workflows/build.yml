@@ -24,13 +24,46 @@ jobs:
           java-version: 21
           cache: gradle
       - name: Build with Gradle
-        run: ./gradlew jsTest
+        run: ./gradlew jsTest --stacktrace
 #          ./gradlew generateDylib && ./gradlew test buildPlugin --stacktrace
+      - name: Dump JS test diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+
+          echo "::group::Generated test result files"
+          find tidyparse-core tidyparse-web -path '*/build/test-results/*' -type f | sort
+          echo "::endgroup::"
+
+          echo "::group::Generated test report entrypoints"
+          find tidyparse-core tidyparse-web -path '*/build/reports/tests/*/index.html' -type f | sort
+          echo "::endgroup::"
+
+          echo "::group::Karma config overlay"
+          cat tidyparse-web/karma.config.d/karma.conf.js || true
+          echo "::endgroup::"
+
+          echo "::group::Test XML summaries and tails"
+          while IFS= read -r file; do
+            echo "===== ${file} ====="
+            grep -nE '<testsuite|<testcase|<failure|<error|<system-err|</system-err>' "${file}" | head -200 || true
+            echo "----- tail ${file} -----"
+            tail -n 250 "${file}" || true
+          done < <(find tidyparse-core tidyparse-web -path '*/build/test-results/*/TEST-*.xml' -type f | sort)
+          echo "::endgroup::"
+
+          echo "::group::Gradle problem reports"
+          find . -path '*/build/reports/problems/*' -type f -print | sort
+          echo "::endgroup::"
       - name: Upload Test Reports
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: test-reports
           path: |
-            tidyparse-core/build/reports/tests/jsTest/
-            tidyparse-web/build/reports/tests/jsTest/
+            tidyparse-core/build/reports/tests/
+            tidyparse-core/build/test-results/
+            tidyparse-web/build/reports/tests/
+            tidyparse-web/build/test-results/
+            build/reports/problems/
