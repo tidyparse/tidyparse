@@ -15,10 +15,11 @@ if (isCi) {
 config.set({
     logLevel: config.LOG_INFO,
     browserDisconnectTimeout: browserDisconnectTimeoutMs,
-    browserDisconnectTolerance: 0,
+    browserDisconnectTolerance: isCi ? 1 : 0,
     browserNoActivityTimeout: karmaTimeoutMs,
     captureTimeout: karmaTimeoutMs,
     pingTimeout: pingTimeoutMs,
+    retryLimit: 0,
     processKillTimeout: isCi ? 30000 : 2000,
     client: { captureConsole: true, mocha: { timeout: karmaTimeoutMs } },
     browserConsoleLogOptions: { level: 'debug', terminal: true },

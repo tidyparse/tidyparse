@@ -51,14 +51,14 @@ kotlin {
   }
 
   sourceSets {
-    val jsMain by getting {
+    getByName("jsMain") {
       dependencies {
         implementation(project(":tidyparse-core"))
         implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2026.6.1")
       }
     }
 
-    val jsTest by getting {
+    getByName("jsTest") {
       dependencies {
         implementation(kotlin("test-js"))
         implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")

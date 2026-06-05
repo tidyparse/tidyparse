@@ -35,7 +35,7 @@ changelog {
   groups = emptyList()
 }
 
-val swiftGenerator by configurations.creating
+val swiftGenerator = configurations.create("swiftGenerator")
 dependencies {
   implementation("net.java.dev.jna:jna:5.19.0")
   implementation(project(":tidyparse-core")) {
