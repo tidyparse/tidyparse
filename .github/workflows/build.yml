@@ -12,6 +12,7 @@ jobs:
   build:
 
     runs-on: macos-latest
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v6
@@ -24,7 +25,11 @@ jobs:
           java-version: 21
           cache: gradle
       - name: Build with Gradle
-        run: ./gradlew jsTest --stacktrace
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p build/ci-logs
+          ./gradlew jsTest --stacktrace --info 2>&1 | tee build/ci-logs/gradle-jsTest.log
 #          ./gradlew generateDylib && ./gradlew test buildPlugin --stacktrace
       - name: Dump JS test diagnostics
         if: failure()
@@ -42,6 +47,10 @@ jobs:
 
           echo "::group::Karma config overlay"
           cat tidyparse-web/karma.config.d/karma.conf.js || true
+          echo "::endgroup::"
+
+          echo "::group::Gradle/Karma log tail"
+          tail -n 500 build/ci-logs/gradle-jsTest.log || true
           echo "::endgroup::"
 
           echo "::group::Test XML summaries and tails"
@@ -67,3 +76,4 @@ jobs:
             tidyparse-web/build/reports/tests/
             tidyparse-web/build/test-results/
             build/reports/problems/
+            build/ci-logs/

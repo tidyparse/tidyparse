@@ -29,7 +29,7 @@ group = "ai.hypergraph"
 version = "0.23.0"
 
 kotlin {
-  js(IR) {
+  js {
     binaries.executable()
 
     browser {

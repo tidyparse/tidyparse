@@ -1,14 +1,31 @@
+const isCi = process.env.GITHUB_ACTIONS === 'true';
+const chromeFlags = ['--window-size=1,1'];
+const localKarmaTimeoutMs = 540000;
+const ciKarmaTimeoutMs = 30 * 60 * 1000;
+const karmaTimeoutMs = isCi ? ciKarmaTimeoutMs : localKarmaTimeoutMs;
+
+if (isCi) {
+    chromeFlags.push(
+        '--enable-logging=stderr',
+        '--v=1'
+    );
+}
+
 config.set({
-    browserDisconnectTimeout: 540000,
-    browserNoActivityTimeout: 540000,
-    client: { captureConsole: true, mocha: { timeout: 540000 } },
+    logLevel: isCi ? config.LOG_DEBUG : config.LOG_INFO,
+    browserDisconnectTimeout: karmaTimeoutMs,
+    browserDisconnectTolerance: isCi ? 2 : 0,
+    browserNoActivityTimeout: karmaTimeoutMs,
+    captureTimeout: karmaTimeoutMs,
+    processKillTimeout: isCi ? 30000 : 2000,
+    client: { captureConsole: true, mocha: { timeout: karmaTimeoutMs } },
     browserConsoleLogOptions: { level: 'debug', terminal: true },
     customLaunchers: {
         ChromeSmall: {
             base: 'Chrome',
             // flags: ['--window-size=1,1', '--enable-profiling', '--profiling-at-start=gpu-process', '--no-sandbox', '--profiling-flush']
             flags: [
-                '--window-size=1,1',
+                ...chromeFlags,
                 // '--enable-profiling',
                 // '--profiling-at-start=renderer',  // Or gpu-process if that's your focus
                 // '--no-sandbox',
@@ -21,6 +38,7 @@ config.set({
             ]
         }
     },
+    ...(isCi ? { browsers: ['ChromeSmall'] } : {}),
     // browsers: ['ChromeSmall'],
     // customLaunchers: {
     //     ChromeHeadlessWebGPU: {
