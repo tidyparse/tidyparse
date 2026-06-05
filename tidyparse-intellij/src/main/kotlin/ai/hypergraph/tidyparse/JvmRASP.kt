@@ -4,15 +4,7 @@ import ai.hypergraph.kaliningraph.automata.completeWithSparseGRE
 import ai.hypergraph.kaliningraph.parsing.tmLst
 import ai.hypergraph.kaliningraph.rasp.compileToRASPBytecode
 import ai.hypergraph.kaliningraph.repair.loopyHeapless
-import ai.hypergraph.kaliningraph.tokenizeByWhitespace
-import com.sun.jna.*
-import java.io.BufferedInputStream
-import java.io.BufferedOutputStream
-import java.io.DataInputStream
-import java.io.DataOutputStream
-import java.io.File
-import java.io.FileInputStream
-import java.io.FileOutputStream
+import java.io.*
 import java.util.*
 import java.util.stream.IntStream
 import kotlin.streams.asStream
@@ -45,9 +37,7 @@ private const val OPCODE_MASK = (1 shl OPCODE_BITS) - 1
 private const val WORD_MASK = (1 shl WORD_BITS) - 1 // 0x1FFFFFFF
 
 private fun initialMemory(program: IntArray): IntArray {
-  require(program.size <= MEM_WORDS) {
-    "Program has ${program.size} packed instructions, exceeds VM memory budget $MEM_WORDS"
-  }
+  require(program.size <= MEM_WORDS) { "Program has ${program.size} packed instructions, exceeds VM memory budget $MEM_WORDS" }
 
   // c0 = <0, 0, P 0..., 0..., 0...>:
   // code prefix copied into memory, everything else starts at zero.

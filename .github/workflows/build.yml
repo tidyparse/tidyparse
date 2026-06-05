@@ -31,31 +31,61 @@ jobs:
           mkdir -p build/ci-logs
           gradle_log="build/ci-logs/gradle-jsTest.log"
           watchdog_log="build/ci-logs/watchdog.log"
+          export CHROME_LOG_FILE="${PWD}/build/ci-logs/chrome.log"
 
           ./gradlew --no-daemon jsTest --stacktrace 2>&1 | tee "${gradle_log}" &
           gradle_pid=$!
+
+          dump_processes() {
+            echo "----- active java/node/chrome processes -----"
+            ps -axo pid,ppid,etime,stat,comm,args | grep -Ei 'java|gradle|kotlin|node|karma|chrome' | grep -v grep || true
+            echo "----- jvm process list -----"
+            jps -lv || true
+            echo "----- gradle log tail -----"
+            tail -n 300 "${gradle_log}" || true
+          }
+
+          terminate_build() {
+            pkill -TERM -f 'GradleWrapperMain|org.gradle.launcher|KotlinCompileDaemon|karma|Chrome' || true
+            sleep 15
+            pkill -KILL -f 'GradleWrapperMain|org.gradle.launcher|KotlinCompileDaemon|karma|Chrome' || true
+          }
+
+          (
+            while kill -0 "${gradle_pid}" 2>/dev/null; do
+              if grep -q 'reconnect failed before timeout' "${gradle_log}" 2>/dev/null; then
+                sleep 60
+                if kill -0 "${gradle_pid}" 2>/dev/null; then
+                  {
+                    echo "::error::Karma browser disconnected and Gradle did not exit within 60 seconds; collecting diagnostics before terminating it."
+                    date
+                    dump_processes
+                  } | tee -a "${watchdog_log}"
+                  terminate_build
+                fi
+                exit 0
+              fi
+              sleep 5
+            done
+          ) &
+          disconnect_watchdog_pid=$!
 
           (
             sleep 50m
             {
               echo "::error::./gradlew jsTest exceeded 50 minutes; collecting process snapshot before terminating it."
               date
-              echo "----- active java/node/chrome processes -----"
-              ps -axo pid,ppid,etime,stat,comm,args | grep -Ei 'java|gradle|kotlin|node|karma|chrome' | grep -v grep || true
-              echo "----- jvm process list -----"
-              jps -lv || true
-              echo "----- gradle log tail -----"
-              tail -n 300 "${gradle_log}" || true
+              dump_processes
             } | tee "${watchdog_log}"
 
-            pkill -TERM -f 'GradleWrapperMain|org.gradle.launcher|KotlinCompileDaemon|karma|Chrome' || true
-            sleep 15
-            pkill -KILL -f 'GradleWrapperMain|org.gradle.launcher|KotlinCompileDaemon|karma|Chrome' || true
+            terminate_build
           ) &
           watchdog_pid=$!
 
           status=0
           wait "${gradle_pid}" || status=$?
+          kill "${disconnect_watchdog_pid}" 2>/dev/null || true
+          wait "${disconnect_watchdog_pid}" 2>/dev/null || true
           kill "${watchdog_pid}" 2>/dev/null || true
           wait "${watchdog_pid}" 2>/dev/null || true
           exit "${status}"
@@ -84,6 +114,12 @@ jobs:
 
           echo "::group::Watchdog log"
           cat build/ci-logs/watchdog.log || true
+          echo "::endgroup::"
+
+          echo "::group::Browser and Chrome logs"
+          cat build/ci-logs/browser-console.log || true
+          cat build/ci-logs/chrome.log || true
+          find build/ci-logs/chrome-crash-dumps -type f -print || true
           echo "::endgroup::"
 
           echo "::group::Process snapshot after failure"
