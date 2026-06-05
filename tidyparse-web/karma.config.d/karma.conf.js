@@ -3,6 +3,8 @@ const chromeFlags = ['--window-size=1,1'];
 const localKarmaTimeoutMs = 540000;
 const ciKarmaTimeoutMs = 30 * 60 * 1000;
 const karmaTimeoutMs = isCi ? ciKarmaTimeoutMs : localKarmaTimeoutMs;
+const pingTimeoutMs = isCi ? 5 * 60 * 1000 : 5000;
+const browserDisconnectTimeoutMs = isCi ? 5000 : localKarmaTimeoutMs;
 
 if (isCi) {
     chromeFlags.push(
@@ -12,10 +14,11 @@ if (isCi) {
 
 config.set({
     logLevel: config.LOG_INFO,
-    browserDisconnectTimeout: karmaTimeoutMs,
+    browserDisconnectTimeout: browserDisconnectTimeoutMs,
     browserDisconnectTolerance: 0,
     browserNoActivityTimeout: karmaTimeoutMs,
     captureTimeout: karmaTimeoutMs,
+    pingTimeout: pingTimeoutMs,
     processKillTimeout: isCi ? 30000 : 2000,
     client: { captureConsole: true, mocha: { timeout: karmaTimeoutMs } },
     browserConsoleLogOptions: { level: 'debug', terminal: true },

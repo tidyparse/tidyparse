@@ -124,17 +124,17 @@ tasks {
     args = listOf(projectDir.parent + "/examples")
   }
 
-  val generateDylib by registering(JavaExec::class) {
+  register<JavaExec>("generateDylib") {
     mainClass.set("ai.hypergraph.tidyparse.MetalShadersKt")
     classpath = sourceSets["main"].runtimeClasspath + swiftGenerator
   }
 
-  val metalRASP by registering(JavaExec::class) {
+  register<JavaExec>("metalRASP") {
     mainClass.set("ai.hypergraph.tidyparse.MetalRASPKt")
     classpath = sourceSets["main"].runtimeClasspath + swiftGenerator
   }
 
-  val jvmRASP by registering(JavaExec::class) {
+  register<JavaExec>("jvmRASP") {
     mainClass.set("ai.hypergraph.tidyparse.JvmRASPKt")
     classpath = sourceSets["main"].runtimeClasspath + swiftGenerator
   }
