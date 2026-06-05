@@ -43,3 +43,4 @@ temp*.svg
 kotlin-js-store
 *.cf
 tidyparse-web/*.svg
+tidyparse-intellij/src/main/resources/jcef/tidyparse-jcef.html

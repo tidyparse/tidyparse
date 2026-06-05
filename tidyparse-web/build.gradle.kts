@@ -83,6 +83,22 @@ fun plotGrids(vararg names: String) {
   Desktop.getDesktop().browse(file("grid.svg").toURI())
 }
 
+fun jsString(s: String): String =
+  buildString {
+    append('"')
+    for (c in s) when (c) {
+      '\\' -> append("\\\\")
+      '"' -> append("\\\"")
+      '\n' -> append("\\n")
+      '\r' -> append("\\r")
+      '\t' -> append("\\t")
+      '\b' -> append("\\b")
+      '\u000C' -> append("\\f")
+      else -> if (c.code < 0x20) append("\\u%04x".format(c.code)) else append(c)
+    }
+    append('"')
+  }
+
 tasks {
   withType<KotlinJsTest>().configureEach {
     testLogging {
@@ -159,6 +175,76 @@ tasks {
       outHtml.writeText(html)
 
       println("✓ Self-contained headless bundle written to ${outHtml.absolutePath}")
+    }
+  }
+
+  register("bundleJCEF") {
+    group = "build"
+    description = "Bundles a single self-contained JCEF HTML template for the IntelliJ plugin"
+
+    dependsOn(project(":tidyparse-web").tasks.named("jsBrowserProductionWebpack"))
+
+    val webProject = project(":tidyparse-web")
+
+    val bundleDir = webProject.layout.buildDirectory
+      .dir("kotlin-webpack/js/productionExecutable/")
+
+    val jsFile = bundleDir.map { it.file("tidyparse-web.js").asFile }
+    val mapFile = bundleDir.map { it.file("tidyparse-web.js.map").asFile }
+
+    val ngramFile = webProject.layout.projectDirectory
+      .file("src/jsMain/resources/python_4grams.txt")
+      .asFile
+
+    val outHtml = rootProject.layout.projectDirectory
+      .file("tidyparse-intellij/src/main/resources/jcef/tidyparse-jcef.html")
+
+    inputs.files(jsFile, mapFile, ngramFile)
+    outputs.file(outHtml)
+
+    doLast {
+      val jsCode = jsFile.get().readText()
+      val mapJson = mapFile.get().takeIf { it.exists() }?.readText()
+
+      val inlinedJs = if (mapJson != null) {
+        val mapB64 = Base64.encode(mapJson.toByteArray())
+        jsCode.replace(Regex("""(?m)^//# sourceMappingURL=.*$"""), "")
+          .trimEnd('\n', '\r') + "\n//# sourceMappingURL=data:application/json;base64,$mapB64"
+      } else { jsCode.replace(Regex("""(?m)^//# sourceMappingURL=.*$"""), "") }
+
+      val rawNgrams = ngramFile.readText()
+
+      val html = """
+  <!doctype html>
+  <html>
+  <head>
+    <meta charset="utf-8">
+    <title>TidyParse JCEF Runtime</title>
+  </head>
+  <body>
+    <pre id="tidyparse-jcef-log" style="display:none"></pre>
+
+<script>
+window.REPAIR_MODE = "jcef";
+window.raw_ngrams = ${jsString(rawNgrams)};
+
+function __tidyparseJcefSend(payload) {
+  __JCEF_EVENT_CALLBACK__;
+}
+
+window.__tidyparseJcefSend = __tidyparseJcefSend;
+</script>
+
+    <script type="module">
+    $inlinedJs
+    </script>
+  </body>
+  </html>
+""".trimIndent()
+
+      outHtml.asFile.apply { parentFile.mkdirs(); writeText(html) }
+      println("✓ JCEF bundle written to ${outHtml.asFile.absolutePath}")
+      println("  Placeholder to replace at runtime: __JCEF_EVENT_CALLBACK__")
     }
   }
 

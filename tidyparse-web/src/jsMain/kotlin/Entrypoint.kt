@@ -50,10 +50,38 @@ val parser = Parser(
 fun main() {
   MainScope().launch {
     if (window["REPAIR_MODE"] == "headless") headlessSetup()
+    else if (window["REPAIR_MODE"] == "jcef") jcefSetup()
     else if (window["PROGRAMMING_LANG"] == "cnf") cnfSetup()
     else if (window["PROGRAMMING_LANG"] == "python") pythonSetup()
     else defaultSetup()
   }
+}
+
+private val jcefScope = MainScope()
+private fun jcefSend(s: String) { window.asDynamic().__tidyparseJcefSend(s) }
+suspend fun jcefSetup() {
+  log("Starting Tidyparse (JCEF)…")
+
+  val cfg = vanillaS2PCFG
+  tryBootstrappingGPU(needsExtraMemory = true)
+  log("Bootstrapped GPU")
+
+  window.asDynamic().__tidyparseRunString = { prompt: String ->
+    jcefScope.launch {
+      val out = repairCode(
+        cfg,
+        prompt.tokenizeByWhitespace(),
+        LED_BUFFER,
+        null
+      ).distinct().joinToString("\n")
+
+      jcefSend(out)
+    }
+    Unit
+  }
+
+  jcefSend("READY")
+  log("JCEF runtime ready")
 }
 
 suspend fun headlessSetup() {

@@ -75,6 +75,8 @@ kotlin {
 }
 
 tasks {
+//  processResources { dependsOn(bundleJCEF)}
+
   test {
     minHeapSize = "1g"
     maxHeapSize = "3g"
@@ -120,6 +122,7 @@ tasks {
   }
 
   runIde {
+    dependsOn(":tidyparse-web:bundleJCEF")
     maxHeapSize = "4g"
     args = listOf(projectDir.parent + "/examples")
   }
