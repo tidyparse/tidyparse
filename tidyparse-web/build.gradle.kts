@@ -2,6 +2,7 @@
 
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.DEVELOPMENT
 import org.jetbrains.kotlin.gradle.targets.js.webpack.WebpackDevtool
+import org.jetbrains.kotlin.gradle.targets.js.testing.KotlinJsTest
 import org.jetbrains.letsPlot.*
 import org.jetbrains.letsPlot.export.ggsave
 import org.jetbrains.letsPlot.geom.geomLine
@@ -82,6 +83,8 @@ fun plotGrids(vararg names: String) {
 }
 
 tasks {
+  withType<KotlinJsTest>().configureEach { testLogging.showStandardStreams = true }
+
   register<Exec>("replotMetrics") {
     commandLine("../gradlew", "clean", "jsBrowserTest", "--info") // --info flag is crucial to read output
 

@@ -1,7 +1,8 @@
 config.set({
     browserDisconnectTimeout: 540000,
     browserNoActivityTimeout: 540000,
-    client: { mocha: { timeout: 540000 } },
+    client: { captureConsole: true, mocha: { timeout: 540000 } },
+    browserConsoleLogOptions: { level: 'debug', terminal: true },
     customLaunchers: {
         ChromeSmall: {
             base: 'Chrome',

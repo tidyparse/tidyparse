@@ -31,4 +31,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: test-reports
-          path: tidyparse-core/build/reports/tests/jsTest/
+          path: |
+            tidyparse-core/build/reports/tests/jsTest/
+            tidyparse-web/build/reports/tests/jsTest/
