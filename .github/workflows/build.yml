@@ -12,7 +12,7 @@ jobs:
   build:
 
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 65
 
     steps:
       - uses: actions/checkout@v6
@@ -27,9 +27,38 @@ jobs:
       - name: Build with Gradle
         shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
           mkdir -p build/ci-logs
-          ./gradlew jsTest --stacktrace --info 2>&1 | tee build/ci-logs/gradle-jsTest.log
+          gradle_log="build/ci-logs/gradle-jsTest.log"
+          watchdog_log="build/ci-logs/watchdog.log"
+
+          ./gradlew --no-daemon jsTest --stacktrace 2>&1 | tee "${gradle_log}" &
+          gradle_pid=$!
+
+          (
+            sleep 50m
+            {
+              echo "::error::./gradlew jsTest exceeded 50 minutes; collecting process snapshot before terminating it."
+              date
+              echo "----- active java/node/chrome processes -----"
+              ps -axo pid,ppid,etime,stat,comm,args | grep -Ei 'java|gradle|kotlin|node|karma|chrome' | grep -v grep || true
+              echo "----- jvm process list -----"
+              jps -lv || true
+              echo "----- gradle log tail -----"
+              tail -n 300 "${gradle_log}" || true
+            } | tee "${watchdog_log}"
+
+            pkill -TERM -f 'GradleWrapperMain|org.gradle.launcher|KotlinCompileDaemon|karma|Chrome' || true
+            sleep 15
+            pkill -KILL -f 'GradleWrapperMain|org.gradle.launcher|KotlinCompileDaemon|karma|Chrome' || true
+          ) &
+          watchdog_pid=$!
+
+          status=0
+          wait "${gradle_pid}" || status=$?
+          kill "${watchdog_pid}" 2>/dev/null || true
+          wait "${watchdog_pid}" 2>/dev/null || true
+          exit "${status}"
 #          ./gradlew generateDylib && ./gradlew test buildPlugin --stacktrace
       - name: Dump JS test diagnostics
         if: failure()
@@ -51,6 +80,14 @@ jobs:
 
           echo "::group::Gradle/Karma log tail"
           tail -n 500 build/ci-logs/gradle-jsTest.log || true
+          echo "::endgroup::"
+
+          echo "::group::Watchdog log"
+          cat build/ci-logs/watchdog.log || true
+          echo "::endgroup::"
+
+          echo "::group::Process snapshot after failure"
+          ps -axo pid,ppid,etime,stat,comm,args | grep -Ei 'java|gradle|kotlin|node|karma|chrome' | grep -v grep || true
           echo "::endgroup::"
 
           echo "::group::Test XML summaries and tails"

@@ -49,7 +49,7 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
 
 //    bundledPlugins("com.intellij.java")
-    intellijIdea("2026.1")
+    intellijIdea("2026.1.3")
     pluginVerifier()
     testFramework(TestFrameworkType.Platform)
   }

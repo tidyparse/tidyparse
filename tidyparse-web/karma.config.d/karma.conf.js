@@ -6,15 +6,14 @@ const karmaTimeoutMs = isCi ? ciKarmaTimeoutMs : localKarmaTimeoutMs;
 
 if (isCi) {
     chromeFlags.push(
-        '--enable-logging=stderr',
-        '--v=1'
+        '--enable-logging=stderr'
     );
 }
 
 config.set({
-    logLevel: isCi ? config.LOG_DEBUG : config.LOG_INFO,
+    logLevel: config.LOG_INFO,
     browserDisconnectTimeout: karmaTimeoutMs,
-    browserDisconnectTolerance: isCi ? 2 : 0,
+    browserDisconnectTolerance: 0,
     browserNoActivityTimeout: karmaTimeoutMs,
     captureTimeout: karmaTimeoutMs,
     processKillTimeout: isCi ? 30000 : 2000,
@@ -38,7 +37,6 @@ config.set({
             ]
         }
     },
-    ...(isCi ? { browsers: ['ChromeSmall'] } : {}),
     // browsers: ['ChromeSmall'],
     // customLaunchers: {
     //     ChromeHeadlessWebGPU: {
