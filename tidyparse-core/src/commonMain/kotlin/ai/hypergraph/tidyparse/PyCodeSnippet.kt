@@ -36,6 +36,11 @@ data class PyCodeSnippet(val rawCode: String) {
       renderTaggedString(tagged, format(tagged.joinToString(" ") { it.second }))
     }
 
+  fun restitch(levAlignedPatch: List<Pair<String?, String?>>, format: (String) -> String = { it }): String =
+    buildTaggedString(levAlignedPatch).let { tagged ->
+      renderTaggedString(tagged, format(tagged.joinToString(" ") { it.second }), paint = false)
+    }
+
   /**
    * Paints a Levenshtein-aligned patch onto the original code, highlighting:
    *  - inserted tokens in green,
@@ -70,7 +75,7 @@ data class PyCodeSnippet(val rawCode: String) {
     return taggedStr
   }
 
-  private fun renderTaggedString(taggedStr: List<Pair<Paint, String>>, formattedCode: String): String {
+  private fun renderTaggedString(taggedStr: List<Pair<Paint, String>>, formattedCode: String, paint: Boolean = true): String {
     // This removes newlines, since the input and output are assumed to be a single line.
     val formattedString =
       formattedCode.replace(Regex("\\s+"), " ")
@@ -83,20 +88,23 @@ data class PyCodeSnippet(val rawCode: String) {
     var ti = 0
     while (i < formattedString.length) {
       if (!formattedString[i].isWhitespace()) {
-        while (ti < taggedStr.size && taggedStr[ti].first == Paint.GRAY) sb.append(paint(taggedStr[ti++]))
+        while (ti < taggedStr.size && taggedStr[ti].first == Paint.GRAY) sb.append(render(taggedStr[ti++], paint))
         if (ti >= taggedStr.size) break
         val ts = taggedStr[ti]
         if (ts.second.startsWith(formattedString[i])) {
-          sb.append(paint(ts))
+          sb.append(render(ts, paint))
           i += ts.second.length
-        } else sb.append(paint(ts.first to ts.second + " "))
+        } else sb.append(render(ts.first to ts.second + " ", paint))
         ti++
       } else sb.append(formattedString[i++])
     }
-    while (ti < taggedStr.size) sb.append(paint(taggedStr[ti++]))
+    while (ti < taggedStr.size) sb.append(render(taggedStr[ti++], paint))
 
     return sb.toString()
   }
+
+  private fun render(ts: Pair<Paint, String>, paint: Boolean): String =
+    if (paint) paint(ts) else ts.second
 
   private fun paint(ts: Pair<Paint, String>): String = when (ts.first) {
     Paint.GREEN -> """<span style="color: green">${ts.second.escapeHTML()}</span>"""

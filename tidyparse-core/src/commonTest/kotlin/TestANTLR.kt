@@ -1,3 +1,6 @@
+import ai.hypergraph.kaliningraph.parsing.levenshteinAlign
+import ai.hypergraph.kaliningraph.tokenizeByWhitespace
+import ai.hypergraph.tidyparse.PyCodeSnippet
 import com.strumenta.antlrkotlin.parsers.generated.Python3Lexer
 import com.strumenta.antlrkotlin.parsers.generated.Python3Parser
 import com.strumenta.antlrkotlin.parsers.generated.SimpleExprLexer
@@ -51,5 +54,20 @@ class TestANTLR {
 
     parser.eval_input()
     assertEquals(1, parser.numberOfSyntaxErrors)
+  }
+
+  @Test
+  fun testPythonRepairRestitchesLexerTokensIntoSourceText() {
+    val snippet = PyCodeSnippet("CI = A - P (")
+    val originalTokens = snippet.lexedTokens()
+      .tokenizeByWhitespace()
+      .map { if (it == "|") "OR" else it }
+      .dropLast(1)
+    val repairTokens = "NAME = NAME - NAME ( )".tokenizeByWhitespace()
+
+    assertEquals(
+      "CI = A - P ( )",
+      snippet.restitch(levenshteinAlign(originalTokens, repairTokens))
+    )
   }
 }

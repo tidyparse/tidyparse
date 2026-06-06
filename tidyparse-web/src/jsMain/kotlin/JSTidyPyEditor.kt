@@ -13,6 +13,9 @@ import kotlin.math.ln
 import kotlin.time.DurationUnit
 import kotlin.time.TimeSource
 
+private fun String.replacePythonKeywords() =
+  replace("OR", "|").replace("not_in", "not in").replace("is_not", "is not")
+
 @ExperimentalUnsignedTypes
 class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val output: Node) : JSTidyEditor(editor, output) {
   val ngrams: MutableMap<List<String>, Double> = mutableMapOf()
@@ -64,6 +67,20 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
   companion object {
     val prefix = listOf("BOS", "NEWLINE")
     val suffix = listOf("NEWLINE", "EOS")
+
+    suspend fun handleInput(line: String, cfg: CFG, ngramTensor: GPUBuffer?, maxResults: Int = 50): List<String> {
+      val currentLine = line.trim()
+      if (currentLine.isBlank() || currentLine.startsWith("#")) return emptyList()
+
+      val pcs = PyCodeSnippet(currentLine)
+      val tokens = pcs.lexedTokens().tokenizeByWhitespace().map { if (it == "|") "OR" else it }
+
+      return repairCode(cfg, tokens, LED_BUFFER, ngramTensor)
+        .map { repairTks ->
+          val repair = repairTks.removeSuffix(" NEWLINE").replacePythonKeywords().tokenizeByWhitespace()
+          pcs.restitch(levenshteinAlign(tokens.dropLast(1), repair))
+        }.take(maxResults).toList()
+    }
   }
 
   override fun writeDisplayText(s: Σᐩ) {
@@ -162,9 +179,6 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
   } catch (error: dynamic) {
     code.also { log("Error formatting Python code: $error") }
   }
-
-  fun String.replacePythonKeywords() =
-    replace("OR", "|").replace("not_in", "not in").replace("is_not", "is not")
 
   override fun navUpdate(event: KeyboardEvent) {
     val key = event.keyCode.toSelectorAction() ?: return

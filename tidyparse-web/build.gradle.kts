@@ -195,11 +195,14 @@ tasks {
     val ngramFile = webProject.layout.projectDirectory
       .file("src/jsMain/resources/python_4grams.txt")
       .asFile
+    val wdfaFile = webProject.layout.projectDirectory
+      .file("src/jsMain/resources/wdfa.bin")
+      .asFile
 
     val outHtml = rootProject.layout.projectDirectory
       .file("tidyparse-intellij/src/main/resources/jcef/tidyparse-jcef.html")
 
-    inputs.files(jsFile, mapFile, ngramFile)
+    inputs.files(jsFile, mapFile, ngramFile, wdfaFile)
     outputs.file(outHtml)
 
     doLast {
@@ -213,6 +216,7 @@ tasks {
       } else { jsCode.replace(Regex("""(?m)^//# sourceMappingURL=.*$"""), "") }
 
       val rawNgrams = ngramFile.readText()
+      val rawWdfaB64 = Base64.encode(wdfaFile.readBytes())
 
       val html = """
   <!doctype html>
@@ -227,6 +231,7 @@ tasks {
 <script>
 window.REPAIR_MODE = "jcef";
 window.raw_ngrams = ${jsString(rawNgrams)};
+window.raw_wdfa_b64 = ${jsString(rawWdfaB64)};
 
 function __tidyparseJcefSend(payload) {
   __JCEF_EVENT_CALLBACK__;

@@ -7,6 +7,7 @@ import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Disposer
 import com.intellij.ui.jcef.JBCefApp
 import com.intellij.ui.jcef.JBCefBrowser
+import com.intellij.ui.jcef.JBCefBrowserBase
 import com.intellij.ui.jcef.JBCefJSQuery
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.sun.net.httpserver.HttpServer
@@ -16,18 +17,21 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.JWindow
 
-class WebGpuStringService(private val project: Project) : Disposable {
+class WGPURepairService : Disposable {
   private val initialized = AtomicBoolean(false)
   private val ready = CompletableFuture<Unit>()
   private var pending: CompletableFuture<String>? = null
-  private var browser: JBCefBrowser? = null
+  private var browser: JBCefBrowserBase? = null
   private var query: JBCefJSQuery? = null
   private var server: HttpServer? = null
   private var window: JWindow? = null
   private var url: String = ""
+
+  fun repairPythonLine(input: String): CompletableFuture<String> = runString(input)
 
   fun runString(input: String): CompletableFuture<String> {
     initRuntime()
@@ -56,7 +60,7 @@ class WebGpuStringService(private val project: Project) : Disposable {
         return@invokeLater
       }
 
-      val cefBrowser = JBCefBrowser()
+      val cefBrowser: JBCefBrowserBase = JBCefBrowser()
       val cefQuery = JBCefJSQuery.create(cefBrowser)
       val httpServer = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0)
 
@@ -68,6 +72,10 @@ class WebGpuStringService(private val project: Project) : Disposable {
       cefQuery.addHandler { raw ->
         ApplicationManager.getApplication().invokeLater {
           if (raw == "READY" && pending == null) ready.complete(Unit)
+          else if (raw.startsWith(TIDYPARSE_JCEF_ERROR)) {
+            val error = IllegalStateException(raw.removePrefix(TIDYPARSE_JCEF_ERROR))
+            pending?.completeExceptionally(error)?.also { pending = null } ?: ready.completeExceptionally(error)
+          }
           else pending?.complete(raw).also { pending = null }
         }
         null
@@ -100,6 +108,9 @@ class WebGpuStringService(private val project: Project) : Disposable {
         isVisible = true
       }
       cefBrowser.loadURL(url)
+      AppExecutorUtil.getAppScheduledExecutorService().schedule({
+        if (!ready.isDone) ready.completeExceptionally(IllegalStateException("Timed out waiting for TidyParse JCEF runtime"))
+      }, 30, TimeUnit.SECONDS)
     }
   }
 
@@ -113,7 +124,7 @@ class WebGpuStringService(private val project: Project) : Disposable {
   }
 }
 
-fun Project.webGpuStringService(): WebGpuStringService = getService(WebGpuStringService::class.java)
+fun Project.webGpuStringService(): WGPURepairService = getService(WGPURepairService::class.java)
 
 fun Throwable.showTidyParseError(project: Project) =
   ApplicationManager.getApplication().invokeLater {
@@ -136,3 +147,5 @@ private fun jsString(s: String): String =
     }
     append('"')
   }
+
+private const val TIDYPARSE_JCEF_ERROR = "__TIDYPARSE_ERROR__"

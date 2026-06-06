@@ -5,6 +5,7 @@
     <vendor>Hypergraph.ai</vendor>
 
     <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.python</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <typedHandler implementation="ai.hypergraph.tidyparse.TidyKeyHandler"/>
@@ -18,13 +19,13 @@
                 name="Tidy File"
                 implementationClass="ai.hypergraph.tidyparse.TidyFileType"
                 extensions="tidy"/>
-        <projectService serviceImplementation="ai.hypergraph.tidyparse.WebGpuStringService"/>
+        <projectService serviceImplementation="ai.hypergraph.tidyparse.WGPURepairService"/>
     </extensions>
     <actions>
         <action id="TidyParse.WebGpuCompletion"
                 class="ai.hypergraph.tidyparse.TidyRepairAction"
-                text="TidyParse WebGPU Completion"
-                description="Show WebGPU completions for the current line">
+                text="TidyParse Python Repair"
+                description="Show WebGPU Python repairs for the current line">
             <keyboard-shortcut keymap="$default" first-keystroke="control shift R"/>
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
         </action>

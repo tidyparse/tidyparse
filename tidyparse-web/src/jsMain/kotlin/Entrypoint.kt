@@ -49,33 +49,39 @@ val parser = Parser(
 // ./gradlew :tidyparse-web:jsBrowserDevelopmentRun --continuous
 fun main() {
   MainScope().launch {
-    if (window["REPAIR_MODE"] == "headless") headlessSetup()
-    else if (window["REPAIR_MODE"] == "jcef") jcefSetup()
-    else if (window["PROGRAMMING_LANG"] == "cnf") cnfSetup()
-    else if (window["PROGRAMMING_LANG"] == "python") pythonSetup()
-    else defaultSetup()
+    try {
+      if (window["REPAIR_MODE"] == "headless") headlessSetup()
+      else if (window["REPAIR_MODE"] == "jcef") jcefSetup()
+      else if (window["PROGRAMMING_LANG"] == "cnf") cnfSetup()
+      else if (window["PROGRAMMING_LANG"] == "python") pythonSetup()
+      else defaultSetup()
+    } catch (t: Throwable) {
+      if (window["REPAIR_MODE"] == "jcef") jcefSend("__TIDYPARSE_ERROR__${t.message ?: t.toString()}")
+      else throw t
+    }
   }
 }
 
 private val jcefScope = MainScope()
+private val jcefNgrams: MutableMap<List<String>, Double> = mutableMapOf()
+private var jcefNgramTensor: GPUBuffer? = null
 private fun jcefSend(s: String) { window.asDynamic().__tidyparseJcefSend(s) }
 suspend fun jcefSetup() {
-  log("Starting Tidyparse (JCEF)…")
+  log("Starting TidyPython (JCEF)…")
 
-  val cfg = vanillaS2PCFG
+  val cfg = pythonStatementCNFAllProds
+  loadNgrams(target = jcefNgrams)
+  LED_BUFFER = 2
+  TIMEOUT_MS = 1000
   tryBootstrappingGPU(needsExtraMemory = true)
+  if (gpuAvailable) jcefNgramTensor = jcefNgrams.toGpuHash(cfg = cfg).loadToGPUBuffer()
+  if (gpuAvailable) loadWDFA()
   log("Bootstrapped GPU")
 
-  window.asDynamic().__tidyparseRunString = { prompt: String ->
+  window.asDynamic().__tidyparseRunString = { line: String ->
     jcefScope.launch {
-      val out = repairCode(
-        cfg,
-        prompt.tokenizeByWhitespace(),
-        LED_BUFFER,
-        null
-      ).distinct().joinToString("\n")
-
-      jcefSend(out)
+      try { jcefSend(repairPythonLineRaw(cfg, line)) }
+      catch (t: Throwable) { jcefSend("__TIDYPARSE_ERROR__${t.message ?: t.toString()}") }
     }
     Unit
   }
@@ -83,6 +89,9 @@ suspend fun jcefSetup() {
   jcefSend("READY")
   log("JCEF runtime ready")
 }
+
+private suspend fun repairPythonLineRaw(cfg: CFG, line: String, maxResults: Int = 50): String =
+  JSTidyPyEditor.handleInput(line, cfg, jcefNgramTensor, maxResults).joinToString("\n")
 
 suspend fun headlessSetup() {
   log("Starting Tidyparse (headless)…")
@@ -228,34 +237,63 @@ var wdfaNumEdges: Int = 0
 
 suspend fun loadWDFA(file: String = "wdfa.bin") {
   val t0 = TimeSource.Monotonic.markNow()
+  val inlineWdfaB64 = window.asDynamic().raw_wdfa_b64 as? String
+  if (!inlineWdfaB64.isNullOrBlank()) {
+    loadWDFAFromArrayBuffer(base64ToArrayBuffer(inlineWdfaB64))
+    log("Loaded WDFA(|Q|=$wdfaNumStates, |δ|=$wdfaNumEdges) inline in ${t0.elapsedNow()}")
+    return
+  }
+
   val response = window.fetch(file).await()
   if (!response.ok) { "Failed to load WDFA from $file".also { log(it); error(it) } }
 
-  val ab = response.arrayBuffer().await().unsafeCast<ArrayBuffer>()
+  loadWDFAFromArrayBuffer(response.arrayBuffer().await().unsafeCast<ArrayBuffer>())
+  log("Loaded WDFA(|Q|=$wdfaNumStates, |δ|=$wdfaNumEdges) from $file in ${t0.elapsedNow()}")
+}
+
+private fun loadWDFAFromArrayBuffer(ab: ArrayBuffer) {
   val ints = Int32Array(ab)
   val buf = GPUBuffer(byteSize = ints.byteLength, us = STCPSD, data = ints)
 
   wdfaNumStates = ints[3]
   wdfaNumEdges = ints[4]
   wdfa = buf
-
-  log("Loaded WDFA(|Q|=$wdfaNumStates, |δ|=$wdfaNumEdges) from $file in ${t0.elapsedNow()}")
 }
 
-suspend fun loadNgrams(file: String = "python_4grams.txt") {
+private fun base64ToArrayBuffer(b64: String): ArrayBuffer =
+  js("""(function(s) {
+      const binary = atob(s);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes.buffer;
+  })""")(b64).unsafeCast<ArrayBuffer>()
+
+suspend fun loadNgrams(
+  file: String = "python_4grams.txt",
+  target: MutableMap<List<String>, Double> = jsPyEditor.ngrams
+) {
   val t0 = TimeSource.Monotonic.markNow()
+  val inlineNgrams = window.asDynamic().raw_ngrams as? String
+  if (!inlineNgrams.isNullOrBlank()) {
+    parseNgrams(inlineNgrams, target)
+    log("Loaded ${target.size} inline n-grams in ${t0.elapsedNow()}")
+    return
+  }
+
   val response = window.fetch(file).await()
   if (response.ok) {
-    var numNgrams = 0
-    var n = 0
-    response.text().await().lines().filter { it.isNotBlank() }.forEach { line ->
-      val (ngram, count) = line.split(" ::: ")
-      jsPyEditor.ngrams[ngram.split(" ").also { n = it.size }] = count.toDouble()
-      numNgrams++
-    }
-
-    log("Loaded ${jsPyEditor.ngrams.size} $n-grams from $file in ${t0.elapsedNow()}")
+    val n = parseNgrams(response.text().await(), target)
+    log("Loaded ${target.size} $n-grams from $file in ${t0.elapsedNow()}")
   } else log("Failed to load ngrams from $file")
+}
+
+private fun parseNgrams(raw: String, target: MutableMap<List<String>, Double>): Int {
+  var n = 0
+  raw.lines().filter { it.isNotBlank() }.forEach { line ->
+    val (ngram, count) = line.split(" ::: ")
+    target[ngram.split(" ").also { n = it.size }] = count.toDouble()
+  }
+  return n
 }
 
 private fun Element.scrollIntoViewCompat() {

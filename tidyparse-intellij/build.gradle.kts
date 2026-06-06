@@ -48,7 +48,8 @@ dependencies {
   intellijPlatform {
     testImplementation("junit:junit:4.13.2")
 
-//    bundledPlugins("com.intellij.java")
+    bundledPlugin("org.toml.lang")
+    plugin("PythonCore:261.25134.95")
     intellijIdea("2026.1.3")
     pluginVerifier()
     testFramework(TestFrameworkType.Platform)
