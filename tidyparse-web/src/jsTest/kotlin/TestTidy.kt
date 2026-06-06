@@ -56,8 +56,7 @@ class TestTidy {
     }
 
     log("Total $name latency: ${startTime.elapsedNow().inWholeMilliseconds}")
-    log("Total $name repairs: $totalResults")
-    log("Total $name matches: $totalMatches")
+    log("Total $name repairs: $totalResults\nTotal $name matches: $totalMatches")
   }
 
   // TODO: test parity between GPU- and CPU- versions

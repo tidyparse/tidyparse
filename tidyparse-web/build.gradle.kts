@@ -4,6 +4,8 @@ import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.D
 import org.jetbrains.kotlin.gradle.targets.js.webpack.WebpackDevtool
 import org.jetbrains.kotlin.gradle.targets.js.testing.KotlinJsTest
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
+import org.gradle.api.services.BuildService
+import org.gradle.api.services.BuildServiceParameters
 import org.jetbrains.letsPlot.*
 import org.jetbrains.letsPlot.export.ggsave
 import org.jetbrains.letsPlot.geom.geomLine
@@ -11,7 +13,28 @@ import org.jetbrains.letsPlot.intern.Plot
 import org.jetbrains.letsPlot.label.ggtitle
 import java.awt.Desktop
 import java.io.ByteArrayOutputStream
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.io.encoding.*
+
+abstract class BrowserConsoleTailService : BuildService<BuildServiceParameters.None>, AutoCloseable {
+  private val processes = CopyOnWriteArrayList<Process>()
+
+  fun register(process: Process) {
+    processes.add(process)
+  }
+
+  fun stop(process: Process?) {
+    if (process == null) return
+    process.destroy()
+    processes.remove(process)
+  }
+
+  override fun close() {
+    processes.forEach { it.destroy() }
+    processes.clear()
+  }
+}
 
 buildscript {
   repositories { mavenCentral() }
@@ -46,7 +69,7 @@ kotlin {
         devtool = "source-map" // For debugging; remove for production
       }
 
-      testTask { useKarma { useChrome() } }
+      testTask { useKarma { useChromeHeadless() } }
     }
   }
 
@@ -100,7 +123,16 @@ fun jsString(s: String): String =
   }
 
 tasks {
+  val browserConsoleTailService = gradle.sharedServices.registerIfAbsent(
+    "browserConsoleTailService",
+    BrowserConsoleTailService::class
+  ) {}
+
   withType<KotlinJsTest>().configureEach {
+    val testTaskPath = path
+    val browserConsoleTailProcess = AtomicReference<Process?>()
+    usesService(browserConsoleTailService)
+
     testLogging {
       showStandardStreams = true
       showExceptions = true
@@ -109,6 +141,34 @@ tasks {
       exceptionFormat = TestExceptionFormat.FULL
       events("passed", "skipped", "failed", "standardOut", "standardError")
     }
+
+    doFirst {
+      val browserConsoleLog = rootProject.layout.buildDirectory.file("ci-logs/browser-console.log").get().asFile
+      browserConsoleLog.parentFile.mkdirs()
+      browserConsoleLog.writeText("")
+
+      val tailProcess = ProcessBuilder("tail", "-n", "+1", "-f", browserConsoleLog.absolutePath)
+        .redirectErrorStream(true)
+        .start()
+
+      browserConsoleTailService.get().stop(browserConsoleTailProcess.getAndSet(tailProcess))
+      browserConsoleTailService.get().register(tailProcess)
+      Thread {
+        tailProcess.inputStream.bufferedReader().useLines { lines ->
+          lines.forEach { println(it) }
+        }
+      }.apply {
+        name = "browser-console-tail-$testTaskPath"
+        isDaemon = true
+        start()
+      }
+    }
+
+    fun stopBrowserConsoleTail() {
+      browserConsoleTailService.get().stop(browserConsoleTailProcess.getAndSet(null))
+    }
+
+    doLast { stopBrowserConsoleTail() }
   }
 
   register<Exec>("replotMetrics") {
