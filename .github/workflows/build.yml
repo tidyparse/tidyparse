@@ -31,14 +31,37 @@ jobs:
           mkdir -p build/ci-logs
           gradle_log="build/ci-logs/gradle-jsTest.log"
           watchdog_log="build/ci-logs/watchdog.log"
+          process_log="build/ci-logs/process-memory.log"
           export CHROME_LOG_FILE="${PWD}/build/ci-logs/chrome.log"
 
           ./gradlew --no-daemon jsTest --stacktrace 2>&1 | tee "${gradle_log}" &
           gradle_pid=$!
 
+          sample_resources() {
+            {
+              echo "===== $(date -u '+%Y-%m-%dT%H:%M:%SZ') ====="
+              echo "----- matching java/node/chrome/karma processes -----"
+              ps -axo pid,ppid,etime,stat,%cpu,%mem,rss,vsz,comm,args \
+                | awk 'NR == 1 || /java|gradle|kotlin|node|karma|[Cc]hrome/' \
+                || true
+              echo "----- top processes by RSS -----"
+              {
+                ps -axo pid,ppid,etime,stat,%cpu,%mem,rss,vsz,comm,args | sed -n '1p'
+                ps -axo pid,ppid,etime,stat,%cpu,%mem,rss,vsz,comm,args | sed '1d' | sort -k7 -nr | awk 'NR <= 30'
+              } || true
+              echo "----- vm_stat -----"
+              vm_stat || true
+              echo "----- memory_pressure -----"
+              memory_pressure || true
+              echo
+            } >> "${process_log}" 2>&1
+          }
+
           dump_processes() {
             echo "----- active java/node/chrome processes -----"
             ps -axo pid,ppid,etime,stat,comm,args | grep -Ei 'java|gradle|kotlin|node|karma|chrome' | grep -v grep || true
+            echo "----- latest process/memory samples -----"
+            tail -n 250 "${process_log}" || true
             echo "----- jvm process list -----"
             jps -lv || true
             echo "----- gradle log tail -----"
@@ -50,6 +73,15 @@ jobs:
             sleep 15
             pkill -KILL -f 'GradleWrapperMain|org.gradle.launcher|KotlinCompileDaemon|karma|Chrome' || true
           }
+
+          (
+            while kill -0 "${gradle_pid}" 2>/dev/null; do
+              sample_resources || true
+              sleep 15
+            done
+            sample_resources || true
+          ) &
+          process_sampler_pid=$!
 
           (
             while kill -0 "${gradle_pid}" 2>/dev/null; do
@@ -84,6 +116,8 @@ jobs:
 
           status=0
           wait "${gradle_pid}" || status=$?
+          kill "${process_sampler_pid}" 2>/dev/null || true
+          wait "${process_sampler_pid}" 2>/dev/null || true
           kill "${disconnect_watchdog_pid}" 2>/dev/null || true
           wait "${disconnect_watchdog_pid}" 2>/dev/null || true
           kill "${watchdog_pid}" 2>/dev/null || true
@@ -114,6 +148,10 @@ jobs:
 
           echo "::group::Watchdog log"
           cat build/ci-logs/watchdog.log || true
+          echo "::endgroup::"
+
+          echo "::group::Process and memory sampling"
+          tail -n 1000 build/ci-logs/process-memory.log || true
           echo "::endgroup::"
 
           echo "::group::Browser and Chrome logs"

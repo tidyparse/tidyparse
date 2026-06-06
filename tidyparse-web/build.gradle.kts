@@ -54,7 +54,7 @@ kotlin {
     getByName("jsMain") {
       dependencies {
         implementation(project(":tidyparse-core"))
-        implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2026.6.1")
+        implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2026.6.3")
       }
     }
 
