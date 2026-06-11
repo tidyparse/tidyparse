@@ -13,9 +13,6 @@ import kotlin.math.ln
 import kotlin.time.DurationUnit
 import kotlin.time.TimeSource
 
-private fun String.replacePythonKeywords() =
-  replace("OR", "|").replace("not_in", "not in").replace("is_not", "is not")
-
 @ExperimentalUnsignedTypes
 class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val output: Node) : JSTidyEditor(editor, output) {
   val ngrams: MutableMap<List<String>, Double> = mutableMapOf()
@@ -68,18 +65,56 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     val prefix = listOf("BOS", "NEWLINE")
     val suffix = listOf("NEWLINE", "EOS")
 
-    suspend fun handleInput(line: String, cfg: CFG, ngramTensor: GPUBuffer?, maxResults: Int = 50): List<String> {
+    suspend fun Sequence<String>.filterCompilerErrors(errHst: MutableMap<String, Int> = mutableMapOf(), window: Int = 16): Sequence<String> = coroutineScope {
+      val kept = ArrayList<String>()
+      val iterator = iterator()
+      val inFlight = ArrayDeque<Deferred<Pair<String, String>>>()
+
+      fun launchOne() {
+        if (!iterator.hasNext()) return
+        val s = iterator.next()
+        inFlight.addLast(async { s to pythonCompilerOutput(s) })
+      }
+
+      repeat(window) { launchOne() }
+
+      while (inFlight.isNotEmpty()) {
+        val (s, output) = inFlight.removeFirst().await()
+        val ok = when (val errorType = output.getErrorType()) {
+          "" -> true
+          else -> {
+            "$errorType: ${output.getErrorMessage()}".also { err -> errHst[err] = 1 + errHst.getOrElse(err) { 0 } }
+            false
+          }
+        }
+
+        if (ok) kept.add(s)
+
+        launchOne()
+      }
+
+      kept.asSequence()
+    }
+
+    suspend fun handleInput(line: String, cfg: CFG, maxResults: Int = 50): List<String> {
       val currentLine = line.trim()
       if (currentLine.isBlank() || currentLine.startsWith("#")) return emptyList()
 
       val pcs = PyCodeSnippet(currentLine)
       val tokens = pcs.lexedTokens().tokenizeByWhitespace().map { if (it == "|") "OR" else it }
+      val errHst = mutableMapOf<String, Int>()
 
-      return repairCode(cfg, tokens, LED_BUFFER, ngramTensor)
-        .map { repairTks ->
-          val repair = repairTks.removeSuffix(" NEWLINE").replacePythonKeywords().tokenizeByWhitespace()
-          pcs.restitch(levenshteinAlign(tokens.dropLast(1), repair))
-        }.take(maxResults).toList()
+      return repairCode(cfg, tokens, LED_BUFFER).map {
+        val repair = it.removeSuffix(" NEWLINE").replacePythonKeywords().tokenizeByWhitespace()
+        pcs.restitch(levenshteinAlign(tokens.dropLast(1), repair))
+      }.asSequence().distinct().filterCompilerErrors(errHst).take(maxResults).toList().also {
+        if (errHst.isNotEmpty()) {
+          val pad = (errHst.values.maxOrNull()?.toString()?.length ?: 1) + 1
+          val summary = errHst.toMap().entries.sortedBy { -it.component2() }
+            .joinToString("\n") { "${it.value.toString().padEnd(pad)}| ${it.key}" }
+          log("Rejection histogram:\n$summary")
+        }
+      }
     }
   }
 
@@ -120,50 +155,6 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     jsPyEditor.pyodide.runPython(pyCode)
     jsPyEditor.pyodide.globals.get("_result") as String
   } catch (e: dynamic) { "" } //{ "Error during compilation: $e".also { log(it) }; "" }
-
-  suspend fun Sequence<String>.filterCompilerErrors(
-    errHst: MutableMap<String, Int> = mutableMapOf(),
-    window: Int = 16,
-    onSeen: (ok: Boolean) -> Unit = {},
-  ): Sequence<String> = coroutineScope {
-    val pool = try { ensurePyCompileWorkers() }
-    catch (t: Throwable) { log("Pyodide worker pool unavailable: ${t.message ?: t}"); null }
-
-    val kept = ArrayList<String>()
-    val iterator = iterator()
-    val inFlight = ArrayDeque<Deferred<Pair<String, String>>>()
-
-    fun launchOne() {
-      if (!iterator.hasNext()) return
-      val s = iterator.next()
-      inFlight.addLast(async { s to (pool?.compile(s)?.output ?: getOutput(s)) })
-    }
-
-    repeat(window) { launchOne() }
-
-    while (inFlight.isNotEmpty()) {
-      val (s, output) = inFlight.removeFirst().await()
-      val ok = when (val errorType = output.getErrorType()) {
-        "" -> true
-        else -> {
-          "$errorType: ${output.getErrorMessage()}".also { err -> errHst[err] = 1 + errHst.getOrElse(err) { 0 } }
-          false
-        }
-      }
-
-      if (ok) kept.add(s)
-      onSeen(ok)
-
-      launchOne()
-    }
-
-    kept.asSequence()
-  }
-
-  private fun String.getErrorType(): String =
-    if (isEmpty()) "" else lines().dropLast(1).lastOrNull()?.substringBeforeLast(":")?.substringAfterLast(":1: ") ?: this
-
-  private fun String.getErrorMessage(): String = substringAfterLast(": ").substringBefore('.').trim()
 
   suspend fun formatCodeAsync(code: String): String =
     try { ensurePyCompileWorkers().format(code).also { if (it.startsWith("__BLACK_ERROR__")) log(it) } }
@@ -220,7 +211,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
       writeDisplayText("✅ ${tokens.dropLast(1).joinToString(" ")}$compilerFeedback".also { cache[workHash] = it })
     } else /* Repair */ Unit.also {
       runningJob = MainScope().launch {
-        var (rejected, total) = 0 to 0
+        var total = 0
 //      var metric: (List<String>) -> Int = { (score(it) * 1_000.0).toInt() } // TODO: Is reordering really necessary if we are decoding GREs by ngram score?
         var metric: (List<String>) -> Int = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() }
 //        var metric: (List<String>) -> Int = { -1 }
@@ -228,7 +219,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
         val repairs =
           (if (gpuAvailable) {
             log("Repairing on GPU...")
-            repairCode(cfg, tokens, LED_BUFFER, ngramTensor).asSequence()
+            repairCode(cfg, tokens, LED_BUFFER).asSequence()
           } else {
             log("Repairing on CPU...")
             metric = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() }
@@ -236,9 +227,8 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
           }).map { it.dropLast(8).replacePythonKeywords() }.distinct()
 
         val postProcTimer = TimeSource.Monotonic.markNow()
-        val compilerFilteredRepairs =
-          if (allowCompilerErrors) { repairs.onEach { total++ } }
-          else { repairs.filterCompilerErrors(errHst = errHst) { ok -> if (!ok) rejected++; total++ } }
+        val compilerFilteredRepairs = repairs.onEach { total++ }
+          .let { if (allowCompilerErrors) it else it.filterCompilerErrors(errHst) }
 
         compilerFilteredRepairs.enumerateRankedRepairsInteractively(
           workHash = workHash,
@@ -261,7 +251,7 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
               timings.logTimesheet()
             }
 
-            ", discarded $rejected/$total, ${t0.elapsedNow()} latency."
+            ", discarded ${errHst.values.sum()}/$total, ${t0.elapsedNow()} latency."
           },
           reason = invalidPrefix
         )
@@ -273,7 +263,6 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     val scriptTag = (document.querySelector("script[src*='pyodide.js']") as HTMLScriptElement)
       .getAttribute("src")!!.substringBefore("pyodide.js")
 
-    val workerPoolReady = startPyodideWorkers(8)
     val config = js("{}")
     config.indexURL = scriptTag
     jsPyEditor.pyodide = window.asDynamic().loadPyodide(config).unsafeCast<Promise<*>>().await()
@@ -288,32 +277,10 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     log("Main-thread Black test => $beautified")
     log(jsPyEditor.getOutput("1+"))
 
-    val pool = workerPoolReady.await()
+    val pool = startPyodideWorkers().await().apply { init(); log("Initialized $WEBWORKERS Python Web Workers") }
     log("Worker compile ready => ${pool.compile("1+").output.getErrorType() == "SyntaxError"}")
     log("Worker format ready => ${pool.format("x=1") == "x = 1"}")
   } catch (e: Throwable) { log("Error during Pyodide initialization: ${e.message ?: e.toString()}") }
-
-  private val pyodideIndexURL: String by lazy {
-    (document.querySelector("script[src*='pyodide.js']") as HTMLScriptElement)
-      .getAttribute("src")!!.substringBefore("pyodide.js")
-  }
-
-  private var webWorkerPoolReady: Deferred<WebWorkerPool>? = null
-  fun startPyodideWorkers(nWorkers: Int = 16): Deferred<WebWorkerPool> {
-    webWorkerPoolReady?.let { return it }
-    return MainScope().async {
-      try {
-        WebWorkerPool(indexURL = pyodideIndexURL, size = nWorkers)
-          .also { it.init(); log("Initialized $nWorkers Web Workers") }
-      } catch (t: Throwable) {
-        webWorkerPoolReady = null
-        log("Failed to initialize Web Workers: ${t.message ?: t}")
-        throw t
-      }
-    }.also { webWorkerPoolReady = it }
-  }
-
-  suspend fun ensurePyCompileWorkers(): WebWorkerPool = startPyodideWorkers().await()
 
   private data class RankedCompletion(val raw: String, val tokens: List<String>, val score: Int)
 
@@ -372,3 +339,44 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     log("$moreResults~$throughput res/s${postCompletionSummary()}")
   }
 }
+
+private fun String.replacePythonKeywords() =
+  replace("OR", "|").replace("not_in", "not in").replace("is_not", "is not")
+
+private fun String.getErrorType(): String =
+  if (isEmpty()) "" else lines().dropLast(1).lastOrNull()?.substringBeforeLast(":")?.substringAfterLast(":1: ") ?: this
+
+private fun String.getErrorMessage(): String = substringAfterLast(": ").substringBefore('.').trim()
+
+private const val PYODIDE_CDN_INDEX_URL = "https://cdn.jsdelivr.net/pyodide/v0.27.5/full/"
+private const val WEBWORKERS = 16
+
+private fun pyodideIndexURLFromDocument(): String? =
+  try {
+    (document.querySelector("script[src*='pyodide.js']") as? HTMLScriptElement)
+      ?.getAttribute("src")
+      ?.substringBefore("pyodide.js")
+  } catch (_: Throwable) { null }
+
+private fun pyodideIndexURL(): String = pyodideIndexURLFromDocument() ?: PYODIDE_CDN_INDEX_URL
+
+private var webWorkerPoolReady: Deferred<WebWorkerPool>? = null
+private fun startPyodideWorkers(): Deferred<WebWorkerPool> = webWorkerPoolReady ?: MainScope().async {
+  try {
+    WebWorkerPool(indexURL = pyodideIndexURL(), size = WEBWORKERS)
+      .also { log("Started $WEBWORKERS Python Web Workers") }
+  } catch (t: Throwable) {
+    webWorkerPoolReady = null
+    log("Failed to initialize Python Web Workers: ${t.message ?: t}")
+    throw t
+  }
+}.also { webWorkerPoolReady = it }
+
+private suspend fun ensurePyCompileWorkers(): WebWorkerPool = startPyodideWorkers().await()
+
+private suspend fun pythonCompilerOutput(code: String): String =
+  try { ensurePyCompileWorkers().compile(code).output }
+  catch (t: Throwable) {
+    log("Python compiler unavailable: ${t.message ?: t}")
+    "__TIDYPARSE_COMPILER_INFRA_ERROR__: ${t.message ?: t}\n"
+  }

@@ -96,7 +96,7 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
   } else print("GPU not detected.")
 }
 
-suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VALUE, ngrams: GPUBuffer? = null): List<String> {
+suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VALUE): List<String> {
   timings = linkedMapOf()
   val preprocT = TimeSource.Monotonic.markNow()
   val fsa: FSA = makeLevFSA(code, MAX_LEV_RAD)
@@ -111,14 +111,14 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
 
   mark("preprocessing", preprocT)
 //  val words = repairPipelineV2(cfg, fsa, ledBuffer, ngrams, codePoints)
-  val words = repairPipeline(cfg, fsa, ledBuffer, ngrams, codePoints)
+  val words = repairPipeline(cfg, fsa, ledBuffer, codePoints)
 //  val distinctWords = words.distinct()
 //  log("Distinct: ${distinctWords.size} words")
 
   return words.also { log("Received: ${words.size} words in ${preprocT.elapsedNow()} (round trip)") }
 }
 
-suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer?, codePoints: IntArray): List<String> {
+suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, codePoints: IntArray): List<String> {
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   log("FSA(|Q|=$numStates, |δ|=${fsa.transit.size}), ${cfg.calcStats()}")
 
@@ -258,7 +258,7 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, ngrams: GPUBuffer
   val decodeT = TimeSource.Monotonic.markNow()
   val result =
     if (wdfa != null) wdfaDecoder(outBuf, wdfa!!, maxRepairLen, cfg, toDecode)
-    else if (ngrams != null) ngramDecoder(outBuf, ngrams, maxRepairLen, cfg, toDecode)
+    else if (ngrams != null) ngramDecoder(outBuf, ngrams!!, maxRepairLen, cfg, toDecode)
     else uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)
   mark("decode", decodeT)
 

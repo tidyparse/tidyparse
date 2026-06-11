@@ -63,20 +63,23 @@ fun main() {
 }
 
 private val jcefScope = MainScope()
-private val jcefNgrams: MutableMap<List<String>, Double> = mutableMapOf()
-private var jcefNgramTensor: GPUBuffer? = null
 private fun jcefSend(s: String) { window.asDynamic().__tidyparseJcefSend(s) }
 suspend fun jcefSetup() {
   log("Starting TidyPython (JCEF)…")
 
   val cfg = pythonStatementCNFAllProds
+  val jcefNgrams: MutableMap<List<String>, Double> = mutableMapOf()
   loadNgrams(target = jcefNgrams)
   LED_BUFFER = 2
   TIMEOUT_MS = 1000
   tryBootstrappingGPU(needsExtraMemory = true)
-  if (gpuAvailable) jcefNgramTensor = jcefNgrams.toGpuHash(cfg = cfg).loadToGPUBuffer()
-  if (gpuAvailable) loadWDFA()
+  if (gpuAvailable) {
+    ngrams = jcefNgrams.toGpuHash(cfg = cfg).loadToGPUBuffer()
+    loadWDFA()
+  }
   log("Bootstrapped GPU")
+
+  jsPyEditor.initPyodide()
 
   window.asDynamic().__tidyparseRunString = { line: String ->
     jcefScope.launch {
@@ -90,8 +93,8 @@ suspend fun jcefSetup() {
   log("JCEF runtime ready")
 }
 
-private suspend fun repairPythonLineRaw(cfg: CFG, line: String, maxResults: Int = 50): String =
-  JSTidyPyEditor.handleInput(line, cfg, jcefNgramTensor, maxResults).joinToString("\n")
+suspend fun repairPythonLineRaw(cfg: CFG, line: String, maxResults: Int = 50): String =
+  JSTidyPyEditor.handleInput(line, cfg, maxResults).joinToString("\n")
 
 suspend fun headlessSetup() {
   log("Starting Tidyparse (headless)…")
@@ -107,7 +110,7 @@ suspend fun headlessSetup() {
       errors = 0
       val prompt = (ev.data as String).also { log("Received prompt: $it") }.tokenizeByWhitespace()
 //      val out = repairCode(cfg, prompt, LED_BUFFER, ngramTensor) // With reranking + truncation
-      val out = repairCode(cfg, prompt, LED_BUFFER, null) // Without reranking + truncation
+      val out = repairCode(cfg, prompt, LED_BUFFER) // Without reranking + truncation
         .distinct().joinToString("\n")
       window.fetch("/result", RequestInit(method = "POST", body = out)).await()
     }
@@ -199,6 +202,7 @@ suspend fun pythonSetup() {
     val t0 = TimeSource.Monotonic.markNow()
     tryBootstrappingGPU(true)
     if (gpuAvailable) {
+      ngrams = jsPyEditor.ngrams.toGpuHash(cfg = jsPyEditor.getLatestCFG()).loadToGPUBuffer()
       log("Loaded n-grams into ${jsPyEditor.ngramTensor.size / 1000000}mb GPU buffer in ${t0.elapsedNow()}")
       loadWDFA()
       debugWDFATokenIndexing()
@@ -232,10 +236,19 @@ val timeout by lazy { document.getElementById("timeout") as HTMLInputElement }
 val ledBuffSel by lazy { document.getElementById("led-buffer") as HTMLInputElement }
 
 var wdfa: GPUBuffer? = null
+var ngrams: GPUBuffer? = null
 var wdfaNumStates: Int = 0
 var wdfaNumEdges: Int = 0
 
 suspend fun loadWDFA(file: String = "wdfa.bin") {
+  fun loadWDFAFromArrayBuffer(ab: ArrayBuffer) {
+    val ints = Int32Array(ab)
+    val buf = GPUBuffer(byteSize = ints.byteLength, us = STCPSD, data = ints)
+
+    wdfaNumStates = ints[3]
+    wdfaNumEdges = ints[4]
+    wdfa = buf
+  }
   val t0 = TimeSource.Monotonic.markNow()
   val inlineWdfaB64 = window.asDynamic().raw_wdfa_b64 as? String
   if (!inlineWdfaB64.isNullOrBlank()) {
@@ -249,15 +262,6 @@ suspend fun loadWDFA(file: String = "wdfa.bin") {
 
   loadWDFAFromArrayBuffer(response.arrayBuffer().await().unsafeCast<ArrayBuffer>())
   log("Loaded WDFA(|Q|=$wdfaNumStates, |δ|=$wdfaNumEdges) from $file in ${t0.elapsedNow()}")
-}
-
-private fun loadWDFAFromArrayBuffer(ab: ArrayBuffer) {
-  val ints = Int32Array(ab)
-  val buf = GPUBuffer(byteSize = ints.byteLength, us = STCPSD, data = ints)
-
-  wdfaNumStates = ints[3]
-  wdfaNumEdges = ints[4]
-  wdfa = buf
 }
 
 private fun base64ToArrayBuffer(b64: String): ArrayBuffer =

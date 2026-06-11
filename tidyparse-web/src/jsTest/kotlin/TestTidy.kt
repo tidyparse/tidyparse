@@ -1,5 +1,6 @@
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
+import ai.hypergraph.tidyparse.PyCodeSnippet
 import ai.hypergraph.tidyparse.sampleGREUntilTimeout
 import kotlinx.coroutines.test.runTest
 import kotlin.test.*
@@ -16,16 +17,47 @@ class TestTidy {
   fun before() { DEBUG_SUFFIX = "\n" }
 
   val cfg by lazy { vanillaS2PCFG }
+  val pythonCfg by lazy { pythonStatementCNFAllProds }
+  val TO_TEST = 50
+
+  val snippets by lazy {
+    PYTHON_SNIPPETS.trim('\n', '\r').lines().chunked(4).also {
+      require(it.all { snippet -> snippet.size == 4 }) {
+        "PYTHON_SNIPPETS must contain complete 4-line records"
+      }
+    }
+  }
+
   val repairs by lazy {
-    PYTHON_SNIPPETS.lines().windowed(4)
-      .map { it.map { "$it NEWLINE".tokenizeByWhitespace() } }
-      .map { it[0] to it[1] }.take(50)
+    snippets.asSequence().map { it.map { "$it NEWLINE".tokenizeByWhitespace() } }
+      .map { it[0] to it[1] }.take(TO_TEST)
+  }
+
+  val rawPythonRepairs by lazy {
+    snippets.asSequence().map { decodeBase64(it[2]) to decodeBase64(it[3]) }
+      .filter { "\n" !in it.first && "\n" !in it.second }
+      .take(TO_TEST).toList()
   }
 
   @Test
   fun testRepairCodeGPU() = runTest(timeout = 10.minutes) {
     tryBootstrappingGPU()
-    benchmarkRepair("GPU") { repairCode(cfg, code = it, LED_BUFFER, null) }
+    benchmarkRepair("GPU") { repairCode(cfg, code = it, LED_BUFFER) }
+  }
+
+  @Test
+  @OptIn(ExperimentalUnsignedTypes::class)
+  fun testEndToEndRepairPipeline() = runTest(timeout = 10.minutes) {
+    tryBootstrappingGPU()
+    val errHst = mutableMapOf<String, Int>()
+    val filtered = JSTidyPyEditor.run {
+      sequenceOf("x = 1", "x =").filterCompilerErrors(errHst, window = 2).toList()
+    }
+
+    assertEquals(listOf("x = 1"), filtered)
+    assertTrue(errHst.isNotEmpty(), "Expected headless compiler filtering to reject invalid Python")
+
+    benchmarkEndToEndRepairPipeline("end-to-end") { repairPythonLineRaw(pythonCfg, it) }
   }
 
   @Test
@@ -58,6 +90,44 @@ class TestTidy {
     log("Total $name latency: ${startTime.elapsedNow().inWholeMilliseconds}")
     log("Total $name repairs: $totalResults\nTotal $name matches: $totalMatches")
   }
+
+  suspend fun benchmarkEndToEndRepairPipeline(name: String, repair: suspend (String) -> String) {
+    log("Testing $name Python repairs...")
+
+    val startTime = TimeSource.Monotonic.markNow()
+    var totalResults = 0; var totalRepairs = 0; var totalMatches = 0; var noResults = 0
+
+    rawPythonRepairs.forEach { (line, fixed) ->
+      totalRepairs++
+      val t0 = TimeSource.Monotonic.markNow()
+      val repairResults = repair(line).lines().filter { it.isNotBlank() }
+      val elapsed = t0.elapsedNow()
+
+      if (repairResults.isEmpty()) {
+        noResults++
+        log("No raw repairs generated in $elapsed for:\n\t\t\t$line")
+        return@forEach
+      }
+
+      val fixedTokens = pythonTokens(fixed)
+      if (repairResults.map { pythonTokens(it) }.contains(fixedTokens)) totalMatches++
+
+      val numRepairs = repairResults.size.also { totalResults += it }
+      log("Generated $numRepairs raw repairs in $elapsed")
+      log((listOf("Sample raw repairs:") + repairResults).take(5).joinToString("\n\t\t\t"))
+    }
+
+    assertEquals(TO_TEST, totalRepairs)
+    assertTrue(totalResults > 0, "Expected at least one raw repair result")
+
+    log("Total $name raw latency: ${startTime.elapsedNow().inWholeMilliseconds}")
+    log("Total $name raw repairs: $totalResults\nTotal $name raw matches: $totalMatches\nTotal $name raw no-results: $noResults")
+  }
+
+  private fun pythonTokens(code: String): List<String> =
+    PyCodeSnippet(code).lexedTokens().tokenizeByWhitespace().map { if (it == "|") "OR" else it }
+
+  private fun decodeBase64(s: String): String = js("atob")(s) as String
 
   // TODO: test parity between GPU- and CPU- versions
   // TODO: implement and test GPU-based hole completion
