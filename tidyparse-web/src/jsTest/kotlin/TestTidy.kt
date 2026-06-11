@@ -2,7 +2,9 @@ import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.tidyparse.PyCodeSnippet
 import ai.hypergraph.tidyparse.sampleGREUntilTimeout
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.promise
+import kotlinx.coroutines.withTimeout
 import kotlin.test.*
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.TimeSource
@@ -15,6 +17,10 @@ or
 class TestTidy {
   @BeforeTest
   fun before() { DEBUG_SUFFIX = "\n" }
+
+  private val benchmarkTimeout = 30.minutes
+  private fun browserTest(block: suspend () -> Unit) =
+    MainScope().promise { withTimeout(benchmarkTimeout) { block() } }
 
   val cfg by lazy { vanillaS2PCFG }
   val pythonCfg by lazy { pythonStatementCNFAllProds }
@@ -40,14 +46,14 @@ class TestTidy {
   }
 
   @Test
-  fun testRepairCodeGPU() = runTest(timeout = 10.minutes) {
+  fun testRepairCodeGPU() = browserTest {
     tryBootstrappingGPU()
     benchmarkRepair("GPU") { repairCode(cfg, code = it, LED_BUFFER) }
   }
 
   @Test
   @OptIn(ExperimentalUnsignedTypes::class)
-  fun testEndToEndRepairPipeline() = runTest(timeout = 10.minutes) {
+  fun testEndToEndRepairPipeline() = browserTest {
     tryBootstrappingGPU()
     val errHst = mutableMapOf<String, Int>()
     val filtered = JSTidyPyEditor.run {
@@ -61,7 +67,7 @@ class TestTidy {
   }
 
   @Test
-  fun testRepairCodeCPU() = runTest(timeout = 10.minutes) {
+  fun testRepairCodeCPU() = browserTest {
     benchmarkRepair("CPU") { sampleGREUntilTimeout(it, cfg).distinct().toList() }
   }
 

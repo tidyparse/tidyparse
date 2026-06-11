@@ -1,7 +1,7 @@
 package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.*
-import ai.hypergraph.kaliningraph.automata.initiateSuspendableRepair
+import ai.hypergraph.kaliningraph.automata.repairWithSparseGRE
 import ai.hypergraph.kaliningraph.image.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.TIMEOUT_MS
@@ -169,7 +169,7 @@ suspend fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
 }
 
 suspend fun sampleGREUntilTimeout(tokens: List<String>, cfg: CFG) =
-  initiateSuspendableRepair(tokens, cfg)?.let {
+  repairWithSparseGRE(tokens, cfg)?.let {
     val clock = TimeSource.Monotonic.markNow()
     it.words(cfg.tmLst) { clock.hasTimeLeft() }
   } ?: emptySequence()

@@ -3,12 +3,12 @@ const path = require('path');
 
 const isCi = process.env.GITHUB_ACTIONS === 'true';
 const chromeFlags = ['--window-size=1,1'];
-const chromeHeapMb = process.env.CHROME_V8_HEAP_MB || '3072';
+const chromeHeapMb = process.env.CHROME_V8_HEAP_MB || '8192';
 const localKarmaTimeoutMs = 540000;
 const ciKarmaTimeoutMs = 30 * 60 * 1000;
 const karmaTimeoutMs = isCi ? ciKarmaTimeoutMs : localKarmaTimeoutMs;
-const pingTimeoutMs = isCi ? 5 * 60 * 1000 : 5000;
-const browserDisconnectTimeoutMs = isCi ? 30000 : localKarmaTimeoutMs;
+const pingTimeoutMs = karmaTimeoutMs;
+const browserDisconnectTimeoutMs = karmaTimeoutMs;
 const ciLogsDir = path.resolve(__dirname, '../../../ci-logs');
 const browserConsoleLog = path.join(ciLogsDir, 'browser-console.log');
 

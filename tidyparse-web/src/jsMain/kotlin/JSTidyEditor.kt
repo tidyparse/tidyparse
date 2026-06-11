@@ -153,7 +153,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
           writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it }); null
         }
         REPAIR ->
-          if (!gpuAvailable) sampleGREUntilTimeout(tokens, cfg)
+          if (!gpuAvailable) { log("Repairing on CPU..."); sampleGREUntilTimeout(tokens, cfg) }
           else repairCode(cfg, tokens, LED_BUFFER).stripEpsilon()
       }?.let { if (scenario != REPAIR) it.take(MAX_DISP_RESULTS) else it }
       ?.let { if (caretInGrammar) it.map { it.replace("[START]", "START") } else it }
