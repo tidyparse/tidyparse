@@ -8,7 +8,7 @@ const localKarmaTimeoutMs = 540000;
 const ciKarmaTimeoutMs = 30 * 60 * 1000;
 const karmaTimeoutMs = isCi ? ciKarmaTimeoutMs : localKarmaTimeoutMs;
 const pingTimeoutMs = isCi ? 5 * 60 * 1000 : 5000;
-const browserDisconnectTimeoutMs = isCi ? 5000 : localKarmaTimeoutMs;
+const browserDisconnectTimeoutMs = isCi ? 30000 : localKarmaTimeoutMs;
 const ciLogsDir = path.resolve(__dirname, '../../../ci-logs');
 const browserConsoleLog = path.join(ciLogsDir, 'browser-console.log');
 

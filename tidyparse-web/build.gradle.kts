@@ -228,7 +228,6 @@ tasks {
         <script type="module">
         $inlinedJs
         </script>
-        <script src="https://cdn.jsdelivr.net/pyodide/v0.27.5/full/pyodide.js"></script>
     """.trimIndent()
 
       val outHtml = File(System.getProperty("user.home"), "tidyparse.html")
