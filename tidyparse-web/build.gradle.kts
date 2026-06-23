@@ -257,11 +257,14 @@ tasks {
     val wdfaFile = webProject.layout.projectDirectory
       .file("src/jsMain/resources/wdfa.bin")
       .asFile
+    val rerankerWeightsFile = webProject.layout.projectDirectory
+      .file("src/jsMain/resources/reranker_2000.safetensors")
+      .asFile
 
     val outHtml = rootProject.layout.projectDirectory
       .file("tidyparse-intellij/src/main/resources/jcef/tidyparse-jcef.html")
 
-    inputs.files(jsFile, mapFile, ngramFile, wdfaFile)
+    inputs.files(jsFile, mapFile, ngramFile, wdfaFile, rerankerWeightsFile)
     outputs.file(outHtml)
 
     doLast {
@@ -276,6 +279,7 @@ tasks {
 
       val rawNgrams = ngramFile.readText()
       val rawWdfaB64 = Base64.encode(wdfaFile.readBytes())
+      val rawRerankerWeightsB64 = Base64.encode(rerankerWeightsFile.readBytes())
 
       val html = """
   <!doctype html>
@@ -291,6 +295,7 @@ tasks {
 window.REPAIR_MODE = "jcef";
 window.raw_ngrams = ${jsString(rawNgrams)};
 window.raw_wdfa_b64 = ${jsString(rawWdfaB64)};
+window.raw_reranker_weights_b64 = ${jsString(rawRerankerWeightsB64)};
 
 function __tidyparseJcefSend(payload) {
   __JCEF_EVENT_CALLBACK__;

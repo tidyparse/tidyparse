@@ -96,7 +96,12 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
   } else print("GPU not detected.")
 }
 
-suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VALUE): List<String> {
+suspend fun repairCode(
+  cfg: CFG,
+  code: List<String>,
+  ledBuffer: Int = Int.MAX_VALUE,
+  rerankerQuery: List<String>? = null
+): List<String> {
   timings = linkedMapOf()
   val preprocT = TimeSource.Monotonic.markNow()
   val fsa: FSA = makeLevFSA(code, MAX_LEV_RAD)
@@ -111,14 +116,20 @@ suspend fun repairCode(cfg: CFG, code: List<String>, ledBuffer: Int = Int.MAX_VA
 
   mark("preprocessing", preprocT)
 //  val words = repairPipelineV2(cfg, fsa, ledBuffer, ngrams, codePoints)
-  val words = repairPipeline(cfg, fsa, ledBuffer, codePoints)
+  val words = repairPipeline(cfg, fsa, ledBuffer, codePoints, rerankerQuery)
 //  val distinctWords = words.distinct()
 //  log("Distinct: ${distinctWords.size} words")
 
   return words.also { log("Received: ${words.size} words in ${preprocT.elapsedNow()} (round trip)") }
 }
 
-suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, codePoints: IntArray): List<String> {
+suspend fun repairPipeline(
+  cfg: CFG,
+  fsa: FSA,
+  ledBuffer: Int,
+  codePoints: IntArray,
+  rerankerQuery: List<String>? = null
+): List<String> {
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   log("FSA(|Q|=$numStates, |δ|=${fsa.transit.size}), ${cfg.calcStats()}")
 
@@ -256,13 +267,22 @@ suspend fun repairPipeline(cfg: CFG, fsa: FSA, ledBuffer: Int, codePoints: IntAr
   log("Enumerated $toDecode samples in ${timings["enumerate"]}ms (${outBuf.size}B)")
 
   val decodeT = TimeSource.Monotonic.markNow()
+  val decoderTopK = if (rerankerQuery != null) RERANKER_TOP_K_SAMP else TOP_K_SAMP
   val result =
-    if (wdfa != null) wdfaDecoder(outBuf, wdfa!!, maxRepairLen, cfg, toDecode)
-    else if (ngrams != null) ngramDecoder(outBuf, ngrams!!, maxRepairLen, cfg, toDecode)
+    if (wdfa != null) wdfaDecoder(outBuf, wdfa!!, maxRepairLen, cfg, toDecode, decoderTopK)
+    else if (ngrams != null) ngramDecoder(outBuf, ngrams!!, maxRepairLen, cfg, toDecode, decoderTopK)
     else uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)
   mark("decode", decodeT)
 
-  return result.also {
+  val rankedResult =
+    if (rerankerQuery != null) {
+      val candidates = result.take(RERANKER_TOP_K_SAMP)
+      val rerankT = TimeSource.Monotonic.markNow()
+      RepairReranker.rerankOrOriginal(rerankerQuery, candidates)
+        .also { mark("rerank", rerankT) }
+    } else result
+
+  return rankedResult.also {
     listOf(
       outBuf, rootSizes, rootCDF, metaBuf, dpBuf, activeBuf, wordBuf,
       idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf
@@ -295,15 +315,29 @@ suspend fun uniformDecoder(outBuf: GPUBuffer, cfg: CFG, maxRepairLen: Int, sampl
 }
 
 // TODO: Switch to MRF-based sampler? https://aclanthology.org/H92-1028.pdf
-suspend fun ngramDecoder(outBuf: GPUBuffer, ngrams: GPUBuffer, maxRepairLen: Int, cfg: CFG, samplesToDecode: Int): List<String> {
+suspend fun ngramDecoder(
+  outBuf: GPUBuffer,
+  ngrams: GPUBuffer,
+  maxRepairLen: Int,
+  cfg: CFG,
+  samplesToDecode: Int,
+  k: Int = TOP_K_SAMP
+): List<String> {
   log("Using n-gram decoder...")
-  val topK = scoreSelectGather(packets = outBuf, ngrams = ngrams, maxSamples = samplesToDecode, stride = maxRepairLen, k = TOP_K_SAMP)
+  val topK = scoreSelectGather(packets = outBuf, ngrams = ngrams, maxSamples = samplesToDecode, stride = maxRepairLen, k = k)
   return decodePackets(topK, cfg, maxRepairLen)
 }
 
-suspend fun wdfaDecoder(outBuf: GPUBuffer, wdfa: GPUBuffer, maxRepairLen: Int, cfg: CFG, samplesToDecode: Int): MutableList<String> {
+suspend fun wdfaDecoder(
+  outBuf: GPUBuffer,
+  wdfa: GPUBuffer,
+  maxRepairLen: Int,
+  cfg: CFG,
+  samplesToDecode: Int,
+  k: Int = TOP_K_SAMP
+): MutableList<String> {
   log("Using WDFA decoder...")
-  val topK = scoreSelectGatherWDFA(outBuf, wdfa, samplesToDecode, maxRepairLen, TOP_K_SAMP)
+  val topK = scoreSelectGatherWDFA(outBuf, wdfa, samplesToDecode, maxRepairLen, k)
   return decodePackets(topK, cfg, maxRepairLen).toMutableList()
 }
 
@@ -1272,6 +1306,7 @@ const val MAX_WORD_LEN = 128
 const val MAX_LEV_RAD = 5
 const val MAX_SAMPLES = 2_000_000 // Maximum number of samples to draw before reranking
 const val TOP_K_SAMP = 10 * MAX_DISP_RESULTS // Maximum results to sample, some of which may be displayed to the user
+const val RERANKER_TOP_K_SAMP = 1_000
 const val DISPATCH_GROUP_SIZE_X = 65_535
 // Length of the packet header in each repair buffer
 const val PKT_HDR_LEN = 2 // [levenshtein distance, Markov probability]

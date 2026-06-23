@@ -76,6 +76,8 @@ suspend fun jcefSetup() {
   if (gpuAvailable) {
     ngrams = jcefNgrams.toGpuHash(cfg = cfg).loadToGPUBuffer()
     loadWDFA()
+    neuralRerankerEnabled = true
+    RepairReranker.preload()
   }
   log("Bootstrapped GPU")
 
@@ -205,6 +207,7 @@ suspend fun pythonSetup() {
       ngrams = jsPyEditor.ngrams.toGpuHash(cfg = jsPyEditor.getLatestCFG()).loadToGPUBuffer()
       log("Loaded n-grams into ${jsPyEditor.ngramTensor.size / 1000000}mb GPU buffer in ${t0.elapsedNow()}")
       loadWDFA()
+      if (RepairReranker.preloadAvailable()) installNeuralRerankerToggle()
       debugWDFATokenIndexing()
     }
   }
@@ -221,6 +224,34 @@ suspend fun pythonSetup() {
   ledBuffSel.addEventListener("change", { LED_BUFFER = ledBuffSel.value.toInt() })
 
   jsPyEditor.initPyodide()
+}
+
+private const val NEURAL_RERANKER_CHECKBOX_ID = "neural-reranker-checkbox"
+
+private fun installNeuralRerankerToggle() {
+  if (document.getElementById(NEURAL_RERANKER_CHECKBOX_ID) != null) return
+  val row = document.getElementById("confrow1") ?: return
+  (row as? HTMLElement)?.style?.setProperty("justify-content", "flex-end")
+  (document.getElementById("gpuAvail") as? HTMLElement)?.style?.setProperty("margin-right", "auto")
+
+  neuralRerankerEnabled = false
+  val checkbox = document.createElement("input") as HTMLInputElement
+  checkbox.id = NEURAL_RERANKER_CHECKBOX_ID
+  checkbox.type = "checkbox"
+  checkbox.checked = false
+  checkbox.addEventListener("change", {
+    neuralRerankerEnabled = checkbox.checked
+    jsPyEditor.run { continuation { handleInput() } }
+  })
+
+  val label = document.createElement("label") as HTMLLabelElement
+  label.setAttribute(
+    "style",
+    "margin-left:1.2em;display:inline-flex;align-items:center;gap:0.35em;white-space:nowrap;"
+  )
+  label.appendChild(checkbox)
+  label.appendChild(document.createTextNode("Neural reranker"))
+  row.appendChild(label)
 }
 
 val exSelector by lazy { document.getElementById("ex-selector") as HTMLSelectElement }

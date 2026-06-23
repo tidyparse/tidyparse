@@ -76,7 +76,7 @@ kotlin {
 }
 
 tasks {
-//  processResources { dependsOn(bundleJCEF)}
+  processResources { dependsOn(":tidyparse-web:bundleJCEF") }
 
   test {
     minHeapSize = "1g"
