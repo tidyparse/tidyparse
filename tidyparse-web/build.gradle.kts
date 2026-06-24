@@ -1,7 +1,6 @@
 @file:OptIn(ExperimentalEncodingApi::class)
 
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.DEVELOPMENT
-import org.jetbrains.kotlin.gradle.targets.js.webpack.WebpackDevtool
 import org.jetbrains.kotlin.gradle.targets.js.testing.KotlinJsTest
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.gradle.api.services.BuildService
@@ -13,6 +12,7 @@ import org.jetbrains.letsPlot.intern.Plot
 import org.jetbrains.letsPlot.label.ggtitle
 import java.awt.Desktop
 import java.io.ByteArrayOutputStream
+import java.util.zip.GZIPOutputStream
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.io.encoding.*
@@ -56,11 +56,7 @@ kotlin {
     binaries.executable()
 
     browser {
-      runTask {
-        mainOutputFileName = "tidyparse-web.js"
-        sourceMaps = true
-        devtool = WebpackDevtool.SOURCE_MAP
-      }
+      runTask { mainOutputFileName = "tidyparse-web.js" }
 
       webpackTask {
         // We need this to work on Chrome when deployed due to the PLATFORM_CALLER_STACKTRACE_DEPTH hack
@@ -121,6 +117,44 @@ fun jsString(s: String): String =
     }
     append('"')
   }
+
+fun gzip(bytes: ByteArray): ByteArray {
+  val out = ByteArrayOutputStream()
+  GZIPOutputStream(out).use { it.write(bytes) }
+  return out.toByteArray()
+}
+
+fun gzipBase64(bytes: ByteArray): String = Base64.encode(gzip(bytes))
+fun gzipBase64(text: String): String = gzipBase64(text.toByteArray())
+
+fun jsObjectLiteral(entries: Map<String, String>): String =
+  "{${entries.entries.joinToString(",") { (key, value) -> "${jsString(key)}:${jsString(value)}" }}}"
+
+val EMBEDDED_WEB_RESOURCES_START = "/* __TIDYPARSE_EMBEDDED_WEB_RESOURCES_START__ */"
+val EMBEDDED_WEB_RESOURCES_END = "/* __TIDYPARSE_EMBEDDED_WEB_RESOURCES_END__ */"
+
+fun embeddedWebResourcesScript(
+  rawNgramsGzipB64: String,
+  rawWdfaGzipB64: String,
+  rawRerankerWeightsGzipB64: String,
+  rawExamplesGzipB64: String
+): String = """
+$EMBEDDED_WEB_RESOURCES_START
+window.raw_ngrams_gzip_b64 = ${jsString(rawNgramsGzipB64)};
+window.raw_wdfa_gzip_b64 = ${jsString(rawWdfaGzipB64)};
+window.raw_reranker_weights_gzip_b64 = ${jsString(rawRerankerWeightsGzipB64)};
+window.raw_examples_gzip_b64 = ${jsString(rawExamplesGzipB64)};
+$EMBEDDED_WEB_RESOURCES_END
+""".trimIndent() + "\n"
+
+fun String.withoutEmbeddedWebResources(): String =
+  replace(
+    Regex(
+      "^${Regex.escape(EMBEDDED_WEB_RESOURCES_START)}.*?${Regex.escape(EMBEDDED_WEB_RESOURCES_END)}\\s*",
+      RegexOption.DOT_MATCHES_ALL
+    ),
+    ""
+  )
 
 tasks {
   val browserConsoleTailService = gradle.sharedServices.registerIfAbsent(
@@ -258,7 +292,7 @@ tasks {
       .file("src/jsMain/resources/wdfa.bin")
       .asFile
     val rerankerWeightsFile = webProject.layout.projectDirectory
-      .file("src/jsMain/resources/reranker_2000.safetensors")
+      .file("src/jsMain/resources/reranker_2000.q8.safetensors")
       .asFile
 
     val outHtml = rootProject.layout.projectDirectory
@@ -319,15 +353,52 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
 
   register("deployWeb") {
     group = "deployment"
-    description = "Builds app, opens Finder to the build and resources directories, and launches the browser for upload"
+    description = "Builds app, embeds runtime resources into the JS artifact, and launches the browser for upload"
     dependsOn(":tidyparse-web:jsBrowserProductionWebpack")
+
+    val webProject = project(":tidyparse-web")
+    val bundleDir = webProject.layout.buildDirectory
+      .dir("kotlin-webpack/js/productionExecutable/")
+    val jsFile = bundleDir.map { it.file("tidyparse-web.js").asFile }
+
+    val ngramFile = webProject.layout.projectDirectory
+      .file("src/jsMain/resources/python_4grams.txt")
+      .asFile
+    val wdfaFile = webProject.layout.projectDirectory
+      .file("src/jsMain/resources/wdfa.bin")
+      .asFile
+    val rerankerWeightsFile = webProject.layout.projectDirectory
+      .file("src/jsMain/resources/reranker_2000.q8.safetensors")
+      .asFile
+    val exampleFiles = rootProject.fileTree("examples") {
+      include("**/*.tidy")
+      include("**/*.txt")
+    }
+
+    inputs.files(jsFile, ngramFile, wdfaFile, rerankerWeightsFile, exampleFiles)
+
     doLast {
-      val webProject = project(":tidyparse-web")
-      val buildDir = webProject.layout.buildDirectory.asFile.get().resolve("kotlin-webpack/js/productionExecutable/")
-      val resourcesDir = webProject.file("src/jsMain/resources")
+      val buildDir = bundleDir.get().asFile
+      val jsBundle = jsFile.get()
+      val rawExamples = exampleFiles.files
+        .sortedBy { rootProject.projectDir.toPath().relativize(it.toPath()).toString() }
+        .associate {
+          val relPath = rootProject.projectDir.toPath().relativize(it.toPath())
+            .toString()
+            .replace(File.separatorChar, '/')
+          relPath to it.readText()
+        }
+      val embeddedResources = embeddedWebResourcesScript(
+        rawNgramsGzipB64 = gzipBase64(ngramFile.readBytes()),
+        rawWdfaGzipB64 = gzipBase64(wdfaFile.readBytes()),
+        rawRerankerWeightsGzipB64 = gzipBase64(rerankerWeightsFile.readBytes()),
+        rawExamplesGzipB64 = gzipBase64(jsObjectLiteral(rawExamples))
+      )
+
+      jsBundle.writeText(embeddedResources + jsBundle.readText().withoutEmbeddedWebResources())
+      println("✓ Embedded gzip-compressed python_4grams.txt, wdfa.bin, reranker_2000.q8.safetensors, and ${exampleFiles.files.size} examples into ${jsBundle.absolutePath}")
 
       ProcessBuilder("open", buildDir.absolutePath).start()
-      ProcessBuilder("open", resourcesDir.absolutePath).start()
       ProcessBuilder("open", "https://github.com/tidyparse/tidyparse.github.io/upload/main").start()
     }
   }
@@ -336,7 +407,7 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
 // To deploy the browser application, run:
 // ./gradlew deployWeb
 // Then copy the contents of tidyparse-web/build/kotlin-webpack/js/productionExecutable/tidyparse-web
-// (and optionally, if static resources have been modified, tidyparse-web/src/jsMain/resources) to:
+// (and static HTML/CSS/image resources if they have changed) to:
 //  https://github.com/tidyparse/tidyparse.github.io/upload/main
 // Wait a few minutes for CI to finish, then check the website:
 //  https://tidyparse.github.io

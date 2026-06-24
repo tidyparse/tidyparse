@@ -13,6 +13,7 @@ import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
 import org.w3c.fetch.RequestInit
 import web.gpu.GPUBuffer
+import kotlin.js.Promise
 import kotlin.time.TimeSource
 
 /**
@@ -281,6 +282,13 @@ suspend fun loadWDFA(file: String = "wdfa.bin") {
     wdfa = buf
   }
   val t0 = TimeSource.Monotonic.markNow()
+  val inlineWdfaGzipB64 = window.asDynamic().raw_wdfa_gzip_b64 as? String
+  if (!inlineWdfaGzipB64.isNullOrBlank()) {
+    loadWDFAFromArrayBuffer(gzipBase64ToArrayBuffer(inlineWdfaGzipB64))
+    log("Loaded WDFA(|Q|=$wdfaNumStates, |δ|=$wdfaNumEdges) inline gzip in ${t0.elapsedNow()}")
+    return
+  }
+
   val inlineWdfaB64 = window.asDynamic().raw_wdfa_b64 as? String
   if (!inlineWdfaB64.isNullOrBlank()) {
     loadWDFAFromArrayBuffer(base64ToArrayBuffer(inlineWdfaB64))
@@ -288,7 +296,7 @@ suspend fun loadWDFA(file: String = "wdfa.bin") {
     return
   }
 
-  val response = window.fetch(file).await()
+  val response = window.fetch(browserResourceUrl(file)).await()
   if (!response.ok) { "Failed to load WDFA from $file".also { log(it); error(it) } }
 
   loadWDFAFromArrayBuffer(response.arrayBuffer().await().unsafeCast<ArrayBuffer>())
@@ -303,11 +311,38 @@ private fun base64ToArrayBuffer(b64: String): ArrayBuffer =
       return bytes.buffer;
   })""")(b64).unsafeCast<ArrayBuffer>()
 
+private suspend fun gzipBase64ToArrayBuffer(b64: String): ArrayBuffer =
+  js("""(function(s) {
+      const binary = atob(s);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+      return new Response(stream).arrayBuffer();
+  })""")(b64).unsafeCast<Promise<ArrayBuffer>>().await()
+
+private suspend fun gzipBase64ToText(b64: String): String =
+  js("""(function(s) {
+      const binary = atob(s);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+      return new Response(stream).text();
+  })""")(b64).unsafeCast<Promise<String>>().await()
+
+private fun browserResourceUrl(path: String): String = js("new URL(path, document.baseURI).href") as String
+
 suspend fun loadNgrams(
   file: String = "python_4grams.txt",
   target: MutableMap<List<String>, Double> = jsPyEditor.ngrams
 ) {
   val t0 = TimeSource.Monotonic.markNow()
+  val inlineNgramsGzipB64 = window.asDynamic().raw_ngrams_gzip_b64 as? String
+  if (!inlineNgramsGzipB64.isNullOrBlank()) {
+    parseNgrams(gzipBase64ToText(inlineNgramsGzipB64), target)
+    log("Loaded ${target.size} inline gzip n-grams in ${t0.elapsedNow()}")
+    return
+  }
+
   val inlineNgrams = window.asDynamic().raw_ngrams as? String
   if (!inlineNgrams.isNullOrBlank()) {
     parseNgrams(inlineNgrams, target)
@@ -315,7 +350,7 @@ suspend fun loadNgrams(
     return
   }
 
-  val response = window.fetch(file).await()
+  val response = window.fetch(browserResourceUrl(file)).await()
   if (response.ok) {
     val n = parseNgrams(response.text().await(), target)
     log("Loaded ${target.size} $n-grams from $file in ${t0.elapsedNow()}")
@@ -385,10 +420,28 @@ suspend fun fetchSelectedExample() {
   fetchExample(selectedExample, syncSelector = false, updateHash = true)
 }
 
+private var embeddedGzipExamples: dynamic = null
+
+private suspend fun inlineExampleText(examplePath: String): String? {
+  val inlineExamples = window.asDynamic().raw_examples
+  val inlineExample = if (inlineExamples != null && inlineExamples != js("undefined")) {
+    inlineExamples[examplePath] as? String
+  } else null
+  if (inlineExample != null) return inlineExample
+
+  if (embeddedGzipExamples == null) {
+    val inlineExamplesGzipB64 = window.asDynamic().raw_examples_gzip_b64 as? String
+    if (!inlineExamplesGzipB64.isNullOrBlank()) {
+      val examplesJson = gzipBase64ToText(inlineExamplesGzipB64)
+      embeddedGzipExamples = js("JSON.parse(examplesJson)")
+    }
+  }
+
+  return if (embeddedGzipExamples != null) embeddedGzipExamples[examplePath] as? String else null
+}
+
 suspend fun fetchExample(examplePath: String, syncSelector: Boolean, updateHash: Boolean): Boolean {
-  val response = window.fetch(examplePath).await()
-  if (response.ok) {
-    val text = response.text().await()
+  fun applyExampleText(text: String) {
     inputField.value = text
     if (hasCmEditor()) {
       cmEditor.setValue(text)
@@ -398,7 +451,13 @@ suspend fun fetchExample(examplePath: String, syncSelector: Boolean, updateHash:
     if (syncSelector) syncExampleSelector(examplePath)
     if (updateHash) updateExampleHash(examplePath)
     jsEditor.redecorateLines()
-    return true
-  } else console.error("Failed to load file '$examplePath': ${response.status}")
+  }
+
+  val inlineExample = inlineExampleText(examplePath)
+  if (inlineExample != null) { applyExampleText(inlineExample); return true }
+
+  val response = window.fetch(browserResourceUrl(examplePath)).await()
+  if (response.ok) { applyExampleText(response.text().await()); return true }
+  else console.error("Failed to load file '$examplePath': ${response.status}")
   return false
 }

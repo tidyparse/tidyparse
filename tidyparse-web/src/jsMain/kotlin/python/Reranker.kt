@@ -9,7 +9,7 @@ import kotlin.js.Promise
 import kotlin.math.min
 import kotlin.time.TimeSource
 
-private const val RERANKER_WEIGHTS = "./reranker_2000.safetensors"
+private const val RERANKER_WEIGHTS = "./reranker_2000.q8.safetensors"
 private const val RERANKER_MAX_LEN_Q = 100
 private const val RERANKER_MAX_LEN_D = 110
 private const val RERANKER_MAX_LEN = RERANKER_MAX_LEN_Q + RERANKER_MAX_LEN_D + 2
@@ -98,16 +98,22 @@ object RepairReranker {
   }
 
   private suspend fun loadWeights(): dynamic {
+    val inlineGzipWeights = window.asDynamic().raw_reranker_weights_gzip_b64 as? String
+    if (!inlineGzipWeights.isNullOrBlank()) {
+      val buffer = gzipBase64ToArrayBuffer(inlineGzipWeights)
+      return materializeF32Safetensors(buffer)
+    }
+
     val inlineWeights = window.asDynamic().raw_reranker_weights_b64 as? String
     if (!inlineWeights.isNullOrBlank()) {
       val buffer = base64ToArrayBuffer(inlineWeights)
-      return js("new Uint8Array(buffer)")
+      return materializeF32Safetensors(buffer)
     }
 
     val response = window.fetch(browserResourceUrl(RERANKER_WEIGHTS)).await()
     if (!response.ok) error("Failed to load $RERANKER_WEIGHTS")
     val buffer = response.arrayBuffer().await().unsafeCast<ArrayBuffer>()
-    return js("new Uint8Array(buffer)")
+    return materializeF32Safetensors(buffer)
   }
 
   private fun browserResourceUrl(path: String): String =
@@ -120,6 +126,125 @@ object RepairReranker {
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       return bytes.buffer;
     })(b64)""").unsafeCast<ArrayBuffer>()
+
+  private suspend fun gzipBase64ToArrayBuffer(b64: String): ArrayBuffer =
+    js("""(function(s) {
+      const binary = atob(s);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+      return new Response(stream).arrayBuffer();
+    })(b64)""").unsafeCast<Promise<ArrayBuffer>>().await()
+
+  private fun materializeF32Safetensors(rawSafetensors: ArrayBuffer): dynamic =
+    js("""(function(buffer) {
+      function fail(message) { throw new Error(message); }
+      function assert(condition, message) { if (!condition) fail(message); }
+      function tensorElementCount(shape) {
+        assert(Array.isArray(shape), "Tensor shape is not an array.");
+        return shape.reduce((total, dim) => total * Number(dim), 1);
+      }
+      function dtypeByteSize(dtype) {
+        if (dtype === "F32") return 4;
+        if (dtype === "F16") return 2;
+        if (dtype === "I8" || dtype === "U8") return 1;
+        fail("Unsupported safetensors dtype for browser reranker: " + dtype);
+      }
+      function float16ToNumber(bits) {
+        const sign = bits & 0x8000 ? -1 : 1;
+        const exponent = (bits >>> 10) & 0x1f;
+        const fraction = bits & 0x03ff;
+        if (exponent === 0) return sign * (fraction ? Math.pow(2, -14) * (fraction / 1024) : 0);
+        if (exponent === 0x1f) return fraction ? NaN : sign * Infinity;
+        return sign * Math.pow(2, exponent - 15) * (1 + fraction / 1024);
+      }
+
+      assert(buffer.byteLength >= 8, "Safetensors file is shorter than its 8-byte header.");
+      const view = new DataView(buffer);
+      const headerBig = view.getBigUint64(0, true);
+      assert(headerBig <= BigInt(Number.MAX_SAFE_INTEGER), "Safetensors header is too large.");
+      const headerLength = Number(headerBig);
+      const dataStart = 8 + headerLength;
+      assert(dataStart <= buffer.byteLength, "Safetensors header extends past the end of the file.");
+
+      let metadata;
+      try {
+        metadata = JSON.parse(new TextDecoder("utf-8").decode(new Uint8Array(buffer, 8, headerLength)));
+      } catch (error) {
+        throw new Error("Invalid safetensors metadata JSON: " + error.message);
+      }
+
+      const sourceMetadata = metadata.__metadata__ || {};
+      const quantization = sourceMetadata["cstk.quantization"] || "";
+      const tensorNames = Object.keys(metadata).filter(name => name !== "__metadata__");
+
+      for (const name of tensorNames) {
+        const entry = metadata[name];
+        const offsets = entry.data_offsets;
+        assert(Array.isArray(offsets) && offsets.length === 2, "Bad data offsets for weight: " + name);
+        assert(dataStart + offsets[1] <= buffer.byteLength, "Weight extends past EOF: " + name);
+        const byteLength = offsets[1] - offsets[0];
+        const expectedBytes = tensorElementCount(entry.shape) * dtypeByteSize(entry.dtype);
+        assert(byteLength === expectedBytes, name + " has " + byteLength + " data bytes; expected " + expectedBytes + " for " + entry.dtype + ".");
+
+        if (!quantization) {
+          assert(entry.dtype === "F32", name + " is " + entry.dtype + "; unquantized generated WebGPU weights must be F32.");
+        } else if (quantization === "q8_symmetric_per_tensor") {
+          assert(entry.dtype === "I8", name + " is " + entry.dtype + "; q8 transfer weights must be I8.");
+          const scale = Number(sourceMetadata["cstk.quant." + name + ".scale"]);
+          assert(Number.isFinite(scale) && scale > 0, "Missing or invalid q8 scale for " + name + ".");
+        } else if (quantization === "f16") {
+          assert(entry.dtype === "F16", name + " is " + entry.dtype + "; f16 transfer weights must be F16.");
+        } else {
+          fail("Unsupported safetensors quantization format: " + quantization);
+        }
+      }
+
+      if (!quantization) return new Uint8Array(buffer);
+
+      const outHeader = {"__metadata__": {}};
+      for (const key of Object.keys(sourceMetadata)) outHeader.__metadata__[key] = sourceMetadata[key];
+      outHeader.__metadata__["cstk.materialized_dtype"] = "F32";
+      outHeader.__metadata__["cstk.materialized_from_quantization"] = quantization;
+      const chunks = [];
+      let cursor = 0;
+
+      for (const name of tensorNames) {
+        const entry = metadata[name];
+        const count = tensorElementCount(entry.shape);
+        const begin = dataStart + entry.data_offsets[0];
+        const values = new Float32Array(count);
+
+        if (quantization === "q8_symmetric_per_tensor") {
+          const scale = Number(sourceMetadata["cstk.quant." + name + ".scale"]);
+          const packed = new Int8Array(buffer, begin, count);
+          for (let i = 0; i < count; i++) values[i] = packed[i] * scale;
+        } else if (quantization === "f16") {
+          const view = new DataView(buffer, begin, count * 2);
+          for (let i = 0; i < count; i++) values[i] = float16ToNumber(view.getUint16(i * 2, true));
+        }
+
+        const bytes = new Uint8Array(values.buffer);
+        outHeader[name] = {
+          dtype: "F32",
+          shape: entry.shape,
+          data_offsets: [cursor, cursor + bytes.byteLength],
+        };
+        chunks.push(bytes);
+        cursor += bytes.byteLength;
+      }
+
+      const headerBytes = new TextEncoder().encode(JSON.stringify(outHeader));
+      const out = new Uint8Array(8 + headerBytes.byteLength + cursor);
+      new DataView(out.buffer).setBigUint64(0, BigInt(headerBytes.byteLength), true);
+      out.set(headerBytes, 8);
+      let offset = 8 + headerBytes.byteLength;
+      for (const chunk of chunks) {
+        out.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return out;
+    })(rawSafetensors)""")
 
   private fun encodeTokens(tokens: List<String>, maxLength: Int): String? {
     val ids = ArrayList<Int>(tokens.size + 2)
