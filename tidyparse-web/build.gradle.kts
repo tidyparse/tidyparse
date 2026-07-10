@@ -2,7 +2,9 @@
 
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.DEVELOPMENT
 import org.jetbrains.kotlin.gradle.targets.js.testing.KotlinJsTest
+import org.gradle.api.tasks.Sync
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
+import org.gradle.api.tasks.bundling.Zip
 import org.gradle.api.services.BuildService
 import org.gradle.api.services.BuildServiceParameters
 import org.jetbrains.letsPlot.*
@@ -12,6 +14,7 @@ import org.jetbrains.letsPlot.intern.Plot
 import org.jetbrains.letsPlot.label.ggtitle
 import java.awt.Desktop
 import java.io.ByteArrayOutputStream
+import java.util.UUID
 import java.util.zip.GZIPOutputStream
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicReference
@@ -156,6 +159,57 @@ fun String.withoutEmbeddedWebResources(): String =
     ""
   )
 
+fun ByteArray.replaceAllBytes(target: ByteArray, replacement: ByteArray): Pair<ByteArray, Int> {
+  require(target.isNotEmpty()) { "target must not be empty" }
+
+  val out = ByteArrayOutputStream(size)
+  var replacements = 0
+  var i = 0
+  while (i < size) {
+    val matches = i + target.size <= size && target.indices.all { this[i + it] == target[it] }
+    if (matches) {
+      out.write(replacement)
+      i += target.size
+      replacements++
+    } else {
+      out.write(this[i].toInt())
+      i++
+    }
+  }
+
+  return out.toByteArray() to replacements
+}
+
+fun anonymizeArtifact(root: File, original: String = "breandan"): Int {
+  val replacement = UUID.randomUUID().toString()
+    .replace("-", "")
+    .take(original.length)
+  val targetBytes = original.toByteArray()
+  val replacementBytes = replacement.toByteArray()
+  var replacements = 0
+
+  root.walkTopDown()
+    .filter { it.isFile }
+    .forEach { file ->
+      val (anonymized, count) = file.readBytes().replaceAllBytes(targetBytes, replacementBytes)
+      if (count > 0) {
+        file.writeBytes(anonymized)
+        replacements += count
+      }
+    }
+
+  root.walkBottomUp()
+    .filter { it != root && original in it.name }
+    .forEach { file ->
+      val dest = file.resolveSibling(file.name.replace(original, replacement))
+      check(file.renameTo(dest)) { "Failed to rename ${file.absolutePath} to ${dest.absolutePath}" }
+      replacements++
+    }
+
+  println("Anonymized $replacements artifact occurrence(s) of '$original'.")
+  return replacements
+}
+
 tasks {
   val browserConsoleTailService = gradle.sharedServices.registerIfAbsent(
     "browserConsoleTailService",
@@ -234,14 +288,25 @@ tasks {
   register("bundleHeadless") {
     dependsOn(project(":tidyparse-web").tasks.named("jsBrowserProductionWebpack"))
 
+    val webProject = project(":tidyparse-web")
     val bundleDir = project(":tidyparse-web").layout.buildDirectory
       .dir("kotlin-webpack/js/productionExecutable/")
 
     val jsFile = bundleDir.map { it.file("tidyparse-web.js").asFile }
     val mapFile = bundleDir.map { it.file("tidyparse-web.js.map").asFile }
+    val ngramFile = webProject.layout.projectDirectory
+      .file("src/jsMain/resources/python_4grams.txt")
+      .asFile
+    val wdfaFile = webProject.layout.projectDirectory
+      .file("src/jsMain/resources/wdfa.bin")
+      .asFile
+    val rerankerWeightsFile = webProject.layout.projectDirectory
+      .file("src/jsMain/resources/reranker_2000.q8.safetensors")
+      .asFile
+    val outHtml = File(System.getProperty("user.home"), "tidyparse.html")
 
-    inputs.files(jsFile, mapFile)
-    outputs.file(File(System.getProperty("user.home"), "gpu.html"))
+    inputs.files(jsFile, mapFile, ngramFile, wdfaFile, rerankerWeightsFile)
+    outputs.file(outHtml)
 
     doLast {
       val jsCode = jsFile.get().readText()
@@ -250,21 +315,26 @@ tasks {
       val mapB64 = Base64.encode(mapJson.toByteArray())
       val inlinedJs = jsCode.replace(Regex("""(?m)^//# sourceMappingURL=.*$"""), "")
         .trimEnd('\n', '\r') + "\n//# sourceMappingURL=data:application/json;base64,$mapB64"
-      val ngramPath = "src/jsMain/resources/python_4grams.txt"
-      val rawNgrams = project(":tidyparse-web").layout.projectDirectory.file(ngramPath).asFile.readText()
+      val embeddedResources = embeddedWebResourcesScript(
+        rawNgramsGzipB64 = gzipBase64(ngramFile.readBytes()),
+        rawWdfaGzipB64 = gzipBase64(wdfaFile.readBytes()),
+        rawRerankerWeightsGzipB64 = gzipBase64(rerankerWeightsFile.readBytes()),
+        rawExamplesGzipB64 = ""
+      )
 
       val html = """
         <!doctype html>
         <meta charset="utf-8">
         <title>TidyParse Headless</title>
-        <script type="text/javascript">var REPAIR_MODE = "headless"</script>
-        <script type="text/javascript">var raw_ngrams = `$rawNgrams`;</script>
+        <script type="text/javascript">
+        window.REPAIR_MODE = "headless";
+        $embeddedResources
+        </script>
         <script type="module">
         $inlinedJs
         </script>
     """.trimIndent()
 
-      val outHtml = File(System.getProperty("user.home"), "tidyparse.html")
       outHtml.writeText(html)
 
       println("✓ Self-contained headless bundle written to ${outHtml.absolutePath}")
@@ -401,6 +471,99 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
       ProcessBuilder("open", buildDir.absolutePath).start()
       ProcessBuilder("open", "https://github.com/tidyparse/tidyparse.github.io/upload/main").start()
     }
+  }
+
+  val prepareZipArtifact = register<Sync>("prepareZipArtifact") {
+    group = "distribution"
+    description = "Stages tidyparse-web as a Chrome-openable local browser artifact"
+
+    dependsOn("jsBrowserProductionWebpack", "jsProcessResources")
+
+    val stagingDir = layout.buildDirectory.dir("browser-artifact")
+    val bundleDir = layout.buildDirectory.dir("kotlin-webpack/js/productionExecutable")
+    val resourcesDir = layout.buildDirectory.dir("processedResources/js/main")
+
+    val ngramFile = layout.projectDirectory.file("src/jsMain/resources/python_4grams.txt").asFile
+    val wdfaFile = layout.projectDirectory.file("src/jsMain/resources/wdfa.bin").asFile
+    val rerankerWeightsFile = layout.projectDirectory.file("src/jsMain/resources/reranker_2000.q8.safetensors").asFile
+    val exampleFiles = rootProject.fileTree("examples") {
+      include("**/*.tidy")
+      include("**/*.txt")
+    }
+
+    into(stagingDir)
+    from(resourcesDir) {
+      exclude(".DS_Store")
+      exclude("**/.DS_Store")
+      exclude("examples/.idea/**")
+    }
+    from(bundleDir) {
+      include("tidyparse-web.js")
+      include("tidyparse-web.js.map")
+    }
+
+    inputs.files(ngramFile, wdfaFile, rerankerWeightsFile, exampleFiles)
+    outputs.file(stagingDir.map { it.file("tidyparse-local-resources.js") })
+    outputs.file(stagingDir.map { it.file("README.txt") })
+    outputs.upToDateWhen { false }
+
+    doLast {
+      val outDir = stagingDir.get().asFile
+      val rawExamples = exampleFiles.files
+        .sortedBy { rootProject.projectDir.toPath().relativize(it.toPath()).toString() }
+        .associate {
+          val relPath = rootProject.projectDir.toPath().relativize(it.toPath())
+            .toString()
+            .replace(File.separatorChar, '/')
+          relPath to it.readText()
+        }
+
+      outDir.resolve("tidyparse-local-resources.js").writeText(
+        embeddedWebResourcesScript(
+          rawNgramsGzipB64 = gzipBase64(ngramFile.readBytes()),
+          rawWdfaGzipB64 = gzipBase64(wdfaFile.readBytes()),
+          rawRerankerWeightsGzipB64 = gzipBase64(rerankerWeightsFile.readBytes()),
+          rawExamplesGzipB64 = gzipBase64(jsObjectLiteral(rawExamples))
+        )
+      )
+
+      outDir.walkTopDown()
+        .filter { it.isFile && it.extension.equals("html", ignoreCase = true) }
+        .forEach { htmlFile ->
+          val html = htmlFile.readText()
+            .replace("""href="/pluginIcon.svg"""", """href="pluginIcon.svg"""")
+            .replace("""src="/pluginIcon.svg"""", """src="pluginIcon.svg"""")
+            .let {
+              val resourceScript = """<script src="tidyparse-local-resources.js"></script>"""
+              if ("tidyparse-web.js" !in it || resourceScript in it) it
+              else it.replace(
+                Regex("""(?m)(\s*<script\s+src=["']tidyparse-web\.js["']\s*></script>)"""),
+                "\n$resourceScript$1"
+              )
+            }
+          htmlFile.writeText(html)
+        }
+
+      outDir.resolve("README.txt").writeText(
+        """
+        Tidyparse browser artifact
+
+        Open index.html or python.html in Chrome after unzipping this archive.
+        """.trimIndent() + "\n"
+      )
+
+      anonymizeArtifact(outDir)
+    }
+  }
+
+  register<Zip>("browserArtifact") {
+    group = "distribution"
+    description = "Creates browser-artifact.zip with the tidyparse-web local browser app"
+
+    dependsOn(prepareZipArtifact)
+    archiveFileName = "browser-artifact.zip"
+    destinationDirectory = layout.buildDirectory.dir("distributions")
+    from(prepareZipArtifact.map { it.destinationDir })
   }
 }
 
