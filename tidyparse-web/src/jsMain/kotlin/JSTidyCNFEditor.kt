@@ -23,9 +23,7 @@ class JSTidyCNFEditor(
 ) : JSTidyEditor(editor, output) {
 
   /** Load a CNF from text and refresh highlighting */
-  fun loadCNFFromText(text: String) {
-    cfg = text.trimIndent().lines().map { it.split(" -> ").let { Pair(it[0], it[1].split(" ")) } }.toSet().freeze()
-  }
+  fun loadCNFFromText(text: String) { cfg = text.parseCNF() }
 
   override fun getLatestCFG(): CFG = cfg
 

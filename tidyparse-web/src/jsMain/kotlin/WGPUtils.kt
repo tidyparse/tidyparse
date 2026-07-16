@@ -241,7 +241,7 @@ suspend fun completePipeline(cfg: CFG, fsa: FSA, ngrams: GPUBuffer?, codePoints:
   mark("matrix closure", closureT)
   log("Matrix closure reached in: ${timings["matrix closure"]}ms")
 
-//  logActiveNTGrid(activeBuf, numStates, numNTs, limit = minOf(48, numStates))
+  logActiveNTGrid(activeBuf, numStates, numNTs, limit = minOf(48, numStates))
 
   val startNT = cfg.bindex[START_SYMBOL]
   val rootQuery = fsa.finalIdxs.map { it * numNTs + startNT }

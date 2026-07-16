@@ -161,6 +161,8 @@ suspend fun repairPipeline(
   mark("matrix closure", closureT)
   log("Matrix closure reached in: ${timings["matrix closure"]}ms")
 
+  logActiveNTGrid(activeBuf, numStates, numNTs, limit = minOf(48, numStates))
+
   val rootsT = TimeSource.Monotonic.markNow()
   val startNT     = cfg.bindex[START_SYMBOL]
   val allStartIds = fsa.levFinalIdxs.map { it * numNTs + startNT }
