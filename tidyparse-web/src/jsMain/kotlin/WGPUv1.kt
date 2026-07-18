@@ -70,13 +70,10 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         wdfa_score_raw, active_nt_count,
 
         // V2 (untested)
-        frontier_init_v2,
-        frontier_count_succ_v2,
-        frontier_write_exact_v2,
-        frontier_parent_weights_v2,
-        frontier_sampled_step_v2,
-        frontier_pack_packets_v2,
-        markov_score_v2
+        wdfa_frontier_init_v2, wdfa_frontier_count_succ_v2,
+        wdfa_frontier_write_exact_v2, wdfa_frontier_parent_weights_v2,
+        wdfa_frontier_sampled_step_v2, wdfa_frontier_emit_done_packets_v2,
+        wdfa_frontier_pack_packets_v2, select_top_k_unique_v2
       ).forEach { it.bind() }
 //      benchmarkWGPU() // TODO: remove for deployment
 //      benchmarkWGPURepair()
@@ -115,7 +112,7 @@ suspend fun repairCode(
 //  log("Initial nonzeros: ${dpIn.count { it != 0 }}")
 
   mark("preprocessing", preprocT)
-//  val words = repairPipelineV2(cfg, fsa, ledBuffer, ngrams, codePoints)
+//  val words = intersectionPipelineV2(cfg, fsa, ledBuffer, codePoints, rerankerQuery)
   val words = intersectionPipeline(cfg, fsa, ledBuffer, codePoints, rerankerQuery)
 //  val distinctWords = words.distinct()
 //  log("Distinct: ${distinctWords.size} words")
@@ -403,7 +400,7 @@ suspend fun scoreSelectGather(
 //  t0 = TimeSource.Monotonic.markNow()
   val totalGroups = (maxSamples + 255) / 256
   val selGroupsY  = (totalGroups + threads - 1) / threads
-  val idxBuf      = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
+  val idxBuf      = IntArray(k) { -1 }.toGPUBuffer(STCPSD)
   val scrBuf      = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
 
   select_top_k(prmBuf, packets, idxBuf, scrBuf)(threads, selGroupsY)
@@ -444,7 +441,7 @@ suspend fun scoreSelectGatherWDFA(
   val totalGroups = (maxSamples + 255) / 256
   val selGroupsY = (totalGroups + threads - 1) / threads
 
-  val idxBuf = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
+  val idxBuf = IntArray(k) { -1 }.toGPUBuffer(STCPSD)
   val scrBuf = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
 
   timings["select_top_k"] = timedGPUIsolated("Select top-k") { select_top_k(prmBuf, packets, idxBuf, scrBuf)(threads, selGroupsY) }
@@ -702,6 +699,8 @@ fn find_edge(q: u32, tok: u32) -> u32 {
     if (tok < t) { hi = mid; }
     else { lo = mid + 1u; }
   }
+
+  return NO_EDGE;
 }"""
 
 //language=wgsl
@@ -1375,6 +1374,8 @@ fn binarySearchCDF(base: u32, len: u32, needle: u32) -> u32 {
     let mid = (lo + hi) >> 1u;
     if (needle < ls_sparse[base + mid]) { hi = mid; } else { lo = mid + 1u; }
   }
+
+  return base + lo;
 }
 
 fn decodeLiteral(
@@ -1464,6 +1465,8 @@ fn permute_in_range(sid: u32, seed: u32, total: u32) -> u32 {
     if (x < total) { return x; }
     // cycle-walk continues
   }
+
+  return 0u;
 }
 
 // ---------- RNG helpers (used when saturation makes rank/CDF meaningless) ----------
@@ -1490,6 +1493,8 @@ fn rand_bounded(state: ptr<function, u32>, bound: u32) -> u32 {
     let r = rng_next(state);
     if (r >= threshold) { return r % bound; }
   }
+
+  return 0u;
 }
 
 fn randomRankForSize(state: ptr<function, u32>, size: u32) -> u32 {
@@ -1755,6 +1760,7 @@ $WDFA_STRUCT
 
 const PKT_HDR_LEN : u32 = ${PKT_HDR_LEN}u;
 const EDIT_COST_STRIDE : u32 = 10000000u;
+const WDFA_SCORE_INVALID : u32 = 0xffffffffu;
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
   let sid = gid.x + gid.y * prm.threads;
@@ -1785,7 +1791,15 @@ const EDIT_COST_STRIDE : u32 = 10000000u;
   }
 
   let fc = final_cost(q);
-  if (fc >= WDFA_INF) { cost = WDFA_INF; } else { cost = sat_add_wdfa(cost, fc); }
+  if (fc >= WDFA_INF) {
+    packets[base + 1u] = WDFA_SCORE_INVALID;
+    return;
+  }
+  cost = sat_add_wdfa(cost, fc);
+  if (cost >= WDFA_INF) {
+    packets[base + 1u] = WDFA_SCORE_INVALID;
+    return;
+  }
 
   // Preserve the current edit-distance-first ranking convention.
   packets[base + 1u] = sat_add_wdfa(cost, (packets[base] + 1u) * EDIT_COST_STRIDE);
@@ -1798,6 +1812,8 @@ val select_top_k by Shader("""$SAMPLER_PARAMS
 @group(0) @binding(2) var<storage, read_write>   topIdx : array<atomic<u32>>;
 @group(0) @binding(3) var<storage, read_write> topScore : array<atomic<u32>>;
 
+const TOPK_EMPTY_SCORE : u32 = 0x7fffffffu;
+
 @compute @workgroup_size(256) fn main(
     @builtin(workgroup_id)        workgroup_id : vec3<u32>,
     @builtin(local_invocation_id) local_id     : vec3<u32>
@@ -1807,18 +1823,17 @@ val select_top_k by Shader("""$SAMPLER_PARAMS
     if (i >= prm.maxSamples || prm.k == 0u) { return; }
 
     let score : u32 = packets[i * prm.stride + 1u];
+    if (score >= TOPK_EMPTY_SCORE) { return; }
 
     loop {
         var worstPos : u32 = 0u;
         var worstVal : u32 = atomicLoad(&topScore[0]);
-        var duplicate : bool = (worstVal == score);
         for (var j : u32 = 1u; j < prm.k; j = j + 1u) {
             let v = atomicLoad(&topScore[j]);
-            if (v == score) { duplicate = true; }
             if (v > worstVal) { worstVal = v; worstPos = j; }
         }
 
-        if (duplicate || score >= worstVal) { return; }
+        if (score > worstVal) { return; }
         let old = atomicCompareExchangeWeak(&topScore[worstPos], worstVal, score);
         if (old.exchanged) { atomicStore(&topIdx[worstPos], i); return; }
     }
@@ -1836,12 +1851,17 @@ val gather_top_k by Shader("""$SAMPLER_PARAMS
     if (j >= prm.k) { return; }
 
     let srcIdx : u32 = topIdx[j];
-    if (srcIdx == 0xFFFFFFFFu) { return; } 
-
     let stride : u32 = prm.stride;
-    let srcOff : u32 = srcIdx * stride;
     let dstOff : u32 = j      * stride;
 
+    if (srcIdx == 0xFFFFFFFFu) {
+        bestPk[dstOff + 0u] = 0u;
+        bestPk[dstOff + 1u] = 0xFFFFFFFFu;
+        if (${PKT_HDR_LEN}u < stride) { bestPk[dstOff + ${PKT_HDR_LEN}u] = 0u; }
+        return;
+    }
+
+    let srcOff : u32 = srcIdx * stride;
     for (var t: u32 = 0u; t < stride; t = t + 1u) { bestPk[dstOff + t] = packets[srcOff + t]; }
 }""")
 
@@ -2167,7 +2187,17 @@ class Shader constructor(val src: String) {
 // buffers[i]  = payload_i   (u32‑packed GPUBuffer)
 // result      = [constants | (off0,len0) (off1,len1)… | payload_0 … payload_k ]
 //                ^ headerInts.size * 4  bytes
-fun packStruct(constants: List<Int> = emptyList(), vararg buffers: GPUBuffer): GPUBuffer {
+fun packStruct(constants: List<Int> = emptyList(), vararg buffers: GPUBuffer): GPUBuffer =
+  packStructInternal(constants, true, buffers)
+
+fun packStructBorrowed(constants: List<Int> = emptyList(), vararg buffers: GPUBuffer): GPUBuffer =
+  packStructInternal(constants, false, buffers)
+
+private fun packStructInternal(
+  constants: List<Int> = emptyList(),
+  destroyInputs: Boolean,
+  buffers: Array<out GPUBuffer>
+): GPUBuffer {
   if (buffers.isEmpty()) error("At least one payload buffer required")
 
   // ── lengths & offsets (in *ints*, not bytes) ──────────────────────────────
@@ -2199,7 +2229,7 @@ fun packStruct(constants: List<Int> = emptyList(), vararg buffers: GPUBuffer): G
 
   gpu.queue.submit(arrayOf(enc.finish()))
 
-  return metaBuf.also { buffers.forEach { it.destroy() } }
+  return metaBuf.also { if (destroyInputs) buffers.forEach { it.destroy() } }
 }
 
 const val NEWLINE_ID = 1
