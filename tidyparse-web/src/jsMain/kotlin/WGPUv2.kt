@@ -754,7 +754,7 @@ suspend fun repairPipelineV2(
   val activeBuf = GPUBuffer((numStates * numStates * activeWords * 4).toLong(), STCPSD)
 
   val initT = TimeSource.Monotonic.markNow()
-  init_chart(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+  init_lev_chart(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
   mark("init chart", initT)
 
   val closureT = TimeSource.Monotonic.markNow()

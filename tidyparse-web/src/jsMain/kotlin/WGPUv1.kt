@@ -56,7 +56,7 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         // Loaders
         sparse_load, sparse_mat_load,
         // Automata construction
-        init_chart, init_chart_line,
+        init_lev_chart, init_line_chart,
         // Matrix closure/CFL reachability
         dag_reach, mdpt_count, mdpt_write,
         cfl_mul_upper,
@@ -116,19 +116,20 @@ suspend fun repairCode(
 
   mark("preprocessing", preprocT)
 //  val words = repairPipelineV2(cfg, fsa, ledBuffer, ngrams, codePoints)
-  val words = repairPipeline(cfg, fsa, ledBuffer, codePoints, rerankerQuery)
+  val words = intersectionPipeline(cfg, fsa, ledBuffer, codePoints, rerankerQuery)
 //  val distinctWords = words.distinct()
 //  log("Distinct: ${distinctWords.size} words")
 
   return words.also { log("Received: ${words.size} words in ${preprocT.elapsedNow()} (round trip)") }
 }
 
-suspend fun repairPipeline(
+suspend fun intersectionPipeline(
   cfg: CFG,
   fsa: FSA,
   ledBuffer: Int,
   codePoints: IntArray,
-  rerankerQuery: List<String>? = null
+  rerankerQuery: List<String>? = null,
+  chartInitializer: Shader = init_lev_chart
 ): List<String> {
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   log("FSA(|Q|=$numStates, |δ|=${fsa.transit.size}), ${cfg.calcStats()}")
@@ -153,7 +154,7 @@ suspend fun repairPipeline(
   )
 
   timings["init chart"] = timedGPUIsolated("Init chart") {
-    init_chart(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+    chartInitializer(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
   }
 
   val closureT = TimeSource.Monotonic.markNow()
@@ -165,8 +166,9 @@ suspend fun repairPipeline(
 
   val rootsT = TimeSource.Monotonic.markNow()
   val startNT     = cfg.bindex[START_SYMBOL]
-  val allStartIds = fsa.levFinalIdxs.map { it * numNTs + startNT }
-    .let { it.zip(dpBuf.readIndices(it)) }
+  val rootQuery   = fsa.finalIdxs.map { it * numNTs + startNT }
+  val allStartIds = rootQuery
+    .zip(dpBuf.readIndices(rootQuery))
     .filter { (_, v) -> v != 0 }
     .map { it.first }
   mark("read roots", rootsT)
@@ -703,7 +705,7 @@ fn find_edge(q: u32, tok: u32) -> u32 {
 }"""
 
 //language=wgsl
-val init_chart by Shader("""$CFL_STRUCT $TERM_STRUCT $ACTIVE_NT_HELPERS
+val init_lev_chart by Shader("""$CFL_STRUCT $TERM_STRUCT $ACTIVE_NT_HELPERS
 @group(0) @binding(0) var<storage, read_write>         dp_in : array<u32>;
 @group(0) @binding(1) var<storage, read_write>    active_nts : array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read>              word : array<u32>;
@@ -859,7 +861,7 @@ const MAX_J_IDX_CONST : u32 = ${MAX_LEV_RAD}u; // Max index for j (edit distance
 }""")
 
 //language=wgsl
-val init_chart_line by Shader("""$CFL_STRUCT $TERM_STRUCT $ACTIVE_NT_HELPERS
+val init_line_chart by Shader("""$CFL_STRUCT $TERM_STRUCT $ACTIVE_NT_HELPERS
 @group(0) @binding(0) var<storage, read_write>         dp_in : array<u32>;
 @group(0) @binding(1) var<storage, read_write>    active_nts : array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read>              word : array<u32>;
