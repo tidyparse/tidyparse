@@ -32,6 +32,49 @@ fun initTidyCodeMirror(options: dynamic = null): dynamic {
   return editor
 }
 
+fun initPythonCodeMirror(): dynamic {
+  installFixedHtmlHint()
+
+  val options = js("{}")
+  options.mode = "python"
+  options.gutters = js("['CodeMirror-linenumbers', 'cm-warn-gutter']")
+  options.indentUnit = 4
+  options.tabSize = 4
+  options.indentWithTabs = false
+
+  return initTidyCodeMirror(options)
+}
+
+private fun installFixedHtmlHint() {
+  val w = window.asDynamic()
+  if (w.COMPLETIONS == null || w.COMPLETIONS == js("undefined")) w.COMPLETIONS = emptyArray<String>()
+  if (w.fixedHtmlHint != null && w.fixedHtmlHint != js("undefined")) return
+
+  w.fixedHtmlHint = js("""(function(cm) {
+    function htmlToPlaintext(html) {
+      const tmp = document.createElement("div");
+      tmp.innerHTML = html;
+      return (tmp.textContent || tmp.innerText || "").trim();
+    }
+
+    const cur = cm.getCursor();
+    const lineStr = cm.getLine(cur.line);
+    const from = CodeMirror.Pos(cur.line, (lineStr.match(/^\s*/) || [""])[0].length);
+    const to = CodeMirror.Pos(cur.line, lineStr.length);
+    const list = (window.COMPLETIONS || []).map(html => {
+      const plain = htmlToPlaintext(html);
+      return {
+        text: plain,
+        displayText: plain,
+        _html: html,
+        render: function(elt, data, completion) { elt.innerHTML = completion._html; }
+      };
+    });
+
+    return { list, from, to };
+  })""")
+}
+
 private fun syncCodeMirrorTextareaAndEvents(editor: dynamic, textarea: HTMLTextAreaElement, dispatchInput: Boolean) {
   editor.save()
 

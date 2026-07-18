@@ -159,6 +159,45 @@ fun String.withoutEmbeddedWebResources(): String =
     ""
   )
 
+val productionBundleDir = layout.buildDirectory.dir("kotlin-webpack/js/productionExecutable")
+val productionJsFile = productionBundleDir.map { it.file("tidyparse-web.js").asFile }
+val productionJsMapFile = productionBundleDir.map { it.file("tidyparse-web.js.map").asFile }
+
+val ngramFile = layout.projectDirectory.file("src/jsMain/resources/python_4grams.txt").asFile
+val wdfaFile = layout.projectDirectory.file("src/jsMain/resources/wdfa.bin").asFile
+val rerankerWeightsFile = layout.projectDirectory.file("src/jsMain/resources/reranker_2000.q8.safetensors").asFile
+val exampleFiles = rootProject.fileTree("examples") {
+  include("**/*.tidy")
+  include("**/*.txt")
+}
+
+fun exampleResourceMap(): Map<String, String> =
+  exampleFiles.files
+    .sortedBy { rootProject.projectDir.toPath().relativize(it.toPath()).toString() }
+    .associate {
+      rootProject.projectDir.toPath()
+        .relativize(it.toPath())
+        .toString()
+        .replace(File.separatorChar, '/') to it.readText()
+    }
+
+fun embeddedRuntimeResources(includeExamples: Boolean = true): String =
+  embeddedWebResourcesScript(
+    rawNgramsGzipB64 = gzipBase64(ngramFile.readBytes()),
+    rawWdfaGzipB64 = gzipBase64(wdfaFile.readBytes()),
+    rawRerankerWeightsGzipB64 = gzipBase64(rerankerWeightsFile.readBytes()),
+    rawExamplesGzipB64 = if (includeExamples) gzipBase64(jsObjectLiteral(exampleResourceMap())) else ""
+  )
+
+fun File.withInlineSourceMap(mapFile: File): String {
+  val jsCode = readText()
+    .withoutEmbeddedWebResources()
+    .replace(Regex("""(?m)^//# sourceMappingURL=.*$"""), "")
+  val mapJson = mapFile.takeIf { it.exists() }?.readText() ?: return jsCode
+  val mapB64 = Base64.encode(mapJson.toByteArray())
+  return jsCode.trimEnd('\n', '\r') + "\n//# sourceMappingURL=data:application/json;base64,$mapB64"
+}
+
 fun ByteArray.replaceAllBytes(target: ByteArray, replacement: ByteArray): Pair<ByteArray, Int> {
   require(target.isNotEmpty()) { "target must not be empty" }
 
@@ -288,39 +327,14 @@ tasks {
   register("bundleHeadless") {
     dependsOn(project(":tidyparse-web").tasks.named("jsBrowserProductionWebpack"))
 
-    val webProject = project(":tidyparse-web")
-    val bundleDir = project(":tidyparse-web").layout.buildDirectory
-      .dir("kotlin-webpack/js/productionExecutable/")
-
-    val jsFile = bundleDir.map { it.file("tidyparse-web.js").asFile }
-    val mapFile = bundleDir.map { it.file("tidyparse-web.js.map").asFile }
-    val ngramFile = webProject.layout.projectDirectory
-      .file("src/jsMain/resources/python_4grams.txt")
-      .asFile
-    val wdfaFile = webProject.layout.projectDirectory
-      .file("src/jsMain/resources/wdfa.bin")
-      .asFile
-    val rerankerWeightsFile = webProject.layout.projectDirectory
-      .file("src/jsMain/resources/reranker_2000.q8.safetensors")
-      .asFile
     val outHtml = File(System.getProperty("user.home"), "tidyparse.html")
 
-    inputs.files(jsFile, mapFile, ngramFile, wdfaFile, rerankerWeightsFile)
+    inputs.files(productionJsFile, productionJsMapFile, ngramFile, wdfaFile, rerankerWeightsFile)
     outputs.file(outHtml)
 
     doLast {
-      val jsCode = jsFile.get().readText()
-      val mapJson = mapFile.get().readText()
-
-      val mapB64 = Base64.encode(mapJson.toByteArray())
-      val inlinedJs = jsCode.replace(Regex("""(?m)^//# sourceMappingURL=.*$"""), "")
-        .trimEnd('\n', '\r') + "\n//# sourceMappingURL=data:application/json;base64,$mapB64"
-      val embeddedResources = embeddedWebResourcesScript(
-        rawNgramsGzipB64 = gzipBase64(ngramFile.readBytes()),
-        rawWdfaGzipB64 = gzipBase64(wdfaFile.readBytes()),
-        rawRerankerWeightsGzipB64 = gzipBase64(rerankerWeightsFile.readBytes()),
-        rawExamplesGzipB64 = ""
-      )
+      val inlinedJs = productionJsFile.get().withInlineSourceMap(productionJsMapFile.get())
+      val embeddedResources = embeddedRuntimeResources(includeExamples = false)
 
       val html = """
         <!doctype html>
@@ -347,43 +361,15 @@ tasks {
 
     dependsOn(project(":tidyparse-web").tasks.named("jsBrowserProductionWebpack"))
 
-    val webProject = project(":tidyparse-web")
-
-    val bundleDir = webProject.layout.buildDirectory
-      .dir("kotlin-webpack/js/productionExecutable/")
-
-    val jsFile = bundleDir.map { it.file("tidyparse-web.js").asFile }
-    val mapFile = bundleDir.map { it.file("tidyparse-web.js.map").asFile }
-
-    val ngramFile = webProject.layout.projectDirectory
-      .file("src/jsMain/resources/python_4grams.txt")
-      .asFile
-    val wdfaFile = webProject.layout.projectDirectory
-      .file("src/jsMain/resources/wdfa.bin")
-      .asFile
-    val rerankerWeightsFile = webProject.layout.projectDirectory
-      .file("src/jsMain/resources/reranker_2000.q8.safetensors")
-      .asFile
-
     val outHtml = rootProject.layout.projectDirectory
       .file("tidyparse-intellij/src/main/resources/jcef/tidyparse-jcef.html")
 
-    inputs.files(jsFile, mapFile, ngramFile, wdfaFile, rerankerWeightsFile)
+    inputs.files(productionJsFile, productionJsMapFile, ngramFile, wdfaFile, rerankerWeightsFile)
     outputs.file(outHtml)
 
     doLast {
-      val jsCode = jsFile.get().readText()
-      val mapJson = mapFile.get().takeIf { it.exists() }?.readText()
-
-      val inlinedJs = if (mapJson != null) {
-        val mapB64 = Base64.encode(mapJson.toByteArray())
-        jsCode.replace(Regex("""(?m)^//# sourceMappingURL=.*$"""), "")
-          .trimEnd('\n', '\r') + "\n//# sourceMappingURL=data:application/json;base64,$mapB64"
-      } else { jsCode.replace(Regex("""(?m)^//# sourceMappingURL=.*$"""), "") }
-
-      val rawNgrams = ngramFile.readText()
-      val rawWdfaB64 = Base64.encode(wdfaFile.readBytes())
-      val rawRerankerWeightsB64 = Base64.encode(rerankerWeightsFile.readBytes())
+      val inlinedJs = productionJsFile.get().withInlineSourceMap(productionJsMapFile.get())
+      val embeddedResources = embeddedRuntimeResources(includeExamples = false)
 
       val html = """
   <!doctype html>
@@ -397,9 +383,7 @@ tasks {
 
 <script>
 window.REPAIR_MODE = "jcef";
-window.raw_ngrams = ${jsString(rawNgrams)};
-window.raw_wdfa_b64 = ${jsString(rawWdfaB64)};
-window.raw_reranker_weights_b64 = ${jsString(rawRerankerWeightsB64)};
+$embeddedResources
 
 function __tidyparseJcefSend(payload) {
   __JCEF_EVENT_CALLBACK__;
@@ -426,44 +410,12 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
     description = "Builds app, embeds runtime resources into the JS artifact, and launches the browser for upload"
     dependsOn(":tidyparse-web:jsBrowserProductionWebpack")
 
-    val webProject = project(":tidyparse-web")
-    val bundleDir = webProject.layout.buildDirectory
-      .dir("kotlin-webpack/js/productionExecutable/")
-    val jsFile = bundleDir.map { it.file("tidyparse-web.js").asFile }
-
-    val ngramFile = webProject.layout.projectDirectory
-      .file("src/jsMain/resources/python_4grams.txt")
-      .asFile
-    val wdfaFile = webProject.layout.projectDirectory
-      .file("src/jsMain/resources/wdfa.bin")
-      .asFile
-    val rerankerWeightsFile = webProject.layout.projectDirectory
-      .file("src/jsMain/resources/reranker_2000.q8.safetensors")
-      .asFile
-    val exampleFiles = rootProject.fileTree("examples") {
-      include("**/*.tidy")
-      include("**/*.txt")
-    }
-
-    inputs.files(jsFile, ngramFile, wdfaFile, rerankerWeightsFile, exampleFiles)
+    inputs.files(productionJsFile, ngramFile, wdfaFile, rerankerWeightsFile, exampleFiles)
 
     doLast {
-      val buildDir = bundleDir.get().asFile
-      val jsBundle = jsFile.get()
-      val rawExamples = exampleFiles.files
-        .sortedBy { rootProject.projectDir.toPath().relativize(it.toPath()).toString() }
-        .associate {
-          val relPath = rootProject.projectDir.toPath().relativize(it.toPath())
-            .toString()
-            .replace(File.separatorChar, '/')
-          relPath to it.readText()
-        }
-      val embeddedResources = embeddedWebResourcesScript(
-        rawNgramsGzipB64 = gzipBase64(ngramFile.readBytes()),
-        rawWdfaGzipB64 = gzipBase64(wdfaFile.readBytes()),
-        rawRerankerWeightsGzipB64 = gzipBase64(rerankerWeightsFile.readBytes()),
-        rawExamplesGzipB64 = gzipBase64(jsObjectLiteral(rawExamples))
-      )
+      val buildDir = productionBundleDir.get().asFile
+      val jsBundle = productionJsFile.get()
+      val embeddedResources = embeddedRuntimeResources()
 
       jsBundle.writeText(embeddedResources + jsBundle.readText().withoutEmbeddedWebResources())
       println("✓ Embedded gzip-compressed python_4grams.txt, wdfa.bin, reranker_2000.q8.safetensors, and ${exampleFiles.files.size} examples into ${jsBundle.absolutePath}")
@@ -480,16 +432,7 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
     dependsOn("jsBrowserProductionWebpack", "jsProcessResources")
 
     val stagingDir = layout.buildDirectory.dir("browser-artifact")
-    val bundleDir = layout.buildDirectory.dir("kotlin-webpack/js/productionExecutable")
     val resourcesDir = layout.buildDirectory.dir("processedResources/js/main")
-
-    val ngramFile = layout.projectDirectory.file("src/jsMain/resources/python_4grams.txt").asFile
-    val wdfaFile = layout.projectDirectory.file("src/jsMain/resources/wdfa.bin").asFile
-    val rerankerWeightsFile = layout.projectDirectory.file("src/jsMain/resources/reranker_2000.q8.safetensors").asFile
-    val exampleFiles = rootProject.fileTree("examples") {
-      include("**/*.tidy")
-      include("**/*.txt")
-    }
 
     into(stagingDir)
     from(resourcesDir) {
@@ -497,7 +440,7 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
       exclude("**/.DS_Store")
       exclude("examples/.idea/**")
     }
-    from(bundleDir) {
+    from(productionBundleDir) {
       include("tidyparse-web.js")
       include("tidyparse-web.js.map")
     }
@@ -509,23 +452,8 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
 
     doLast {
       val outDir = stagingDir.get().asFile
-      val rawExamples = exampleFiles.files
-        .sortedBy { rootProject.projectDir.toPath().relativize(it.toPath()).toString() }
-        .associate {
-          val relPath = rootProject.projectDir.toPath().relativize(it.toPath())
-            .toString()
-            .replace(File.separatorChar, '/')
-          relPath to it.readText()
-        }
 
-      outDir.resolve("tidyparse-local-resources.js").writeText(
-        embeddedWebResourcesScript(
-          rawNgramsGzipB64 = gzipBase64(ngramFile.readBytes()),
-          rawWdfaGzipB64 = gzipBase64(wdfaFile.readBytes()),
-          rawRerankerWeightsGzipB64 = gzipBase64(rerankerWeightsFile.readBytes()),
-          rawExamplesGzipB64 = gzipBase64(jsObjectLiteral(rawExamples))
-        )
-      )
+      outDir.resolve("tidyparse-local-resources.js").writeText(embeddedRuntimeResources())
 
       outDir.walkTopDown()
         .filter { it.isFile && it.extension.equals("html", ignoreCase = true) }

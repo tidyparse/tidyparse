@@ -2,7 +2,6 @@ import ai.hypergraph.kaliningraph.parsing.tmMap
 import ai.hypergraph.kaliningraph.repair.s2pg
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import js.buffer.ArrayBuffer
-import kotlinx.browser.window
 import kotlinx.coroutines.*
 import kotlinx.coroutines.await
 import kotlin.js.Promise
@@ -98,43 +97,9 @@ object RepairReranker {
   }
 
   private suspend fun loadWeights(): dynamic {
-    val inlineGzipWeights = window.asDynamic().raw_reranker_weights_gzip_b64 as? String
-    if (!inlineGzipWeights.isNullOrBlank()) {
-      val buffer = gzipBase64ToArrayBuffer(inlineGzipWeights)
-      return materializeF32Safetensors(buffer)
-    }
-
-    val inlineWeights = window.asDynamic().raw_reranker_weights_b64 as? String
-    if (!inlineWeights.isNullOrBlank()) {
-      val buffer = base64ToArrayBuffer(inlineWeights)
-      return materializeF32Safetensors(buffer)
-    }
-
-    val response = window.fetch(browserResourceUrl(RERANKER_WEIGHTS)).await()
-    if (!response.ok) error("Failed to load $RERANKER_WEIGHTS")
-    val buffer = response.arrayBuffer().await().unsafeCast<ArrayBuffer>()
-    return materializeF32Safetensors(buffer)
+    val loaded = browserRerankerWeights(RERANKER_WEIGHTS) ?: error("Failed to load $RERANKER_WEIGHTS")
+    return materializeF32Safetensors(loaded)
   }
-
-  private fun browserResourceUrl(path: String): String =
-    js("new URL(path, document.baseURI).href") as String
-
-  private fun base64ToArrayBuffer(b64: String): ArrayBuffer =
-    js("""(function(s) {
-      const binary = atob(s);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      return bytes.buffer;
-    })(b64)""").unsafeCast<ArrayBuffer>()
-
-  private suspend fun gzipBase64ToArrayBuffer(b64: String): ArrayBuffer =
-    js("""(function(s) {
-      const binary = atob(s);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-      return new Response(stream).arrayBuffer();
-    })(b64)""").unsafeCast<Promise<ArrayBuffer>>().await()
 
   private fun materializeF32Safetensors(rawSafetensors: ArrayBuffer): dynamic =
     js("""(function(buffer) {

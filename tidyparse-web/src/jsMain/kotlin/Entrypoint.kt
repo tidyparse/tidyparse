@@ -13,7 +13,6 @@ import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
 import org.w3c.fetch.RequestInit
 import web.gpu.GPUBuffer
-import kotlin.js.Promise
 import kotlin.time.TimeSource
 
 /**
@@ -196,6 +195,7 @@ suspend fun defaultSetup() {
 suspend fun pythonSetup() {
   log("Starting TidyPython")
 
+  initPythonCodeMirror()
   jsPyEditor.getLatestCFG()
 //    LED_BUFFER = maxEdits.value.toInt()
   jsPyEditor.redecorateLines()
@@ -282,79 +282,25 @@ suspend fun loadWDFA(file: String = "wdfa.bin") {
     wdfa = buf
   }
   val t0 = TimeSource.Monotonic.markNow()
-  val inlineWdfaGzipB64 = window.asDynamic().raw_wdfa_gzip_b64 as? String
-  if (!inlineWdfaGzipB64.isNullOrBlank()) {
-    loadWDFAFromArrayBuffer(gzipBase64ToArrayBuffer(inlineWdfaGzipB64))
-    log("Loaded WDFA(|Q|=$wdfaNumStates, |δ|=$wdfaNumEdges) inline gzip in ${t0.elapsedNow()}")
-    return
-  }
-
-  val inlineWdfaB64 = window.asDynamic().raw_wdfa_b64 as? String
-  if (!inlineWdfaB64.isNullOrBlank()) {
-    loadWDFAFromArrayBuffer(base64ToArrayBuffer(inlineWdfaB64))
-    log("Loaded WDFA(|Q|=$wdfaNumStates, |δ|=$wdfaNumEdges) inline in ${t0.elapsedNow()}")
-    return
-  }
-
-  val response = window.fetch(browserResourceUrl(file)).await()
-  if (!response.ok) { "Failed to load WDFA from $file".also { log(it); error(it) } }
-
-  loadWDFAFromArrayBuffer(response.arrayBuffer().await().unsafeCast<ArrayBuffer>())
-  log("Loaded WDFA(|Q|=$wdfaNumStates, |δ|=$wdfaNumEdges) from $file in ${t0.elapsedNow()}")
+  val loaded = browserWdfa(file)
+    ?: run {
+      val message = "Failed to load WDFA from $file"
+      log(message)
+      error(message)
+    }
+  loadWDFAFromArrayBuffer(loaded)
+  log("Loaded WDFA(|Q|=$wdfaNumStates, |δ|=$wdfaNumEdges) in ${t0.elapsedNow()}")
 }
-
-private fun base64ToArrayBuffer(b64: String): ArrayBuffer =
-  js("""(function(s) {
-      const binary = atob(s);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      return bytes.buffer;
-  })""")(b64).unsafeCast<ArrayBuffer>()
-
-private suspend fun gzipBase64ToArrayBuffer(b64: String): ArrayBuffer =
-  js("""(function(s) {
-      const binary = atob(s);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-      return new Response(stream).arrayBuffer();
-  })""")(b64).unsafeCast<Promise<ArrayBuffer>>().await()
-
-private suspend fun gzipBase64ToText(b64: String): String =
-  js("""(function(s) {
-      const binary = atob(s);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-      return new Response(stream).text();
-  })""")(b64).unsafeCast<Promise<String>>().await()
-
-private fun browserResourceUrl(path: String): String = js("new URL(path, document.baseURI).href") as String
 
 suspend fun loadNgrams(
   file: String = "python_4grams.txt",
   target: MutableMap<List<String>, Double> = jsPyEditor.ngrams
 ) {
   val t0 = TimeSource.Monotonic.markNow()
-  val inlineNgramsGzipB64 = window.asDynamic().raw_ngrams_gzip_b64 as? String
-  if (!inlineNgramsGzipB64.isNullOrBlank()) {
-    parseNgrams(gzipBase64ToText(inlineNgramsGzipB64), target)
-    log("Loaded ${target.size} inline gzip n-grams in ${t0.elapsedNow()}")
-    return
-  }
+  val loaded = browserNgrams(file) ?: return log("Failed to load ngrams from $file")
 
-  val inlineNgrams = window.asDynamic().raw_ngrams as? String
-  if (!inlineNgrams.isNullOrBlank()) {
-    parseNgrams(inlineNgrams, target)
-    log("Loaded ${target.size} inline n-grams in ${t0.elapsedNow()}")
-    return
-  }
-
-  val response = window.fetch(browserResourceUrl(file)).await()
-  if (response.ok) {
-    val n = parseNgrams(response.text().await(), target)
-    log("Loaded ${target.size} $n-grams from $file in ${t0.elapsedNow()}")
-  } else log("Failed to load ngrams from $file")
+  val n = parseNgrams(loaded, target)
+  log("Loaded ${target.size} $n-grams in ${t0.elapsedNow()}")
 }
 
 private fun parseNgrams(raw: String, target: MutableMap<List<String>, Double>): Int {
