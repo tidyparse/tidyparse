@@ -42,15 +42,125 @@
         #confrow1 {
             justify-content: space-between;
             align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
         }
 
-        #gpuAvail {
+        #gpuAvail object { width: 24px; height: 24px; }
+
+        .runtime-status-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-right: auto;
+            min-width: 0;
+        }
+
+        .runtime-status-item {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
             width: 35px;
             height: 35px;
             flex: 0 0 35px;
+            border: 1px solid rgba(88, 110, 117, 0.28);
+            border-radius: 8px;
+            background: rgba(253, 246, 227, 0.58);
+            opacity: 0.42;
+            box-sizing: border-box;
+            overflow: hidden;
+            transition: opacity 120ms ease, background-color 120ms ease;
         }
 
-        #gpuAvail object { display: block; }
+        .runtime-status-item img,
+        .runtime-status-item object,
+        .runtime-status-item svg {
+            display: block;
+            max-width: 24px;
+            max-height: 24px;
+            object-fit: contain;
+            filter: grayscale(1);
+            pointer-events: none;
+        }
+
+        .runtime-status-item.ready {
+            opacity: 1;
+            background: rgba(253, 246, 227, 0.78);
+        }
+
+        .runtime-status-item.warming {
+            opacity: 0.72;
+            background: rgba(253, 246, 227, 0.68);
+        }
+
+        .runtime-status-item.ready img,
+        .runtime-status-item.ready object,
+        .runtime-status-item.ready svg { filter: none; }
+
+        .runtime-status-item svg {
+            width: 24px;
+            height: 24px;
+            fill: none;
+            stroke: #586e75;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            stroke-width: 1.55;
+        }
+
+        .runtime-status-item.ready svg { stroke: #268bd2; }
+
+        #blackStatus .formatter-glyph {
+            display: block;
+            font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 15px;
+            font-weight: 800;
+            line-height: 1;
+            letter-spacing: 0;
+            color: #586e75;
+            pointer-events: none;
+        }
+
+        #blackStatus.ready .formatter-glyph {
+            color: #268bd2;
+        }
+
+        .runtime-status-item.error {
+            opacity: 1;
+            background: rgba(220, 50, 47, 0.08);
+        }
+
+        .runtime-status-dot {
+            position: absolute;
+            right: 3px;
+            top: 3px;
+            width: 8px;
+            height: 8px;
+            border-radius: 999px;
+            background: #839496;
+            box-shadow: 0 0 0 2px #eee8d5;
+        }
+
+        .runtime-status-item.warming .runtime-status-dot { background: #b58900; }
+        .runtime-status-item.ready .runtime-status-dot { background: #2aa198; }
+        .runtime-status-item.error .runtime-status-dot { background: #dc322f; }
+
+        #neural-reranker-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35em;
+            margin-left: 1.2em;
+            white-space: nowrap;
+        }
+
+        #neural-reranker-label.is-disabled {
+            color: #839496;
+            cursor: not-allowed;
+        }
+
+        #neural-reranker-checkbox:disabled {
+            cursor: not-allowed;
+        }
     </style>
     <!-- CodeMirror 5 -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css">
@@ -141,12 +251,39 @@ filtered = [x for x in common if x in words]
 
 <div id="tidyparse-output" class="panel" style="display:none"></div>
 
-<div title="Minimizes total edits per repair." id="confrow1">
-    <div id="gpuAvail"></div>
-    <label>
+<div id="confrow1">
+    <div class="runtime-status-group" aria-label="Runtime status">
+        <div id="gpuAvail" class="runtime-status-item pending" role="status" aria-label="WebGPU loading" title="WebGPU loading">
+            <object type="image/svg+xml" data="/webgpu.svg" width="24" height="24" aria-label="WebGPU"></object>
+            <span class="runtime-status-dot"></span>
+        </div>
+        <div id="pyWorkerStatus" class="runtime-status-item pending" role="status" aria-label="Python workers loading" title="Python workers loading">
+            <img src="/python-logo-only.svg" alt="">
+            <span class="runtime-status-dot"></span>
+        </div>
+        <div id="blackStatus" class="runtime-status-item pending" role="status" aria-label="Python formatter loading" title="Python formatter loading">
+            <span class="formatter-glyph" aria-hidden="true">&lt;/&gt;</span>
+            <span class="runtime-status-dot"></span>
+        </div>
+        <div id="neuralRerankerStatus" class="runtime-status-item pending" role="status" aria-label="Neural reranker loading" title="Neural reranker loading">
+            <svg viewBox="0 0 24 24" aria-label="Neural reranker">
+                <rect x="3.5" y="5" width="9" height="3.5" rx="0.9" />
+                <rect x="3.5" y="10.25" width="9" height="3.5" rx="0.9" />
+                <rect x="3.5" y="15.5" width="9" height="3.5" rx="0.9" />
+                <path d="M15 17.25c4.7-2.2 4.7-8.3 0-10.5" />
+                <path d="M17.6 6.95 15 6.75l1.12 2.35" />
+            </svg>
+            <span class="runtime-status-dot"></span>
+        </div>
+    </div>
+    <label title="Minimizes total edits per repair.">
         Max edit distance:
         <a href="https://en.wikipedia.org/wiki/Edit_distance#Language_edit_distance">LED</a> +
         <input id="led-buffer" type="number" value="2" min="0" max="3" step="1" style="margin-right: 1.2em">
+    </label>
+    <label id="neural-reranker-label" class="is-disabled" title="Neural reranker weights loading">
+        <input id="neural-reranker-checkbox" type="checkbox" disabled>
+        Neural reranker
     </label>
 </div>
 

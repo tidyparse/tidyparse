@@ -5,7 +5,7 @@ import kotlinx.coroutines.async
 
 data class PyCompileResult(val output: String)
 
-class WebWorkerPool(private val indexURL: String, size: Int) {
+class WebWorkerPool(private val indexURL: String, private val size: Int) {
   private class Slot(val worker: dynamic) { val pending = mutableMapOf<Int, CompletableDeferred<dynamic>>() }
 
   private var nextId = 1
@@ -14,10 +14,10 @@ class WebWorkerPool(private val indexURL: String, size: Int) {
 
   private fun makeWorker(url: String): dynamic = js("(url) => new Worker(url)")(url)
 
-  private val slots: Array<Slot> = Array(size) {
+  private fun makeSlot(): Slot {
     val worker = makeWorker(workerURL)
 
-    Slot(worker).also { slot ->
+    return Slot(worker).also { slot ->
       worker.onmessage = { ev: dynamic ->
         val data = ev.data
         val id = data.id as Int
@@ -49,7 +49,26 @@ class WebWorkerPool(private val indexURL: String, size: Int) {
     }
   }
 
-  private suspend fun request(slot: Slot, op: String, src: String? = null): dynamic {
+  private fun makeSlots(): Array<Slot> = Array(size) { makeSlot() }
+
+  private var slots: Array<Slot> = makeSlots()
+
+  private fun terminateSlots(slots: Array<Slot>) {
+    slots.forEach { it.worker.terminate() }
+  }
+
+  private fun resetSlots() {
+    terminateSlots(slots)
+    slots = makeSlots()
+    nextSlot = 0
+  }
+
+  private fun throwInfraError(data: dynamic, context: String) {
+    val infraError = data.infraError as? String
+    if (!infraError.isNullOrBlank()) throw RuntimeException("$context: $infraError")
+  }
+
+  private suspend fun request(slot: Slot, op: String, src: String? = null, snapshot: dynamic = null): dynamic {
     val id = nextId++
     val deferred = CompletableDeferred<dynamic>()
     slot.pending[id] = deferred
@@ -59,6 +78,7 @@ class WebWorkerPool(private val indexURL: String, size: Int) {
     msg.op = op
     msg.indexURL = indexURL
     if (src != null) msg.src = src
+    if (snapshot != null) msg.snapshot = snapshot
 
     slot.worker.postMessage(msg)
     return deferred.await()
@@ -70,8 +90,67 @@ class WebWorkerPool(private val indexURL: String, size: Int) {
     return slot
   }
 
-  suspend fun init() =
-    coroutineScope { slots.map { slot -> async { request(slot, "init") } }.awaitAll() }
+  suspend fun init() {
+    if (tryInitFromSnapshot()) return
+    initCold()
+  }
+
+  private suspend fun initCold() =
+    coroutineScope {
+      slots.map { slot ->
+        async { throwInfraError(request(slot, "init"), "Pyodide worker cold init failed") }
+      }.awaitAll()
+    }
+
+  private suspend fun buildSnapshot(op: String, label: String): dynamic {
+    val builder = makeSlot()
+
+    return try {
+      log("Building $label Pyodide worker memory snapshot")
+      val snapshotData = request(builder, op)
+      throwInfraError(snapshotData, "Pyodide $label snapshot build failed")
+
+      if (snapshotData.snapshot == null) throw RuntimeException("Pyodide $label snapshot build returned no snapshot")
+      log("Built $label Pyodide worker memory snapshot (${snapshotData.snapshotBytes} bytes)")
+      snapshotData
+    } finally {
+      builder.worker.terminate()
+    }
+  }
+
+  private fun shouldTryWarmBlackSnapshot(): Boolean =
+    try {
+      js("(() => { try { return !globalThis.localStorage || globalThis.localStorage.getItem('tidyparseWarmBlackSnapshot') !== '0'; } catch (_) { return true; } })()") as Boolean
+    } catch (_: Throwable) { true }
+
+  private suspend fun tryInitFromSnapshot(): Boolean {
+    return try {
+      val snapshotData =
+        if (shouldTryWarmBlackSnapshot()) {
+          try {
+            buildSnapshot("snapshot", "warm")
+          } catch (warmFailure: Throwable) {
+            log("Warm Pyodide worker memory snapshot failed; trying base snapshot: ${warmFailure.message ?: warmFailure}")
+            buildSnapshot("snapshotBase", "base")
+          }
+        } else buildSnapshot("snapshotBase", "base")
+
+      val snapshot = snapshotData.snapshot
+
+      coroutineScope {
+        slots.map { slot ->
+          async { throwInfraError(request(slot, "initSnapshot", snapshot = snapshot), "Pyodide snapshot restore failed") }
+        }.awaitAll()
+      }
+
+      log("Initialized $size Python Web Workers from ${snapshotData.snapshotKind} snapshot")
+      true
+    } catch (t: Throwable) {
+      log("Pyodide memory snapshot warmup failed; falling back to cold workers: ${t.message ?: t}")
+      resetSlots()
+      false
+    }
+  }
 
   suspend fun compile(src: String): PyCompileResult {
     val data = request(nextWorkerSlot(), "compile", src)
@@ -91,7 +170,7 @@ class WebWorkerPool(private val indexURL: String, size: Int) {
   }
 
   fun terminate() {
-    slots.forEach { it.worker.terminate() }
+    terminateSlots(slots)
     revokePyodideWorkerURL(workerURL)
   }
 }

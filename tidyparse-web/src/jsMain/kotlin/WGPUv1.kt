@@ -78,19 +78,42 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
 //      benchmarkWGPU() // TODO: remove for deployment
 //      benchmarkWGPURepair()
 //      benchmarkReach()
-    } catch (e: Exception) { e.printStackTrace(); return }
+    } catch (e: Exception) {
+      e.printStackTrace()
+      markWebGPUStatus("error", "WebGPU unavailable: ${e.message ?: e.toString()}")
+      return
+    }
 
     log("Bootstrapping GPU successful!")
     gpuAvailable = true
 
-    (document.getElementById("gpuAvail") as? HTMLDivElement)?.appendChild(
-      document.createElement("object").apply {
-        setAttribute("type", "image/svg+xml")
-        setAttribute("data", "/webgpu.svg")
-        setAttribute("width", "35")
-        setAttribute("height", "35")
-      })
-  } else print("GPU not detected.")
+    (document.getElementById("gpuAvail") as? HTMLDivElement)?.also { node ->
+      if (node.querySelector("object") == null) {
+        node.appendChild(
+          document.createElement("object").apply {
+            setAttribute("type", "image/svg+xml")
+            setAttribute("data", "/webgpu.svg")
+            setAttribute("width", "24")
+            setAttribute("height", "24")
+          })
+      }
+    }
+    markWebGPUStatus("ready", "WebGPU ready")
+  } else {
+    markWebGPUStatus("error", "WebGPU unavailable")
+    print("GPU not detected.")
+  }
+}
+
+private fun markWebGPUStatus(state: String, label: String) {
+  val node = document.getElementById("gpuAvail") as? HTMLDivElement ?: return
+  node.classList.remove("pending")
+  node.classList.remove("warming")
+  node.classList.remove("ready")
+  node.classList.remove("error")
+  node.classList.add(state)
+  node.setAttribute("aria-label", label)
+  node.setAttribute("title", label)
 }
 
 suspend fun repairCode(
@@ -689,9 +712,7 @@ fn find_edge(q: u32, tok: u32) -> u32 {
   var lo = row_start(q);
   var hi = row_end(q);
 
-  loop {
-    if (lo >= hi) { return NO_EDGE; }
-
+  while (lo < hi) {
     let mid = (lo + hi) >> 1u;
     let t = edge_tok(mid);
 
@@ -1369,8 +1390,7 @@ $WGSL_LANG_SIZE
 fn binarySearchCDF(base: u32, len: u32, needle: u32) -> u32 {
   var lo: u32 = 0u;
   var hi: u32 = len;
-  loop {
-    if (lo >= hi) { return base + lo; }
+  while (lo < hi) {
     let mid = (lo + hi) >> 1u;
     if (needle < ls_sparse[base + mid]) { hi = mid; } else { lo = mid + 1u; }
   }
@@ -1460,13 +1480,14 @@ fn permute_in_range(sid: u32, seed: u32, total: u32) -> u32 {
     x = sid & mask;
   }
 
-  loop {
+  var attempts: u32 = 0u;
+  while (attempts < 64u) {
     x = feistel_perm(x, seed, k_even);
     if (x < total) { return x; }
-    // cycle-walk continues
+    attempts = attempts + 1u;
   }
 
-  return 0u;
+  return x % total;
 }
 
 // ---------- RNG helpers (used when saturation makes rank/CDF meaningless) ----------
@@ -1489,12 +1510,14 @@ fn rng_next(state: ptr<function, u32>) -> u32 {
 fn rand_bounded(state: ptr<function, u32>, bound: u32) -> u32 {
   if (bound == 0u) { return 0u; }
   let threshold = (0xffffffffu - bound + 1u) % bound;
-  loop {
+  var attempts: u32 = 0u;
+  while (attempts < 32u) {
     let r = rng_next(state);
     if (r >= threshold) { return r % bound; }
+    attempts = attempts + 1u;
   }
 
-  return 0u;
+  return rng_next(state) % bound;
 }
 
 fn randomRankForSize(state: ptr<function, u32>, size: u32) -> u32 {

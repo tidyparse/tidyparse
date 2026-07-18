@@ -264,28 +264,59 @@ class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val outp
     }
   }
 
-  suspend fun initPyodide() = try {
-    val scriptTag = (document.querySelector("script[src*='pyodide.js']") as HTMLScriptElement)
-      .getAttribute("src")!!.substringBefore("pyodide.js")
+  suspend fun initPyodide() {
+    var loading = "Python runtime"
 
-    val config = js("{}")
-    config.indexURL = scriptTag
-    jsPyEditor.pyodide = window.asDynamic().loadPyodide(config).unsafeCast<Promise<*>>().await()
-    jsPyEditor.pyodide.loadPackage("micropip").unsafeCast<Promise<*>>().await()
+    fun statusLoading(id: String, label: String) {
+      loading = label
+      setPythonRuntimeStatus(id, "pending", "$label loading")
+    }
 
-    val micropip = jsPyEditor.pyodide.pyimport("micropip")
-    micropip.install("black").unsafeCast<Promise<*>>().await()
+    fun statusReady(id: String, label: String) =
+      setPythonRuntimeStatus(id, "ready", "$label ready")
 
-    val testStr = "1+1"
-    val beautified = jsPyEditor.formatCode(testStr)
+    try {
+      val scriptTag = (document.querySelector("script[src*='pyodide.js']") as HTMLScriptElement)
+        .getAttribute("src")!!.substringBefore("pyodide.js")
 
-    log("Main-thread Black test => $beautified")
-    log(jsPyEditor.getOutput("1+"))
+      val workerPoolReady = startPyodideWorkers(scriptTag)
 
-    val pool = startPyodideWorkers().await().apply { init(); log("Initialized $WEBWORKERS Python Web Workers") }
-    log("Worker compile ready => ${pool.compile("1+").output.getErrorType() == "SyntaxError"}")
-    log("Worker format ready => ${pool.format("x=1") == "x = 1"}")
-  } catch (e: Throwable) { log("Error during Pyodide initialization: ${e.message ?: e.toString()}") }
+      val config = js("{}")
+      config.indexURL = scriptTag
+      jsPyEditor.pyodide = window.asDynamic().loadPyodide(config).unsafeCast<Promise<*>>().await()
+      setPythonRuntimeStatus(PY_STATUS_WORKERS, "warming", "Python runtime ready; workers loading")
+
+      statusLoading(PY_STATUS_BLACK, "Python formatter")
+      installVendoredBlack(jsPyEditor.pyodide)
+
+      val testStr = "1+1"
+      val beautified = jsPyEditor.formatCode(testStr)
+      log("Main-thread Black test => $beautified")
+      if (beautified != "1 + 1") throw RuntimeException("Black sanity check returned '$beautified'")
+      setPythonRuntimeStatus(PY_STATUS_BLACK, "warming", "Python formatter ready; worker formatter loading")
+
+      log(jsPyEditor.getOutput("1+"))
+
+      loading = "Python workers"
+      val pool = workerPoolReady.await()
+
+      loading = "Python workers"
+      val workerCompileReady = pool.compile("1+").output.getErrorType() == "SyntaxError"
+      log("Worker compile ready => $workerCompileReady")
+      if (!workerCompileReady) throw RuntimeException("Worker compile sanity check failed")
+      statusReady(PY_STATUS_WORKERS, "Python workers")
+
+      loading = "Python formatter"
+      val workerFormat = pool.format("x=1")
+      val workerFormatReady = workerFormat == "x = 1"
+      log("Worker format ready => $workerFormatReady")
+      if (!workerFormatReady) throw RuntimeException("Worker Black sanity check returned '$workerFormat'")
+      statusReady(PY_STATUS_BLACK, "Python formatter")
+    } catch (e: Throwable) {
+      markPythonRuntimeStatusesNotReadyError("$loading failed: ${e.message ?: e.toString()}")
+      log("Error during Pyodide initialization: ${e.message ?: e.toString()}")
+    }
+  }
 
   private data class RankedCompletion(val raw: String, val tokens: List<String>, val score: Int)
 
@@ -355,6 +386,30 @@ private fun String.getErrorMessage(): String = substringAfterLast(": ").substrin
 
 private const val PYODIDE_CDN_INDEX_URL = "https://cdn.jsdelivr.net/pyodide/v0.27.5/full/"
 private const val WEBWORKERS = 16
+private const val PY_STATUS_BLACK = "blackStatus"
+private const val PY_STATUS_WORKERS = "pyWorkerStatus"
+
+private val PY_RUNTIME_STATUS_IDS = listOf(
+  PY_STATUS_BLACK,
+  PY_STATUS_WORKERS
+)
+
+private fun setPythonRuntimeStatus(id: String, state: String, label: String) {
+  val node = document.getElementById(id) as? HTMLElement ?: return
+  node.classList.remove("pending")
+  node.classList.remove("warming")
+  node.classList.remove("ready")
+  node.classList.remove("error")
+  node.classList.add(state)
+  node.setAttribute("aria-label", label)
+  node.setAttribute("title", label)
+}
+
+private fun markPythonRuntimeStatusesNotReadyError(label: String) =
+  PY_RUNTIME_STATUS_IDS.forEach { id ->
+    val node = document.getElementById(id) as? HTMLElement ?: return@forEach
+    if (!node.classList.contains("ready")) setPythonRuntimeStatus(id, "error", label)
+  }
 
 private fun pyodideIndexURLFromDocument(): String? =
   try {
@@ -365,11 +420,33 @@ private fun pyodideIndexURLFromDocument(): String? =
 
 private fun pyodideIndexURL(): String = pyodideIndexURLFromDocument() ?: PYODIDE_CDN_INDEX_URL
 
+private suspend fun installVendoredBlack(pyodide: dynamic) {
+  val alreadyInstalled = pyodide.runPython(
+    "import importlib.util; importlib.util.find_spec('black') is not None"
+  ) as Boolean
+
+  if (alreadyInstalled) return
+
+  val response = window.asDynamic().fetch(PYODIDE_BLACK_VENDOR_ARCHIVE).unsafeCast<Promise<dynamic>>().await()
+  val ok = response.ok as? Boolean ?: false
+  if (!ok) throw RuntimeException("Failed to load vendored Black archive: ${response.status} ${response.statusText}")
+
+  val buffer = response.arrayBuffer().unsafeCast<Promise<dynamic>>().await()
+  val sitePackages = pyodide.runPython("import site; site.getsitepackages()[0]") as String
+  val options = js("{}")
+  options.extractDir = sitePackages
+  pyodide.unpackArchive(buffer, "zip", options)
+}
+
 private var webWorkerPoolReady: Deferred<WebWorkerPool>? = null
-private fun startPyodideWorkers(): Deferred<WebWorkerPool> = webWorkerPoolReady ?: MainScope().async {
+private fun startPyodideWorkers(indexURL: String = pyodideIndexURL()): Deferred<WebWorkerPool> = webWorkerPoolReady ?: MainScope().async {
   try {
-    WebWorkerPool(indexURL = pyodideIndexURL(), size = WEBWORKERS)
-      .also { log("Started $WEBWORKERS Python Web Workers") }
+    WebWorkerPool(indexURL = indexURL, size = WEBWORKERS)
+      .also {
+        log("Started $WEBWORKERS Python Web Workers")
+        it.init()
+        log("Initialized $WEBWORKERS Python Web Workers")
+      }
   } catch (t: Throwable) {
     webWorkerPoolReady = null
     log("Failed to initialize Python Web Workers: ${t.message ?: t}")

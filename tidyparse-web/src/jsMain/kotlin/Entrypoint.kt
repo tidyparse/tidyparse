@@ -196,6 +196,7 @@ suspend fun pythonSetup() {
   log("Starting TidyPython")
 
   initPythonCodeMirror()
+  initNeuralRerankerControl()
   jsPyEditor.getLatestCFG()
 //    LED_BUFFER = maxEdits.value.toInt()
   jsPyEditor.redecorateLines()
@@ -203,13 +204,22 @@ suspend fun pythonSetup() {
   loadNgrams()
   MainScope().launch {
     val t0 = TimeSource.Monotonic.markNow()
-    tryBootstrappingGPU(true)
-    if (gpuAvailable) {
-      ngrams = jsPyEditor.ngrams.toGpuHash(cfg = jsPyEditor.getLatestCFG()).loadToGPUBuffer()
-      log("Loaded n-grams into ${jsPyEditor.ngramTensor.size / 1000000}mb GPU buffer in ${t0.elapsedNow()}")
-      loadWDFA()
-      if (RepairReranker.preloadAvailable()) installNeuralRerankerToggle()
-      debugWDFATokenIndexing()
+    try {
+      tryBootstrappingGPU(true)
+      if (gpuAvailable) {
+        ngrams = jsPyEditor.ngrams.toGpuHash(cfg = jsPyEditor.getLatestCFG()).loadToGPUBuffer()
+        log("Loaded n-grams into ${jsPyEditor.ngramTensor.size / 1000000}mb GPU buffer in ${t0.elapsedNow()}")
+        loadWDFA()
+        markNeuralRerankerLoading("Neural reranker weights loading")
+        if (RepairReranker.preloadAvailable()) markNeuralRerankerReady()
+        else markNeuralRerankerUnavailable("Neural reranker unavailable")
+        debugWDFATokenIndexing()
+      } else {
+        markNeuralRerankerUnavailable("Neural reranker unavailable: WebGPU unavailable")
+      }
+    } catch (t: Throwable) {
+      markNeuralRerankerUnavailable("Neural reranker unavailable: ${t.message ?: t.toString()}")
+      log("Failed to initialize GPU/reranker path: ${t.message ?: t}")
     }
   }
 
@@ -228,31 +238,62 @@ suspend fun pythonSetup() {
 }
 
 private const val NEURAL_RERANKER_CHECKBOX_ID = "neural-reranker-checkbox"
+private const val NEURAL_RERANKER_LABEL_ID = "neural-reranker-label"
+private const val NEURAL_RERANKER_STATUS_ID = "neuralRerankerStatus"
+private var neuralRerankerControlBound = false
 
-private fun installNeuralRerankerToggle() {
-  if (document.getElementById(NEURAL_RERANKER_CHECKBOX_ID) != null) return
-  val row = document.getElementById("confrow1") ?: return
-  (row as? HTMLElement)?.style?.setProperty("justify-content", "flex-end")
-  (document.getElementById("gpuAvail") as? HTMLElement)?.style?.setProperty("margin-right", "auto")
-
+private fun initNeuralRerankerControl() {
   neuralRerankerEnabled = false
-  val checkbox = document.createElement("input") as HTMLInputElement
-  checkbox.id = NEURAL_RERANKER_CHECKBOX_ID
-  checkbox.type = "checkbox"
-  checkbox.checked = false
+  setNeuralRerankerSelectable(false, "Neural reranker weights loading")
+  markNeuralRerankerStatus("pending", "Neural reranker weights loading")
+
+  if (neuralRerankerControlBound) return
+  val checkbox = document.getElementById(NEURAL_RERANKER_CHECKBOX_ID) as? HTMLInputElement ?: return
+
   checkbox.addEventListener("change", {
-    neuralRerankerEnabled = checkbox.checked
+    neuralRerankerEnabled = !checkbox.disabled && checkbox.checked
     jsPyEditor.run { continuation { handleInput() } }
   })
+  neuralRerankerControlBound = true
+}
 
-  val label = document.createElement("label") as HTMLLabelElement
-  label.setAttribute(
-    "style",
-    "margin-left:1.2em;display:inline-flex;align-items:center;gap:0.35em;white-space:nowrap;"
-  )
-  label.appendChild(checkbox)
-  label.appendChild(document.createTextNode("Neural reranker"))
-  row.appendChild(label)
+private fun markNeuralRerankerLoading(label: String) {
+  setNeuralRerankerSelectable(false, label)
+  markNeuralRerankerStatus("warming", label)
+}
+
+private fun markNeuralRerankerReady() {
+  setNeuralRerankerSelectable(true, "Neural reranker weights loaded")
+  markNeuralRerankerStatus("ready", "Neural reranker weights loaded")
+}
+
+private fun markNeuralRerankerUnavailable(label: String) {
+  neuralRerankerEnabled = false
+  setNeuralRerankerSelectable(false, label)
+  markNeuralRerankerStatus("error", label)
+}
+
+private fun setNeuralRerankerSelectable(selectable: Boolean, label: String) {
+  val checkbox = document.getElementById(NEURAL_RERANKER_CHECKBOX_ID) as? HTMLInputElement ?: return
+  checkbox.disabled = !selectable
+  if (!selectable) checkbox.checked = false
+  checkbox.setAttribute("title", label)
+
+  val labelNode = document.getElementById(NEURAL_RERANKER_LABEL_ID) as? HTMLElement ?: return
+  labelNode.setAttribute("title", label)
+  if (selectable) labelNode.classList.remove("is-disabled")
+  else labelNode.classList.add("is-disabled")
+}
+
+private fun markNeuralRerankerStatus(state: String, label: String) {
+  val node = document.getElementById(NEURAL_RERANKER_STATUS_ID) as? HTMLElement ?: return
+  node.classList.remove("pending")
+  node.classList.remove("warming")
+  node.classList.remove("ready")
+  node.classList.remove("error")
+  node.classList.add(state)
+  node.setAttribute("aria-label", label)
+  node.setAttribute("title", label)
 }
 
 val exSelector by lazy { document.getElementById("ex-selector") as HTMLSelectElement }

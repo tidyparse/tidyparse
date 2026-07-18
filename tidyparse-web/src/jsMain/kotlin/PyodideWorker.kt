@@ -1,3 +1,5 @@
+const val PYODIDE_BLACK_VENDOR_ARCHIVE = "/pyodide-black-25.1.0-site.zip"
+
 private val pyCompileBootstrap = """
 import sys, traceback, io, base64, textwrap, warnings
 
@@ -54,23 +56,88 @@ private fun pyodideWorkerSource(): String = """
 let pyodide = null;
 let ready = null;
 let blackReady = null;
+let loadedPyodideScript = false;
 
 const PY_COMPILE_BOOTSTRAP = ${jsStringLiteral(pyCompileBootstrap)};
 const PY_FORMAT_BOOTSTRAP = ${jsStringLiteral(pyFormatBootstrap)};
+const BLACK_VENDOR_ARCHIVE_URL = ${jsStringLiteral(PYODIDE_BLACK_VENDOR_ARCHIVE)};
 
-async function ensureReady(indexURL) {
+function hasPythonGlobal(name) {
+    try {
+        return pyodide.runPython(JSON.stringify(name) + " in globals()") === true;
+    } catch (_) {
+        return false;
+    }
+}
+
+function markBlackReadyFromSnapshot() {
+    if (hasPythonGlobal("_format_output_b64")) {
+        blackReady = Promise.resolve();
+        return true;
+    }
+
+    return false;
+}
+
+function hasPythonModule(name) {
+    try {
+        return pyodide.runPython("import importlib.util; importlib.util.find_spec(" + JSON.stringify(name) + ") is not None") === true;
+    } catch (_) {
+        return false;
+    }
+}
+
+function appResourceURL(path) {
+    if (/^https?:\/\//.test(path)) return path;
+
+    const base = self.location.href.startsWith("blob:")
+        ? self.location.href.substring("blob:".length)
+        : self.location.href;
+
+    return new URL(path, base).href;
+}
+
+async function unpackVendoredBlack() {
+    if (hasPythonModule("black")) return;
+
+    const archiveURL = appResourceURL(BLACK_VENDOR_ARCHIVE_URL);
+    console.log("[py-worker] loading vendored Black:", archiveURL);
+
+    const response = await fetch(archiveURL, {cache: "force-cache"});
+    if (!response.ok) {
+        throw new Error("Failed to load vendored Black archive: " + response.status + " " + response.statusText);
+    }
+
+    const buffer = await response.arrayBuffer();
+    const sitePackages = pyodide.runPython("import site; site.getsitepackages()[0]");
+    pyodide.unpackArchive(buffer, "zip", {extractDir: sitePackages});
+}
+
+async function ensureReady(indexURL, options = {}) {
     if (ready) return ready;
 
     ready = (async () => {
-        console.log("[py-worker] ensureReady: begin");
+        const mode = options.snapshot ? "snapshot" : (options.makeSnapshot ? "snapshot-builder" : "cold");
+        console.log("[py-worker] ensureReady: begin (" + mode + ")");
 
-        importScripts(indexURL + "pyodide.js");
+        if (!loadedPyodideScript) {
+            importScripts(indexURL + "pyodide.js");
+            loadedPyodideScript = true;
+        }
 
-        pyodide = await loadPyodide({indexURL, stdout: () => {}, stderr: () => {}});
+        const config = {indexURL, stdout: () => {}, stderr: () => {}};
+        if (options.makeSnapshot) config._makeSnapshot = true;
+        if (options.snapshot) config._loadSnapshot = options.snapshot;
 
-        pyodide.runPython(PY_COMPILE_BOOTSTRAP);
+        pyodide = await loadPyodide(config);
 
-        console.log("[py-worker] ensureReady: done");
+        if (!hasPythonGlobal("_compile_output_b64")) {
+            pyodide.runPython(PY_COMPILE_BOOTSTRAP);
+        }
+
+        markBlackReadyFromSnapshot();
+
+        console.log("[py-worker] ensureReady: done (" + mode + ")");
     })();
 
     return ready;
@@ -82,14 +149,7 @@ async function ensureBlackReady() {
     blackReady = (async () => {
         console.log("[py-worker] ensureBlackReady: begin");
 
-        await pyodide.loadPackage("micropip");
-
-        const micropip = pyodide.pyimport("micropip");
-        try {
-            await micropip.install("black");
-        } finally {
-            try { micropip.destroy(); } catch (_) {}
-        }
+        await unpackVendoredBlack();
 
         pyodide.runPython(PY_FORMAT_BOOTSTRAP);
 
@@ -98,6 +158,27 @@ async function ensureBlackReady() {
     })();
 
     return blackReady;
+}
+
+async function makeWarmSnapshot(indexURL) {
+    await ensureReady(indexURL, {makeSnapshot: true});
+    await ensureBlackReady();
+
+    if (typeof pyodide.makeMemorySnapshot !== "function") {
+        throw new Error("pyodide.makeMemorySnapshot is unavailable");
+    }
+
+    return pyodide.makeMemorySnapshot();
+}
+
+async function makeBaseSnapshot(indexURL) {
+    await ensureReady(indexURL, {makeSnapshot: true});
+
+    if (typeof pyodide.makeMemorySnapshot !== "function") {
+        throw new Error("pyodide.makeMemorySnapshot is unavailable");
+    }
+
+    return pyodide.makeMemorySnapshot();
 }
 
 function runFormatNoEnsure(src) {
@@ -121,9 +202,50 @@ async function runFormat(src) {
 
 self.onmessage = async (ev) => {
     const data = ev.data || {};
-    const { id, op, indexURL, src } = data;
+    const { id, op, indexURL, src, snapshot } = data;
 
     try {
+        if (op === "snapshot") {
+            const snapshot = await makeWarmSnapshot(indexURL);
+
+            self.postMessage({
+                id,
+                ok: true,
+                snapshot,
+                snapshotKind: "warm",
+                snapshotBytes: snapshot.byteLength
+            }, [snapshot.buffer]);
+            return;
+        }
+
+        if (op === "snapshotBase") {
+            const snapshot = await makeBaseSnapshot(indexURL);
+
+            self.postMessage({
+                id,
+                ok: true,
+                snapshot,
+                snapshotKind: "base",
+                snapshotBytes: snapshot.byteLength
+            }, [snapshot.buffer]);
+            return;
+        }
+
+        if (op === "initSnapshot") {
+            if (!snapshot) throw new Error("Missing Pyodide memory snapshot");
+
+            await ensureReady(indexURL, {snapshot});
+            if (!markBlackReadyFromSnapshot()) await ensureBlackReady();
+
+            self.postMessage({
+                id,
+                ok: true,
+                output: "",
+                formatted: ""
+            });
+            return;
+        }
+
         await ensureReady(indexURL);
 
         if (op === "init") {

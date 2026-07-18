@@ -809,8 +809,7 @@ fn wdfa_choose_parent(rng: ptr<function, u32>) -> u32 {
 
   var lo: u32 = 0u;
   var hi: u32 = prm.frontierCount;
-  loop {
-    if (lo + 1u >= hi) { return min(lo, prm.frontierCount - 1u); }
+  while (lo + 1u < hi) {
     let mid = (lo + hi) >> 1u;
     let base = parentCDF[mid];
     let end = base + parentW[mid];

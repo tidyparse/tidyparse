@@ -12,7 +12,6 @@ import kotlin.js.Promise
 import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.TimeSource
 
-// Access your existing editor elements (or keep your earlier lazy vals)
 val cnfInputField by lazy { document.getElementById("tidyparse-input") as HTMLTextAreaElement }
 val cnfOutputField by lazy { document.getElementById("tidyparse-output") as Node }
 
