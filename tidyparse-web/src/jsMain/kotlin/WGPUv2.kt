@@ -152,12 +152,10 @@ suspend fun intersectionPipelineV2(
   val filterT = TimeSource.Monotonic.markNow()
   val statesToDist = allStartIds.map { it to fsa.idsToCoords[(it - startNT) / numNTs]!!.second }
   val led = statesToDist.minOf { it.second }
-  val startIdxs = statesToDist
+  val rootEntries = statesToDist
     .filter { it.second in (led..(led + ledBuffer)) }
-    .map { listOf(it.first, it.second) }
-    .sortedBy { it[1] }
+    .sortedWith(compareBy<Pair<Int, Int>> { it.second }.thenBy { it.first })
     .also { log("V2 start indices: total=${it.size}, roots=${it.size}, LED=$led, window=[${led}, ${led + ledBuffer}]") }
-    .flatten()
   mark("filter roots", filterT)
 
   val maxRepairLen = fsa.width + fsa.height + 10
@@ -169,27 +167,49 @@ suspend fun intersectionPipelineV2(
     }
   }
 
-  val numRoots = startIdxs.size / 2
-  val idxUniBuf = packStruct(
-    listOf(0, maxRepairLen, numNTs, numStates, DISPATCH_GROUP_SIZE_X, MAX_SAMPLES),
-    startIdxs.toGPUBuffer()
-  )
+  val rootsByDist = rootEntries
+    .groupBy({ it.second }, { it.first })
+    .entries
+    .sortedBy { it.key }
+    .map { it.key to it.value }
 
   val decodeT = TimeSource.Monotonic.markNow()
   val decoderTopK = if (rerankerQuery != null) RERANKER_TOP_K_SAMP else TOP_K_SAMP
-  val result = wdfaRegexFrontierDecoderV2(
-    dpBuf = dpBuf,
-    bpCountBuf = bpCountBuf,
-    bpOffsetBuf = bpOffsetBuf,
-    bpStorageBuf = bpStorageBuf,
-    tmBuf = tmBuf,
-    idxUniBuf = idxUniBuf,
-    wdfa = wdfaBuf,
-    maxRepairLen = maxRepairLen,
-    cfg = cfg,
-    numRoots = numRoots,
-    k = decoderTopK
-  )
+  log("V2 decoding ${rootEntries.size} roots across ${rootsByDist.size} edit-distance bucket(s)")
+  val result = mutableListOf<String>()
+  val seen = linkedSetOf<String>()
+  for ((dist, roots) in rootsByDist) {
+    if (result.size >= decoderTopK) break
+
+    val startIdxs = roots.flatMap { listOf(it, dist) }
+    val idxUniBuf = packStruct(
+      listOf(0, maxRepairLen, numNTs, numStates, DISPATCH_GROUP_SIZE_X, MAX_SAMPLES),
+      startIdxs.toGPUBuffer()
+    )
+
+    try {
+      val bucketResult = wdfaRegexFrontierDecoderV2(
+        dpBuf = dpBuf,
+        bpCountBuf = bpCountBuf,
+        bpOffsetBuf = bpOffsetBuf,
+        bpStorageBuf = bpStorageBuf,
+        tmBuf = tmBuf,
+        idxUniBuf = idxUniBuf,
+        wdfa = wdfaBuf,
+        maxRepairLen = maxRepairLen,
+        cfg = cfg,
+        numRoots = roots.size,
+        k = decoderTopK - result.size
+      )
+
+      for (word in bucketResult) {
+        if (seen.add(word)) result.add(word)
+        if (result.size >= decoderTopK) break
+      }
+    } finally {
+      idxUniBuf.destroy()
+    }
+  }
   mark("decode", decodeT)
 
   val rankedResult =
@@ -203,7 +223,7 @@ suspend fun intersectionPipelineV2(
   return rankedResult.also {
     listOf(
       metaBuf, dpBuf, activeBuf, wordBuf,
-      idxUniBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf
+      bpCountBuf, bpOffsetBuf, bpStorageBuf
     ).forEach(GPUBuffer::destroy)
   }
 }
