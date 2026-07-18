@@ -1,5 +1,6 @@
 import GPUBufferUsage.STCPSD
 import Shader.Companion.GPUBuffer
+import Shader.Companion.buildLanguageSizeBuf
 import Shader.Companion.packMetadata
 import Shader.Companion.readIndices
 import Shader.Companion.toGPUBuffer
@@ -22,6 +23,17 @@ const val MAX_WDFA_COMPLETIONS_V2 = 262_144
 const val WDFA_RESAMPLE_SCALE_V2 = 4_096u
 
 private data class WdfaFrontierV2( var buf: GPUBuffer, var count: Int ) { fun destroy() = buf.destroy() }
+
+private fun u32ToLongV2(x: Int): Long = x.toUInt().toLong()
+
+private fun satAddLongV2(a: Long, b: Long): Long =
+  if (Long.MAX_VALUE - a < b) Long.MAX_VALUE else a + b
+
+private fun sumLangSizesV2(sizes: Iterable<Long>): Long =
+  sizes.fold(0L, ::satAddLongV2)
+
+private fun pctV2(n: Long, d: Long): Double =
+  n.toDouble() * 100.0 / d.toDouble().coerceAtLeast(1.0)
 
 private fun allocWdfaFrontierV2(count: Int, stride: Int): WdfaFrontierV2 {
   val intsPerState = WDFA_META_STRIDE_V2 + 2 * stride
@@ -167,11 +179,29 @@ suspend fun intersectionPipelineV2(
     }
   }
 
-  val rootsByDist = rootEntries
-    .groupBy({ it.second }, { it.first })
+  val langSizeT = TimeSource.Monotonic.markNow()
+  val rootLangSizes =
+    if (rootEntries.isEmpty()) emptyList()
+    else {
+      val lsDense = buildLanguageSizeBuf(numStates, numNTs, dpBuf, metaBuf, tmBuf)
+      try {
+        lsDense.readIndices(rootEntries.map { it.first }).map(::u32ToLongV2)
+      } finally {
+        lsDense.destroy()
+      }
+    }
+  mark("build ls dense", langSizeT)
+
+  val rootsByDist = rootEntries.zip(rootLangSizes)
+    .groupBy({ it.first.second }, { it.first.first to it.second })
     .entries
     .sortedBy { it.key }
     .map { it.key to it.value }
+  val totalLangSize = sumLangSizesV2(rootLangSizes)
+  val bucketSummary = rootsByDist.joinToString(", ") { (dist, roots) ->
+    "Δ=$dist:${sumLangSizesV2(roots.map { it.second })}/${roots.size} roots"
+  }
+  log("V2 language size: total=$totalLangSize across ${rootEntries.size} roots, maxRepairLen=$maxRepairLen, buckets=[$bucketSummary]")
 
   val decodeT = TimeSource.Monotonic.markNow()
   val decoderTopK = if (rerankerQuery != null) RERANKER_TOP_K_SAMP else TOP_K_SAMP
@@ -181,7 +211,8 @@ suspend fun intersectionPipelineV2(
   for ((dist, roots) in rootsByDist) {
     if (result.size >= decoderTopK) break
 
-    val startIdxs = roots.flatMap { listOf(it, dist) }
+    val startIdxs = roots.flatMap { listOf(it.first, dist) }
+    val bucketLangSize = sumLangSizesV2(roots.map { it.second })
     val idxUniBuf = packStruct(
       listOf(0, maxRepairLen, numNTs, numStates, DISPATCH_GROUP_SIZE_X, MAX_SAMPLES),
       startIdxs.toGPUBuffer()
@@ -199,7 +230,9 @@ suspend fun intersectionPipelineV2(
         maxRepairLen = maxRepairLen,
         cfg = cfg,
         numRoots = roots.size,
-        k = decoderTopK - result.size
+        k = decoderTopK - result.size,
+        expectedLanguageSize = bucketLangSize,
+        distanceLabel = dist
       )
 
       for (word in bucketResult) {
@@ -239,7 +272,9 @@ suspend fun wdfaRegexFrontierDecoderV2(
   maxRepairLen: Int,
   cfg: CFG,
   numRoots: Int,
-  k: Int = TOP_K_SAMP
+  k: Int = TOP_K_SAMP,
+  expectedLanguageSize: Long? = null,
+  distanceLabel: Int? = null
 ): MutableList<String> {
   log("Using V2 WDFA regex frontier decoder...")
   val t0 = TimeSource.Monotonic.markNow()
@@ -355,8 +390,19 @@ suspend fun wdfaRegexFrontierDecoderV2(
 
     val totalCompletions = readU32V2(completionCntBuf)
     val recordedCompletions = totalCompletions.coerceAtMost(completionCap.toLong()).toInt()
+    val label = distanceLabel?.let { " Δ=$it" } ?: ""
+    if (expectedLanguageSize != null) {
+      val emittedPct = pctV2(totalCompletions, expectedLanguageSize)
+      val recordedPct = pctV2(recordedCompletions.toLong(), expectedLanguageSize)
+      log(
+        "V2 language saturation$label: " +
+          "emitted=$emittedPct% ($totalCompletions/$expectedLanguageSize), " +
+          "recorded=$recordedPct% ($recordedCompletions/$expectedLanguageSize), " +
+          "maxRepairLen=$maxRepairLen, frontierExact=$exact"
+      )
+    }
     if (recordedCompletions == 0) {
-      log("V2 WDFA frontier produced no completed packets in ${t0.elapsedNow()} | frontier=${frontierA.count} | exact=$exact")
+      log("V2 WDFA frontier produced no completed packets in ${t0.elapsedNow()} | frontier=${frontierA.count} | frontierExact=$exact")
       return mutableListOf()
     }
 
@@ -380,7 +426,7 @@ suspend fun wdfaRegexFrontierDecoderV2(
       }
 
       val topK = bestBuf.readJSIntArray()
-      log("V2 WDFA frontier/select/gather read ${topK.length} = ${k}x${maxRepairLen}x4 bytes in ${t0.elapsedNow()} | frontier=${frontierA.count} | completions=$recordedCompletions/$totalCompletions | exact=$exact")
+      log("V2 WDFA frontier/select/gather read ${topK.length} = ${k}x${maxRepairLen}x4 bytes in ${t0.elapsedNow()} | frontier=${frontierA.count} | completions=$recordedCompletions/$totalCompletions | frontierExact=$exact")
       return decodePackets(topK, cfg, maxRepairLen).toMutableList()
     } finally {
       listOf(prmBuf, idxBuf, scrBuf, hashBuf, bestBuf).forEach(GPUBuffer::destroy)
