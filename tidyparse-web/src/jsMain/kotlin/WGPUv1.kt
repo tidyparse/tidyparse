@@ -135,8 +135,8 @@ suspend fun repairCode(
 //  log("Initial nonzeros: ${dpIn.count { it != 0 }}")
 
   mark("preprocessing", preprocT)
-  val words = intersectionPipelineV2(cfg, fsa, ledBuffer, codePoints, rerankerQuery)
-//  val words = intersectionPipeline(cfg, fsa, ledBuffer, codePoints, rerankerQuery)
+//  val words = intersectionPipelineV2(cfg, fsa, ledBuffer, codePoints, rerankerQuery)
+  val words = intersectionPipeline(cfg, fsa, ledBuffer, codePoints, rerankerQuery)
 //  val distinctWords = words.distinct()
 //  log("Distinct: ${distinctWords.size} words")
 
