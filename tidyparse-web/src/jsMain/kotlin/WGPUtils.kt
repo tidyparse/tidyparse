@@ -291,6 +291,16 @@ fun makePorousFSA(tokens: List<String>): FSA {
 
 private const val HOLE_SENTINEL_INT: Int = -1 // 0xFFFF_FFFFu on GPU
 
+private fun escapeUnknownTokenHtml(token: String): String =
+  token
+    .replace("&", "&amp;")
+    .replace("<", "&lt;")
+    .replace(">", "&gt;")
+    .replace("\"", "&quot;")
+    .replace("'", "&#39;")
+
+fun unknownTokenHtml(token: String): String = "❌ Unknown token: ${escapeUnknownTokenHtml(token)}"
+
 fun porousToCodePoints(cfg: CFG, porous: List<String>): IntArray =
   IntArray(porous.size) { i ->
     val t = porous[i]

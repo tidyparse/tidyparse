@@ -158,13 +158,15 @@ open class TextareaDecorator(val inputField: HTMLTextAreaElement, private val pa
   }
 
   private fun markCodeMirrorTokens(lineNo: Int, line: String) {
-    parser.findAll(line).forEach { match ->
-      val token = match.value
+    var ch = 0
+    line.tokenizeByWhitespaceAndKeepDelimiters().forEach { token ->
+      val fromCh = ch
+      ch += token.length
       val cls = parser.identify(token)?.takeIf { it in setOf("red", "orange", "yellow", "green", "blue", "gray") }
         ?: return@forEach
       if (token.isBlank()) return@forEach
 
-      markCodeMirrorRange(lineNo, match.range.first, match.range.last + 1, "cm-$cls")
+      markCodeMirrorRange(lineNo, fromCh, ch, "cm-$cls")
     }
   }
 

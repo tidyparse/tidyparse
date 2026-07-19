@@ -121,10 +121,22 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
     if (cfg.isEmpty()) return
 
+    val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, epsilons, ntStubs).hashCode()
+
+    val hasHoleMarker = HOLE_MARKER in tokens
+    if (hasHoleMarker) {
+      val unknownToken = tokens.firstOrNull { it != HOLE_MARKER && cfg.tmMap[it] == null }
+      if (unknownToken != null) {
+        runningJob?.cancel()
+        currentWorkHash = tokens.hashCode() + cfg.hashCode() + settingsHash.hashCode()
+        writeDisplayText(unknownTokenHtml(unknownToken))
+        return
+      }
+    }
+
     var containsUnkTok = false
     val abstractUnk = tokens.map { if (it in cfg.terminals) it else { containsUnkTok = true; "_" } }
 
-    val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, epsilons, ntStubs).hashCode()
     val workHash = abstractUnk.hashCode() + cfg.hashCode() + settingsHash.hashCode()
     if (workHash == currentWorkHash && !suffixEligible) return
     currentWorkHash = workHash
@@ -135,7 +147,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     runningJob = MainScope().also { runningJob?.cancel() }.launch {
       val scenario = when {
         tokens.size == 1 && stubMatcher.matches(tokens[0]) -> STUB
-        HOLE_MARKER in tokens -> COMPLETION
+        hasHoleMarker -> COMPLETION
 //        !containsUnkTok && forwardCompletion?.isValidContinuation(tokens) == true -> FORWARD_COMPLETION
         // This scenario can be handled much more elegantly using coalegbra and incremental decoding
         tokens in cfg.language && !suffixEligible -> PARSEABLE
