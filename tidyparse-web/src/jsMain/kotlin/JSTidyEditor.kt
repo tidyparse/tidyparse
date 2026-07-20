@@ -155,7 +155,6 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
         else -> REPAIR
       }
 
-      var postProcTimer = TimeSource.Monotonic.markNow()
       when (scenario) {
         STUB -> cfg.enumNTSmall(tokens[0].stripStub()).take(100)
         COMPLETION -> if (!gpuAvailable) cfg.enumSeqSmart(tokens) else completeCode(cfg, tokens).stripEpsilon()
@@ -175,7 +174,8 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
           SUFFIX_COMPLETION -> ({ it.size })
           else -> ({ 0 })
         },
-        reason = scenario.reason, postCompletionSummary = {
+        reason = scenario.reason,
+        postCompletionSummary = TimeSource.Monotonic.markNow().let { postProcTimer -> {
           if (gpuAvailable) {
             mark("postprocessing", postProcTimer);
             timings["total"] = t0.elapsedNow().inWholeMilliseconds.toInt()
@@ -183,7 +183,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
             timings.logTimesheet()
           }
           ", ${t0.elapsedNow()} latency."
-        }.also { postProcTimer = TimeSource.Monotonic.markNow() }
+        }}
       )
     }
   }

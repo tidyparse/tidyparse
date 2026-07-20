@@ -7,7 +7,7 @@ import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 plugins {
   kotlin("jvm")
-  id("org.jetbrains.intellij.platform") version "2.16.0"
+  id("org.jetbrains.intellij.platform") version "2.18.1"
   id("org.jetbrains.changelog") version "2.5.0"
 }
 
@@ -49,6 +49,7 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
 
     bundledPlugin("org.toml.lang")
+    bundledPlugin("org.jetbrains.kotlin")
     plugin("PythonCore:261.25134.95")
     intellijIdea("2026.1.3")
     pluginVerifier()
@@ -81,6 +82,7 @@ tasks {
   test {
     minHeapSize = "1g"
     maxHeapSize = "3g"
+    systemProperty("idea.suppressed.plugins.id", "org.jetbrains.plugins.vue")
 
     testLogging {
       events = setOf(
