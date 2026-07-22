@@ -46,8 +46,10 @@ class JSTidyCNFEditor(
     if (hasHoleMarker) {
       val unknownToken = tokens.firstOrNull { it != HOLE_MARKER && cfg.tmMap[it] == null }
       if (unknownToken != null) {
+        val workHash = tokens.hashCode() + cfg.hashCode() + settingsHash.hashCode()
+        if (workHash == currentWorkHash) return
         runningJob?.cancel()
-        currentWorkHash = tokens.hashCode() + cfg.hashCode() + settingsHash.hashCode()
+        currentWorkHash = workHash
         writeDisplayText(unknownTokenHtml(unknownToken))
         return
       }

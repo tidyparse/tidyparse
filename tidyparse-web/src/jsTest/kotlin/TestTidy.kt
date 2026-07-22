@@ -1,4 +1,5 @@
 import ai.hypergraph.kaliningraph.repair.*
+import ai.hypergraph.kaliningraph.parsing.parseCFG
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.tidyparse.PyCodeSnippet
 import ai.hypergraph.tidyparse.sampleGREUntilTimeout
@@ -49,6 +50,23 @@ class TestTidy {
   fun testRepairCodeGPU() = browserTest {
     tryBootstrappingGPU()
     benchmarkRepair("GPU") { repairCode(cfg, code = it, LED_BUFFER) }
+  }
+
+  @Test
+  fun testCachedTerminalBufferSurvivesEmptyIntersection() = browserTest {
+    tryBootstrappingGPU()
+    if (!gpuAvailable) return@browserTest
+
+    val smallCfg = """
+      START -> EQ
+      EQ -> 1 + 1 = 2
+    """.trimIndent().parseCFG()
+
+    assertTrue(completeCode(smallCfg, listOf("_", "=", "=")).isEmpty())
+    assertTrue(
+      "1 + 1 = 2" in completeCode(smallCfg, listOf("_", "+", "_", "=", "_")),
+      "An empty intersection should not destroy the CFG's cached terminal buffer"
+    )
   }
 
   @Test

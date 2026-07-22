@@ -42,9 +42,15 @@ const val largeMem = "{ requiredLimits: { maxBufferSize: 2000000000, maxStorageB
 const val smallMem = "{ requiredLimits: { maxBufferSize: 1073741824, maxStorageBufferBindingSize: 1073741824, maxStorageBuffersPerShaderStage: 10 } }"
 
 suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
-  val tmpDev = (navigator.gpu as? GPU)?.requestAdapter()?.also {
-    gpu = if (needsExtraMemory) it.requestDevice(js(largeMem))
-    else it.requestDevice(js(smallMem))
+  val tmpDev = try {
+    (navigator.gpu as? GPU)?.requestAdapter()?.also {
+      gpu = if (needsExtraMemory) it.requestDevice(js(largeMem))
+      else it.requestDevice(js(smallMem))
+    }
+  } catch (t: Throwable) {
+    gpuAvailable = false
+    markWebGPUStatus("error", "WebGPU unavailable: ${t.message ?: t.toString()}")
+    return
   }
 
   if (tmpDev != null) {
@@ -159,7 +165,7 @@ suspend fun intersectionPipeline(
   mark("pack metadata", metaT)
   log("Packed metadata in ${timings["pack metadata"]}ms")
 
-  val tmBuf       = cfg.termBuf
+  val tmBuf       = cfg.termBuf // Borrowed from the CFG cache; never destroy per invocation.
   val wordBuf     = codePoints.toGPUBuffer()
   val totalSize   = numStates * numStates * numNTs
   val activeWords = (numNTs + 31) ushr 5
@@ -195,7 +201,7 @@ suspend fun intersectionPipeline(
 
   if (allStartIds.isEmpty()) {
 //    timings.logTimingsToJSConsole()
-    listOf(activeBuf, wordBuf, tmBuf, metaBuf, dpBuf).forEach(GPUBuffer::destroy)
+    listOf(activeBuf, wordBuf, metaBuf, dpBuf).forEach(GPUBuffer::destroy)
     return emptyList<String>().also { log("No valid parse found: dpComplete has no entries in final states!") }
   }
 
@@ -223,7 +229,7 @@ suspend fun intersectionPipeline(
   val maxRepairLen = fsa.width + fsa.height + 10
   if (MAX_WORD_LEN < maxRepairLen) {
 //    timings.logTimingsToJSConsole()
-    listOf(activeBuf, wordBuf, tmBuf, metaBuf, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf)
+    listOf(activeBuf, wordBuf, metaBuf, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf)
       .forEach(GPUBuffer::destroy)
     return emptyList<String>().also {
       log("Max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)")
@@ -480,7 +486,7 @@ suspend fun scoreSelectGatherWDFA(
   return topK
 }
 
-// Maps NTs to terminals for sampling
+// Maps NTs to terminals for sampling. This buffer is cached and borrowed by each pipeline invocation.
 val CFG.termBuf: GPUBuffer by cache {
 //  val packTime = TimeSource.Monotonic.markNow()
   val terminalLists = nonterminals.map { bimap.UNITS[it]?.map { tmMap[it]!! } ?: emptyList() }

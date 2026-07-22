@@ -222,6 +222,90 @@ u { text-decoration: #f00 wavy underline; }
 
 .config-output-controls--split { justify-content: space-between; }
 
+#gpuAvail object { width: 24px; height: 24px; }
+
+.runtime-status-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-right: auto;
+    min-width: 0;
+}
+
+.runtime-status-item {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 35px;
+    height: 35px;
+    flex: 0 0 35px;
+    border: 1px solid rgba(88, 110, 117, 0.28);
+    border-radius: 8px;
+    background: rgba(253, 246, 227, 0.58);
+    opacity: 0.42;
+    box-sizing: border-box;
+    overflow: hidden;
+    transition: opacity 120ms ease, background-color 120ms ease;
+}
+
+.runtime-status-item img,
+.runtime-status-item object,
+.runtime-status-item svg {
+    display: block;
+    max-width: 24px;
+    max-height: 24px;
+    object-fit: contain;
+    filter: grayscale(1);
+    pointer-events: none;
+}
+
+.runtime-status-item.ready {
+    opacity: 1;
+    background: rgba(253, 246, 227, 0.78);
+}
+
+.runtime-status-item.warming {
+    opacity: 0.72;
+    background: rgba(253, 246, 227, 0.68);
+}
+
+.runtime-status-item.error {
+    opacity: 1;
+    background: rgba(220, 50, 47, 0.08);
+}
+
+.runtime-status-item.ready img,
+.runtime-status-item.ready object,
+.runtime-status-item.ready svg { filter: none; }
+
+.runtime-status-item svg {
+    width: 24px;
+    height: 24px;
+    fill: none;
+    stroke: #586e75;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.55;
+}
+
+.runtime-status-item.ready svg { stroke: #268bd2; }
+
+.runtime-status-dot {
+    position: absolute;
+    right: 3px;
+    top: 3px;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: #839496;
+    box-shadow: 0 0 0 2px #eee8d5;
+}
+
+.runtime-status-item.warming .runtime-status-dot { background: #b58900; }
+.runtime-status-item.ready .runtime-status-dot { background: #2aa198; }
+.runtime-status-item.error .runtime-status-dot { background: #dc322f; }
+
 .config-number-control {
     display: inline-flex;
     align-items: center;

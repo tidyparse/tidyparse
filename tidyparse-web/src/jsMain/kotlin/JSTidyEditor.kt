@@ -127,8 +127,10 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     if (hasHoleMarker) {
       val unknownToken = tokens.firstOrNull { it != HOLE_MARKER && cfg.tmMap[it] == null }
       if (unknownToken != null) {
+        val workHash = tokens.hashCode() + cfg.hashCode() + settingsHash.hashCode()
+        if (workHash == currentWorkHash) return
         runningJob?.cancel()
-        currentWorkHash = tokens.hashCode() + cfg.hashCode() + settingsHash.hashCode()
+        currentWorkHash = workHash
         writeDisplayText(unknownTokenHtml(unknownToken))
         return
       }
@@ -138,7 +140,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     val abstractUnk = tokens.map { if (it in cfg.terminals) it else { containsUnkTok = true; "_" } }
 
     val workHash = abstractUnk.hashCode() + cfg.hashCode() + settingsHash.hashCode()
-    if (workHash == currentWorkHash && !suffixEligible) return
+    if (workHash == currentWorkHash) return
     currentWorkHash = workHash
 
     val cached = cache[workHash]

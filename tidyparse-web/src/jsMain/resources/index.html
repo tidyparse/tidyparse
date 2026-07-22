@@ -60,7 +60,12 @@
     </select>
   </div>
   <div class="config-output-controls config-output-controls--split">
-    <div id="gpuAvail"></div>
+    <div class="runtime-status-group" aria-label="Runtime status">
+      <div id="gpuAvail" class="runtime-status-item pending" role="status" aria-label="WebGPU loading" title="WebGPU loading">
+        <object type="image/svg+xml" data="/webgpu.svg" width="24" height="24" aria-label="WebGPU"></object>
+        <span class="runtime-status-dot"></span>
+      </div>
+    </div>
     <div class="config-control-group">
       <label class="config-number-control"><span class="config-number-control__label">Generation timeout:</span><span class="timeout-input"><input id="timeout" type="number" value="300" min="100" step="100"><span class="timeout-input__suffix">&nbsp;ms</span></span></label>
       <label for="epsilon-checkbox">Add ε-productions&nbsp;</label>

@@ -112,13 +112,19 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
         • In case of slow repairs, try enabling WebGPU in your browser.
     </div>
 </div>
-<div title="Minimizes total edits per repair." id="confrow1">
-    <label>Max edit distance: <a href="https://en.wikipedia.org/wiki/Edit_distance#Language_edit_distance">LED</a> + <input id="led-buffer" type="number" value="2" min="0" max="3" step="1" style="margin-right: 1.2em"></label>
-</div>
-<div title="Adds nonterminal stubs to CFG." id="confrow2">
-    <div id="gpuAvail" style="margin-right: 770px; margin-top:-50px"></div>
-    <!--    <label for="ntstubs-checkbox">Nonterminal stubs&nbsp;</label>-->
-    <!--    <input type="checkbox" id="ntstubs-checkbox" checked>-->
+<div id="config-panel">
+    <div class="config-input-controls"></div>
+    <div class="config-output-controls config-output-controls--split">
+        <div class="runtime-status-group" aria-label="Runtime status">
+            <div id="gpuAvail" class="runtime-status-item pending" role="status" aria-label="WebGPU loading" title="WebGPU loading">
+                <object type="image/svg+xml" data="/webgpu.svg" width="24" height="24" aria-label="WebGPU"></object>
+                <span class="runtime-status-dot"></span>
+            </div>
+        </div>
+        <div class="config-control-group" title="Minimizes total edits per repair.">
+            <label class="config-number-control"><span class="config-number-control__label">Max edit distance: <a href="https://en.wikipedia.org/wiki/Edit_distance#Language_edit_distance">LED</a> +</span><input id="led-buffer" type="number" value="2" min="0" max="3" step="1"></label>
+        </div>
+    </div>
 </div>
 <script type="text/javascript">var PROGRAMMING_LANG = "cnf"</script>
 <script src="https://cdn.jsdelivr.net/pyodide/v0.27.5/full/pyodide.js"></script>
