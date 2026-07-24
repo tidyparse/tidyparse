@@ -1,0 +1,43 @@
+START -> E_AND = E_AND | E_P = E_P | E_Q = E_Q | E_OR = E_OR
+
+E_P -> p
+E_P -> ( E_P & E_P ) | ( E_P & E_OR ) | ( E_OR & E_P )
+E_P -> ( E_P v E_P ) | ( E_P v E_AND ) | ( E_AND v E_P )
+
+E_Q -> q
+E_Q -> ( E_Q & E_Q ) | ( E_Q & E_OR ) | ( E_OR & E_Q )
+E_Q -> ( E_Q v E_Q ) | ( E_Q v E_AND ) | ( E_AND v E_Q )
+
+E_AND -> ( E_AND & E_AND ) | ( E_AND & E_P ) | ( E_AND & E_Q ) | ( E_AND & E_OR )
+E_AND -> ( E_P & E_AND ) | ( E_Q & E_AND ) | ( E_OR & E_AND )
+E_AND -> ( E_P & E_Q ) | ( E_Q & E_P )
+E_AND -> ( E_AND v E_AND )
+
+E_OR -> ( E_OR & E_OR )
+E_OR -> ( E_OR v E_OR ) | ( E_OR v E_P ) | ( E_OR v E_Q ) | ( E_OR v E_AND )
+E_OR -> ( E_P v E_OR ) | ( E_Q v E_OR ) | ( E_AND v E_OR )
+E_OR -> ( E_P v E_Q ) | ( E_Q v E_P )
+
+---
+
+p = p
+( p & q ) = ( q & p )
+( p v q ) = ( q v p )
+p = ( p & p )
+( p & ( p v q ) ) = p
+( p v ( p & q ) ) = p
+( ( p & q ) & p ) = ( p & ( q & p ) )
+( p & ( q v p ) ) = ( ( p & q ) v ( p & p ) )
+
+p = q
+p = ( p & q )
+( p & q ) = ( p v q )
+( p & ( p v q ) ) = q
+( p v ( p & q ) ) = ( p v q )
+
+( p & q ) = _
+( p & _ ) = p
+( _ & q ) = ( p & q )
+( p v _ ) = ( p v q )
+_ = ( q & p )
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _

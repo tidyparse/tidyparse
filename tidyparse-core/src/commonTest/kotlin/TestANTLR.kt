@@ -22,9 +22,7 @@ class TestANTLR {
       charPositionInLine: Int,
       msg: String,
       e: RecognitionException?
-    ) {
-      throw RuntimeException("Syntax error at line $line:$charPositionInLine - $msg")
-    }
+    ) = throw RuntimeException("Syntax error at line $line:$charPositionInLine - $msg")
   }
 
   @Test
