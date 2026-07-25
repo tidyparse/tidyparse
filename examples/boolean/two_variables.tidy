@@ -1,25 +1,17 @@
-START -> E_AND = E_AND | E_P = E_P | E_Q = E_Q | E_OR = E_OR
+START -> E& = E& | EP = EP | EQ = EQ | EV = EV
 
-E_P -> p
-E_P -> ( E_P & E_P ) | ( E_P & E_OR ) | ( E_OR & E_P )
-E_P -> ( E_P v E_P ) | ( E_P v E_AND ) | ( E_AND v E_P )
+EP -> p
+EP -> ( EP & EP ) | ( EP & EV ) | ( EV & EP )
+EP -> ( EP v EP ) | ( EP v E& ) | ( E& v EP )
+EQ -> q
+EQ -> ( EQ & EQ ) | ( EQ & EV ) | ( EV & EQ )
+EQ -> ( EQ v EQ ) | ( EQ v E& ) | ( E& v EQ )
 
-E_Q -> q
-E_Q -> ( E_Q & E_Q ) | ( E_Q & E_OR ) | ( E_OR & E_Q )
-E_Q -> ( E_Q v E_Q ) | ( E_Q v E_AND ) | ( E_AND v E_Q )
-
-E_AND -> ( E_AND & E_AND ) | ( E_AND & E_P ) | ( E_AND & E_Q ) | ( E_AND & E_OR )
-E_AND -> ( E_P & E_AND ) | ( E_Q & E_AND ) | ( E_OR & E_AND )
-E_AND -> ( E_P & E_Q ) | ( E_Q & E_P )
-E_AND -> ( E_AND v E_AND )
-
-E_OR -> ( E_OR & E_OR )
-E_OR -> ( E_OR v E_OR ) | ( E_OR v E_P ) | ( E_OR v E_Q ) | ( E_OR v E_AND )
-E_OR -> ( E_P v E_OR ) | ( E_Q v E_OR ) | ( E_AND v E_OR )
-E_OR -> ( E_P v E_Q ) | ( E_Q v E_P )
-
+E& -> ( E& & E& ) | ( E& & EP ) | ( E& & EQ ) | ( E& & EV ) | ( EP & E& )
+E& -> ( EQ & E& ) | ( EV & E& ) | ( EP & EQ ) | ( EQ & EP ) | ( E& v E& )
+EV -> ( EV & EV ) | ( EV v EV ) | ( EV v EP ) | ( EV v EQ ) | ( EV v E& )
+EV -> ( EP v EV ) | ( EQ v EV ) | ( E& v EV ) | ( EP v EQ ) | ( EQ v EP )
 ---
-
 p = p
 ( p & q ) = ( q & p )
 ( p v q ) = ( q v p )
