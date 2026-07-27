@@ -235,14 +235,20 @@ suspend fun intersectionPipeline(
   }
 
   val lsDenseT = TimeSource.Monotonic.markNow()
-  val lsDense = buildLanguageSizeBuf(numStates, numNTs, dpBuf, metaBuf, tmBuf)
+  val lsDense = buildLanguageSizeBuf(
+    numStates, numNTs, dpBuf, metaBuf, tmBuf,
+    bpCountBuf, bpOffsetBuf, bpStorageBuf
+  )
   mark("build ls dense", lsDenseT)
   log("Built lsDense in ${timings["build ls dense"]}ms (${lsDense.size}B)")
 
   val cdfBuf = GPUBuffer(totalExp * 4, STCPSD)
   timings["build cdf"] = timedGPUIsolated("Build CDF") {
     val ntWorkgroups = (numNTs + DENSE_NT_WORKGROUP_SIZE - 1) / DENSE_NT_WORKGROUP_SIZE
-    ls_cdf(dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)(numStates, numStates, ntWorkgroups)
+    ls_cdf(
+      dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf,
+      bpCountBuf, bpStorageBuf
+    )(numStates, numStates, ntWorkgroups)
   }
   lsDense.destroy()
   log("Pairing function construction took: ${timings["build cdf"]}ms (${cdfBuf.size}B)")
@@ -290,7 +296,7 @@ suspend fun intersectionPipeline(
     enum_words_wor(
       dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf,
       cdfBuf, tmBuf, idxUniBuf, rootSizes, rootCDF, outBuf
-    )(DISPATCH_GROUP_SIZE_X, (toDecode + DISPATCH_GROUP_SIZE_X - 1) / DISPATCH_GROUP_SIZE_X)
+    ).dispatchFlat(toDecode)
   }
 
   log("Enumerated $toDecode samples in ${timings["enumerate"]}ms (${outBuf.size}B)")
@@ -414,11 +420,10 @@ suspend fun scoreSelectGather(
 ): JSIntArray {
   val t0 = TimeSource.Monotonic.markNow()
   val threads = DISPATCH_GROUP_SIZE_X
-  val groupsY = (maxSamples + threads - 1) / threads
   /** Memory layout: [SAMPLER_PARAMS] */
   val prmBuf  = intArrayOf(maxSamples, k, stride, threads).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
 
-  markov_score(packets, ngrams, prmBuf)(threads, groupsY)
+  markov_score(packets, ngrams, prmBuf).dispatchFlat(maxSamples)
 //  log("Score in ${t0.elapsedNow()}")
 
 //  log(packets.readInts().toList().windowed(stride, stride)
@@ -427,11 +432,10 @@ suspend fun scoreSelectGather(
 
 //  t0 = TimeSource.Monotonic.markNow()
   val totalGroups = (maxSamples + 255) / 256
-  val selGroupsY  = (totalGroups + threads - 1) / threads
   val idxBuf      = IntArray(k) { -1 }.toGPUBuffer(STCPSD)
   val scrBuf      = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
 
-  select_top_k(prmBuf, packets, idxBuf, scrBuf)(threads, selGroupsY)
+  select_top_k(prmBuf, packets, idxBuf, scrBuf).dispatchFlat(totalGroups)
 //  log("Select in ${t0.elapsedNow()}")
 
 //  t0 = TimeSource.Monotonic.markNow()
@@ -459,20 +463,22 @@ suspend fun scoreSelectGatherWDFA(
   val timings = linkedMapOf<String, Int>()
 
   val threads = DISPATCH_GROUP_SIZE_X
-  val groupsY = (maxSamples + threads - 1) / threads
 
   val prmBuf = intArrayOf(maxSamples, k, stride, threads)
     .toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
 
-  timings["wdfa_score"] = timedGPUIsolated("WDFA score") { wdfa_score(packets, wdfa, prmBuf)(threads, groupsY) }
+  timings["wdfa_score"] = timedGPUIsolated("WDFA score") {
+    wdfa_score(packets, wdfa, prmBuf).dispatchFlat(maxSamples)
+  }
 
   val totalGroups = (maxSamples + 255) / 256
-  val selGroupsY = (totalGroups + threads - 1) / threads
 
   val idxBuf = IntArray(k) { -1 }.toGPUBuffer(STCPSD)
   val scrBuf = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
 
-  timings["select_top_k"] = timedGPUIsolated("Select top-k") { select_top_k(prmBuf, packets, idxBuf, scrBuf)(threads, selGroupsY) }
+  timings["select_top_k"] = timedGPUIsolated("Select top-k") {
+    select_top_k(prmBuf, packets, idxBuf, scrBuf).dispatchFlat(totalGroups)
+  }
 
   val bestBuf = GPUBuffer(k * stride * 4, STCPSD)
 
@@ -632,23 +638,6 @@ fn langSize(dpIdx: u32, numNTs: u32) -> u32 {
 
   return last;
 }"""
-
-//language=text
-const val SHORT_PREAMBLE = """
-let N  = cs.numStates;
-let NT = cs.numNonterminals;
-
-let snt     = N * NT;
-let dpIdx   = r*snt + c*NT + A;
-let startGC = getGrammarOffset(A);
-var endGC: u32;
-if (A + 1u < NT) { endGC = getGrammarOffset(A + 1u); } else { endGC = cs.grammarFlattenedSize; }
-let aoi            = r*N + c + 1u;
-let pairOffset     = getMdptOffset(aoi - 1u);
-var pairOffsetNext: u32;
-if (aoi < cs.mdptsOffsetsSize) { pairOffsetNext = getMdptOffset(aoi); } 
-else { pairOffsetNext = cs.mdptsSize; }
-"""
 
 //language=text
 const val PREAMBLE = """
@@ -1004,12 +993,19 @@ struct IterationState { count: atomic<u32>, round: u32 };
 @group(0) @binding(2) var<storage, read>                cs : CFLStruct;
 @group(0) @binding(3) var<storage, read_write>          iter : IterationState;
 @group(0) @binding(4) var<storage, read_write> changed_cells : array<atomic<u32>>;
+@group(0) @binding(5) var<storage, read_write>    binary_nts : array<u32>;
 
 fn flushParentMask(r: u32, c: u32, aw: u32, mask: u32, tgtBase: u32, snt: u32, NT: u32) -> u32 {
     if (mask == 0u || aw >= cs.activeWords) { return 0u; }
 
+    let binaryIdx = tgtBase + aw;
+    let oldBinary = binary_nts[binaryIdx];
+    let newBinary = mask & ~oldBinary;
+    if (newBinary == 0u) { return 0u; }
+    binary_nts[binaryIdx] = oldBinary | newBinary;
+
     let oldActive = atomicLoad(&active_nts[tgtBase + aw]);
-    let newlyActive = mask & ~oldActive;
+    let newlyActive = newBinary & ~oldActive;
 
     if (newlyActive != 0u) { _ = atomicOr(&active_nts[tgtBase + aw], newlyActive); }
 
@@ -1036,7 +1032,7 @@ fn flushParentMask(r: u32, c: u32, aw: u32, mask: u32, tgtBase: u32, snt: u32, N
     // Already-active A may still be terminal/literal-only, so add binary bit.
     // This preserves binary support for downstream consumers, but does not
     // grow active_nts and therefore must not keep the fixpoint alive.
-    var ab = mask & oldActive;
+    var ab = newBinary & oldActive;
     loop {
         if (ab == 0u) { break; }
 
@@ -1190,14 +1186,19 @@ struct SpanUni { span : u32 };
 @group(0) @binding(2) var<storage, read>              cs : CFLStruct;
 @group(0) @binding(3) var<storage, read>       terminals : Terminals;
 @group(0) @binding(4) var<uniform>                    su : SpanUni;
+@group(0) @binding(5) var<storage, read>        bp_count : array<u32>;
+@group(0) @binding(6) var<storage, read>       bp_offset : array<u32>;
+@group(0) @binding(7) var<storage, read>      bp_storage : array<u32>;
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let r = gid.x;
     let c = r + su.span;
     if (c >= cs.numStates) { return; }
     let A = gid.z;
-    
-    $SHORT_PREAMBLE
+
+    let N     = cs.numStates;
+    let NT    = cs.numNonterminals;
+    let dpIdx = (r * N + c) * NT + A;
     
     let val = dp_in[dpIdx];
     if (val == 0u) { return; }
@@ -1208,19 +1209,13 @@ struct SpanUni { span : u32 };
 
     var total: u32 = litCount;
 
-    for (var p = pairOffset; p < pairOffsetNext; p = p + 1u) {
-        let m = getMdpt(p);
-
-        for (var g = startGC; g < endGC; g = g + 2u) {
-            let B = getGrammarSymbol(g);
-            let C = getGrammarSymbol(g + 1u);
-
-            let idxBM = r*snt + m*NT + B;
-            let idxMC = m*snt + c*NT + C;
-
-            // only add if both children are present
-            if (dp_in[idxBM] != 0u && dp_in[idxMC] != 0u) { total = sat_add(total, sat_mul(ls_dense[idxBM], ls_dense[idxMC])); }
-        }
+    let base = bp_offset[dpIdx];
+    let count = bp_count[dpIdx];
+    for (var i = 0u; i < count; i = i + 1u) {
+        let pairBase = (base + i) * 2u;
+        let left = bp_storage[pairBase];
+        let right = bp_storage[pairBase + 1u];
+        total = sat_add(total, sat_mul(ls_dense[left], ls_dense[right]));
     }
     ls_dense[dpIdx] = max(total, 1u);  // total==0 should not happen, but guard anyway
 }""")
@@ -1233,34 +1228,34 @@ val ls_cdf by Shader("""$CFL_STRUCT $TERM_STRUCT $SAT_ARTH
 @group(0) @binding(3) var<storage, read_write>   ls_sparse : array<u32>;
 @group(0) @binding(4) var<storage, read>                cs : CFLStruct;
 @group(0) @binding(5) var<storage, read>         terminals : Terminals;
+@group(0) @binding(6) var<storage, read>          bp_count : array<u32>;
+@group(0) @binding(7) var<storage, read>        bp_storage : array<u32>;
 
 @compute @workgroup_size(1,1,$DENSE_NT_WORKGROUP_SIZE) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-    $PREAMBLE
+    let r = gid.x;
+    let c = gid.y;
+    if (c <= r) { return; }
+    let N = cs.numStates;
+    let NT = cs.numNonterminals;
+    let A = gid.z;
+    if (A >= NT) { return; }
+    let dpIdx = (r * N + c) * NT + A;
 
     let val = dp_in[dpIdx];
     if (val == 0u) { return; }
 
     var acc    : u32 = 0u;
-    var outPos : u32 = bp_offset[dpIdx];
-    
+    let outPos = bp_offset[dpIdx];
+    let count = bp_count[dpIdx];
+
     let litCount = count_tms(val, A);
 
-    for (var p = pairOffset; p < pairOffsetNext; p = p + 1u) {
-        let m = getMdpt(p);
-
-        for (var g = startGC; g < endGC; g = g + 2u) {
-            let B = getGrammarSymbol(g);
-            let C = getGrammarSymbol(g + 1u);
-
-            let idxBM = r*snt + m*NT + B;
-            let idxMC = m*snt + c*NT + C;
-
-            if (dp_in[idxBM] != 0u && dp_in[idxMC] != 0u) {
-                acc = sat_add(acc, sat_mul(ls_dense[idxBM], ls_dense[idxMC]));
-                ls_sparse[outPos] = sat_add(acc, litCount);
-                outPos += 1u;
-            }
-        }
+    for (var i = 0u; i < count; i = i + 1u) {
+        let pairBase = (outPos + i) * 2u;
+        let left = bp_storage[pairBase];
+        let right = bp_storage[pairBase + 1u];
+        acc = sat_add(acc, sat_mul(ls_dense[left], ls_dense[right]));
+        ls_sparse[outPos + i] = sat_add(acc, litCount);
     }
 }""")
 
@@ -2154,14 +2149,26 @@ class Shader constructor(val src: String) {
       return Triple(bpCountBuf, bpOffsetBuf, bpStorageBuf)
     }
 
-    fun buildLanguageSizeBuf(nStates: Int, nNT: Int, dpIn: GPUBuffer, metaBuf: GPUBuffer, tmBuf: GPUBuffer): GPUBuffer {
+    fun buildLanguageSizeBuf(
+      nStates: Int,
+      nNT: Int,
+      dpIn: GPUBuffer,
+      metaBuf: GPUBuffer,
+      tmBuf: GPUBuffer,
+      bpCountBuf: GPUBuffer,
+      bpOffsetBuf: GPUBuffer,
+      bpStorageBuf: GPUBuffer
+    ): GPUBuffer {
       val totalCells = nStates * nStates * nNT
       val lsDenseBuf = GPUBuffer(totalCells * 4, STCPSD)
 
       for (span in 1..<nStates) {
         val spanBuf = span.toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
 
-        ls_dense(dpIn, lsDenseBuf, metaBuf, tmBuf, spanBuf)(nStates - span, 1, nNT)
+        ls_dense(
+          dpIn, lsDenseBuf, metaBuf, tmBuf, spanBuf,
+          bpCountBuf, bpOffsetBuf, bpStorageBuf
+        )(nStates - span, 1, nNT)
       }
 
       log("Size of lsDenseBuf: ${lsDenseBuf.size} bytes  (|Q|=$nStates, |V|=$nNT)")
@@ -2174,6 +2181,7 @@ class Shader constructor(val src: String) {
     var t0 = TimeSource.Monotonic.markNow()
     val iterationBuf = intArrayOf(0, 0).toGPUBuffer(STCPSD)
     val changedCellsBuf = GPUBuffer(numStates * numStates * 4, STCPSD)
+    val binaryNtsBuf = GPUBuffer(activeBuf.size, STCPSD)
     val changeIndex = listOf(0)
     val workgroupsX = (numStates + CFL_WORKGROUP_SIZE_X - 1) / CFL_WORKGROUP_SIZE_X
     val workgroupsY = (numStates + CFL_WORKGROUP_SIZE_Y - 1) / CFL_WORKGROUP_SIZE_Y
@@ -2182,7 +2190,9 @@ class Shader constructor(val src: String) {
       if (round != 0) iterationBuf.writeU32(wordIndex = 0, value = 0)
       iterationBuf.writeU32(wordIndex = 1, value = round)
 
-      cfl_mul_upper(dpIn, activeBuf, metaBuf, iterationBuf, changedCellsBuf)(workgroupsX, workgroupsY)
+      cfl_mul_upper(
+        dpIn, activeBuf, metaBuf, iterationBuf, changedCellsBuf, binaryNtsBuf
+      )(workgroupsX, workgroupsY)
       val changesThisRound = iterationBuf.readIndices(changeIndex)[0]
       log("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
       t0 = TimeSource.Monotonic.markNow()
@@ -2190,7 +2200,7 @@ class Shader constructor(val src: String) {
       if (changesThisRound == 0) break
     }
 
-    destroyAll(iterationBuf, changedCellsBuf)
+    destroyAll(iterationBuf, changedCellsBuf, binaryNtsBuf)
   }
 
   suspend fun invokeDAGFixpoint(fsa: FSA): Pair<GPUBuffer, Int> {
@@ -2215,6 +2225,11 @@ class Shader constructor(val src: String) {
   }
 
   class DispatchStrategy(val gce: GPUCommandEncoder, val gcpe: GPUComputePassEncoder) {
+    fun dispatchFlat(workgroups: Int) = invoke(
+      minOf(workgroups, DISPATCH_GROUP_SIZE_X),
+      (workgroups + DISPATCH_GROUP_SIZE_X - 1) / DISPATCH_GROUP_SIZE_X
+    )
+
     operator fun invoke(x: Int, y: Int = 1, z: Int = 1) {
       gcpe.dispatchWorkgroups(x, y, z)
       gcpe.end()

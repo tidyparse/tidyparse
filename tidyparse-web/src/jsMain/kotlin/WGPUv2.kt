@@ -184,7 +184,10 @@ suspend fun intersectionPipelineV2(
   val rootLangSizes =
     if (rootEntries.isEmpty()) emptyList()
     else {
-      val lsDense = buildLanguageSizeBuf(numStates, numNTs, dpBuf, metaBuf, tmBuf)
+      val lsDense = buildLanguageSizeBuf(
+        numStates, numNTs, dpBuf, metaBuf, tmBuf,
+        bpCountBuf, bpOffsetBuf, bpStorageBuf
+      )
       try {
         lsDense.readIndices(rootEntries.map { it.first }).map(::u32ToLongV2)
       } finally {
