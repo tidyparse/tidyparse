@@ -60,7 +60,7 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         // Utils
         prefix_sum_p1, prefix_sum_p2,
         // Loaders
-        sparse_load, sparse_mat_load,
+        sparse_mat_load,
         // Automata construction
         init_lev_chart, init_line_chart,
         // Matrix closure/CFL reachability
@@ -1903,28 +1903,6 @@ val gather_top_k by Shader("""$SAMPLER_PARAMS
 }""")
 
 //language=wgsl
-val sparse_load by Shader("""
-struct SparseElement { r: u32, c: u32, v: u32, i: u32 };
-struct Coeffs { rowCoeff: u32, colCoeff: u32 };
-
-@group(0) @binding(0) var<storage, read>     sparse_elements : array<SparseElement>;
-@group(0) @binding(1) var<storage, read_write> output_buffer : array<u32>;
-@group(0) @binding(2) var<uniform>                    coeffs : Coeffs;
-
-// Define workgroup size (must match constant in Kotlin code)
-const WORKGROUP_SIZE: u32 = ${SPARSE_WRITER_WORKGROUP_SIZE}u;
-
-@compute @workgroup_size(WORKGROUP_SIZE) fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let index = global_id.x;
-    let num_elements = arrayLength(&sparse_elements);
-    let output_size = arrayLength(&output_buffer);
-    if (index >= num_elements) { return; }
-    let element = sparse_elements[index];
-    let target_index = element.r * coeffs.rowCoeff + element.c * coeffs.colCoeff + element.v;
-    if (target_index < output_size) { output_buffer[target_index] = element.i; }
-}""")
-
-//language=wgsl
 val sparse_mat_load by Shader("""struct SparseElement { r: u32, c: u32 };
 @group(0) @binding(0) var<storage, read>     sparse_elements : array<SparseElement>;
 @group(0) @binding(1) var<storage, read_write> output_buffer : array<u32>;
@@ -2013,20 +1991,6 @@ class Shader constructor(val src: String) {
     fun createParseChart(usage: Int, totalSizeInInts: Int): GPUBuffer {
       val outputByteSize = totalSizeInInts.toLong() * Int32Array.BYTES_PER_ELEMENT
       return GPUBuffer(outputByteSize, usage or GPUBufferUsage.STORAGE or GPUBufferUsage.COPY_DST)
-    }
-
-    fun IntArray.toGPUBufferSparse(usage: Int, totalSizeInInts: Int, rowCoeff: Int, colCoeff: Int): GPUBuffer {
-      require(size % 4 == 0) { "Input array size must be a multiple of 4 for sparse data (r,c,v,i)." }
-      require(totalSizeInInts > 0) { "totalSizeInInts must be positive." }
-
-      val sparseDataGpuBuffer = toGPUBuffer()
-      val outputBuffer = createParseChart(usage, totalSizeInInts)
-      val coeffsBuffer = intArrayOf(rowCoeff, colCoeff).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
-      val numWorkgroups = ceil(size / 4.0 / SPARSE_WRITER_WORKGROUP_SIZE).toInt()
-
-      sparse_load(sparseDataGpuBuffer, outputBuffer, coeffsBuffer)(numWorkgroups)
-
-      return outputBuffer.also { sparseDataGpuBuffer.destroy(); coeffsBuffer.destroy() }
     }
 
     fun IntArray.toSquareMatrixSparse(n: Int): GPUBuffer {
