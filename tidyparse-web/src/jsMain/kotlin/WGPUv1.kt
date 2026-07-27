@@ -687,14 +687,18 @@ const val CHART_INIT_PREAMBLE = """$CFL_STRUCT $TERM_STRUCT $ACTIVE_NT_HELPERS
 
 fn letter_at(idx : u32, wd_len : u32) -> u32 { return select(word[idx], 0xffffffffu, idx >= wd_len); }
 
-fn encode_pos_literal(A_nt_idx : u32, sigma_token : u32) -> u32 {
+fn literal_index(A_nt_idx : u32, sigma_token : u32) -> u32 {
     if (sigma_token == 0xffffffffu) { return 0u; }
     let ntLen = get_nt_tm_lens(A_nt_idx);
     let ntOff = get_offsets(A_nt_idx);
     for (var k : u32 = 0u; k < ntLen; k = k + 1u) {
-        if (get_all_tms(ntOff + k) == sigma_token) { return ((k + 1u) << 1u); }
+        if (get_all_tms(ntOff + k) == sigma_token) { return k + 1u; }
     }
     return 0u;
+}
+
+fn encode_pos_literal(A_nt_idx : u32, sigma_token : u32) -> u32 {
+    return literal_index(A_nt_idx, sigma_token) << 1u;
 }"""
 
 //language=wgsl
@@ -748,21 +752,9 @@ fn unrank_to_coords(rank_idx: u32, max_j_idx: u32, max_i_idx: u32) -> u32 {
 }
 
 fn encode_neg_literal(A_nt_idx : u32, sigma_token : u32) -> u32 {
-    var s_is_in_Sigma_A = false;
-    var k_idx_of_s_in_Sigma_A : u32 = 0u;
-    if (sigma_token != 0xffffffffu) {
-        let ntLen = get_nt_tm_lens(A_nt_idx);
-        let ntOff = get_offsets(A_nt_idx);
-        for (var k : u32 = 0u; k < ntLen; k = k + 1u) {
-            if (get_all_tms(ntOff + k) == sigma_token) {
-                s_is_in_Sigma_A = true;
-                k_idx_of_s_in_Sigma_A = k;
-                break;
-            }
-        }
-    }
-    if (s_is_in_Sigma_A) { return NEG_BIT | ((k_idx_of_s_in_Sigma_A + 1u) << 1u); }
-    else { return LIT_ALL; }
+    let index = literal_index(A_nt_idx, sigma_token);
+    if (index == 0u) { return LIT_ALL; }
+    return NEG_BIT | (index << 1u);
 }
 
 const MAX_J_IDX_CONST : u32 = ${MAX_LEV_RAD}u; // Max index for j (edit distance)
