@@ -200,7 +200,7 @@ suspend fun intersectionPipeline(
 
   if (allStartIds.isEmpty()) {
 //    timings.logTimingsToJSConsole()
-    listOf(activeBuf, wordBuf, metaBuf, dpBuf).forEach(GPUBuffer::destroy)
+    destroyAll(activeBuf, wordBuf, metaBuf, dpBuf)
     return emptyList<String>().also { log("No valid parse found: dpComplete has no entries in final states!") }
   }
 
@@ -228,8 +228,7 @@ suspend fun intersectionPipeline(
   val maxRepairLen = fsa.width + fsa.height + 10
   if (MAX_WORD_LEN < maxRepairLen) {
 //    timings.logTimingsToJSConsole()
-    listOf(activeBuf, wordBuf, metaBuf, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf)
-      .forEach(GPUBuffer::destroy)
+    destroyAll(activeBuf, wordBuf, metaBuf, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf)
     return emptyList<String>().also {
       log("Max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)")
     }
@@ -313,10 +312,10 @@ suspend fun intersectionPipeline(
     } else result
 
   return rankedResult.also {
-    listOf(
+    destroyAll(
       outBuf, rootSizes, rootCDF, metaBuf, dpBuf, activeBuf, wordBuf,
       idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf
-    ).forEach(GPUBuffer::destroy)
+    )
   }
 }
 
@@ -445,7 +444,7 @@ suspend fun scoreSelectGather(
   val topK = bestBuf.readJSIntArray()
   log("Score/select/gather read ${topK.length} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
 
-  listOf(prmBuf, idxBuf, scrBuf, bestBuf).forEach(GPUBuffer::destroy)
+  destroyAll(prmBuf, idxBuf, scrBuf, bestBuf)
   return topK
 }
 
@@ -482,7 +481,7 @@ suspend fun scoreSelectGatherWDFA(
   val topK = bestBuf.readJSIntArray()
   log("WDFA score/select/gather read ${topK.length} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
 
-  listOf(prmBuf, idxBuf, scrBuf, bestBuf).forEach(GPUBuffer::destroy)
+  destroyAll(prmBuf, idxBuf, scrBuf, bestBuf)
   return topK
 }
 
@@ -998,12 +997,13 @@ const val CFL_WORKGROUP_SIZE_Y = 4
 
 //language=wgsl
 val cfl_mul_upper by Shader("""$CFL_STRUCT $ACTIVE_NT_HELPERS
-struct AtomicChange { count: atomic<u32> };
+struct IterationState { count: atomic<u32>, round: u32 };
 
 @group(0) @binding(0) var<storage, read_write>         dp_in : array<u32>;
 @group(0) @binding(1) var<storage, read_write>    active_nts : array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read>                cs : CFLStruct;
-@group(0) @binding(3) var<storage, read_write>     changes : AtomicChange;
+@group(0) @binding(3) var<storage, read_write>          iter : IterationState;
+@group(0) @binding(4) var<storage, read_write> changed_cells : array<atomic<u32>>;
 
 fn flushParentMask(r: u32, c: u32, aw: u32, mask: u32, tgtBase: u32, snt: u32, NT: u32) -> u32 {
     if (mask == 0u || aw >= cs.activeWords) { return 0u; }
@@ -1080,6 +1080,12 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
         let leftBase  = activeBase(r, m);
         let rightBase = activeBase(m, c);
 
+        if (iter.round != 0u) {
+            let leftChanged  = atomicLoad(&changed_cells[r * N + m]);
+            let rightChanged = atomicLoad(&changed_cells[m * N + c]);
+            if (leftChanged != iter.round && rightChanged != iter.round) { continue; }
+        }
+
         for (var w = 0u; w < cs.activeWords; w = w + 1u) {
             var leftBits = atomicLoad(&active_nts[leftBase + w]);
 
@@ -1112,7 +1118,10 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
         }
     }
 
-    if (localChanges != 0u) { atomicAdd(&changes.count, localChanges); }
+    if (localChanges != 0u) {
+        atomicStore(&changed_cells[r * N + c], iter.round + 1u);
+        atomicAdd(&iter.count, localChanges);
+    }
 }""")
 
 //language=wgsl
@@ -2053,7 +2062,7 @@ class Shader constructor(val src: String) {
 
     fun prefixSumGPU(inputBuf: GPUBuffer, length: Int): GPUBuffer {
       val numBlocks = (length + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE
-      val groupsX   = DISPATCH_GROUP_SIZE_X
+      val groupsX   = minOf(numBlocks, DISPATCH_GROUP_SIZE_X)
       val groupsY   = (numBlocks + groupsX - 1) / groupsX
 
       val outputBuf     = GPUBuffer(inputBuf.size.toInt(), STCPSD)
@@ -2067,7 +2076,7 @@ class Shader constructor(val src: String) {
       val scannedBlockSumsBuf = prefixSumGPU(blockSumsBuf, numBlocks)
       prefix_sum_p2(outputBuf, scannedBlockSumsBuf, uniBuf)(groupsX, groupsY)
 
-      return outputBuf.also { scannedBlockSumsBuf.destroy(); blockSumsBuf.destroy(); uniBuf.destroy() }
+      return outputBuf.also { destroyAll(scannedBlockSumsBuf, blockSumsBuf, uniBuf) }
     }
 
     suspend fun packMetadata(cfg: CFG, fsa: FSA): GPUBuffer {
@@ -2163,23 +2172,25 @@ class Shader constructor(val src: String) {
   // Invocation strategies: eliminates some of the ceremony of calling a GSL shader
   suspend fun invokeCFLFixpoint(numStates: Int, dpIn: GPUBuffer, activeBuf: GPUBuffer, metaBuf: GPUBuffer) {
     var t0 = TimeSource.Monotonic.markNow()
-    val changesBuf = 0.toGPUBuffer()
+    val iterationBuf = intArrayOf(0, 0).toGPUBuffer(STCPSD)
+    val changedCellsBuf = GPUBuffer(numStates * numStates * 4, STCPSD)
     val changeIndex = listOf(0)
     val workgroupsX = (numStates + CFL_WORKGROUP_SIZE_X - 1) / CFL_WORKGROUP_SIZE_X
     val workgroupsY = (numStates + CFL_WORKGROUP_SIZE_Y - 1) / CFL_WORKGROUP_SIZE_Y
 
     for (round in 0..<numStates) {
-      if (round != 0) changesBuf.writeU32(wordIndex = 0, value = 0)
+      if (round != 0) iterationBuf.writeU32(wordIndex = 0, value = 0)
+      iterationBuf.writeU32(wordIndex = 1, value = round)
 
-      cfl_mul_upper(dpIn, activeBuf, metaBuf, changesBuf)(workgroupsX, workgroupsY)
-      val changesThisRound = changesBuf.readIndices(changeIndex)[0]
+      cfl_mul_upper(dpIn, activeBuf, metaBuf, iterationBuf, changedCellsBuf)(workgroupsX, workgroupsY)
+      val changesThisRound = iterationBuf.readIndices(changeIndex)[0]
       log("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
       t0 = TimeSource.Monotonic.markNow()
 
       if (changesThisRound == 0) break
     }
 
-    changesBuf.destroy()
+    destroyAll(iterationBuf, changedCellsBuf)
   }
 
   suspend fun invokeDAGFixpoint(fsa: FSA): Pair<GPUBuffer, Int> {
@@ -2269,8 +2280,10 @@ private fun packStructInternal(
 
   gpu.queue.submit(arrayOf(enc.finish()))
 
-  return metaBuf.also { if (destroyInputs) buffers.forEach { it.destroy() } }
+  return metaBuf.also { if (destroyInputs) destroyAll(*buffers) }
 }
+
+fun destroyAll(vararg buffers: GPUBuffer) = buffers.forEach(GPUBuffer::destroy)
 
 const val NEWLINE_ID = 1
 const val BOS_ID     = 2
