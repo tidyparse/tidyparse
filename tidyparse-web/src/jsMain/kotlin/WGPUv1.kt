@@ -359,7 +359,7 @@ suspend fun ngramDecoder(
   k: Int = TOP_K_SAMP
 ): List<String> {
   log("Using n-gram decoder...")
-  val topK = scoreSelectGather(packets = outBuf, ngrams = ngrams, maxSamples = samplesToDecode, stride = maxRepairLen, k = k)
+  val topK = scoreSelectGather(outBuf, ngrams, markov_score, samplesToDecode, maxRepairLen, k)
   return decodePackets(topK, cfg, maxRepairLen)
 }
 
@@ -372,7 +372,10 @@ suspend fun wdfaDecoder(
   k: Int = TOP_K_SAMP
 ): MutableList<String> {
   log("Using WDFA decoder...")
-  val topK = scoreSelectGatherWDFA(outBuf, wdfa, samplesToDecode, maxRepairLen, k)
+  val topK = scoreSelectGather(
+    outBuf, wdfa, wdfa_score, samplesToDecode, maxRepairLen, k,
+    profileLabel = "WDFA score"
+  )
   return decodePackets(topK, cfg, maxRepairLen).toMutableList()
 }
 
@@ -412,80 +415,38 @@ fun decodePackets(packets: JSIntArray, cfg: CFG, maxRepairLen: Int, packetCount:
 }
 
 suspend fun scoreSelectGather(
-  packets    : GPUBuffer,
-  ngrams     : GPUBuffer,
-  maxSamples : Int,
-  stride     : Int,
-  k          : Int
+  packets      : GPUBuffer,
+  model        : GPUBuffer,
+  scoreShader  : Shader,
+  maxSamples   : Int,
+  stride       : Int,
+  k            : Int,
+  profileLabel : String? = null
 ): JSIntArray {
   val t0 = TimeSource.Monotonic.markNow()
   val threads = DISPATCH_GROUP_SIZE_X
   /** Memory layout: [SAMPLER_PARAMS] */
   val prmBuf  = intArrayOf(maxSamples, k, stride, threads).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
 
-  markov_score(packets, ngrams, prmBuf).dispatchFlat(maxSamples)
-//  log("Score in ${t0.elapsedNow()}")
-
-//  log(packets.readInts().toList().windowed(stride, stride)
-//    .map { it[1] }.groupingBy { it }.eachCount().entries
-//    .sortedBy { it.key }.joinToString("\n") { (a, b) -> "$a => $b" })
-
-//  t0 = TimeSource.Monotonic.markNow()
-  val totalGroups = (maxSamples + 255) / 256
-  val idxBuf      = IntArray(k) { -1 }.toGPUBuffer(STCPSD)
-  val scrBuf      = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
-
-  select_top_k(prmBuf, packets, idxBuf, scrBuf).dispatchFlat(totalGroups)
-//  log("Select in ${t0.elapsedNow()}")
-
-//  t0 = TimeSource.Monotonic.markNow()
-  val bestBuf   = GPUBuffer(k * stride * 4, STCPSD)
-
-  gather_top_k(prmBuf, packets, idxBuf, bestBuf)(k)
-//  log("Gather in ${t0.elapsedNow()}")
-
-//  t0 = TimeSource.Monotonic.markNow()
-  val topK = bestBuf.readJSIntArray()
-  log("Score/select/gather read ${topK.length} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
-
-  destroyAll(prmBuf, idxBuf, scrBuf, bestBuf)
-  return topK
-}
-
-suspend fun scoreSelectGatherWDFA(
-  packets    : GPUBuffer,
-  wdfa       : GPUBuffer,
-  maxSamples : Int,
-  stride     : Int,
-  k          : Int
-): JSIntArray {
-  val t0 = TimeSource.Monotonic.markNow()
-  val timings = linkedMapOf<String, Int>()
-
-  val threads = DISPATCH_GROUP_SIZE_X
-
-  val prmBuf = intArrayOf(maxSamples, k, stride, threads)
-    .toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
-
-  timings["wdfa_score"] = timedGPUIsolated("WDFA score") {
-    wdfa_score(packets, wdfa, prmBuf).dispatchFlat(maxSamples)
+  suspend fun dispatch(label: String, block: () -> Unit) {
+    if (profileLabel == null) block()
+    else timedGPUIsolated(label, block)
   }
 
-  val totalGroups = (maxSamples + 255) / 256
+  dispatch(profileLabel ?: "Score") { scoreShader(packets, model, prmBuf).dispatchFlat(maxSamples) }
 
+  val totalGroups = (maxSamples + 255) / 256
   val idxBuf = IntArray(k) { -1 }.toGPUBuffer(STCPSD)
   val scrBuf = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
 
-  timings["select_top_k"] = timedGPUIsolated("Select top-k") {
-    select_top_k(prmBuf, packets, idxBuf, scrBuf).dispatchFlat(totalGroups)
-  }
+  dispatch("Select top-k") { select_top_k(prmBuf, packets, idxBuf, scrBuf).dispatchFlat(totalGroups) }
 
   val bestBuf = GPUBuffer(k * stride * 4, STCPSD)
 
-  timings["gather_top_k"] = timedGPUIsolated("Gather top-k") { gather_top_k(prmBuf, packets, idxBuf, bestBuf)(k) }
+  dispatch("Gather top-k") { gather_top_k(prmBuf, packets, idxBuf, bestBuf)(k) }
 
   val topK = bestBuf.readJSIntArray()
-  log("WDFA score/select/gather read ${topK.length} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
+  log("${profileLabel ?: "Score"}/select/gather read ${topK.length} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
 
   destroyAll(prmBuf, idxBuf, scrBuf, bestBuf)
   return topK
