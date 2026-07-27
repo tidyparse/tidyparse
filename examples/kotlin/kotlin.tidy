@@ -1,61 +1,288 @@
-START -> statement
+START -> single_line_statement | member_access_continuation
+single_line_statement -> statement | statement ;
+member_access_continuation -> member_access_operator postfix_unary_expression | member_access_operator postfix_unary_expression ;
 
-statement -> declaration
-statement -> expression
-statement -> control_flow
-statement -> function_call
-statement -> assignment
-statement -> return_statement
+statement -> declaration | block_level_expression
+declaration -> labels_opt declaration_core
+declaration_core -> class_declaration | function_declaration | property_declaration | type_alias
+block_level_expression -> annotations_opt expression
 
-declaration -> val_declaration | var_declaration | function_declaration
+labels_opt -> ε | labels
+labels -> label_definition | labels label_definition
 
-val_declaration -> val id : type | val id : type = expression
-var_declaration -> var id : type | var id : type = expression
+class_declaration -> modifiers_opt class_kind simple_identifier type_parameters_opt primary_constructor_opt delegation_clause_opt type_constraints_opt class_body_opt
+class_kind -> class | interface
+primary_constructor_opt -> ε | primary_constructor
+primary_constructor -> modifiers_opt class_parameters | modifiers_opt constructor class_parameters
+class_parameters -> ( ) | ( class_parameter_list ) | ( class_parameter_list , )
+class_parameter_list -> class_parameter | class_parameter_list , class_parameter
+class_parameter -> modifiers_opt val_or_var_opt simple_identifier : type class_parameter_default_opt
+class_parameter_default_opt -> ε | = expression
+val_or_var_opt -> ε | val | var
 
-type -> basic_type | nullable_type
-basic_type -> Int | Float | Double | String | Boolean | Char | Long | Short | Any | Unit
-nullable_type -> basic_type ?
+delegation_clause_opt -> ε | : delegation_specifiers
+delegation_specifiers -> annotated_delegation_specifier | delegation_specifiers , annotated_delegation_specifier
+annotated_delegation_specifier -> annotations_opt delegation_specifier
+delegation_specifier -> constructor_invocation | user_type | explicit_delegation
+constructor_invocation -> user_type call_suffix
+explicit_delegation -> user_type by expression
 
-function_declaration -> fun id ( parameters ) : type = expression
-parameters -> parameter | parameter , parameters
-parameter -> id : type
+class_body_opt -> ε | class_body | enum_class_body
+class_body -> { } | { class_member_declarations }
+class_member_declarations -> class_member_declaration | class_member_declarations class_member_declaration
+class_member_declaration -> class_member semicolons
+class_member -> class_declaration | function_declaration | object_declaration | companion_object | property_declaration | anonymous_initializer | secondary_constructor | type_alias
+anonymous_initializer -> init block
+secondary_constructor -> modifiers_opt constructor function_value_parameters constructor_delegation_opt block_opt
+constructor_delegation_opt -> ε | : constructor_delegation_call
+constructor_delegation_call -> this value_arguments | super value_arguments
 
-expression -> binary_expr | unary_expr | paren_expr | id | literal | lambda_expr
-binary_expr -> expression binary_op expression
-binary_op -> + | - | * | / | % | && | || | == | != | > | < | >= | <= | ?: | . | ?. | ?:? | .?
-unary_expr -> unary_op expression
-unary_op -> ! | -
+enum_class_body -> { } | { enum_entries } | { ; } | { ; class_member_declarations } | { enum_entries ; } | { enum_entries ; class_member_declarations }
+enum_entries -> enum_entry | enum_entries , enum_entry | enum_entries ,
+enum_entry -> annotations_opt simple_identifier value_arguments_opt class_body_only_opt
+class_body_only_opt -> ε | class_body
 
-paren_expr -> ( expression )
+function_declaration -> function_modifiers_opt fun function_leading_type_opt type_parameters_opt receiver_clause_opt identifier_opt function_value_parameters return_type_opt type_constraints_opt function_body_opt
+function_leading_type_opt -> ε | type .
+receiver_clause_opt -> ε | receiver_type .
+identifier_opt -> ε | identifier
+function_value_parameters -> ( ) | ( function_value_parameter_list ) | ( function_value_parameter_list , )
+function_value_parameter_list -> function_value_parameter | function_value_parameter_list , function_value_parameter
+function_value_parameter -> modifiers_opt parameter parameter_default_opt
+parameter_default_opt -> ε | = expression
+parameter -> simple_identifier : type
+receiver_type -> type_modifiers_opt receiver_type_core
+receiver_type_core -> parenthesized_type | nullable_type | type_reference
+function_body_opt -> ε | function_body
+function_body -> block | = expression
 
-literal -> int_literal | float_literal | double_literal | string_literal | boolean_literal | char_literal
-int_literal -> int
-float_literal -> float
-double_literal -> double
-string_literal -> string
-boolean_literal -> true | false
-char_literal -> char
+object_declaration -> modifiers_opt object simple_identifier primary_constructor_opt delegation_clause_opt class_body_only_opt
+companion_object -> modifiers_opt companion modifiers_opt object simple_identifier_opt delegation_clause_opt class_body_only_opt
+simple_identifier_opt -> ε | simple_identifier
 
-lambda_expr -> { lambda_parameters -> lambda_body }
-lambda_parameters -> id | id , lambda_parameters
-lambda_body -> expression
+property_declaration -> modifiers_opt val_or_var type_parameters_opt property_receiver_opt property_variable type_constraints_opt property_initializer_opt property_tail_opt
+property_receiver_opt -> ε | type .
+property_variable -> multi_variable_declaration | variable_declaration
+property_initializer_opt -> ε | property_initializer
+property_initializer -> by expression | = expression
+property_tail_opt -> ε | property_accessors | explicit_backing_field
+property_accessors -> getter | setter | getter ; setter | setter ; getter
+explicit_backing_field -> field : type = expression
+multi_variable_declaration -> ( variable_declaration_list )
+variable_declaration_list -> variable_declaration | variable_declaration_list , variable_declaration
+variable_declaration -> simple_identifier variable_type_opt
+variable_type_opt -> ε | : type
 
-control_flow -> if_expr | when_expr
-if_expr -> if paren_expr expression | if paren_expr expression else expression
-when_expr -> when paren_expr { when_cases }
-when_cases -> when_case | when_case when_cases
-when_case -> expression -> expression | else -> expression
+getter -> modifiers_opt get | modifiers_opt get ( ) return_type_opt getter_body
+getter_body -> block | = expression
+setter -> modifiers_opt set | modifiers_opt set ( setter_parameter_prefix_opt setter_parameter ) function_body
+setter_parameter_prefix_opt -> ε | setter_parameter_prefix
+setter_parameter_prefix -> setter_parameter_modifier | setter_parameter_prefix setter_parameter_modifier
+setter_parameter_modifier -> annotations | parameter_modifier
+setter_parameter -> simple_identifier | parameter
 
-function_call -> id ( function_args )
-function_args -> expression | expression , function_args
+type_alias -> modifiers_opt typealias simple_identifier type_parameters_opt = type
+type_parameters_opt -> ε | type_parameters
+type_parameters -> < type_parameter_list > | < type_parameter_list , >
+type_parameter_list -> type_parameter | type_parameter_list , type_parameter
+type_parameter -> modifiers_opt type_parameter_name type_bound_opt
+type_parameter_name -> simple_identifier | *
+type_bound_opt -> ε | : type
 
-assignment -> id assignment_op expression
-assignment_op -> = | += | -= | *= | /= | %=
+type -> type_modifiers_opt type_core
+type_core -> function_type | parenthesized_type | nullable_type | type_reference
+type_modifiers_opt -> ε | type_modifier_list
+type_modifier_list -> type_modifier_item | type_modifier_list type_modifier_item
+type_modifier_item -> annotations | suspend
+parenthesized_type -> ( type )
+nullable_type -> nullable_base question_marks
+nullable_base -> type_reference | parenthesized_type
+question_marks -> ? | question_marks ?
+type_reference -> ( type_reference ) | user_type | dynamic
+function_type -> function_type_parameters arrow type | function_type_receiver . function_type_parameters arrow type
+function_type_receiver -> parenthesized_type | nullable_type | type_reference
+user_type -> simple_user_type | user_type . simple_user_type
+simple_user_type -> simple_identifier type_arguments_opt
+function_type_parameters -> ( ) | ( function_type_parameter_list ) | ( function_type_parameter_list , )
+function_type_parameter_list -> function_type_parameter | function_type_parameter_list , function_type_parameter
+function_type_parameter -> parameter | type
 
-return_statement -> return expression
+type_constraints_opt -> ε | type_constraints
+type_constraints -> where type_constraint_list
+type_constraint_list -> type_constraint | type_constraint_list , type_constraint
+type_constraint -> annotations_opt simple_identifier : type
+return_type_opt -> ε | : type
+
+block -> { statements }
+block_opt -> ε | block
+statements -> ε | semicolons | statement_sequence | semicolons statement_sequence
+statement_sequence -> statement | statement_sequence ; | statement_sequence ; statement
+semicolons -> ; | semicolons ;
+
+expression -> disjunction | expression assignment_operator disjunction
+disjunction -> conjunction | disjunction disj conjunction
+conjunction -> equality_comparison | conjunction && equality_comparison
+equality_comparison -> comparison | equality_comparison equality_operation comparison
+comparison -> named_infix | named_infix comparison_operator named_infix
+named_infix -> elvis_expression | elvis_expression in_chain | elvis_expression is_operator type
+in_chain -> in_operator elvis_expression | in_chain in_operator elvis_expression
+elvis_expression -> infix_function_call | elvis_expression ?: infix_function_call
+infix_function_call -> range_expression | infix_function_call simple_identifier range_expression
+range_expression -> additive_expression | range_expression .. additive_expression
+additive_expression -> multiplicative_expression | additive_expression additive_operator multiplicative_expression
+multiplicative_expression -> type_rhs | multiplicative_expression multiplicative_operation type_rhs
+type_rhs -> prefix_unary_expression | type_rhs type_operation prefix_unary_expression
+prefix_unary_expression -> postfix_unary_expression | prefix_unary_operation prefix_unary_expression
+postfix_unary_expression -> atomic_expression | callable_reference | postfix_unary_expression postfix_unary_operation
+
+atomic_expression -> parenthesized_expression | literal_constant | function_literal | this_expression | super_expression | conditional_expression | try_expression | object_literal | jump_expression | loop_expression | collection_literal | simple_identifier | val identifier
+parenthesized_expression -> ( expression )
+
+call_suffix -> type_arguments | type_arguments value_arguments | type_arguments annotated_lambdas | type_arguments value_arguments annotated_lambdas | value_arguments | value_arguments annotated_lambdas | annotated_lambdas
+annotated_lambdas -> annotated_lambda | annotated_lambdas annotated_lambda
+annotated_lambda -> unescaped_annotations_opt label_definition_opt function_literal
+label_definition_opt -> ε | label_definition
+array_access -> [ ] | [ expression_list ]
+expression_list -> expression | expression_list , expression
+value_arguments_opt -> ε | value_arguments
+value_arguments -> ( ) | ( value_argument_list ) | ( value_argument_list , )
+value_argument_list -> value_argument | value_argument_list , value_argument
+type_arguments_opt -> ε | type_arguments
+type_arguments -> < type_projection_list > | < type_projection_list , > | < type_projection_list > ? | < type_projection_list , > ?
+type_projection_list -> type_projection | type_projection_list , type_projection
+type_projection -> type_projection_modifiers_opt type | *
+type_projection_modifiers_opt -> ε | type_projection_modifier_list
+type_projection_modifier_list -> variance_annotation | type_projection_modifier_list variance_annotation
+value_argument -> expression | * expression | simple_identifier = expression | simple_identifier = * expression
+
+literal_constant -> true | false | int | hex | bin | char | real | float | double | null | long | string_literal
+string_literal -> string | line_string_literal | multi_line_string_literal
+line_string_literal -> " " | " line_string_items "
+line_string_items -> line_string_item | line_string_items line_string_item
+line_string_item -> string_text | string_escape | string_ref | line_string_expression
+line_string_expression -> ${ expression }
+multi_line_string_literal -> """ """ | """ multi_line_string_items """
+multi_line_string_items -> multi_line_string_item | multi_line_string_items multi_line_string_item
+multi_line_string_item -> multi_string_text | multi_string_escape | multi_string_ref | multi_line_string_expression | line_string_literal | multi_quote
+multi_line_string_expression -> ${ expression }
+
+function_literal -> annotations_opt { statements } | annotations_opt { lambda_parameters arrow statements }
+lambda_parameters -> ε | lambda_parameter | lambda_parameter_list
+lambda_parameter_list -> lambda_parameter , lambda_parameter | lambda_parameter_list , lambda_parameter
+lambda_parameter -> variable_declaration | multi_variable_declaration lambda_destructuring_type_opt
+lambda_destructuring_type_opt -> ε | : type
+
+object_literal -> object delegation_clause_opt class_body_only_opt
+collection_literal -> [ ] | [ expression_list ]
+this_expression -> this label_reference_opt
+label_reference_opt -> ε | label_reference
+super_expression -> super super_type_opt label_reference_opt
+super_type_opt -> ε | < type >
+conditional_expression -> if_expression | when_expression
+if_expression -> if ( expression ) control_structure_body_opt semicolon_opt else_clause_opt
+control_structure_body_opt -> ε | control_structure_body
+semicolon_opt -> ε | ;
+else_clause_opt -> ε | else control_structure_body_opt
+control_structure_body -> block | expression
+
+when_expression -> when when_subject_opt { when_entries_opt }
+when_subject_opt -> ε | ( expression )
+when_entries_opt -> ε | when_entries
+when_entries -> when_entry | when_entries ; when_entry | when_entries ;
+when_entry -> when_condition_list arrow control_structure_body | else arrow control_structure_body
+when_condition_list -> when_condition | when_condition_list , when_condition
+when_condition -> expression | range_test | type_test
+range_test -> in_operator expression
+type_test -> is_operator type
+
+try_expression -> try block catch_blocks_opt finally_block_opt
+catch_blocks_opt -> ε | catch_blocks
+catch_blocks -> catch_block | catch_blocks catch_block
+catch_block -> catch ( annotations_opt simple_identifier : user_type ) block
+finally_block_opt -> ε | finally_block
+finally_block -> finally block
+
+loop_expression -> for_expression | while_expression | do_while_expression
+for_expression -> for ( annotations_opt loop_variable in expression ) control_structure_body_opt
+loop_variable -> variable_declaration | multi_variable_declaration
+while_expression -> while ( expression ) control_structure_body_opt
+do_while_expression -> do control_structure_body_opt while ( expression )
+
+jump_expression -> throw expression | return expression_opt | return_at expression_opt | continue | continue_at | break | break_at
+expression_opt -> ε | expression
+return_at -> return@ identifier_token
+continue_at -> continue@ identifier_token
+break_at -> break@ identifier_token
+
+callable_reference -> callable_receiver_opt callable_reference_operator callable_reference_target | this :: class
+callable_receiver_opt -> ε | callable_receiver
+callable_receiver -> user_type | callable_receiver ?
+callable_reference_operator -> :: | ?::
+callable_reference_target -> identifier | class
+
+assignment_operator -> = | += | -= | *= | /= | %=
+equality_operation -> != | !== | == | ===
+comparison_operator -> < | > | <= | >=
+in_operator -> in | !in
+is_operator -> is | !is
+additive_operator -> + | -
+multiplicative_operation -> * | / | %
+type_operation -> as | as? | :
+prefix_unary_operation -> ++ | -- | + | - | ! | annotations | label_definition
+postfix_unary_operation -> ++ | -- | ! ! | call_suffix | array_access | callable_reference_suffix | member_access_operator postfix_unary_expression
+callable_reference_suffix -> callable_reference_operator callable_reference_target
+member_access_operator -> . | ? .
+
+modifiers_opt -> ε | modifier_list
+modifier_list -> modifier_list_item | modifier_list modifier_list_item
+modifier_list_item -> annotations | modifier
+function_modifiers_opt -> ε | function_modifier_list
+function_modifier_list -> function_modifier_item | function_modifier_list function_modifier_item
+function_modifier_item -> annotations | modifier | context_modifier
+context_modifier -> context context_parameters
+context_parameters -> ( ) | ( parameter_list ) | ( parameter_list , )
+parameter_list -> parameter | parameter_list , parameter
+modifier -> class_modifier | member_modifier | visibility_modifier | variance_annotation | function_modifier | property_modifier | inheritance_modifier | parameter_modifier | type_parameter_modifier
+class_modifier -> enum | sealed | annotation | data | inner
+member_modifier -> override | lateinit
+visibility_modifier -> public | private | internal | protected
+variance_annotation -> in | out
+function_modifier -> tailrec | operator | infix | inline | external | suspend
+property_modifier -> const
+inheritance_modifier -> abstract | final | open
+parameter_modifier -> vararg | noinline | crossinline
+type_parameter_modifier -> reified
+
+label_definition -> identifier_token @
+label_reference -> @ identifier_token
+annotations_opt -> ε | annotations
+annotations -> annotation_item | annotations annotation_item
+annotation_item -> annotation_syntax | annotation_list
+annotation_syntax -> annotation_use_site_target : unescaped_annotation | label_reference annotation_qualified_tail_opt type_arguments_opt value_arguments_opt
+annotation_qualified_tail_opt -> ε | annotation_qualified_tail
+annotation_qualified_tail -> . simple_identifier | annotation_qualified_tail . simple_identifier
+annotation_list -> annotation_use_site_target : [ unescaped_annotations ] | @ [ unescaped_annotations ]
+annotation_use_site_target -> @field | @file | @property | @get | @set | @receiver | @param | @setparam | @delegate
+unescaped_annotations_opt -> ε | unescaped_annotations
+unescaped_annotations -> unescaped_annotation | unescaped_annotations unescaped_annotation
+unescaped_annotation -> identifier type_arguments_opt value_arguments_opt
+
+identifier -> simple_identifier | identifier . simple_identifier
+simple_identifier -> identifier_token | builtin_type | abstract | annotation | by | catch | context | companion | constructor | crossinline | data | dynamic | enum | external | field | final | finally | get | import | infix | init | inline | inner | internal | lateinit | noinline | open | operator | out | override | private | protected | public | reified | sealed | tailrec | set | vararg | where | const | suspend
+identifier_token -> id | ID | Identifier | let
+builtin_type -> Int | Float | Double | String | Boolean | Char | Long | Short | Any | Unit | Nothing
+
+val_or_var -> val | var
+
+arrow -> `->`
+disj -> `||`
 
 ---
 
 val id : Int = int + int * int
 
 val id = { id -> int }
+
+ID :: ID
+
+. let { ( ID , ID , ID ) -> }

@@ -5,7 +5,9 @@ on:
     paths:
       - '**.kt'
       - '**.kts'
+      - '**.js'
       - '**.tidy'
+      - '**.zip'
       - '.github/workflows/build.yml'
 
 jobs:

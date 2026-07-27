@@ -11,8 +11,19 @@ const pingTimeoutMs = karmaTimeoutMs;
 const browserDisconnectTimeoutMs = karmaTimeoutMs;
 const ciLogsDir = path.resolve(__dirname, '../../../ci-logs');
 const browserConsoleLog = path.join(ciLogsDir, 'browser-console.log');
+const blackArchiveName = 'pyodide-black-25.1.0-site.zip';
 
 fs.mkdirSync(ciLogsDir, { recursive: true });
+
+// Kotlin/JS copies resources into kotlin/, but Karma only serves files declared
+// in its config. Keep the production root URL working in browser tests.
+config.files.push({
+    pattern: path.resolve(__dirname, 'kotlin', blackArchiveName),
+    included: false,
+    served: true,
+    watched: false
+});
+config.proxies[`/${blackArchiveName}`] = `/base/kotlin/${blackArchiveName}`;
 
 if (isCi) {
     chromeFlags.push(
