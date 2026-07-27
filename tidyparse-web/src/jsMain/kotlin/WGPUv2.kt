@@ -129,7 +129,8 @@ suspend fun intersectionPipelineV2(
   )
 
   timings["init chart"] = timedGPUIsolated("Init chart") {
-    chartInitializer(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+    val ntWorkgroups = (numNTs + DENSE_NT_WORKGROUP_SIZE - 1) / DENSE_NT_WORKGROUP_SIZE
+    chartInitializer(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, ntWorkgroups)
   }
 
   val closureT = TimeSource.Monotonic.markNow()

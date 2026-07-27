@@ -180,15 +180,14 @@ suspend fun intersectionPipeline(
   )
 
   timings["init chart"] = timedGPUIsolated("Init chart") {
-    chartInitializer(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+    val ntWorkgroups = (numNTs + DENSE_NT_WORKGROUP_SIZE - 1) / DENSE_NT_WORKGROUP_SIZE
+    chartInitializer(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, ntWorkgroups)
   }
 
   val closureT = TimeSource.Monotonic.markNow()
   cfl_mul_upper.invokeCFLFixpoint(numStates, dpBuf, activeBuf, metaBuf)
   mark("matrix closure", closureT)
   log("Matrix closure reached in: ${timings["matrix closure"]}ms")
-
-  logActiveNTGrid(activeBuf, numStates, numNTs, limit = minOf(48, numStates))
 
   val rootsT = TimeSource.Monotonic.markNow()
   val startNT     = cfg.bindex[START_SYMBOL]
@@ -243,7 +242,8 @@ suspend fun intersectionPipeline(
 
   val cdfBuf = GPUBuffer(totalExp * 4, STCPSD)
   timings["build cdf"] = timedGPUIsolated("Build CDF") {
-    ls_cdf(dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+    val ntWorkgroups = (numNTs + DENSE_NT_WORKGROUP_SIZE - 1) / DENSE_NT_WORKGROUP_SIZE
+    ls_cdf(dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf)(numStates, numStates, ntWorkgroups)
   }
   lsDense.destroy()
   log("Pairing function construction took: ${timings["build cdf"]}ms (${cdfBuf.size}B)")
@@ -652,7 +652,7 @@ else { pairOffsetNext = cs.mdptsSize; }
 """
 
 //language=text
-const val CELL_PREAMBLE = """
+const val PREAMBLE = """
 let r = gid.x;
 let c = gid.y;
 if (c <= r) { return; }
@@ -664,17 +664,16 @@ let pairOffset     = getMdptOffset(aoi - 1u);
 var pairOffsetNext : u32;
 if (aoi < cs.mdptsOffsetsSize) { pairOffsetNext = getMdptOffset(aoi); }
 else { pairOffsetNext = cs.mdptsSize; }
-"""
 
-//language=text
-const val PREAMBLE = """
-$CELL_PREAMBLE
 let A = gid.z;
+if (A >= NT) { return; }
 let dpIdx   = r*snt + c*NT + A;
 let startGC = getGrammarOffset(A);
 var endGC: u32;
 if (A + 1u < NT) { endGC = getGrammarOffset(A + 1u); } else { endGC = cs.grammarFlattenedSize; }
 """
+
+const val DENSE_NT_WORKGROUP_SIZE = 64
 
 //language=wgsl
 const val WDFA_STRUCT = """
@@ -817,11 +816,12 @@ fn encode_neg_literal(A_nt_idx : u32, sigma_token : u32) -> u32 {
 
 const MAX_J_IDX_CONST : u32 = ${MAX_LEV_RAD}u; // Max index for j (edit distance)
 
-@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+@compute @workgroup_size(1,1,$DENSE_NT_WORKGROUP_SIZE) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let q1_rank = gid.x;
     let q2_rank = gid.y;
     let A_idx   = gid.z;
     let nts     = cs.numNonterminals;
+    if (A_idx >= nts) { return; }
 
     let dpIdx = q1_rank * cs.numStates * nts + q2_rank * nts + A_idx;
 
@@ -906,14 +906,17 @@ fn encode_pos_literal(A_nt_idx : u32, sigma_token : u32) -> u32 {
     return 0u;
 }
 
-@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+@compute @workgroup_size(1,1,$DENSE_NT_WORKGROUP_SIZE) fn main(
+    @builtin(global_invocation_id) gid : vec3<u32>
+) {
     let q1 = gid.x;
     let q2 = gid.y;
     let A  = gid.z;
+    let nts = cs.numNonterminals;
+    if (A >= nts) { return; }
 
     if (q2 != q1 + 1u) { return; } // only adjacent edges in the chain
 
-    let nts   = cs.numNonterminals;
     let dpIdx = q1 * cs.numStates * nts + q2 * nts + A;
 
     let wd_len = arrayLength(&word);
@@ -990,6 +993,9 @@ val mdpt_write by Shader("""struct Uni { n : u32 };
     for (var v=0u; v<N; v++) { if (reach[r*N+v]==1u && reach[v*N+c]==1u) { flat_mp[out] = v; out++; } }
 }""")
 
+const val CFL_WORKGROUP_SIZE_X = 16
+const val CFL_WORKGROUP_SIZE_Y = 4
+
 //language=wgsl
 val cfl_mul_upper by Shader("""$CFL_STRUCT $ACTIVE_NT_HELPERS
 struct AtomicChange { count: atomic<u32> };
@@ -999,15 +1005,7 @@ struct AtomicChange { count: atomic<u32> };
 @group(0) @binding(2) var<storage, read>                cs : CFLStruct;
 @group(0) @binding(3) var<storage, read_write>     changes : AtomicChange;
 
-fn flushParentMask(
-    r: u32,
-    c: u32,
-    aw: u32,
-    mask: u32,
-    tgtBase: u32,
-    snt: u32,
-    NT: u32
-) -> u32 {
+fn flushParentMask(r: u32, c: u32, aw: u32, mask: u32, tgtBase: u32, snt: u32, NT: u32) -> u32 {
     if (mask == 0u || aw >= cs.activeWords) { return 0u; }
 
     let oldActive = atomicLoad(&active_nts[tgtBase + aw]);
@@ -1058,8 +1056,20 @@ fn flushParentMask(
     return localChanges;
 }
 
-@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-    $CELL_PREAMBLE
+@compute @workgroup_size($CFL_WORKGROUP_SIZE_X,$CFL_WORKGROUP_SIZE_Y,1) 
+fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+    let r = gid.y;
+    let c = gid.x;
+    let N = cs.numStates;
+    if (r >= N || c >= N || c <= r) { return; }
+
+    let NT = cs.numNonterminals;
+    let snt = N * NT;
+    let aoi = r * N + c + 1u;
+    let pairOffset = getMdptOffset(aoi - 1u);
+    var pairOffsetNext: u32;
+    if (aoi < cs.mdptsOffsetsSize) { pairOffsetNext = getMdptOffset(aoi); }
+    else { pairOffsetNext = cs.mdptsSize; }
 
     let tgtBase = activeBase(r, c);
     var localChanges = 0u;
@@ -1111,7 +1121,7 @@ val bp_count by Shader("""$CFL_STRUCT
 @group(0) @binding(1) var<storage, read_write>  bp_count : array<u32>;
 @group(0) @binding(2) var<storage, read>              cs : CFLStruct;
 
-@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+@compute @workgroup_size(1,1,$DENSE_NT_WORKGROUP_SIZE) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     $PREAMBLE
     
     if ((dp_in[dpIdx] & 0x01u) == 0u) { bp_count[dpIdx] = 0; return; }
@@ -1139,7 +1149,7 @@ val bp_write by Shader("""$CFL_STRUCT
 @group(0) @binding(2) var<storage, read_write>  bp_storage : array<u32>;
 @group(0) @binding(3) var<storage, read>                cs : CFLStruct;
 
-@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+@compute @workgroup_size(1,1,$DENSE_NT_WORKGROUP_SIZE) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     $PREAMBLE
     
     if ((dp_in[dpIdx] & 0x01u) == 0u) { return; }
@@ -1215,7 +1225,7 @@ val ls_cdf by Shader("""$CFL_STRUCT $TERM_STRUCT $SAT_ARTH
 @group(0) @binding(4) var<storage, read>                cs : CFLStruct;
 @group(0) @binding(5) var<storage, read>         terminals : Terminals;
 
-@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+@compute @workgroup_size(1,1,$DENSE_NT_WORKGROUP_SIZE) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     $PREAMBLE
 
     let val = dp_in[dpIdx];
@@ -2116,9 +2126,10 @@ class Shader constructor(val src: String) {
       val totalCells = numStates * numStates * numNTs
 
       val bpCountBuf = GPUBuffer(totalCells * 4, STCPSD)
+      val ntWorkgroups = (numNTs + DENSE_NT_WORKGROUP_SIZE - 1) / DENSE_NT_WORKGROUP_SIZE
 
       log("Total cells: $totalCells = $numStates^2 * $numNTs")
-      bp_count(dpIn, bpCountBuf, metaBuf)(numStates, numStates, numNTs)
+      bp_count(dpIn, bpCountBuf, metaBuf)(numStates, numStates, ntWorkgroups)
 
 //    val bpOffsetBuf = bpCountBuf.readInts().scan(0) { acc, arr -> acc + arr }.dropLast(1).toIntArray().toGPUBuffer(STCPSD)
       val bpOffsetBuf = prefixSumGPU(bpCountBuf, totalCells)
@@ -2129,7 +2140,7 @@ class Shader constructor(val src: String) {
 
       val bpStorageBuf = GPUBuffer(totalExpansions * 2 * 4, STCPSD)
 
-      bp_write(dpIn, bpOffsetBuf, bpStorageBuf, metaBuf)(numStates, numStates, numNTs)
+      bp_write(dpIn, bpOffsetBuf, bpStorageBuf, metaBuf)(numStates, numStates, ntWorkgroups)
 
       return Triple(bpCountBuf, bpOffsetBuf, bpStorageBuf)
     }
@@ -2154,11 +2165,13 @@ class Shader constructor(val src: String) {
     var t0 = TimeSource.Monotonic.markNow()
     val changesBuf = 0.toGPUBuffer()
     val changeIndex = listOf(0)
+    val workgroupsX = (numStates + CFL_WORKGROUP_SIZE_X - 1) / CFL_WORKGROUP_SIZE_X
+    val workgroupsY = (numStates + CFL_WORKGROUP_SIZE_Y - 1) / CFL_WORKGROUP_SIZE_Y
 
     for (round in 0..<numStates) {
       if (round != 0) changesBuf.writeU32(wordIndex = 0, value = 0)
 
-      cfl_mul_upper(dpIn, activeBuf, metaBuf, changesBuf)(numStates, numStates)
+      cfl_mul_upper(dpIn, activeBuf, metaBuf, changesBuf)(workgroupsX, workgroupsY)
       val changesThisRound = changesBuf.readIndices(changeIndex)[0]
       log("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
       t0 = TimeSource.Monotonic.markNow()

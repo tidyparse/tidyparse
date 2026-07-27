@@ -246,7 +246,8 @@ suspend fun checkSuffixPipeline(cfg: CFG, fsa: FSA, suffixLen: Int, codePoints: 
   val activeBuf = GPUBuffer((numStates * numStates * activeWords * 4).toLong(), STCPSD)
 
   timings["init chart"] = timedGPUIsolated("Init chart") {
-    init_line_chart(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, numNTs)
+    val ntWorkgroups = (numNTs + DENSE_NT_WORKGROUP_SIZE - 1) / DENSE_NT_WORKGROUP_SIZE
+    init_line_chart(dpBuf, activeBuf, wordBuf, metaBuf, tmBuf)(numStates, numStates, ntWorkgroups)
   }
 
   val closureT = TimeSource.Monotonic.markNow()
