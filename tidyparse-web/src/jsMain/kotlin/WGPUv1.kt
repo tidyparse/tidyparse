@@ -999,15 +999,6 @@ struct AtomicChange { count: atomic<u32> };
 @group(0) @binding(2) var<storage, read>                cs : CFLStruct;
 @group(0) @binding(3) var<storage, read_write>     changes : AtomicChange;
 
-fn setBinaryBitIfNew(dpIdx: u32) -> bool {
-    let old = dp_in[dpIdx];
-    if ((old & 0x01u) == 0u) {
-        dp_in[dpIdx] = old | 0x01u;
-        return true;
-    }
-    return false;
-}
-
 fn flushParentMask(
     r: u32,
     c: u32,
@@ -1045,6 +1036,8 @@ fn flushParentMask(
     }
 
     // Already-active A may still be terminal/literal-only, so add binary bit.
+    // This preserves binary support for downstream consumers, but does not
+    // grow active_nts and therefore must not keep the fixpoint alive.
     var ab = mask & oldActive;
     loop {
         if (ab == 0u) { break; }
@@ -1058,7 +1051,8 @@ fn flushParentMask(
         if (A >= NT) { continue; }
 
         let dpIdx = r * snt + c * NT + A;
-        if (setBinaryBitIfNew(dpIdx)) { localChanges = localChanges + 1u; }
+        let old = dp_in[dpIdx];
+        if ((old & 0x01u) == 0u) { dp_in[dpIdx] = old | 0x01u; }
     }
 
     return localChanges;
@@ -2158,17 +2152,21 @@ class Shader constructor(val src: String) {
   // Invocation strategies: eliminates some of the ceremony of calling a GSL shader
   suspend fun invokeCFLFixpoint(numStates: Int, dpIn: GPUBuffer, activeBuf: GPUBuffer, metaBuf: GPUBuffer) {
     var t0 = TimeSource.Monotonic.markNow()
+    val changesBuf = 0.toGPUBuffer()
+    val changeIndex = listOf(0)
 
     for (round in 0..<numStates) {
-      val changesBuf = 0.toGPUBuffer()
+      if (round != 0) changesBuf.writeU32(wordIndex = 0, value = 0)
+
       cfl_mul_upper(dpIn, activeBuf, metaBuf, changesBuf)(numStates, numStates)
-      val changesThisRound = changesBuf.readIndices(listOf(0))[0]
-      changesBuf.destroy()
+      val changesThisRound = changesBuf.readIndices(changeIndex)[0]
       log("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
       t0 = TimeSource.Monotonic.markNow()
 
       if (changesThisRound == 0) break
     }
+
+    changesBuf.destroy()
   }
 
   suspend fun invokeDAGFixpoint(fsa: FSA): Pair<GPUBuffer, Int> {
