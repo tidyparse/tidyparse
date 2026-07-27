@@ -325,7 +325,6 @@ suspend fun intersectionPipeline(
   }
 }
 
-
 suspend fun GPUBuffer.readJSIntArray(): JSIntArray {
   val readDst = GPUBuffer(size.toInt(), GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
 
@@ -679,12 +678,27 @@ fn find_edge(q: u32, tok: u32) -> u32 {
 }"""
 
 //language=wgsl
-val init_lev_chart by Shader("""$CFL_STRUCT $TERM_STRUCT $ACTIVE_NT_HELPERS
+const val CHART_INIT_PREAMBLE = """$CFL_STRUCT $TERM_STRUCT $ACTIVE_NT_HELPERS
 @group(0) @binding(0) var<storage, read_write>         dp_in : array<u32>;
 @group(0) @binding(1) var<storage, read_write>    active_nts : array<atomic<u32>>;
 @group(0) @binding(2) var<storage, read>              word : array<u32>;
 @group(0) @binding(3) var<storage, read>                cs : CFLStruct;
 @group(0) @binding(4) var<storage, read>         terminals : Terminals;
+
+fn letter_at(idx : u32, wd_len : u32) -> u32 { return select(word[idx], 0xffffffffu, idx >= wd_len); }
+
+fn encode_pos_literal(A_nt_idx : u32, sigma_token : u32) -> u32 {
+    if (sigma_token == 0xffffffffu) { return 0u; }
+    let ntLen = get_nt_tm_lens(A_nt_idx);
+    let ntOff = get_offsets(A_nt_idx);
+    for (var k : u32 = 0u; k < ntLen; k = k + 1u) {
+        if (get_all_tms(ntOff + k) == sigma_token) { return ((k + 1u) << 1u); }
+    }
+    return 0u;
+}"""
+
+//language=wgsl
+val init_lev_chart by Shader("""$CHART_INIT_PREAMBLE
 
 fn pack_rc(row_j: u32, col_i: u32) -> u32 { return (row_j << 16u) | (col_i & 0xffffu); }
 fn unpack_row_j(packed: u32) -> u32 { return packed >> 16u; }
@@ -731,18 +745,6 @@ fn unrank_to_coords(rank_idx: u32, max_j_idx: u32, max_i_idx: u32) -> u32 {
     let j_final: u32 = u32(s_sum - i32(i_final));
 
     return pack_rc(j_final, i_final);
-}
-
-fn letter_at(idx : u32, wd_len : u32) -> u32 { return select(word[idx], 0xffffffffu, idx >= wd_len); }
-
-fn encode_pos_literal(A_nt_idx : u32, sigma_token : u32) -> u32 {
-    if (sigma_token == 0xffffffffu) { return 0u; }
-    let ntLen = get_nt_tm_lens(A_nt_idx);
-    let ntOff = get_offsets(A_nt_idx);
-    for (var k : u32 = 0u; k < ntLen; k = k + 1u) {
-        if (get_all_tms(ntOff + k) == sigma_token) { return ((k + 1u) << 1u); }
-    }
-    return 0u;
 }
 
 fn encode_neg_literal(A_nt_idx : u32, sigma_token : u32) -> u32 {
@@ -836,28 +838,9 @@ const MAX_J_IDX_CONST : u32 = ${MAX_LEV_RAD}u; // Max index for j (edit distance
 }""")
 
 //language=wgsl
-val init_line_chart by Shader("""$CFL_STRUCT $TERM_STRUCT $ACTIVE_NT_HELPERS
-@group(0) @binding(0) var<storage, read_write>         dp_in : array<u32>;
-@group(0) @binding(1) var<storage, read_write>    active_nts : array<atomic<u32>>;
-@group(0) @binding(2) var<storage, read>              word : array<u32>;
-@group(0) @binding(3) var<storage, read>                cs : CFLStruct;
-@group(0) @binding(4) var<storage, read>         terminals : Terminals;
+val init_line_chart by Shader("""$CHART_INIT_PREAMBLE
 
-fn letter_at(idx : u32, wd_len : u32) -> u32 { return select(word[idx], 0xffffffffu, idx >= wd_len); }
-
-fn encode_pos_literal(A_nt_idx : u32, sigma_token : u32) -> u32 {
-    if (sigma_token == 0xffffffffu) { return 0u; }
-    let ntLen = get_nt_tm_lens(A_nt_idx);
-    let ntOff = get_offsets(A_nt_idx);
-    for (var k : u32 = 0u; k < ntLen; k = k + 1u) {
-        if (get_all_tms(ntOff + k) == sigma_token) { return ((k + 1u) << 1u); }
-    }
-    return 0u;
-}
-
-@compute @workgroup_size(1,1,$DENSE_NT_WORKGROUP_SIZE) fn main(
-    @builtin(global_invocation_id) gid : vec3<u32>
-) {
+@compute @workgroup_size(1,1,$DENSE_NT_WORKGROUP_SIZE) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let q1 = gid.x;
     let q2 = gid.y;
     let A  = gid.z;
@@ -1314,7 +1297,6 @@ const val RERANKER_TOP_K_SAMP = 1_000
 const val DISPATCH_GROUP_SIZE_X = 65_535
 // Length of the packet header in each repair buffer
 const val PKT_HDR_LEN = 2 // [levenshtein distance, Markov probability]
-const val MAX_SAMPLES_PER_DIST = 30_000
 const val SENTINEL = 0xFFFF_FFFFu
 const val HASH_MUL = 0x1e35a7bdu
 
@@ -1329,8 +1311,6 @@ val build_root_sizes by Shader("""$TERM_STRUCT
 @group(0) @binding(6) var<storage, read_write>  idx_uni    : IndexUniforms;
 
 $CHART_DECODING_HELPERS
-
-const NEG_MASK : u32 = $NEG_STR_LIT;
 
 $WGSL_LANG_SIZE
 
@@ -1885,15 +1865,10 @@ const val SPARSE_WRITER_WORKGROUP_SIZE = 256
 
 object GPUBufferUsage {
   const val MAP_READ      = 0x0001
-  const val MAP_WRITE     = 0x0002
   const val COPY_SRC      = 0x0004
   const val COPY_DST      = 0x0008
-  const val INDEX         = 0x0010
-  const val VERTEX        = 0x0020
   const val UNIFORM       = 0x0040
   const val STORAGE       = 0x0080
-  const val INDIRECT      = 0x0100
-  const val QUERY_RESOLVE = 0x0200
   const val STCPSD = STORAGE or COPY_SRC or COPY_DST
 }
 
