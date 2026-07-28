@@ -3,7 +3,7 @@ import kotlinx.browser.window
 import kotlinx.coroutines.await
 import kotlin.js.Promise
 
-private const val CPP_COI_SERVICE_WORKER_VERSION = "3-" + CPP_CLANGD_ARTIFACT_VERSION
+private const val CPP_COI_SERVICE_WORKER_VERSION = "5-" + CPP_CLANGD_ARTIFACT_VERSION
 private const val CPP_COI_RELOAD_KEY = "tidyparse-cpp-coi-reload"
 
 fun isCppCoiServiceWorkerRuntime(): Boolean =

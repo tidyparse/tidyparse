@@ -44,6 +44,19 @@ val monacoWebpackConfig = """
     test: /\.(ttf|woff2?|eot)$/i,
     type: "asset/inline"
   });
+  // VS Code extensions describe grammars, snippets, and language
+  // configuration with new URL(..., import.meta.url). Keep those dependency
+  // resources in the single GitHub Pages bundle as data URLs.
+  config.module.rules.push({
+    dependency: "url",
+    type: "asset/inline",
+    generator: {
+      dataUrl: {
+        encoding: "base64",
+        mimetype: "application/octet-stream"
+      }
+    }
+  });
 """.trimIndent() + "\n"
 val prepareMonacoWebpackConfig = tasks.register("prepareMonacoWebpackConfig") {
   val configFile = monacoWebpackConfigDir.map { it.file("single-bundle.js") }
@@ -73,8 +86,7 @@ val clangdStateDir = rootProject.layout.projectDirectory
   .dir(".gradle/clangd/$clangdArtifactVersion-$clangdHostId")
 val clangdWorkDir = clangdStateDir.dir("work")
 val clangdArtifactDir = clangdStateDir.dir("artifacts")
-val generatedClangdResources = layout.buildDirectory.dir("generated/clangd-resources")
-val generatedClangdWasm = generatedClangdResources.map { it.dir("wasm") }
+val clangdResourceDir = layout.projectDirectory.dir("src/jsMain/resources/wasm")
 
 val buildClangdWasm = tasks.register<Exec>("buildClangdWasm") {
   group = "build"
@@ -87,8 +99,7 @@ val buildClangdWasm = tasks.register<Exec>("buildClangdWasm") {
 
   inputs.files(
     clangdRecipeDir.file("build.sh"),
-    clangdRecipeDir.file("wait_stdin.patch"),
-    clangdRecipeDir.file("THIRD_PARTY_NOTICES.md")
+    clangdRecipeDir.file("wait_stdin.patch")
   ).withPathSensitivity(PathSensitivity.RELATIVE)
   inputs.property("clangdArtifactVersion", clangdArtifactVersion)
   inputs.property("clangdHost", clangdHostId)
@@ -112,16 +123,15 @@ val buildClangdWasm = tasks.register<Exec>("buildClangdWasm") {
   }
 }
 
-val stageClangdResources = tasks.register<Sync>("stageClangdResources") {
+tasks.register<Copy>("refreshClangdResources") {
   group = "build"
-  description = "Stages the locally built clangd artifact as browser resources"
+  description = "Rebuilds and refreshes the checked-in clangd browser resources"
   dependsOn(buildClangdWasm)
 
-  into(generatedClangdWasm)
+  into(clangdResourceDir)
   from(clangdArtifactDir) {
     include("clangd.js", "clangd.wasm", "clangd-manifest.json")
   }
-  from(clangdRecipeDir.file("THIRD_PARTY_NOTICES.md"))
 }
 
 kotlin {
@@ -151,12 +161,19 @@ kotlin {
 
   sourceSets {
     getByName("jsMain") {
-      resources.srcDir(generatedClangdResources)
       dependencies {
         implementation(project(":tidyparse-core"))
         implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2026.6.3")
-        implementation(npm("monaco-editor", "0.52.2"))
-        implementation(npm("worker-loader", "3.0.8"))
+        // Keep this family pinned together. monaco-languageclient 10 is the
+        // maintained successor to the now-discontinued monaco-editor-wrapper
+        implementation(npm("monaco-editor", "npm:@codingame/monaco-vscode-editor-api@25.1.2"))
+        implementation(npm("vscode", "npm:@codingame/monaco-vscode-extension-api@25.1.2"))
+        implementation(npm("monaco-languageclient", "10.7.0"))
+        implementation(npm("vscode-languageclient", "9.0.1"))
+        implementation(npm("@codingame/monaco-vscode-configuration-service-override", "25.1.2"))
+        implementation(npm("@codingame/monaco-vscode-textmate-service-override", "25.1.2"))
+        implementation(npm("@codingame/monaco-vscode-theme-defaults-default-extension", "25.1.2"))
+        implementation(npm("@codingame/monaco-vscode-cpp-default-extension", "25.1.2"))
       }
     }
 
@@ -171,10 +188,6 @@ kotlin {
 
 tasks.withType<KotlinWebpack>().configureEach {
   dependsOn(prepareMonacoWebpackConfig)
-}
-
-tasks.named("jsProcessResources") {
-  dependsOn(stageClangdResources)
 }
 
 fun saveStats(stat: String, name: String) =
@@ -502,7 +515,7 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
     group = "deployment"
     description = "Stages tidyparse-web files for deployment to tidyparse.github.io"
 
-    dependsOn("jsBrowserProductionWebpack", stageClangdResources)
+    dependsOn("jsBrowserProductionWebpack")
 
     into(webDeployStagingDir)
     from("src/jsMain/resources") {
@@ -514,7 +527,6 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
     from(productionBundleDir) {
       include("tidyparse-web.js.map")
     }
-    from(generatedClangdResources)
 
     inputs.files(productionJsFile, ngramFile, wdfaFile, rerankerWeightsFile, exampleFiles, deployExampleFiles)
     outputs.file(webDeployStagingDir.map { it.file("tidyparse-web.js") })

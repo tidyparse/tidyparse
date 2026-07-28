@@ -56,6 +56,14 @@ fun main() {
     setupCppClangdWorker()
     return
   }
+  if (isCppMonacoEditorWorkerRuntime()) {
+    setupCppMonacoEditorWorker()
+    return
+  }
+  if (isCppTextMateWorkerRuntime()) {
+    setupCppTextMateWorker()
+    return
+  }
 
   MainScope().launch {
     try {

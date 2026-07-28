@@ -14,7 +14,6 @@ private const val CPP_CLANGD_C_PATH = "$CPP_CLANGD_WORKSPACE_PATH/main.c"
 private const val CPP_CLANGD_WORKSPACE_URI = "file://$CPP_CLANGD_WORKSPACE_PATH"
 private const val CPP_CLANGD_CPP_URI = "file://$CPP_CLANGD_CPP_PATH"
 private const val CPP_CLANGD_C_URI = "file://$CPP_CLANGD_C_PATH"
-private const val CPP_CLANGD_MAX_VIRTUAL_FILE_SIZE = 4 * 1024 * 1024
 
 private val cppClangdWorkerScope: dynamic
   get() = js("globalThis")
@@ -32,18 +31,18 @@ fun setupCppClangdWorker() {
   worker.__tidyparseClangdStarted = true
 
   val input = ClangdLspInput()
-  val output = ClangdLspOutput(::postClangdLspMessage, ::postClangdProtocolError)
+  val connection = ClangdMessagePort(input)
+  val output = ClangdLspOutput(connection::send, ::postClangdProtocolError)
   val stderr = ClangdStderrOutput()
-  val virtualFiles = ClangdVirtualFiles()
 
   worker.onmessage = { event: dynamic ->
-    handleClangdWorkerMessage(event.data, input, virtualFiles)
+    if (event.data?.type == "connect") connection.connect(event.data?.port)
   }
 
   postClangdStatus("loading", "Loading clangd module")
   MainScope().launch {
     try {
-      startClangd(input, output, stderr, virtualFiles)
+      startClangd(input, output, stderr, connection)
     } catch (failure: Throwable) {
       postClangdFailure(failure)
     }
@@ -54,7 +53,7 @@ private suspend fun startClangd(
   input: ClangdLspInput,
   output: ClangdLspOutput,
   stderr: ClangdStderrOutput,
-  virtualFiles: ClangdVirtualFiles
+  connection: ClangdMessagePort
 ) {
   val clangdJsUrl = clangdArtifactUrl(CPP_CLANGD_JS_PATH)
   val clangdWasmUrl = clangdArtifactUrl(CPP_CLANGD_WASM_PATH)
@@ -81,16 +80,18 @@ private suspend fun startClangd(
   options.stderr = { byte: Int -> stderr.accept(byte) }
   options.onAbort = { reason: dynamic ->
     postClangdError("clangd aborted: $reason", fatal = true)
+    connection.close()
   }
   options.onExit = { code: dynamic ->
-    val message = clangdEnvelope("exit")
-    message.code = code
-    cppClangdWorkerScope.postMessage(message)
+    val exitCode = (code as? Number)?.toInt()
+    if (exitCode != null && exitCode != 0) {
+      postClangdError("clangd exited with code $exitCode", fatal = true)
+    }
+    connection.close()
   }
 
   val clangd = awaitDynamic(clangdFactory(options))
   installClangdWorkspace(clangd)
-  virtualFiles.attach(clangd)
 
   postClangdStatus("starting", "Starting clangd")
   clangd.callMain(
@@ -165,149 +166,50 @@ private fun installClangdWorkspace(clangd: dynamic) {
   )
 }
 
-private fun handleClangdWorkerMessage(
-  data: dynamic,
-  input: ClangdLspInput,
-  virtualFiles: ClangdVirtualFiles
+private class ClangdMessagePort(
+  private val input: ClangdLspInput
 ) {
-  if (data == null || data == js("undefined")) return
+  private var port: dynamic = null
 
-  try {
-    when (data.type as? String) {
-      "lsp", "message" -> {
-        val message =
-          if (data.message != null && data.message != js("undefined")) data.message
-          else data.payload
-        if (message == null || message == js("undefined")) {
-          postClangdProtocolError("Missing LSP message payload")
-        } else {
-          input.enqueue(message)
-        }
-      }
-
-      "configure" -> {
-        val language = if ((data.language as? String).equals("c", true)) "c" else "cpp"
-        val configured = clangdEnvelope("configured")
-        configured.language = language
-        configured.fileUri = if (language == "c") CPP_CLANGD_C_URI else CPP_CLANGD_CPP_URI
-        cppClangdWorkerScope.postMessage(configured)
-      }
-
-      "readFile" -> virtualFiles.read(data)
-
-      "ping" -> cppClangdWorkerScope.postMessage(clangdEnvelope("pong"))
-
-      null -> {
-        // BrowserMessageWriter-style clients post JSON-RPC objects directly.
-        if (data.jsonrpc == "2.0" ||
-          data.method != null && data.method != js("undefined") ||
-          data.id != null && data.id != js("undefined")
-        ) {
-          input.enqueue(data)
-        }
-      }
+  fun connect(candidate: dynamic) {
+    if (candidate == null || candidate == js("undefined")) {
+      postClangdProtocolError("Missing clangd MessagePort")
+      return
     }
-  } catch (failure: Throwable) {
-    postClangdProtocolError(failure.message ?: "Unable to queue LSP message")
-  }
-}
-
-private class ClangdVirtualFiles {
-  private var clangd: dynamic = null
-
-  fun attach(module: dynamic) {
-    clangd = module
-  }
-
-  fun read(request: dynamic) {
-    val response = clangdEnvelope("file")
-    response.id = request.id
-
-    try {
-      if (clangd == null || clangd == js("undefined")) {
-        error("clangd virtual filesystem is not ready")
-      }
-
-      val requestedUri = request.uri as? String
-      val requestedPath = request.path as? String
-      val path = normalizeVirtualPath(
-        when {
-          !requestedPath.isNullOrBlank() -> requestedPath
-          !requestedUri.isNullOrBlank() -> virtualPathFromUri(requestedUri)
-          else -> error("readFile requires an absolute path or file URI")
-        }
-      )
-
-      val fs = clangd.FS
-      val stat = fs.stat(path)
-      if (fs.isFile(stat.mode) != true) {
-        error("$path is not a regular file")
-      }
-      val size = stat.size as Int
-      if (size > CPP_CLANGD_MAX_VIRTUAL_FILE_SIZE) {
-        error("$path is too large to open (${size} bytes)")
-      }
-
-      val options = js("{}")
-      options.encoding = "utf8"
-      val text = fs.readFile(path, options) as? String
-        ?: error("Unable to decode $path as UTF-8")
-
-      response.path = path
-      response.uri = requestedUri ?: virtualFileUri(path)
-      response.text = text
-    } catch (failure: Throwable) {
-      response.type = "fileError"
-      response.path = request.path
-      response.uri = request.uri
-      response.message = failure.message ?: "Unable to read virtual file"
+    if (port != null && port != js("undefined")) {
+      candidate.close()
+      postClangdProtocolError("clangd already has an LSP connection")
+      return
     }
 
-    cppClangdWorkerScope.postMessage(response)
+    port = candidate
+    candidate.onmessage = { event: dynamic ->
+      try {
+        input.enqueue(event.data)
+      } catch (failure: Throwable) {
+        postClangdProtocolError(failure.message ?: "Unable to queue LSP message")
+      }
+    }
+    candidate.onmessageerror = {
+      postClangdProtocolError("The clangd LSP port received an unreadable message")
+    }
+    candidate.start()
+  }
+
+  fun send(message: dynamic) {
+    val target = port
+    if (target == null || target == js("undefined")) {
+      error("clangd produced an LSP message before its port was connected")
+    }
+    target.postMessage(message)
+  }
+
+  fun close() {
+    val target = port
+    port = null
+    if (target != null && target != js("undefined")) target.close()
   }
 }
-
-private fun virtualPathFromUri(uri: String): String =
-  js(
-    """(uri) => {
-      const parsed = new URL(uri);
-      if (parsed.protocol !== "file:") {
-        throw new Error("Only file: URIs can be read from clangd");
-      }
-      if (parsed.hostname !== "" && parsed.hostname !== "localhost") {
-        throw new Error("Remote file URI authorities are not supported");
-      }
-      return decodeURIComponent(parsed.pathname);
-    }"""
-  )(uri) as String
-
-private fun normalizeVirtualPath(path: String): String =
-  js(
-    """(path) => {
-      if (!path.startsWith("/") || path.includes("\0")) {
-        throw new Error("Virtual file paths must be absolute");
-      }
-      const normalized = [];
-      for (const segment of path.split("/")) {
-        if (segment === "" || segment === ".") continue;
-        if (segment === "..") {
-          normalized.pop();
-        } else {
-          normalized.push(segment);
-        }
-      }
-      return "/" + normalized.join("/");
-    }"""
-  )(path) as String
-
-private fun virtualFileUri(path: String): String =
-  js(
-    """(path) => {
-      const uri = new URL("file:///");
-      uri.pathname = path;
-      return uri.href;
-    }"""
-  )(path) as String
 
 private class ClangdLspInput {
   private val encoder: dynamic = js("new TextEncoder()")
@@ -463,22 +365,12 @@ private class ClangdStderrOutput {
     if ((bytes.length as Int) == 0) return
     val line = decoder.decode(js("(values) => new Uint8Array(values)")(bytes)) as String
     bytes = js("[]")
-
-    val log = clangdEnvelope("log")
-    log.stream = "stderr"
-    log.message = line
-    cppClangdWorkerScope.postMessage(log)
+    cppClangdWorkerScope.console.error(line)
   }
 }
 
 private suspend fun awaitDynamic(value: dynamic): dynamic =
   (js("(value) => Promise.resolve(value)")(value) as Promise<dynamic>).await()
-
-private fun postClangdLspMessage(message: dynamic) {
-  val envelope = clangdEnvelope("lsp")
-  envelope.message = message
-  cppClangdWorkerScope.postMessage(envelope)
-}
 
 private fun postClangdStatus(status: String, text: String) {
   val message = clangdEnvelope("status")

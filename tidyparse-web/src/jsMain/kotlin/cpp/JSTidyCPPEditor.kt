@@ -144,17 +144,12 @@ private class CppPlayground {
   private lateinit var problems: HTMLPreElement
   private lateinit var problemsMeta: HTMLElement
   private lateinit var problemCount: HTMLElement
-  private lateinit var completionPopup: HTMLElement
 
   private var language = NativeLanguage.CPP
   private var monacoEditor: JSMonacoEditor? = null
-  private var clangdClient: JSClangdClient? = null
   private var clangdDiagnostics: List<ClangdDiagnostic> = emptyList()
   private var clangdDiagnosticsPublished = false
   private var clangdFailure: String? = null
-  private var completionRequest = 0
-  private var completionItems: List<ClangdCompletion> = emptyList()
-  private var selectedCompletion = 0
 
   fun start() {
     language = NativeLanguage.from(parameter("language") ?: parameter("lang"))
@@ -162,11 +157,14 @@ private class CppPlayground {
     installMarkup()
     bindElements()
     applyInitialTheme()
-    initializeEditor()
+    initializeSource()
     bindEvents()
     updateEditorChrome()
     setStatus("ready", "Ready")
-    scope.launch { bootstrapClangd() }
+    scope.launch {
+      initializeEditor()
+      bootstrapClangd()
+    }
 
     when {
       isTrueParameter("run") -> scope.launch { compileAndRun() }
@@ -222,7 +220,6 @@ private class CppPlayground {
               <textarea id="cpp-source" aria-label="C or C++ source code" autocomplete="off"
                 autocapitalize="off" spellcheck="false" wrap="off"></textarea>
               <div id="cpp-monaco" aria-label="C or C++ source code"></div>
-              <div id="cpp-completions" class="is-hidden" role="listbox" aria-label="Code completions"></div>
             </div>
           </section>
 
@@ -311,30 +308,34 @@ private class CppPlayground {
     problems = element("cpp-problems")
     problemsMeta = element("cpp-problems-meta")
     problemCount = element("cpp-problem-count")
-    completionPopup = element("cpp-completions")
   }
 
-  private fun initializeEditor() {
+  private fun initializeSource() {
     languageSelect.value = language.queryValue
     val requestedCode = parameter("code")
     val savedCode = readLocalStorage(CPP_SOURCE_KEY_PREFIX + language.queryValue)
     source.value = requestedCode ?: savedCode ?: language.sample
     stdin.value = parameter("stdin") ?: ""
+  }
+
+  private suspend fun initializeEditor() {
     editorRoot.classList.add("has-monaco")
     try {
-      monacoEditor = JSMonacoEditor(
+      val created = JSMonacoEditor(
         container = monacoHost,
         fileName = language.fileName,
-        text = source.value,
+        initialText = source.value,
         darkTheme = document.body?.classList?.contains("cpp-dark") == true,
         onChange = { text -> handleMonacoChange(text) },
         onPosition = { line, column -> position.textContent = "Ln $line, Col $column" },
         onOpenedFile = { openedFile -> fileName.textContent = openedFile },
         onRun = { scope.launch { compileAndRun() } }
       )
+      created.start()
+      monacoEditor = created
       source.tabIndex = -1
       source.setAttribute("aria-hidden", "true")
-      monacoEditor?.focus()
+      created.focus()
     } catch (failure: Throwable) {
       editorRoot.classList.remove("has-monaco")
       monacoHost.textContent = ""
@@ -348,7 +349,6 @@ private class CppPlayground {
     source.value = text
     writeLocalStorage(CPP_SOURCE_KEY_PREFIX + language.queryValue, text)
     clangdDiagnosticsPublished = false
-    clangdClient?.didChange(text)
   }
 
   private fun bindEvents() {
@@ -356,28 +356,13 @@ private class CppPlayground {
       writeLocalStorage(CPP_SOURCE_KEY_PREFIX + language.queryValue, source.value)
       updateEditorChrome()
       clangdDiagnosticsPublished = false
-      clangdClient?.didChange(source.value)
-      val caret = source.selectionStart ?: 0
-      val trigger = source.value.getOrNull(caret - 1)
-      if (trigger == '.' || trigger == '>' || trigger == ':') {
-        val request = ++completionRequest
-        window.setTimeout({
-          if (request == completionRequest) requestCompletions()
-        }, 75)
-      } else {
-        hideCompletions()
-      }
     })
     source.addEventListener("scroll", {
       lineNumbers.scrollTop = source.scrollTop
-      hideCompletions()
     })
     source.addEventListener("click", { updateCaretPosition() })
     source.addEventListener("keyup", { updateCaretPosition() })
     source.addEventListener("select", { updateCaretPosition() })
-    source.addEventListener("blur", {
-      window.setTimeout({ hideCompletions() }, 120)
-    })
     source.addEventListener("keydown", { event ->
       handleEditorKey(event as KeyboardEvent)
     })
@@ -420,19 +405,10 @@ private class CppPlayground {
     window.addEventListener("pagehide", { event ->
       if (event.asDynamic().persisted as? Boolean == true) return@addEventListener
       monacoEditor?.dispose()
-      clangdClient?.dispose()
     })
   }
 
   private fun handleEditorKey(event: KeyboardEvent) {
-    if (handleCompletionKey(event)) return
-
-    if (event.code == "Space" && (event.ctrlKey || event.metaKey)) {
-      event.preventDefault()
-      requestCompletions()
-      return
-    }
-
     if (event.key == "Escape") {
       runButton.focus()
       return
@@ -481,12 +457,15 @@ private class CppPlayground {
 
     source.value = readLocalStorage(CPP_SOURCE_KEY_PREFIX + language.queryValue) ?: language.sample
     source.setSelectionRange(0, 0)
-    monacoEditor?.setDocument(language.fileName, source.value)
-    hideCompletions()
+    monacoEditor?.let { editor ->
+      scope.launch {
+        editor.setDocument(language.fileName, source.value)
+        editor.focus()
+      }
+    }
     clangdDiagnostics = emptyList()
     clangdDiagnosticsPublished = false
-    renderClangdDiagnostics(analyzing = clangdClient != null)
-    clangdClient?.changeDocument(language.fileName, language.queryValue, source.value)
+    renderClangdDiagnostics(analyzing = monacoEditor != null)
     output.textContent = "No output yet."
     diagnostics.textContent = "No diagnostics yet."
     outputMeta.textContent = "Run the program to see its output."
@@ -507,10 +486,8 @@ private class CppPlayground {
       writeLocalStorage(CPP_SOURCE_KEY_PREFIX + language.queryValue, source.value)
       source.setSelectionRange(0, 0)
       source.focus()
-      clangdClient?.didChange(source.value)
     }
     updateEditorChrome()
-    hideCompletions()
     clangdDiagnosticsPublished = false
   }
 
@@ -675,163 +652,6 @@ private class CppPlayground {
     position.textContent = "Ln $line, Col $column"
   }
 
-  private fun requestCompletions() {
-    val client = clangdClient ?: return
-    val caret = source.selectionStart ?: return
-    val prefix = source.value.substring(0, caret.coerceIn(0, source.value.length))
-    val line = prefix.count { it == '\n' }
-    val lineStart = prefix.lastIndexOf('\n') + 1
-    val column = prefix.length - lineStart
-    val request = ++completionRequest
-
-    client.requestCompletion(line, column) { items ->
-      if (request != completionRequest || source.selectionStart != caret) return@requestCompletion
-      completionItems = items
-        .sortedWith(compareBy<ClangdCompletion>({ it.sortText ?: it.label }, { it.label }))
-        .take(80)
-      selectedCompletion = 0
-      if (completionItems.isEmpty()) hideCompletions() else showCompletions(line, column)
-    }
-  }
-
-  private fun showCompletions(line: Int, column: Int) {
-    completionPopup.innerHTML = ""
-    completionItems.forEachIndexed { index, item ->
-      val button = document.createElement("button") as HTMLButtonElement
-      button.type = "button"
-      button.className = "cpp-completion-item"
-      button.setAttribute("role", "option")
-      button.setAttribute("aria-selected", (index == selectedCompletion).toString())
-      button.setAttribute("data-index", index.toString())
-
-      val label = document.createElement("span") as HTMLElement
-      label.className = "cpp-completion-label"
-      label.textContent = item.label.trim()
-      button.appendChild(label)
-
-      val detailText = item.detail
-      if (!detailText.isNullOrBlank()) {
-        val detail = document.createElement("span") as HTMLElement
-        detail.className = "cpp-completion-detail"
-        detail.textContent = detailText
-        button.appendChild(detail)
-      }
-
-      button.addEventListener("mouseenter", {
-        selectedCompletion = index
-        updateCompletionSelection()
-      })
-      button.addEventListener("mousedown", { rawEvent ->
-        rawEvent.preventDefault()
-        selectedCompletion = index
-        applySelectedCompletion()
-      })
-      completionPopup.appendChild(button)
-    }
-
-    val style = window.getComputedStyle(source)
-    val fontSize = style.fontSize.removeSuffix("px").toDoubleOrNull() ?: 15.0
-    val lineHeight = style.lineHeight.removeSuffix("px").toDoubleOrNull() ?: fontSize * 1.65
-    val gutterWidth = lineNumbers.offsetWidth.toDouble()
-    val visibleLine = line - (source.scrollTop / lineHeight).toInt()
-    val left = gutterWidth + 16 + column * fontSize * 0.6 - source.scrollLeft
-    val top = 18 + (visibleLine + 1) * lineHeight
-    completionPopup.style.left = "${left.coerceIn(gutterWidth + 4, (app.clientWidth - 120).coerceAtLeast(gutterWidth.toInt() + 4).toDouble()).toInt()}px"
-    completionPopup.style.top = "${top.coerceIn(4.0, (source.clientHeight - 48).coerceAtLeast(4).toDouble()).toInt()}px"
-    completionPopup.classList.remove("is-hidden")
-  }
-
-  private fun handleCompletionKey(event: KeyboardEvent): Boolean {
-    if (completionPopup.classList.contains("is-hidden")) return false
-    when (event.key) {
-      "ArrowDown" -> selectedCompletion = (selectedCompletion + 1) % completionItems.size
-      "ArrowUp" -> selectedCompletion = (selectedCompletion - 1 + completionItems.size) % completionItems.size
-      "Enter", "Tab" -> {
-        event.preventDefault()
-        applySelectedCompletion()
-        return true
-      }
-      "Escape" -> {
-        event.preventDefault()
-        hideCompletions()
-        return true
-      }
-      else -> return false
-    }
-    event.preventDefault()
-    updateCompletionSelection()
-    return true
-  }
-
-  private fun updateCompletionSelection() {
-    val children = completionPopup.children
-    for (index in 0 until children.length) {
-      val item = children.item(index) as HTMLElement
-      val selected = index == selectedCompletion
-      item.setAttribute("aria-selected", selected.toString())
-      if (selected) item.asDynamic().scrollIntoView(js("({ block: 'nearest' })"))
-    }
-  }
-
-  private fun applySelectedCompletion() {
-    val completion = completionItems.getOrNull(selectedCompletion) ?: return
-    val edit = completion.textEdit
-    val value = source.value
-    val caret = source.selectionStart ?: value.length
-    val completionText =
-      edit?.newText
-        ?: completion.insertText
-        ?: completion.label
-    val replacement =
-      if (completion.insertTextFormat == 2) sanitizeSnippet(completionText)
-      else completionText
-
-    val editRange = edit?.range
-    val start = if (editRange != null) {
-      offsetForPosition(value, editRange.start.line, editRange.start.character)
-    } else {
-      var prefixStart = caret
-      while (prefixStart > 0 && value[prefixStart - 1].let { it == '_' || it.isLetterOrDigit() }) prefixStart--
-      prefixStart
-    }
-    val end = if (editRange != null) {
-      offsetForPosition(value, editRange.end.line, editRange.end.character)
-    } else {
-      caret
-    }
-
-    source.value = value.substring(0, start) + replacement + value.substring(end)
-    val nextCaret = start + replacement.length
-    source.setSelectionRange(nextCaret, nextCaret)
-    hideCompletions()
-    source.dispatchEvent(js("new Event('input', { bubbles: true })"))
-    source.focus()
-  }
-
-  private fun hideCompletions() {
-    completionRequest++
-    completionItems = emptyList()
-    completionPopup.classList.add("is-hidden")
-    completionPopup.innerHTML = ""
-  }
-
-  private fun offsetForPosition(text: String, line: Int, character: Int): Int {
-    var offset = 0
-    repeat(line.coerceAtLeast(0)) {
-      val newline = text.indexOf('\n', offset)
-      if (newline < 0) return text.length
-      offset = newline + 1
-    }
-    val end = text.indexOf('\n', offset).let { if (it < 0) text.length else it }
-    return (offset + character.coerceAtLeast(0)).coerceAtMost(end)
-  }
-
-  private fun sanitizeSnippet(text: String): String =
-    text
-      .replace(Regex("""\$\{\d+:([^}]*)\}"""), "$1")
-      .replace(Regex("""\$\{\d+\}"""), "")
-      .replace(Regex("""\$\d+"""), "")
-
   private fun activateTab(name: String) {
     val tabs = document.querySelectorAll("#cpp-build-tabs [data-tab]")
     for (index in 0 until tabs.length) {
@@ -934,29 +754,32 @@ private class CppPlayground {
       return
     }
 
+    val editor = monacoEditor
+    if (editor == null) {
+      val message = "clangd requires the Monaco editor, which could not be initialized."
+      setLspStatus("error", "clangd unavailable", message)
+      problems.textContent = message
+      problemsMeta.textContent = "clangd could not start."
+      return
+    }
+
     setLspStatus("working", "clangd loading…", "Loading locally built clangd WebAssembly")
-    val client = JSClangdClient(
-      onStatus = { state, message -> handleClangdStatus(state, message) },
-      onProgress = { loaded, total ->
-        val percent = if (total > 0) (loaded.toDouble() * 100.0 / total).toInt().coerceIn(0, 100) else 0
-        setLspStatus(
-          "working",
-          if (total > 0) "clangd $percent%" else "clangd loading…",
-          if (total > 0) "Loading clangd WebAssembly ($percent%)" else "Loading clangd WebAssembly"
-        )
-      },
-      onDiagnostics = { _, version, items ->
-        clangdDiagnostics = items
-        monacoEditor?.setDiagnostics(items)
-        if (version != null || items.isNotEmpty()) clangdDiagnosticsPublished = true
-        renderClangdDiagnostics(analyzing = !clangdDiagnosticsPublished)
-        updateEditorChrome()
-      },
-      onSemanticTokensRefresh = { monacoEditor?.refreshSemanticTokens() }
-    )
-    clangdClient = client
-    monacoEditor?.bindClangd(client)
-    client.start(language.fileName, language.queryValue, editorValue())
+    try {
+      editor.startClangd(
+        onStatus = { state, message -> handleClangdStatus(state, message) },
+        onDiagnostics = { items ->
+          clangdDiagnostics = items
+          clangdDiagnosticsPublished = true
+          renderClangdDiagnostics()
+          updateEditorChrome()
+        }
+      )
+    } catch (failure: Throwable) {
+      handleClangdStatus(
+        ClangdClientState.ERROR,
+        failure.message ?: "Unable to initialize clangd"
+      )
+    }
   }
 
   private fun setLspStatus(state: String, text: String, title: String = text) {
@@ -980,7 +803,6 @@ private class CppPlayground {
       ClangdClientState.READY -> {
         clangdFailure = null
         setLspStatus("ready", "clangd ready", message.ifBlank { "clangd is ready" })
-        monacoEditor?.enableClangdSemanticTokens()
         if (clangdDiagnostics.isEmpty() && clangdDiagnosticsPublished) renderClangdDiagnostics()
       }
       ClangdClientState.ERROR -> {
@@ -1416,8 +1238,7 @@ private val CPP_CSS = """
   }
 
   #cpp-editor.has-monaco #cpp-line-numbers,
-  #cpp-editor.has-monaco #cpp-source,
-  #cpp-editor.has-monaco #cpp-completions {
+  #cpp-editor.has-monaco #cpp-source {
     display: none !important;
   }
 
@@ -1469,54 +1290,6 @@ private val CPP_CSS = """
   #cpp-source::selection,
   #cpp-stdin::selection {
     background: var(--cpp-accent-soft);
-  }
-
-  #cpp-completions {
-    position: absolute;
-    z-index: 5;
-    width: min(430px, calc(100% - 76px));
-    max-height: 260px;
-    overflow: auto;
-    border: 1px solid var(--cpp-border-strong);
-    border-radius: 9px;
-    background: var(--cpp-panel);
-    box-shadow: 0 14px 38px rgba(15, 23, 42, 0.22);
-    font: 12px/1.35 var(--cpp-mono);
-  }
-
-  .cpp-completion-item {
-    width: 100%;
-    min-height: 29px;
-    padding: 5px 9px;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 10px;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    color: var(--cpp-text);
-    text-align: left;
-  }
-
-  .cpp-completion-item:hover,
-  .cpp-completion-item[aria-selected="true"] {
-    background: var(--cpp-accent-soft);
-    color: var(--cpp-accent);
-  }
-
-  .cpp-completion-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .cpp-completion-detail {
-    max-width: 170px;
-    overflow: hidden;
-    color: var(--cpp-muted);
-    font-size: 10px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .cpp-line-number {

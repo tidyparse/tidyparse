@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Pinned browser-clangd toolchain. Gradle supplies both directories so the
-# expensive LLVM build can survive `clean` while only generated web resources
-# are copied into tidyparse-web/build.
+# expensive LLVM build can survive `clean`; refreshClangdResources copies the
+# finished artifacts into the checked-in browser resources.
 : "${ROOT_DIR:?Gradle must set ROOT_DIR}"
 : "${OUTPUT_DIR:?Gradle must set OUTPUT_DIR}"
 
