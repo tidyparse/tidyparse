@@ -3,7 +3,7 @@ import kotlinx.browser.window
 import kotlinx.coroutines.await
 import kotlin.js.Promise
 
-private const val CPP_COI_SERVICE_WORKER_VERSION = "5-" + CPP_CLANGD_ARTIFACT_VERSION
+private const val CPP_COI_SERVICE_WORKER_VERSION = "6-" + CPP_CLANGD_ARTIFACT_VERSION
 private const val CPP_COI_RELOAD_KEY = "tidyparse-cpp-coi-reload"
 
 fun isCppCoiServiceWorkerRuntime(): Boolean =
@@ -28,24 +28,46 @@ fun setupCppCoiServiceWorker() {
     if (!invalidCacheMode) {
       val response = js("""(request) => {
         const url = new URL(request.url);
+        const scope = globalThis.registration.scope;
+        const clangdWasmPath = new URL("clangd.wasm", scope).pathname;
         const clangdWorkerRequest =
           request.destination === "worker" &&
           url.searchParams.get("cpp-worker") === "clangd";
-        const target = clangdWorkerRequest
-          ? new URL("tidyparse-web.js?cpp-worker-bundle=clangd", url)
-          : request;
+        const compressedClangdWasm =
+          url.origin === globalThis.location.origin &&
+          url.pathname === clangdWasmPath;
+        let target = request;
+        if (clangdWorkerRequest) {
+          target = new URL("tidyparse-web.js?cpp-worker-bundle=clangd", url);
+        } else if (compressedClangdWasm) {
+          target = new URL(url);
+          target.pathname += ".gz";
+        }
         return fetch(target).then(response => {
-        const sameOrigin = new URL(request.url).origin === globalThis.location.origin;
-        if (!sameOrigin || response.type === "opaque" || response.status === 0) return response;
-            const headers = new Headers(response.headers);
-            headers.set("Cross-Origin-Opener-Policy", "same-origin");
-            headers.set("Cross-Origin-Embedder-Policy", "require-corp");
-            headers.set("Cross-Origin-Resource-Policy", "cross-origin");
-            return new Response(response.body, {
-              status: response.status,
-              statusText: response.statusText,
-              headers
-            });
+          const sameOrigin = url.origin === globalThis.location.origin;
+          if (!sameOrigin || response.type === "opaque" || response.status === 0) return response;
+
+          const headers = new Headers(response.headers);
+          let body = response.body;
+          if (compressedClangdWasm && response.ok && body) {
+            const serverDecodedGzip =
+              /\bgzip\b/i.test(headers.get("Content-Encoding") || "");
+            if (!serverDecodedGzip) {
+              body = body.pipeThrough(new DecompressionStream("gzip"));
+            }
+            headers.delete("Content-Encoding");
+            headers.delete("Content-Length");
+            headers.set("Content-Type", "application/wasm");
+          }
+
+          headers.set("Cross-Origin-Opener-Policy", "same-origin");
+          headers.set("Cross-Origin-Embedder-Policy", "require-corp");
+          headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+          return new Response(body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers
+          });
         });
       }""")(request)
       event.respondWith(response)

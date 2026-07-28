@@ -4,9 +4,8 @@ import kotlinx.coroutines.launch
 import kotlin.js.Promise
 
 private const val CPP_CLANGD_WORKER_NAME = "tidyparse-clangd"
-internal const val CPP_CLANGD_ARTIFACT_VERSION = "llvm-21.1.0-emsdk-4.0.22-wasi-29.0-r2"
-private const val CPP_CLANGD_JS_PATH = "wasm/clangd.js"
-private const val CPP_CLANGD_WASM_PATH = "wasm/clangd.wasm"
+private const val CPP_CLANGD_JS_PATH = "clangd.js"
+private const val CPP_CLANGD_WASM_PATH = "clangd.wasm"
 
 private const val CPP_CLANGD_WORKSPACE_PATH = "/home/web_user"
 private const val CPP_CLANGD_CPP_PATH = "$CPP_CLANGD_WORKSPACE_PATH/main.cpp"

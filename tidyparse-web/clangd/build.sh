@@ -3,9 +3,15 @@ set -euo pipefail
 
 # Pinned browser-clangd toolchain. Gradle supplies both directories so the
 # expensive LLVM build can survive `clean`; refreshClangdResources copies the
-# finished artifacts into the checked-in browser resources.
+# finished artifacts into ignored browser resources before deployment.
 : "${ROOT_DIR:?Gradle must set ROOT_DIR}"
 : "${OUTPUT_DIR:?Gradle must set OUTPUT_DIR}"
+: "${CLANGD_RECIPE_SHA256:?Gradle must set CLANGD_RECIPE_SHA256}"
+
+if [[ ! "$CLANGD_RECIPE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "Invalid clangd recipe SHA-256: $CLANGD_RECIPE_SHA256" >&2
+  exit 1
+fi
 
 EMSDK_VERSION="4.0.22"
 EMSDK_COMMIT="15915cad554b707837024dc2758b6a1c5b94b036"
@@ -17,14 +23,15 @@ LLVM_MAJOR="21"
 LLVM_COMMIT="3623fe661ae35c6c80ac221f14d85be76aa870f1"
 CMAKE_VERSION="3.31.6"
 NINJA_VERSION="1.11.1.4"
-ARTIFACT_VERSION="llvm-21.1.0-emsdk-4.0.22-wasi-29.0-r2"
+ARTIFACT_BASE_VERSION="llvm-21.1.0-emsdk-4.0.22-wasi-29.0-r5"
+ARTIFACT_VERSION="$ARTIFACT_BASE_VERSION-$CLANGD_RECIPE_SHA256"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 mkdir -p "$ROOT_DIR" "$OUTPUT_DIR"
 ROOT_DIR="$(cd "$ROOT_DIR" && pwd -P)"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd -P)"
 
-for command in bash git curl python3 tar shasum; do
+for command in bash git curl gzip python3 tar shasum; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "clangd build requires '$command' on PATH" >&2
     exit 1
@@ -198,6 +205,19 @@ cmake -E copy_directory \
   "$CLANG_RESOURCE_STAGE/lib/clang/$LLVM_MAJOR/include" \
   "$BROWSER_INCLUDE_DIR"
 
+# The browser demo always parses C++23. libc++'s frozen C++03 implementation
+# is never selected, so do not carry it in the embedded browser sysroot.
+LIBCXX_CXX03_DIR="$BROWSER_INCLUDE_DIR/wasm32-wasi/c++/v1/__cxx03"
+if [[ ! -d "$LIBCXX_CXX03_DIR" ]]; then
+  echo "WASI sysroot is missing the expected libc++ C++03 headers: $LIBCXX_CXX03_DIR" >&2
+  exit 1
+fi
+cmake -E remove_directory "$LIBCXX_CXX03_DIR"
+if [[ -e "$LIBCXX_CXX03_DIR" ]]; then
+  echo "Unable to remove libc++ C++03 headers: $LIBCXX_CXX03_DIR" >&2
+  exit 1
+fi
+
 for required_header in \
   "stddef.h" \
   "wasm_simd128.h" \
@@ -219,29 +239,38 @@ for excluded_target in \
   fi
 done
 
-FINAL_LINKER_FLAGS="-pthread -s ENVIRONMENT=worker -s NO_INVOKE_RUN -s EXIT_RUNTIME -s INITIAL_MEMORY=2GB -s ALLOW_MEMORY_GROWTH -s MAXIMUM_MEMORY=4GB -s STACK_SIZE=256kB -s EXPORTED_RUNTIME_METHODS=FS,callMain -s MODULARIZE -s EXPORT_ES6 -s WASM_BIGINT -s ASYNCIFY -s PTHREAD_POOL_SIZE=4 --embed-file=$BROWSER_INCLUDE_DIR@/usr/include"
+# wait_stdin.patch suspends clangd's stdio reader while the LSP queue is empty.
+# JSPI preserves that asynchronous import without Asyncify's whole-program rewrite.
+FINAL_LINKER_FLAGS="-pthread -s ENVIRONMENT=worker -s NO_INVOKE_RUN -s EXIT_RUNTIME -s INITIAL_MEMORY=2GB -s ALLOW_MEMORY_GROWTH -s MAXIMUM_MEMORY=4GB -s STACK_SIZE=256kB -s EXPORTED_RUNTIME_METHODS=FS,callMain -s MODULARIZE -s EXPORT_ES6 -s WASM_BIGINT -s JSPI -s PTHREAD_POOL_SIZE=4 --embed-file=$BROWSER_INCLUDE_DIR@/usr/include"
 emcmake cmake "${COMMON_CMAKE_ARGS[@]}" \
   "-DCMAKE_EXE_LINKER_FLAGS=$FINAL_LINKER_FLAGS"
 cmake --build "$WASM_BUILD" --target clangd
 
-for artifact in clangd.js clangd.wasm; do
-  source_file="$WASM_BUILD/bin/$artifact"
+CLANGD_JS="$WASM_BUILD/bin/clangd.js"
+CLANGD_WASM="$WASM_BUILD/bin/clangd.wasm"
+for source_file in "$CLANGD_JS" "$CLANGD_WASM"; do
   if [[ ! -s "$source_file" ]]; then
     echo "Missing clangd build output: $source_file" >&2
     exit 1
   fi
-  cp "$source_file" "$OUTPUT_DIR/$artifact.tmp"
 done
 
-JS_SHA256="$(shasum -a 256 "$OUTPUT_DIR/clangd.js.tmp" | awk '{print $1}')"
-WASM_SHA256="$(shasum -a 256 "$OUTPUT_DIR/clangd.wasm.tmp" | awk '{print $1}')"
-JS_SIZE="$(wc -c < "$OUTPUT_DIR/clangd.js.tmp" | tr -d ' ')"
-WASM_SIZE="$(wc -c < "$OUTPUT_DIR/clangd.wasm.tmp" | tr -d ' ')"
+cp "$CLANGD_JS" "$OUTPUT_DIR/clangd.js.tmp"
+gzip -9 -n -c "$CLANGD_WASM" > "$OUTPUT_DIR/clangd.wasm.gz.tmp"
+gzip -t "$OUTPUT_DIR/clangd.wasm.gz.tmp"
+
+JS_SHA256="$(shasum -a 256 "$CLANGD_JS" | awk '{print $1}')"
+WASM_SHA256="$(shasum -a 256 "$CLANGD_WASM" | awk '{print $1}')"
+WASM_GZIP_SHA256="$(shasum -a 256 "$OUTPUT_DIR/clangd.wasm.gz.tmp" | awk '{print $1}')"
+JS_SIZE="$(wc -c < "$CLANGD_JS" | tr -d ' ')"
+WASM_SIZE="$(wc -c < "$CLANGD_WASM" | tr -d ' ')"
+WASM_GZIP_SIZE="$(wc -c < "$OUTPUT_DIR/clangd.wasm.gz.tmp" | tr -d ' ')"
 PATCH_SHA256="$(shasum -a 256 "$SCRIPT_DIR/wait_stdin.patch" | awk '{print $1}')"
 
 cat > "$OUTPUT_DIR/clangd-manifest.json.tmp" <<EOF
 {
   "artifactVersion": "$ARTIFACT_VERSION",
+  "recipeSha256": "$CLANGD_RECIPE_SHA256",
   "target": "wasm32-emscripten",
   "clangdAsyncThreads": 4,
   "llvm": { "version": "$LLVM_VERSION", "commit": "$LLVM_COMMIT" },
@@ -250,15 +279,22 @@ cat > "$OUTPUT_DIR/clangd-manifest.json.tmp" <<EOF
   "stdinPatchSha256": "$PATCH_SHA256",
   "artifacts": {
     "clangd.js": { "bytes": $JS_SIZE, "sha256": "$JS_SHA256" },
-    "clangd.wasm": { "bytes": $WASM_SIZE, "sha256": "$WASM_SHA256" }
+    "clangd.wasm": {
+      "path": "clangd.wasm.gz",
+      "compression": "gzip",
+      "uncompressedBytes": $WASM_SIZE,
+      "uncompressedSha256": "$WASM_SHA256",
+      "compressedBytes": $WASM_GZIP_SIZE,
+      "compressedSha256": "$WASM_GZIP_SHA256"
+    }
   }
 }
 EOF
 
 mv "$OUTPUT_DIR/clangd.js.tmp" "$OUTPUT_DIR/clangd.js"
-mv "$OUTPUT_DIR/clangd.wasm.tmp" "$OUTPUT_DIR/clangd.wasm"
+mv "$OUTPUT_DIR/clangd.wasm.gz.tmp" "$OUTPUT_DIR/clangd.wasm.gz"
 mv "$OUTPUT_DIR/clangd-manifest.json.tmp" "$OUTPUT_DIR/clangd-manifest.json"
 
 echo "Built $ARTIFACT_VERSION:"
 echo "  $OUTPUT_DIR/clangd.js ($JS_SIZE bytes)"
-echo "  $OUTPUT_DIR/clangd.wasm ($WASM_SIZE bytes)"
+echo "  $OUTPUT_DIR/clangd.wasm.gz ($WASM_GZIP_SIZE bytes; $WASM_SIZE uncompressed)"

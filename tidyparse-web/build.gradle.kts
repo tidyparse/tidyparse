@@ -1,6 +1,15 @@
 @file:OptIn(ExperimentalEncodingApi::class)
 
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.provider.ValueSource
+import org.gradle.api.provider.ValueSourceParameters
+import org.gradle.api.tasks.CacheableTask
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.OutputFile
+import org.gradle.api.tasks.TaskAction
 import org.jetbrains.kotlin.gradle.targets.js.testing.KotlinJsTest
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpack
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.DEVELOPMENT
@@ -11,6 +20,7 @@ import org.jetbrains.letsPlot.intern.Plot
 import org.jetbrains.letsPlot.label.ggtitle
 import java.awt.Desktop
 import java.io.ByteArrayOutputStream
+import java.security.MessageDigest
 import java.util.*
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicReference
@@ -71,10 +81,7 @@ val prepareMonacoWebpackConfig = tasks.register("prepareMonacoWebpackConfig") {
   }
 }
 
-// Keep this in sync with CPP_CLANGD_ARTIFACT_VERSION in JSClangdWorker.kt.
-// Bump the recipe revision whenever a toolchain pin, patch, or linker flag
-// changes so CMake never reuses an incompatible LLVM build tree.
-val clangdArtifactVersion = "llvm-21.1.0-emsdk-4.0.22-wasi-29.0-r2"
+val clangdArtifactBaseVersion = "llvm-21.1.0-emsdk-4.0.22-wasi-29.0-r5"
 val clangdHostId = listOf(
   System.getProperty("os.name"),
   System.getProperty("os.arch")
@@ -82,11 +89,26 @@ val clangdHostId = listOf(
   .lowercase(Locale.ROOT)
   .replace(Regex("[^a-z0-9._-]+"), "-")
 val clangdRecipeDir = layout.projectDirectory.dir("clangd")
+val clangdRecipeFiles = fileTree(clangdRecipeDir) {
+  exclude("**/.DS_Store")
+}
+val clangdRecipeSha256 = providers.of(ClangdRecipeSha256Source::class) {
+  parameters.directory.set(clangdRecipeDir)
+}
+val clangdRecipeSha256Value = clangdRecipeSha256.get()
+val clangdArtifactVersion = "$clangdArtifactBaseVersion-$clangdRecipeSha256Value"
 val clangdStateDir = rootProject.layout.projectDirectory
   .dir(".gradle/clangd/$clangdArtifactVersion-$clangdHostId")
 val clangdWorkDir = clangdStateDir.dir("work")
 val clangdArtifactDir = clangdStateDir.dir("artifacts")
-val clangdResourceDir = layout.projectDirectory.dir("src/jsMain/resources/wasm")
+val clangdResourceDir = layout.projectDirectory.dir("src/jsMain/resources")
+val generatedClangdVersionDir = layout.buildDirectory.dir("generated/clangd-version")
+val generateClangdArtifactVersion = tasks.register<GenerateClangdArtifactVersion>(
+  "generateClangdArtifactVersion"
+) {
+  artifactVersion.set(clangdArtifactVersion)
+  outputFile.set(generatedClangdVersionDir.map { it.file("JSClangdArtifactVersion.kt") })
+}
 
 val buildClangdWasm = tasks.register<Exec>("buildClangdWasm") {
   group = "build"
@@ -96,16 +118,15 @@ val buildClangdWasm = tasks.register<Exec>("buildClangdWasm") {
   commandLine("bash", clangdRecipeDir.file("build.sh").asFile.absolutePath)
   environment("ROOT_DIR", clangdWorkDir.asFile.absolutePath)
   environment("OUTPUT_DIR", clangdArtifactDir.asFile.absolutePath)
+  environment("CLANGD_RECIPE_SHA256", clangdRecipeSha256Value)
 
-  inputs.files(
-    clangdRecipeDir.file("build.sh"),
-    clangdRecipeDir.file("wait_stdin.patch")
-  ).withPathSensitivity(PathSensitivity.RELATIVE)
+  inputs.files(clangdRecipeFiles).withPathSensitivity(PathSensitivity.RELATIVE)
+  inputs.property("clangdRecipeSha256", clangdRecipeSha256)
   inputs.property("clangdArtifactVersion", clangdArtifactVersion)
   inputs.property("clangdHost", clangdHostId)
   outputs.files(
     clangdArtifactDir.file("clangd.js"),
-    clangdArtifactDir.file("clangd.wasm"),
+    clangdArtifactDir.file("clangd.wasm.gz"),
     clangdArtifactDir.file("clangd-manifest.json")
   )
 
@@ -114,7 +135,7 @@ val buildClangdWasm = tasks.register<Exec>("buildClangdWasm") {
     clangdArtifactDir.asFile.mkdirs()
   }
   doLast {
-    listOf("clangd.js", "clangd.wasm", "clangd-manifest.json").forEach { name ->
+    listOf("clangd.js", "clangd.wasm.gz", "clangd-manifest.json").forEach { name ->
       val artifact = clangdArtifactDir.file(name).asFile
       check(artifact.isFile && artifact.length() > 0) {
         "The clangd build did not produce ${artifact.absolutePath}"
@@ -123,14 +144,27 @@ val buildClangdWasm = tasks.register<Exec>("buildClangdWasm") {
   }
 }
 
-tasks.register<Copy>("refreshClangdResources") {
+val refreshClangdResources = tasks.register<Sync>("refreshClangdResources") {
   group = "build"
-  description = "Rebuilds and refreshes the checked-in clangd browser resources"
+  description = "Rebuilds and refreshes the ignored clangd browser resources"
   dependsOn(buildClangdWasm)
 
   into(clangdResourceDir)
   from(clangdArtifactDir) {
-    include("clangd.js", "clangd.wasm", "clangd-manifest.json")
+    include("clangd.js", "clangd.wasm.gz", "clangd-manifest.json")
+  }
+  preserve {
+    include("**")
+    exclude(
+      "clangd.js",
+      "clangd.wasm",
+      "clangd.wasm.gz",
+      "clangd-manifest.json",
+      "wasm/clangd.js",
+      "wasm/clangd.wasm",
+      "wasm/clangd.wasm.gz",
+      "wasm/clangd-manifest.json"
+    )
   }
 }
 
@@ -161,6 +195,7 @@ kotlin {
 
   sourceSets {
     getByName("jsMain") {
+      kotlin.srcDir(generatedClangdVersionDir)
       dependencies {
         implementation(project(":tidyparse-core"))
         implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2026.6.3")
@@ -184,6 +219,14 @@ kotlin {
       }
     }
   }
+}
+
+tasks.named("compileKotlinJs") {
+  dependsOn(generateClangdArtifactVersion)
+}
+
+tasks.named("jsProcessResources") {
+  mustRunAfter(refreshClangdResources)
 }
 
 tasks.withType<KotlinWebpack>().configureEach {
@@ -515,7 +558,7 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
     group = "deployment"
     description = "Stages tidyparse-web files for deployment to tidyparse.github.io"
 
-    dependsOn("jsBrowserProductionWebpack")
+    dependsOn("jsBrowserProductionWebpack", refreshClangdResources)
 
     into(webDeployStagingDir)
     from("src/jsMain/resources") {
@@ -858,5 +901,67 @@ abstract class DeployWebTask : DefaultTask() {
 
   private fun List<String>.displayCommand(): String = joinToString(" ") { arg ->
     if (arg.any { it.isWhitespace() }) "\"${arg.replace("\"", "\\\"")}\"" else arg
+  }
+}
+
+abstract class ClangdRecipeSha256Source :
+  ValueSource<String, ClangdRecipeSha256Source.Parameters> {
+  interface Parameters : ValueSourceParameters {
+    val directory: DirectoryProperty
+  }
+
+  override fun obtain(): String {
+    val root = parameters.directory.get().asFile
+    val files = root.walkTopDown()
+      .filter { it.isFile && it.name != ".DS_Store" }
+      .map { file ->
+        file.relativeTo(root).invariantSeparatorsPath to file
+      }
+      .sortedBy { it.first }
+      .toList()
+    val recipeDigest = MessageDigest.getInstance("SHA-256")
+    recipeDigest.update("tidyparse-clangd-recipe-v1\u0000".toByteArray())
+
+    files.forEach { (relativePath, file) ->
+      val fileDigest = MessageDigest.getInstance("SHA-256")
+      file.inputStream().buffered().use { input ->
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+          val read = input.read(buffer)
+          if (read < 0) break
+          fileDigest.update(buffer, 0, read)
+        }
+      }
+      recipeDigest.update(relativePath.toByteArray())
+      recipeDigest.update(0.toByte())
+      recipeDigest.update(fileDigest.digest())
+    }
+
+    return HexFormat.of().formatHex(recipeDigest.digest())
+  }
+}
+
+@CacheableTask
+abstract class GenerateClangdArtifactVersion : DefaultTask() {
+  @get:Input
+  abstract val artifactVersion: Property<String>
+
+  @get:OutputFile
+  abstract val outputFile: RegularFileProperty
+
+  @TaskAction
+  fun generate() {
+    val version = artifactVersion.get()
+    require(version.matches(Regex("[a-zA-Z0-9._-]+"))) {
+      "Invalid clangd artifact version: $version"
+    }
+    val source = """
+      // Generated from the complete tidyparse-web/clangd recipe.
+      internal const val CPP_CLANGD_ARTIFACT_VERSION = "$version"
+    """.trimIndent() + "\n"
+    outputFile.get().asFile.apply {
+      parentFile.mkdirs()
+      if (!exists() || readText() != source) writeText(source)
+    }
   }
 }
