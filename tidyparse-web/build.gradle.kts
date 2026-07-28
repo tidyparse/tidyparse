@@ -61,7 +61,7 @@ val prepareMonacoWebpackConfig = tasks.register("prepareMonacoWebpackConfig") {
 // Keep this in sync with CPP_CLANGD_ARTIFACT_VERSION in JSClangdWorker.kt.
 // Bump the recipe revision whenever a toolchain pin, patch, or linker flag
 // changes so CMake never reuses an incompatible LLVM build tree.
-val clangdArtifactVersion = "llvm-21.1.0-emsdk-4.0.22-wasi-29.0-r1"
+val clangdArtifactVersion = "llvm-21.1.0-emsdk-4.0.22-wasi-29.0-r2"
 val clangdHostId = listOf(
   System.getProperty("os.name"),
   System.getProperty("os.arch")
