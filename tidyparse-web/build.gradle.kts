@@ -2,6 +2,7 @@
 
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.jetbrains.kotlin.gradle.targets.js.testing.KotlinJsTest
+import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpack
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.DEVELOPMENT
 import org.jetbrains.letsPlot.*
 import org.jetbrains.letsPlot.export.ggsave
@@ -32,11 +33,109 @@ plugins {
 group = "ai.hypergraph"
 version = "0.23.0"
 
+val monacoWebpackConfigDir = layout.buildDirectory.dir("generated/monaco-webpack-config")
+val monacoWebpackConfig = """
+  const webpack = require("webpack");
+  // This output is evaluated in both Window and Worker globals. With all lazy
+  // chunks folded in, the worker target's self.location base URI is safe in both.
+  config.target = "webworker";
+  config.plugins.push(new webpack.optimize.LimitChunkCountPlugin({ maxChunks: 1 }));
+  config.module.rules.push({
+    test: /\.(ttf|woff2?|eot)$/i,
+    type: "asset/inline"
+  });
+""".trimIndent() + "\n"
+val prepareMonacoWebpackConfig = tasks.register("prepareMonacoWebpackConfig") {
+  val configFile = monacoWebpackConfigDir.map { it.file("single-bundle.js") }
+  inputs.property("contents", monacoWebpackConfig)
+  outputs.file(configFile)
+
+  doLast {
+    configFile.get().asFile.apply {
+      parentFile.mkdirs()
+      writeText(monacoWebpackConfig)
+    }
+  }
+}
+
+// Keep this in sync with CPP_CLANGD_ARTIFACT_VERSION in JSClangdWorker.kt.
+// Bump the recipe revision whenever a toolchain pin, patch, or linker flag
+// changes so CMake never reuses an incompatible LLVM build tree.
+val clangdArtifactVersion = "llvm-21.1.0-emsdk-4.0.22-wasi-29.0-r1"
+val clangdHostId = listOf(
+  System.getProperty("os.name"),
+  System.getProperty("os.arch")
+).joinToString("-")
+  .lowercase(Locale.ROOT)
+  .replace(Regex("[^a-z0-9._-]+"), "-")
+val clangdRecipeDir = layout.projectDirectory.dir("clangd")
+val clangdStateDir = rootProject.layout.projectDirectory
+  .dir(".gradle/clangd/$clangdArtifactVersion-$clangdHostId")
+val clangdWorkDir = clangdStateDir.dir("work")
+val clangdArtifactDir = clangdStateDir.dir("artifacts")
+val generatedClangdResources = layout.buildDirectory.dir("generated/clangd-resources")
+val generatedClangdWasm = generatedClangdResources.map { it.dir("wasm") }
+
+val buildClangdWasm = tasks.register<Exec>("buildClangdWasm") {
+  group = "build"
+  description = "Builds the pinned, self-hosted clangd WebAssembly artifact"
+
+  workingDir(clangdRecipeDir)
+  commandLine("bash", clangdRecipeDir.file("build.sh").asFile.absolutePath)
+  environment("ROOT_DIR", clangdWorkDir.asFile.absolutePath)
+  environment("OUTPUT_DIR", clangdArtifactDir.asFile.absolutePath)
+
+  inputs.files(
+    clangdRecipeDir.file("build.sh"),
+    clangdRecipeDir.file("wait_stdin.patch"),
+    clangdRecipeDir.file("THIRD_PARTY_NOTICES.md")
+  ).withPathSensitivity(PathSensitivity.RELATIVE)
+  inputs.property("clangdArtifactVersion", clangdArtifactVersion)
+  inputs.property("clangdHost", clangdHostId)
+  outputs.files(
+    clangdArtifactDir.file("clangd.js"),
+    clangdArtifactDir.file("clangd.wasm"),
+    clangdArtifactDir.file("clangd-manifest.json")
+  )
+
+  doFirst {
+    clangdWorkDir.asFile.mkdirs()
+    clangdArtifactDir.asFile.mkdirs()
+  }
+  doLast {
+    listOf("clangd.js", "clangd.wasm", "clangd-manifest.json").forEach { name ->
+      val artifact = clangdArtifactDir.file(name).asFile
+      check(artifact.isFile && artifact.length() > 0) {
+        "The clangd build did not produce ${artifact.absolutePath}"
+      }
+    }
+  }
+}
+
+val stageClangdResources = tasks.register<Sync>("stageClangdResources") {
+  group = "build"
+  description = "Stages the locally built clangd artifact as browser resources"
+  dependsOn(buildClangdWasm)
+
+  into(generatedClangdWasm)
+  from(clangdArtifactDir) {
+    include("clangd.js", "clangd.wasm", "clangd-manifest.json")
+  }
+  from(clangdRecipeDir.file("THIRD_PARTY_NOTICES.md"))
+}
+
 kotlin {
   js {
     binaries.executable()
 
     browser {
+      commonWebpackConfig {
+        configDirectory = monacoWebpackConfigDir.get().asFile
+        cssSupport {
+          enabled.set(true)
+        }
+      }
+
       runTask { mainOutputFileName = "tidyparse-web.js" }
 
       webpackTask {
@@ -52,9 +151,12 @@ kotlin {
 
   sourceSets {
     getByName("jsMain") {
+      resources.srcDir(generatedClangdResources)
       dependencies {
         implementation(project(":tidyparse-core"))
         implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2026.6.3")
+        implementation(npm("monaco-editor", "0.52.2"))
+        implementation(npm("worker-loader", "3.0.8"))
       }
     }
 
@@ -65,6 +167,14 @@ kotlin {
       }
     }
   }
+}
+
+tasks.withType<KotlinWebpack>().configureEach {
+  dependsOn(prepareMonacoWebpackConfig)
+}
+
+tasks.named("jsProcessResources") {
+  dependsOn(stageClangdResources)
 }
 
 fun saveStats(stat: String, name: String) =
@@ -121,10 +231,10 @@ fun embeddedWebResourcesScript(
   rawExamplesGzipB64: String
 ): String = """
 $EMBEDDED_WEB_RESOURCES_START
-window.raw_ngrams_gzip_b64 = ${jsString(rawNgramsGzipB64)};
-window.raw_wdfa_gzip_b64 = ${jsString(rawWdfaGzipB64)};
-window.raw_reranker_weights_gzip_b64 = ${jsString(rawRerankerWeightsGzipB64)};
-window.raw_examples_gzip_b64 = ${jsString(rawExamplesGzipB64)};
+globalThis.raw_ngrams_gzip_b64 = ${jsString(rawNgramsGzipB64)};
+globalThis.raw_wdfa_gzip_b64 = ${jsString(rawWdfaGzipB64)};
+globalThis.raw_reranker_weights_gzip_b64 = ${jsString(rawRerankerWeightsGzipB64)};
+globalThis.raw_examples_gzip_b64 = ${jsString(rawExamplesGzipB64)};
 $EMBEDDED_WEB_RESOURCES_END
 """.trimIndent() + "\n"
 
@@ -392,7 +502,7 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
     group = "deployment"
     description = "Stages tidyparse-web files for deployment to tidyparse.github.io"
 
-    dependsOn("jsBrowserProductionWebpack")
+    dependsOn("jsBrowserProductionWebpack", stageClangdResources)
 
     into(webDeployStagingDir)
     from("src/jsMain/resources") {
@@ -404,6 +514,7 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
     from(productionBundleDir) {
       include("tidyparse-web.js.map")
     }
+    from(generatedClangdResources)
 
     inputs.files(productionJsFile, ngramFile, wdfaFile, rerankerWeightsFile, exampleFiles, deployExampleFiles)
     outputs.file(webDeployStagingDir.map { it.file("tidyparse-web.js") })
