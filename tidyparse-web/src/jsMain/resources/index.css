@@ -126,6 +126,10 @@ u { text-decoration: #f00 wavy underline; }
     background: var(--editor-background);
 }
 
+#tidyparse-output .partial-terminal-match {
+    color: yellow;
+}
+
 .workspace-divider {
     grid-column: 2;
     grid-row: 1;
