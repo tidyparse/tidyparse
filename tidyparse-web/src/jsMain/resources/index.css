@@ -120,14 +120,24 @@ u { text-decoration: #f00 wavy underline; }
     text-decoration: #f00 wavy underline;
 }
 
+.CodeMirror .tidyparse-soft-completion {
+    color: rgba(180, 185, 194, 0.72);
+    background: rgba(180, 185, 194, 0.08);
+    border-bottom: 1px solid rgba(180, 185, 194, 0.28);
+    white-space: pre;
+    pointer-events: none;
+    user-select: none;
+    z-index: 2;
+}
+
+.CodeMirror .tidyparse-soft-completion--whitespace-only {
+    min-width: 1ch;
+}
+
 #tidyparse-output {
     max-height: 100%;
     white-space: pre-wrap;
     background: var(--editor-background);
-}
-
-#tidyparse-output .partial-terminal-match {
-    color: yellow;
 }
 
 .workspace-divider {

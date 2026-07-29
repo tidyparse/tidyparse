@@ -1,6 +1,8 @@
 import ai.hypergraph.kaliningraph.parsing.CFG
 import ai.hypergraph.kaliningraph.parsing.noEpsilon
 import ai.hypergraph.kaliningraph.parsing.parseCFG
+import ai.hypergraph.kaliningraph.parsing.terminals
+import ai.hypergraph.tidyparse.MAX_DISP_RESULTS
 import kotlinx.browser.document
 import kotlinx.browser.window
 import kotlinx.coroutines.test.runTest
@@ -42,11 +44,17 @@ class JSTidyEditorTest {
   private class RecordingEditor(
     editor: HTMLTextAreaElement,
     output: HTMLDivElement,
-    override var cfg: CFG
+    override var cfg: CFG,
+    private val softPreviewAvailable: Boolean
   ) : JSTidyEditor(editor, output) {
     var writes = 0
 
     override fun getLatestCFG(): CFG = cfg
+    override fun continuation(f: () -> Unit): Any = Unit
+    override fun renderSoftTerminalInsertionPreview(
+      insertion: String,
+      offset: Int
+    ): Boolean = softPreviewAvailable
     override fun readDisplayText(): String = output.textContent ?: ""
     override fun writeDisplayText(s: String) {
       writes++
@@ -54,7 +62,10 @@ class JSTidyEditorTest {
     }
   }
 
-  private fun editorFor(line: String): Pair<RecordingEditor, HTMLTextAreaElement> {
+  private fun editorFor(
+    line: String,
+    softPreviewAvailable: Boolean = true
+  ): Pair<RecordingEditor, HTMLTextAreaElement> {
     window.asDynamic().cmEditor = null
 
     val input = (document.getElementById("tidyparse-input") as? HTMLTextAreaElement)
@@ -71,12 +82,22 @@ class JSTidyEditorTest {
     output.innerHTML = "instructions"
     input.value = "START -> S\nS -> a\n---\n$line"
     input.setSelectionRange(input.value.length, input.value.length)
-    return RecordingEditor(input, output, cfg) to input
+    return RecordingEditor(input, output, cfg, softPreviewAvailable) to input
   }
 
   private fun RecordingEditor.handleFreshUserInsertion() {
     recordFreshUserInsertion()
     handleInput()
+  }
+
+  private fun RecordingEditor.pressTab() {
+    val event = js("""({
+        keyCode: 9,
+        prevented: false,
+        preventDefault: function() { this.prevented = true; }
+    })""")
+    navUpdate(event)
+    assertTrue(event.prevented as Boolean)
   }
 
   @Test
@@ -152,15 +173,108 @@ class JSTidyEditorTest {
   }
 
   @Test
-  fun plWhileFreshInsertionCompletesIfAndOpeningParenthesis() = runTest {
+  fun plWhileStubPrefixKeepsItsUnchangedLcpAndOnlyViableBranches() {
+    val completion = assertNotNull(
+      plWhileCfg.terminalCompletionPlan(listOf("while", "(", "<"))
+    )
+    val lexicalStubs =
+      plWhileCfg.terminals.filter { it.startsWith("<") }.sorted()
+
+    assertEquals(lexicalStubs.size, completion.lexicalCandidateCount)
+    assertEquals("<", completion.originalPrefix)
+    assertEquals("<", completion.expandedPrefix)
+    assertFalse(completion.terminalCommitted)
+    assertTrue(completion.forcedContinuation.isEmpty())
+    assertEquals(
+      listOf("<BEXP>", "<EXP>", "<LIT>"),
+      completion.branches.map { it.terminal }
+    )
+    assertTrue(completion.branches.all { it.suffixLengths.isNotEmpty() })
+    assertEquals(
+      MAX_TERMINAL_COMPLETION_BRANCHES,
+      completion.branches.size
+    )
+  }
+
+  @Test
+  fun plWhileStubPrefixImmediatelyEnumeratesBranchesFairlyWithoutAGhost() = runTest {
+    val (editor, input) = editorFor("while ( <")
+    editor.cfg = plWhileCfg
+    val typedText = input.value
+    val typedCaret = input.selectionStart
+
+    editor.handleFreshUserInsertion()
+    val completionJob = assertNotNull(editor.runningJob)
+
+    // CodeMirror can dispatch more than one post-key notification. Replaying
+    // the unchanged state must retain the viable prefix resolution instead of
+    // reinterpreting literal "<" as an invalid exact terminal.
+    editor.handleInput()
+    assertSame(completionJob, editor.runningJob)
+
+    assertEquals(typedText, input.value)
+    assertEquals(typedCaret, input.selectionStart)
+    assertNull(editor.pendingTerminalCompletionInsertion)
+
+    completionJob.join()
+
+    assertEquals(typedText, input.value)
+    assertEquals(typedCaret, input.selectionStart)
+    assertNull(editor.pendingTerminalCompletionInsertion)
+
+    val displayText = editor.output.textContent ?: ""
+    assertTrue(displayText.startsWith("-> Forward completion"))
+    val results = displayText.lineSequence()
+      .map {
+        it.substringAfter(
+          delimiter = ".) ",
+          missingDelimiterValue = ""
+        )
+      }
+      .filter { it.isNotEmpty() }
+      .toList()
+    assertEquals(MAX_DISP_RESULTS, results.size)
+
+    val viableStubs = listOf("<BEXP>", "<EXP>", "<LIT>")
+    val resultStubs = results.map { result ->
+      assertNotNull(
+        viableStubs.singleOrNull {
+          result.startsWith("while ( $it ")
+        },
+        "Unexpected terminal-completion branch: $result"
+      )
+    }
+    val counts = viableStubs.associateWith { stub ->
+      resultStubs.count { it == stub }
+    }
+
+    assertEquals(viableStubs.toSet(), resultStubs.toSet())
+    assertEquals(MAX_DISP_RESULTS, counts.values.sum())
+    assertEquals(listOf(9, 10, 10), counts.values.sorted())
+  }
+
+  @Test
+  fun plWhileFreshInsertionOffersIfAndOpeningParenthesisUntilTab() = runTest {
     val (editor, input) = editorFor("i")
     editor.cfg = plWhileGrammar.parseCFG(validate = true)
+    val typedText = input.value
+    val typedCaret = input.selectionStart
 
     editor.handleFreshUserInsertion()
     assertNotNull(editor.runningJob).join()
 
-    assertTrue(input.value.endsWith("\nif ( "))
+    assertEquals(typedText, input.value)
+    assertEquals(typedCaret, input.selectionStart)
+    assertEquals("f ( ", editor.pendingTerminalCompletionInsertion)
     assertContains(editor.output.textContent ?: "", "if (")
+
+    editor.handleInput()
+    assertEquals(typedText, input.value)
+    assertEquals("f ( ", editor.pendingTerminalCompletionInsertion)
+
+    editor.pressTab()
+    assertTrue(input.value.endsWith("\nif ( "))
+    assertNull(editor.pendingTerminalCompletionInsertion)
   }
 
   @Test
@@ -173,7 +287,6 @@ class JSTidyEditorTest {
         cfg.terminalCompletionPlan(listOf("if", "(", "true", ")"))
       )
 
-      assertFalse(completion.isPartialMatch)
       assertEquals(listOf("{"), completion.forcedContinuation)
       assertEquals(
         listOf("if", "(", "true", ")", "{"),
@@ -184,25 +297,86 @@ class JSTidyEditorTest {
   }
 
   @Test
-  fun plWhileFreshClosingParenthesisAdvancesThroughOpeningBrace() = runTest {
+  fun plWhileFreshClosingParenthesisOffersOpeningBraceUntilTab() = runTest {
     val (editor, input) = editorFor("if ( true ")
     editor.cfg = plWhileGrammar.parseCFG(validate = true)
 
     input.value += ")"
     input.setSelectionRange(input.value.length, input.value.length)
+    val typedText = input.value
     editor.handleFreshUserInsertion()
     assertNotNull(editor.runningJob).join()
 
+    assertEquals(typedText, input.value)
+    assertEquals(" { ", editor.pendingTerminalCompletionInsertion)
+    assertContains(editor.output.textContent ?: "", "if ( true ) {")
+
+    editor.pressTab()
     assertTrue(input.value.endsWith("\nif ( true ) { "))
-    val output = editor.output as HTMLDivElement
-    assertContains(output.textContent ?: "", "if ( true ) {")
-    assertContains(output.innerHTML, "<span style=\"color: green\">{</span>")
-    assertFalse(output.innerHTML.contains("partial-terminal-match"))
-    assertFalse(output.innerHTML.contains("color: orange"))
+    assertNull(editor.pendingTerminalCompletionInsertion)
   }
 
   @Test
-  fun plWhileFreshClosingBraceReceivesTrailingSpace() {
+  fun matchingTypedCharactersConsumeTheSoftInsertionPrefix() {
+    val (editor, input) = editorFor("while ( true ")
+    editor.cfg = plWhileCfg
+
+    input.value += ")"
+    input.setSelectionRange(input.value.length, input.value.length)
+    editor.handleFreshUserInsertion()
+    assertTrue(input.value.endsWith("\nwhile ( true )"))
+    assertEquals(" { ", editor.pendingTerminalCompletionInsertion)
+
+    input.value += " "
+    input.setSelectionRange(input.value.length, input.value.length)
+    editor.handleFreshUserInsertion()
+    assertTrue(input.value.endsWith("\nwhile ( true ) "))
+    assertEquals("{ ", editor.pendingTerminalCompletionInsertion)
+
+    input.value += "{"
+    input.setSelectionRange(input.value.length, input.value.length)
+    editor.handleFreshUserInsertion()
+    assertTrue(input.value.endsWith("\nwhile ( true ) {"))
+    assertEquals(" ", editor.pendingTerminalCompletionInsertion)
+
+    input.value += " "
+    input.setSelectionRange(input.value.length, input.value.length)
+    editor.handleFreshUserInsertion()
+    val fullyTypedText = input.value
+    assertTrue(fullyTypedText.endsWith("\nwhile ( true ) { "))
+    assertNull(editor.pendingTerminalCompletionInsertion)
+
+    editor.pressTab()
+    assertEquals(fullyTypedText, input.value)
+    assertNull(editor.pendingTerminalCompletionInsertion)
+    editor.runningJob?.cancel()
+  }
+
+  @Test
+  fun unexpectedTypedCharacterClearsTheRemainingSoftInsertion() {
+    val (editor, input) = editorFor("while ( true ")
+    editor.cfg = plWhileCfg
+
+    input.value += ")"
+    input.setSelectionRange(input.value.length, input.value.length)
+    editor.handleFreshUserInsertion()
+    assertEquals(" { ", editor.pendingTerminalCompletionInsertion)
+
+    input.value += " "
+    input.setSelectionRange(input.value.length, input.value.length)
+    editor.handleFreshUserInsertion()
+    assertEquals("{ ", editor.pendingTerminalCompletionInsertion)
+
+    input.value += "x"
+    input.setSelectionRange(input.value.length, input.value.length)
+    editor.handleFreshUserInsertion()
+    assertTrue(input.value.endsWith("\nwhile ( true ) x"))
+    assertNull(editor.pendingTerminalCompletionInsertion)
+    editor.runningJob?.cancel()
+  }
+
+  @Test
+  fun plWhileFreshClosingBraceOffersTrailingSpaceUntilTab() {
     val (editor, input) = editorFor("if ( true ) { if ( true ) { ID ")
     editor.cfg = plWhileGrammar.parseCFG(validate = true)
     val tokens = listOf(
@@ -215,16 +389,17 @@ class JSTidyEditorTest {
     assertNull(editor.cfg.terminalCompletionPlan(tokens))
     editor.handleFreshUserInsertion()
 
-    assertTrue(input.value.endsWith("\nif ( true ) { if ( true ) { ID } "))
-    assertEquals(input.value.length, input.selectionStart)
+    assertTrue(input.value.endsWith("\nif ( true ) { if ( true ) { ID }"))
+    assertEquals(" ", editor.pendingTerminalCompletionInsertion)
 
-    editor.handleInput()
-    assertTrue(input.value.endsWith("\nif ( true ) { if ( true ) { ID } "))
-
-    input.value = input.value.dropLast(1)
-    input.setSelectionRange(input.value.length, input.value.length)
     editor.handleInput()
     assertTrue(input.value.endsWith("\nif ( true ) { if ( true ) { ID }"))
+    assertEquals(" ", editor.pendingTerminalCompletionInsertion)
+
+    editor.pressTab()
+    assertTrue(input.value.endsWith("\nif ( true ) { if ( true ) { ID } "))
+    assertEquals(input.value.length, input.selectionStart)
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -239,6 +414,7 @@ class JSTidyEditorTest {
     editor.handleFreshUserInsertion()
 
     assertTrue(input.value.endsWith("\nunknown end"))
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -256,7 +432,6 @@ class JSTidyEditorTest {
       assertEquals(listOf("=="), completion.branches.map { it.terminal })
       assertEquals("==", completion.expandedPrefix)
       assertTrue(completion.terminalCommitted)
-      assertTrue(completion.isPartialMatch)
       assertTrue(completion.forcedContinuation.isEmpty())
       assertEquals((5..10).toList(), completion.branches.single().suffixLengths)
     }
@@ -266,14 +441,17 @@ class JSTidyEditorTest {
 
     input.value += "="
     input.setSelectionRange(input.value.length, input.value.length)
+    val typedText = input.value
     editor.handleFreshUserInsertion()
     assertNotNull(editor.runningJob).join()
 
-    assertTrue(input.value.endsWith("\nwhile ( true == "))
+    assertEquals(typedText, input.value)
+    assertEquals("= ", editor.pendingTerminalCompletionInsertion)
     assertContains(editor.output.textContent ?: "", "while ( true ==")
-    val output = editor.output as HTMLDivElement
-    assertContains(output.innerHTML, "<span class=\"partial-terminal-match\">=</span>")
-    assertContains(output.innerHTML, "<span style=\"color: orange\">=</span>")
+
+    editor.pressTab()
+    assertTrue(input.value.endsWith("\nwhile ( true == "))
+    assertNull(editor.pendingTerminalCompletionInsertion)
   }
 
   @Test
@@ -289,7 +467,11 @@ class JSTidyEditorTest {
     assertTrue(completion.forcedContinuation.isEmpty())
     editor.handleFreshUserInsertion()
 
+    assertTrue(input.value.endsWith("\ngo"))
+    assertEquals(" ", editor.pendingTerminalCompletionInsertion)
+    editor.pressTab()
     assertTrue(input.value.endsWith("\ngo "))
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -303,6 +485,7 @@ class JSTidyEditorTest {
     editor.handleFreshUserInsertion()
 
     assertTrue(input.value.endsWith("\ndone"))
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -323,6 +506,7 @@ class JSTidyEditorTest {
     editor.handleFreshUserInsertion()
 
     assertTrue(input.value.endsWith("\nif"))
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -334,6 +518,7 @@ class JSTidyEditorTest {
     editor.handleFreshUserInsertion()
 
     assertTrue(input.value.endsWith("\nif ( true ) "))
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -348,6 +533,7 @@ class JSTidyEditorTest {
     editor.handleInput()
 
     assertTrue(input.value.endsWith("\nif ( true )"))
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -401,7 +587,12 @@ class JSTidyEditorTest {
     assertTrue(completion.forcedContinuation.isEmpty())
 
     editor.handleFreshUserInsertion()
+    assertTrue(input.value.endsWith("\ni"))
+    assertEquals("f", editor.pendingTerminalCompletionInsertion)
+
+    editor.pressTab()
     assertTrue(input.value.endsWith("\nif"))
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -489,37 +680,7 @@ class JSTidyEditorTest {
   }
 
   @Test
-  fun partialTerminalDiffHighlightsOnlyMatchedTokenCharacters() {
-    val html = terminalCompletionDiff(
-      inputTokens = listOf("Ta", "lead", "Ta"),
-      matchedPrefix = "Ta",
-      completion = "Ta lead Table z"
-    )
-
-    assertEquals(1, "partial-terminal-match".toRegex().findAll(html).count())
-    assertContains(html, "Ta lead <span class=\"partial-terminal-match\">Ta</span>")
-    assertContains(html, "<span style=\"color: orange\">ble</span>")
-    assertContains(html, "<span style=\"color: green\">z</span>")
-
-    val div = document.createElement("div") as HTMLDivElement
-    div.innerHTML = html
-    assertEquals("Ta lead Table z", div.textContent)
-  }
-
-  @Test
-  fun partialTerminalDiffEscapesHighlightedTerminal() {
-    val html = terminalCompletionDiff(
-      inputTokens = listOf("lead", "<&"),
-      matchedPrefix = "<&",
-      completion = "lead <&rest tail"
-    )
-
-    assertContains(html, "<span class=\"partial-terminal-match\">&lt;&amp;</span>")
-    assertFalse(html.contains("<&rest"))
-  }
-
-  @Test
-  fun handleInputInsertsTheUnambiguousTerminalSuffixAtCaret() {
+  fun tabCommitsTheUnambiguousTerminalSuffixAtCaret() {
     val uniqueCfg = """
       START -> begin Table x | begin Table y | other Target q
     """.trimIndent().parseCFG().noEpsilon
@@ -528,13 +689,17 @@ class JSTidyEditorTest {
 
     editor.handleFreshUserInsertion()
 
+    assertTrue(input.value.endsWith("\nbegin Tab"))
+    assertEquals("le ", editor.pendingTerminalCompletionInsertion)
+    editor.pressTab()
     assertTrue(input.value.endsWith("\nbegin Table "))
     assertEquals(input.value.length, input.selectionStart)
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
   @Test
-  fun handleInputCompletesTheLastTokenBeforeTrailingWhitespace() {
+  fun tabCompletesTheLastTokenBeforeTrailingWhitespace() {
     val uniqueCfg = """
       START -> begin Table x | begin Table y | other Target q
     """.trimIndent().parseCFG().noEpsilon
@@ -544,9 +709,14 @@ class JSTidyEditorTest {
 
     editor.handleFreshUserInsertion()
 
+    assertTrue(input.value.endsWith("\nbegin Tab   "))
+    assertEquals(originalCaret, input.selectionStart)
+    assertEquals("le", editor.pendingTerminalCompletionInsertion)
+    editor.pressTab()
     assertTrue(input.value.endsWith("\nbegin Table   "))
     assertEquals(originalCaret + 2, input.selectionStart)
     assertEquals(input.selectionStart, input.selectionEnd)
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -560,8 +730,12 @@ class JSTidyEditorTest {
 
     editor.handleFreshUserInsertion()
 
+    assertTrue(input.value.endsWith("\nbegin Tab\t"))
+    assertEquals("le", editor.pendingTerminalCompletionInsertion)
+    editor.pressTab()
     assertTrue(input.value.endsWith("\nbegin Table\t"))
     assertEquals(input.value.length, input.selectionStart)
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -576,8 +750,13 @@ class JSTidyEditorTest {
 
     editor.handleFreshUserInsertion()
 
+    assertTrue(input.value.endsWith("\nbegin Tab "))
+    assertEquals(input.value.length - 1, input.selectionStart)
+    assertEquals("le", editor.pendingTerminalCompletionInsertion)
+    editor.pressTab()
     assertTrue(input.value.endsWith("\nbegin Table "))
     assertEquals(input.value.length, input.selectionStart)
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -592,9 +771,14 @@ class JSTidyEditorTest {
 
     editor.handleFreshUserInsertion()
 
+    assertTrue(input.value.endsWith("\ni "))
+    assertEquals(input.value.length - 1, input.selectionStart)
+    assertEquals("f", editor.pendingTerminalCompletionInsertion)
+    editor.pressTab()
     assertTrue(input.value.endsWith("\nif "))
     assertEquals(input.value.length - 1, input.selectionStart)
     assertEquals(input.selectionStart, input.selectionEnd)
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -608,6 +792,7 @@ class JSTidyEditorTest {
     editor.handleInput()
 
     assertTrue(input.value.endsWith("\ni"))
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -622,6 +807,7 @@ class JSTidyEditorTest {
 
     assertTrue(input.value.endsWith("\ni "))
     assertEquals(input.value.length - 1, input.selectionStart)
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -636,6 +822,7 @@ class JSTidyEditorTest {
     editor.handleInput()
 
     assertTrue(input.value.endsWith("\ni"))
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -650,6 +837,7 @@ class JSTidyEditorTest {
     editor.handleInput()
 
     assertTrue(input.value.endsWith("\nwhile ( true ="))
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -664,6 +852,127 @@ class JSTidyEditorTest {
 
     assertTrue(input.value.endsWith("\nwhile ( true ="))
     assertEquals(input.value.length - 1, input.selectionStart)
+    assertNull(editor.pendingTerminalCompletionInsertion)
+    editor.runningJob?.cancel()
+  }
+
+  @Test
+  fun backspaceToAnEmptyLineInvalidatesAnExistingSoftInsertion() {
+    val (editor, input) = editorFor("i")
+    editor.cfg = plWhileCfg
+    editor.handleFreshUserInsertion()
+    assertEquals("f ( ", editor.pendingTerminalCompletionInsertion)
+
+    input.value = input.value.dropLast(1)
+    input.setSelectionRange(input.value.length, input.value.length)
+    editor.handleInput()
+
+    assertTrue(input.value.endsWith("\n"))
+    assertNull(editor.pendingTerminalCompletionInsertion)
+    editor.pressTab()
+    assertTrue(input.value.endsWith("\n"))
+    editor.runningJob?.cancel()
+  }
+
+  @Test
+  fun caretMovementInvalidatesAnExistingSoftInsertion() {
+    val (editor, input) = editorFor("i")
+    editor.cfg = plWhileCfg
+    editor.handleFreshUserInsertion()
+    assertEquals("f ( ", editor.pendingTerminalCompletionInsertion)
+
+    input.setSelectionRange(input.value.length - 1, input.value.length - 1)
+    editor.handleInput()
+
+    assertTrue(input.value.endsWith("\ni"))
+    assertNull(editor.pendingTerminalCompletionInsertion)
+    editor.pressTab()
+    assertTrue(input.value.endsWith("\ni"))
+    editor.runningJob?.cancel()
+  }
+
+  @Test
+  fun grammarChangeInvalidatesSoftInsertionAtCommitTime() {
+    val (editor, input) = editorFor("i")
+    editor.cfg = plWhileCfg
+    editor.handleFreshUserInsertion()
+    assertEquals("f ( ", editor.pendingTerminalCompletionInsertion)
+
+    editor.cfg = "START -> other".parseCFG().noEpsilon
+    editor.pressTab()
+
+    assertTrue(input.value.endsWith("\ni"))
+    assertNull(editor.pendingTerminalCompletionInsertion)
+    editor.runningJob?.cancel()
+  }
+
+  @Test
+  fun completionModeChangeInvalidatesSoftInsertionAtCommitTime() {
+    val (editor, input) = editorFor("i")
+    editor.cfg = plWhileCfg
+    editor.handleFreshUserInsertion()
+    assertEquals("f ( ", editor.pendingTerminalCompletionInsertion)
+
+    editor.epsilons = !editor.epsilons
+    editor.pressTab()
+
+    assertTrue(input.value.endsWith("\ni"))
+    assertNull(editor.pendingTerminalCompletionInsertion)
+    editor.runningJob?.cancel()
+  }
+
+  @Test
+  fun tabWithoutSoftInsertionRetainsNonterminalStubNavigation() {
+    val (editor, input) = editorFor("left <EXP> right")
+    val stubStart = input.value.lastIndexOf("<EXP>")
+
+    assertNull(editor.pendingTerminalCompletionInsertion)
+    editor.pressTab()
+
+    assertTrue(input.value.endsWith("\nleft <EXP> right"))
+    assertEquals(stubStart, input.selectionStart)
+    assertEquals(stubStart + "<EXP>".length, input.selectionEnd)
+    assertNull(editor.pendingTerminalCompletionInsertion)
+  }
+
+  @Test
+  fun freshExactStubRetainsStubGenerationAndTabNavigation() = runTest {
+    val stub = "<BEXP>"
+    val (editor, input) = editorFor(stub)
+    editor.cfg = plWhileCfg
+    val typedText = input.value
+    val stubStart = input.value.lastIndexOf(stub)
+
+    editor.handleFreshUserInsertion()
+    assertNotNull(editor.runningJob).join()
+
+    assertEquals(typedText, input.value)
+    assertNull(editor.pendingTerminalCompletionInsertion)
+    assertTrue(
+      (editor.output.textContent ?: "")
+        .startsWith("</> Stub generation, possible completions:")
+    )
+
+    editor.pressTab()
+
+    assertEquals(typedText, input.value)
+    assertEquals(stubStart, input.selectionStart)
+    assertEquals(stubStart + stub.length, input.selectionEnd)
+    assertNull(editor.pendingTerminalCompletionInsertion)
+  }
+
+  @Test
+  fun textareaFallbackDoesNotArmAnInvisibleSoftInsertion() {
+    val (editor, input) = editorFor("i", softPreviewAvailable = false)
+    editor.cfg = plWhileCfg
+
+    editor.handleFreshUserInsertion()
+
+    assertTrue(input.value.endsWith("\ni"))
+    assertNull(editor.pendingTerminalCompletionInsertion)
+    editor.pressTab()
+    assertTrue(input.value.endsWith("\ni"))
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -678,6 +987,7 @@ class JSTidyEditorTest {
     editor.handleInput()
 
     assertTrue(input.value.endsWith("\ni"))
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -692,10 +1002,16 @@ class JSTidyEditorTest {
     input.dispatchEvent(Event("compositionstart"))
     editor.handleFreshUserInsertion()
     assertTrue(input.value.endsWith("\nbegin Tab"))
+    assertNull(editor.pendingTerminalCompletionInsertion)
 
     input.dispatchEvent(Event("compositionend"))
     editor.handleInput()
+    assertTrue(input.value.endsWith("\nbegin Tab"))
+    assertEquals("le ", editor.pendingTerminalCompletionInsertion)
+
+    editor.pressTab()
     assertTrue(input.value.endsWith("\nbegin Table "))
+    assertNull(editor.pendingTerminalCompletionInsertion)
     editor.runningJob?.cancel()
   }
 
@@ -714,48 +1030,53 @@ class JSTidyEditorTest {
     input.setSelectionRange(input.value.length, input.value.length)
     editor.handleFreshUserInsertion()
 
-    assertTrue(input.value.endsWith("\nbegin Table "))
+    assertTrue(input.value.endsWith("\nbegin Tab"))
+    assertEquals("le ", editor.pendingTerminalCompletionInsertion)
     assertNotSame(exactTerminalJob, editor.runningJob)
+
+    editor.pressTab()
+    assertTrue(input.value.endsWith("\nbegin Table "))
+    assertNull(editor.pendingTerminalCompletionInsertion)
     exactTerminalJob.cancel()
     editor.runningJob?.cancel()
   }
 
   @Test
-  fun partialSuffixResultsRenderWithYellowMatchedPrefix() = runTest {
+  fun partialSuffixResultsEnumerateWithoutMutatingTheEditor() = runTest {
     val uniqueCfg = """
       START -> begin Table x | begin Table y | other Target q
     """.trimIndent().parseCFG().noEpsilon
-    val (editor, _) = editorFor("begin Tab")
+    val (editor, input) = editorFor("begin Tab")
     editor.cfg = uniqueCfg
+    val typedText = input.value
 
     editor.handleFreshUserInsertion()
     assertNotNull(editor.runningJob).join()
 
-    val output = editor.output as HTMLDivElement
-    assertContains(output.innerHTML, "<span class=\"partial-terminal-match\">Tab</span>")
-    assertContains(output.innerHTML, "<span style=\"color: orange\">le</span>")
-    assertContains(output.textContent ?: "", "begin Table x")
-    assertContains(output.textContent ?: "", "begin Table y")
+    assertEquals(typedText, input.value)
+    assertEquals("le ", editor.pendingTerminalCompletionInsertion)
+    val outputText = editor.output.textContent ?: ""
+    assertContains(outputText, "begin Table x")
+    assertContains(outputText, "begin Table y")
   }
 
   @Test
-  fun handleInputAdvancesToTheLastCommonContinuationToken() = runTest {
+  fun handleInputOffersTheLastCommonContinuationWithoutMutating() = runTest {
     val cfg = """
       START -> if ( x ) | if ( y )
     """.trimIndent().parseCFG().noEpsilon
     val (editor, input) = editorFor("i")
     editor.cfg = cfg
+    val typedText = input.value
 
     editor.handleFreshUserInsertion()
     assertNotNull(editor.runningJob).join()
 
-    assertTrue(input.value.endsWith("\nif ( "))
-    val output = editor.output as HTMLDivElement
-    assertContains(output.textContent ?: "", "if ( x )")
-    assertContains(output.textContent ?: "", "if ( y )")
-    assertContains(output.innerHTML, "<span class=\"partial-terminal-match\">i</span>")
-    assertContains(output.innerHTML, "<span style=\"color: orange\">f</span>")
-    assertContains(output.innerHTML, "<span style=\"color: green\">(</span>")
+    assertEquals(typedText, input.value)
+    assertEquals("f ( ", editor.pendingTerminalCompletionInsertion)
+    val outputText = editor.output.textContent ?: ""
+    assertContains(outputText, "if ( x )")
+    assertContains(outputText, "if ( y )")
   }
 
   @Test
@@ -763,11 +1084,13 @@ class JSTidyEditorTest {
     val cfg = "START -> if (".parseCFG().noEpsilon
     val (editor, input) = editorFor("i")
     editor.cfg = cfg
+    val typedText = input.value
 
     editor.handleFreshUserInsertion()
     assertNotNull(editor.runningJob).join()
 
-    assertTrue(input.value.endsWith("\nif ( "))
+    assertEquals(typedText, input.value)
+    assertEquals("f ( ", editor.pendingTerminalCompletionInsertion)
     assertContains(editor.output.textContent ?: "", "if (")
   }
 
@@ -778,20 +1101,18 @@ class JSTidyEditorTest {
     """.trimIndent().parseCFG().noEpsilon
     val (editor, input) = editorFor("begin T")
     editor.cfg = cfg
+    val typedText = input.value
 
     editor.handleFreshUserInsertion()
     assertNotNull(editor.runningJob).join()
 
-    assertTrue(input.value.endsWith("\nbegin Ta"))
-    val output = editor.output as HTMLDivElement
-    val text = output.textContent ?: ""
+    assertEquals(typedText, input.value)
+    assertEquals("a", editor.pendingTerminalCompletionInsertion)
+    val text = editor.output.textContent ?: ""
     assertContains(text, "begin Table x")
     assertContains(text, "begin Target y")
     assertContains(text, "begin Task z")
     assertFalse(text.contains("begin Taco q"))
-    assertEquals(3, "partial-terminal-match".toRegex().findAll(output.innerHTML).count())
-    assertEquals(3, "<span class=\"partial-terminal-match\">T</span>".toRegex()
-      .findAll(output.innerHTML).count())
   }
 
   @Test
@@ -799,12 +1120,15 @@ class JSTidyEditorTest {
     val cfg = """
       START -> begin Table w | begin Tangent x | begin Target y | begin Task z
     """.trimIndent().parseCFG().noEpsilon
-    val (editor, _) = editorFor("begin T")
+    val (editor, input) = editorFor("begin T")
     editor.cfg = cfg
+    val typedText = input.value
 
     editor.handleFreshUserInsertion()
     assertNotNull(editor.runningJob).join()
 
+    assertEquals(typedText, input.value)
+    assertEquals("a", editor.pendingTerminalCompletionInsertion)
     val text = editor.output.textContent ?: ""
     assertContains(text, "begin Table w")
     assertContains(text, "begin Tangent x")

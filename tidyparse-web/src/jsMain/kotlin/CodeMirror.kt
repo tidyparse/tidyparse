@@ -24,10 +24,18 @@ fun initTidyCodeMirror(options: dynamic = null): dynamic {
   val editor = codeMirror.fromTextArea(textarea, js("Object").assign(defaults, options ?: js("{}")))
 
   editor.on("change") { _: dynamic, change: dynamic ->
-    clearFreshCodeMirrorInsertion(editor)
     val insertedText = change.text.join("\n") as String
+    // A normal insertion is followed by cursorActivity. Advance a matching
+    // ghost first so that event validates the new snapshot instead of
+    // mistaking the edit for independent caret movement.
+    if (!reconcileSoftCodeMirrorInsertion(
+        editor = editor,
+        change = change,
+        insertedText = insertedText
+      )) clearSoftCodeMirrorInsertion(editor)
+    clearFreshCodeMirrorInsertion(editor)
     if (
-      editor.tidyparseAutomaticInsertionActive != true &&
+      editor.tidyparseCompletionCommitActive != true &&
       change.origin in arrayOf("+input", "*compose") &&
       insertedText.isNotEmpty()
     ) recordFreshCodeMirrorInsertion(editor)
@@ -36,11 +44,20 @@ fun initTidyCodeMirror(options: dynamic = null): dynamic {
   }
 
   editor.on("cursorActivity") { _: dynamic ->
+    invalidateSoftCodeMirrorInsertion(editor)
     invalidateFreshCodeMirrorInsertionIfStateChanged(editor)
     syncCodeMirrorTextareaAndEvents(editor, textarea, dispatchInput = false)
   }
 
+  editor.on("refresh") { _: dynamic ->
+    val position = editor.tidyparsePositionSoftInsertion
+    if (position != null && position != js("undefined")) position()
+  }
+
+  editor.on("blur") { _: dynamic -> clearSoftCodeMirrorInsertion(editor) }
+
   editor.getInputField().addEventListener("compositionstart", {
+    clearSoftCodeMirrorInsertion(editor)
     clearFreshCodeMirrorInsertion(editor)
   })
   editor.getInputField().addEventListener("compositionend", {
@@ -75,6 +92,36 @@ private fun clearFreshCodeMirrorInsertion(editor: dynamic) {
   editor.tidyparseFreshInsertionText = null
   editor.tidyparseFreshInsertionStart = null
   editor.tidyparseFreshInsertionEnd = null
+}
+
+private fun clearSoftCodeMirrorInsertion(editor: dynamic) {
+  val clear = editor.tidyparseClearSoftInsertion
+  if (clear != null && clear != js("undefined")) clear()
+}
+
+private fun invalidateSoftCodeMirrorInsertion(editor: dynamic) {
+  val invalidate = editor.tidyparseInvalidateSoftInsertion
+  if (invalidate != null && invalidate != js("undefined")) invalidate()
+  else clearSoftCodeMirrorInsertion(editor)
+}
+
+private fun reconcileSoftCodeMirrorInsertion(
+  editor: dynamic,
+  change: dynamic,
+  insertedText: String
+): Boolean {
+  if (
+    editor.tidyparseCompletionCommitActive == true ||
+    change.origin !in arrayOf("+input", "*compose") ||
+    insertedText.isEmpty() ||
+    (change.removed.join("\n") as String).isNotEmpty()
+  ) return false
+
+  val reconcile = editor.tidyparseReconcileSoftInsertion
+  if (reconcile == null || reconcile == js("undefined")) return false
+
+  val offset = editor.indexFromPos(change.from) as Int
+  return reconcile(insertedText, offset) == true
 }
 
 private fun recordFreshCodeMirrorInsertion(editor: dynamic) {

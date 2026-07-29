@@ -177,8 +177,14 @@ suspend fun defaultSetup() {
 
   if (hasCmEditor()) cmEditor.on("keydown") { _: dynamic, event: dynamic -> jsEditor.navUpdate(event) }
   else inputField.addEventListener("keydown", { event -> jsEditor.navUpdate(event as KeyboardEvent) })
-  epscheck.addEventListener("change", { log("Changed check"); jsEditor.epsilons = epscheck.checked; log("Checked: ${jsEditor.epsilons}") })
+  epscheck.addEventListener("change", {
+    jsEditor.discardSoftTerminalCompletion()
+    log("Changed check")
+    jsEditor.epsilons = epscheck.checked
+    log("Checked: ${jsEditor.epsilons}")
+  })
   ntscheck.addEventListener("change", {
+    jsEditor.discardSoftTerminalCompletion()
     jsEditor.ntStubs = ntscheck.checked
     try {
       jsEditor.cfg = jsEditor.getGrammarText().parseCFG(validate = true)
