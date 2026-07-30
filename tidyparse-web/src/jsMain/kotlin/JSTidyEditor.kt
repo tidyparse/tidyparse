@@ -57,19 +57,19 @@ private fun CFG.validContinuationSuffixLengths(tokens: List<Σᐩ>): List<Int> =
     hasTerminalCompletion(tokens + List(suffixLength) { HOLE_MARKER })
   }
 
-private typealias TokenSequenceBounds =
-  Pair<List<Σᐩ>, List<Σᐩ>>
+private fun CFG.validCompletionSuffixLengths(tokens: List<Σᐩ>, includeCompleteInput: Boolean): List<Int> =
+  buildList {
+    if (includeCompleteInput && hasTerminalCompletion(tokens)) add(0)
+    addAll(validContinuationSuffixLengths(tokens))
+  }
 
-private data class PTreeYieldBounds(
-  // The lexicographic extrema determine the common prefix of every yield at
-  // this visible length without enumerating an exponentially large forest.
-  val byLength: Map<Int, TokenSequenceBounds>
-)
+private typealias TokenSequenceBounds = Pair<List<Σᐩ>, List<Σᐩ>>
 
-private fun compareTokenSequences(
-  left: List<Σᐩ>,
-  right: List<Σᐩ>
-): Int {
+// The lexicographic extrema determine the common prefix of every yield at
+// this visible length without enumerating an exponentially large forest.
+private data class PTreeYieldBounds(val byLength: Map<Int, TokenSequenceBounds>)
+
+private fun compareTokenSequences(left: List<Σᐩ>, right: List<Σᐩ>): Int {
   for (index in 0..<minOf(left.size, right.size)) {
     val comparison = left[index].compareTo(right[index])
     if (comparison != 0) return comparison
@@ -77,10 +77,7 @@ private fun compareTokenSequences(
   return left.size.compareTo(right.size)
 }
 
-private fun MutableMap<Int, TokenSequenceBounds>.mergeBounds(
-  minimum: List<Σᐩ>,
-  maximum: List<Σᐩ>
-) {
+private fun MutableMap<Int, TokenSequenceBounds>.mergeBounds(minimum: List<Σᐩ>, maximum: List<Σᐩ>) {
   val existing = this[minimum.size]
   this[minimum.size] =
     if (existing == null) minimum to maximum
@@ -95,9 +92,7 @@ private fun MutableMap<Int, TokenSequenceBounds>.mergeBounds(
     }
 }
 
-private fun PTree.yieldBounds(
-  cache: MutableMap<PTree, PTreeYieldBounds>
-): PTreeYieldBounds {
+private fun PTree.yieldBounds(cache: MutableMap<PTree, PTreeYieldBounds>): PTreeYieldBounds {
   cache[this]?.let { return it }
 
   val result =
@@ -140,8 +135,7 @@ private fun PTreeYieldBounds.extrema(): TokenSequenceBounds? {
     ) maximum = candidateMaximum
   }
 
-  return if (minimum == null || maximum == null) null
-  else minimum!! to maximum!!
+  return if (minimum == null || maximum == null) null else minimum to maximum
 }
 
 private fun CFG.commonForcedContinuation(branch: TerminalCompletionBranch): List<Σᐩ> {
@@ -160,7 +154,7 @@ private fun CFG.commonForcedContinuation(branch: TerminalCompletionBranch): List
   if (suffixExtrema.any {
       it.size < branch.tokens.size ||
         it.take(branch.tokens.size) != branch.tokens
-    }) return emptyList()
+     }) return emptyList()
 
   val suffixes = suffixExtrema.map { it.drop(branch.tokens.size) }
   val commonLength = suffixes.minOfOrNull { it.size } ?: return emptyList()
@@ -175,9 +169,7 @@ private fun CFG.commonForcedContinuation(branch: TerminalCompletionBranch): List
   return continuation
 }
 
-private fun TerminalCompletionBranch.advanceBy(
-  forcedContinuation: List<Σᐩ>
-): TerminalCompletionBranch =
+private fun TerminalCompletionBranch.advanceBy(forcedContinuation: List<Σᐩ>): TerminalCompletionBranch =
   if (forcedContinuation.isEmpty()) this
   else copy(
     tokens = tokens + forcedContinuation,
@@ -190,23 +182,38 @@ internal fun CFG.terminalCompletionPlan(tokens: List<Σᐩ>): TerminalCompletion
   val partial = tokens.lastOrNull() ?: return null
   val lexicalCandidates = terminals.filter { it.startsWith(partial) }.sorted()
   if (lexicalCandidates.isEmpty()) return null
-  if (partial in terminals && hasTerminalCompletion(tokens)) return null
+  val exactInputComplete = partial in terminals && hasTerminalCompletion(tokens)
 
   // Resolve lexical ambiguity using the grammar: a spelling that cannot lead
-  // to a suffix completion is not a viable interpretation of the last token.
+  // to a completion is not a viable interpretation of the last token. Length
+  // zero matters when completing the partial token itself finishes the input,
+  // as with a generated nonterminal stub such as "<" -> "<EXP>".
   val prefixTokens = tokens.dropLast(1)
   val viableBranches = lexicalCandidates.mapNotNull { terminal ->
     val candidateTokens = prefixTokens + terminal
-    val suffixLengths = validContinuationSuffixLengths(candidateTokens)
+    val suffixLengths = validCompletionSuffixLengths(
+      tokens = candidateTokens,
+      // A complete exact spelling preserves the already-typed terminal
+      // interpretation. When that spelling is also a prefix of a stub, the
+      // complete stub is the competing interpretation we need to retain.
+      // Other partial tokens still require a positive continuation.
+      includeCompleteInput =
+        terminal == partial || (partial in terminals && terminal.isNonterminalStubIn(this))
+    )
     suffixLengths.takeIf { it.isNotEmpty() }
       ?.let { TerminalCompletionBranch(terminal, candidateTokens, it) }
   }
   if (viableBranches.isEmpty()) return null
+  if (
+    exactInputComplete && viableBranches.none {
+      it.terminal != partial &&
+        it.terminal.isNonterminalStubIn(this)
+    }
+  ) return null
 
   val terminalCommitted = viableBranches.size == 1
   val expandedPrefix = when {
-    terminalCommitted ->
-      viableBranches.single().terminal
+    terminalCommitted -> viableBranches.single().terminal
     viableBranches.size > 1 ->
       viableBranches.map { it.terminal }.longestCommonPrefix()
         .takeIf { it.length > partial.length } ?: partial
@@ -215,8 +222,7 @@ internal fun CFG.terminalCompletionPlan(tokens: List<Σᐩ>): TerminalCompletion
   val forcedContinuation =
     if (terminalCommitted) commonForcedContinuation(viableBranches.single())
     else emptyList()
-  val advancedBranches =
-    viableBranches.map { it.advanceBy(forcedContinuation) }
+  val advancedBranches = viableBranches.map { it.advanceBy(forcedContinuation) }
 
   return TerminalCompletionPlan(
     originalPrefix = partial,
@@ -227,6 +233,19 @@ internal fun CFG.terminalCompletionPlan(tokens: List<Σᐩ>): TerminalCompletion
     branches = advancedBranches
   )
 }
+
+private fun TerminalCompletionPlan.enumerationBranches(): List<TerminalCompletionBranch> =
+  branches.sortedWith(
+    compareBy<TerminalCompletionBranch>(
+      // A partial token can already be a complete terminal while also
+      // prefixing generated nonterminal stubs. Preserve that interpretation,
+      // then spend the remaining bounded work on the branches that can finish
+      // soonest instead of whichever terminal happens to sort first.
+      { if (it.terminal == originalPrefix) 0 else 1 },
+      { it.suffixLengths.minOrNull() ?: Int.MAX_VALUE },
+      { it.terminal }
+    )
+  ).take(MAX_TERMINAL_COMPLETION_BRANCHES)
 
 private fun CFG.isUnambiguousExactTerminal(token: Σᐩ): Boolean =
   terminals.count { it.startsWith(token) } == 1 && token in terminals
@@ -412,22 +431,16 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     listOf(cfg.hashCode(), epsilons, ntStubs).hashCode()
 
   private fun SoftTerminalInsertion.matchesCurrentEditorState(): Boolean =
-    editorText == readEditorText() &&
-      caret == getCaretPosition() &&
-      caret.first == caret.last
+    editorText == readEditorText() && caret == getCaretPosition() && caret.first == caret.last
 
   private fun SoftTerminalInsertion.matchesCurrentContext(cfg: CFG): Boolean =
-    matchesCurrentEditorState() &&
-      contextHash == currentCompletionContextHash(cfg)
+    matchesCurrentEditorState() && contextHash == currentCompletionContextHash(cfg)
 
   private fun TerminalPrefixResolution.matchesCurrentEditorState(): Boolean =
-    editorText == readEditorText() &&
-      caret == getCaretPosition() &&
-      caret.first == caret.last
+    editorText == readEditorText() && caret == getCaretPosition() && caret.first == caret.last
 
   private fun TerminalPrefixResolution.matchesCurrentContext(cfg: CFG): Boolean =
-    matchesCurrentEditorState() &&
-      contextHash == currentCompletionContextHash(cfg)
+    matchesCurrentEditorState() && contextHash == currentCompletionContextHash(cfg)
 
   private fun invalidateTerminalCompletionStateIfChanged() {
     if (
@@ -442,12 +455,8 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
   private fun installTerminalCompletionCallbacks() {
     if (!hasCodeMirror()) return
-    codeMirror.tidyparseClearSoftInsertion = {
-      clearTerminalCompletionState()
-    }
-    codeMirror.tidyparseInvalidateSoftInsertion = {
-      invalidateTerminalCompletionStateIfChanged()
-    }
+    codeMirror.tidyparseClearSoftInsertion = { clearTerminalCompletionState() }
+    codeMirror.tidyparseInvalidateSoftInsertion = { invalidateTerminalCompletionStateIfChanged() }
     codeMirror.tidyparseReconcileSoftInsertion =
       { insertedText: String, offset: Int ->
         reconcileSoftTerminalInsertion(
@@ -477,10 +486,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     clearSoftTerminalInsertionPreview()
   }
 
-  private fun rememberTerminalPrefixResolution(
-    cfg: CFG,
-    completion: TerminalCompletionPlan
-  ) {
+  private fun rememberTerminalPrefixResolution(cfg: CFG, completion: TerminalCompletionPlan) {
     terminalPrefixResolution = TerminalPrefixResolution(
       editorText = readEditorText(),
       caret = getCaretPosition(),
@@ -493,13 +499,9 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
   private fun updateSoftTerminalInsertionMarker() {
     val insertion = softTerminalInsertion ?: return
     val marker = softTerminalInsertionMarker ?: return
-    marker.textContent =
-      if (insertion.insertion.isBlank()) "\u00a0"
-      else insertion.insertion
-    if (insertion.insertion.isBlank())
-      marker.classList.add("tidyparse-soft-completion--whitespace-only")
-    else
-      marker.classList.remove("tidyparse-soft-completion--whitespace-only")
+    marker.textContent = insertion.insertion.ifBlank { "\u00a0" }
+    if (insertion.insertion.isBlank()) marker.classList.add("tidyparse-soft-completion--whitespace-only")
+    else marker.classList.remove("tidyparse-soft-completion--whitespace-only")
     marker.setAttribute("data-soft-completion", insertion.insertion)
     positionSoftTerminalInsertion()
   }
@@ -561,16 +563,10 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     val insertion = softTerminalInsertion ?: return false
     val currentText = readEditorText()
     val insertedLength = currentText.length - insertion.editorText.length
-    if (
-      insertedLength <= 0 ||
-      insertion.offset + insertedLength > currentText.length
-    ) return false
+    if (insertedLength <= 0 || insertion.offset + insertedLength > currentText.length ) return false
 
     return reconcileSoftTerminalInsertion(
-      insertedText = currentText.substring(
-        insertion.offset,
-        insertion.offset + insertedLength
-      ),
+      insertedText = currentText.substring(insertion.offset, insertion.offset + insertedLength),
       insertionOffset = insertion.offset,
       requireCurrentCaret = true
     )
@@ -584,10 +580,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     marker.style.top = "${coordinates.top}px"
   }
 
-  protected open fun renderSoftTerminalInsertionPreview(
-    insertion: Σᐩ,
-    offset: Int
-  ): Boolean {
+  protected open fun renderSoftTerminalInsertionPreview(insertion: Σᐩ, offset: Int): Boolean {
     if (!hasCodeMirror()) return false
     val marker = document.createElement("span") as HTMLSpanElement
     marker.className = "tidyparse-soft-completion"
@@ -613,18 +606,14 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
       )) clearSoftTerminalInsertionPreview()
   }
 
-  internal val pendingTerminalCompletionInsertion: Σᐩ?
-    get() = softTerminalInsertion?.insertion
+  internal val pendingTerminalCompletionInsertion: Σᐩ? get() = softTerminalInsertion?.insertion
 
-  internal fun discardSoftTerminalCompletion() {
-    clearTerminalCompletionState()
-  }
+  internal fun discardSoftTerminalCompletion() = clearTerminalCompletionState()
 
   internal fun commitSoftTerminalInsertion(): Boolean {
     val insertion = softTerminalInsertion ?: return false
     val currentCfg = getLatestCFG()
-    val renderedInsertionAvailable =
-      !hasCodeMirror() || softTerminalInsertionMarker?.isConnected == true
+    val renderedInsertionAvailable = !hasCodeMirror() || softTerminalInsertionMarker?.isConnected == true
     if (
       compositionActive() ||
       currentCfg.isEmpty() ||
@@ -723,8 +712,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
     }
   }
 
-  override fun readEditorText(): Σᐩ =
-    if (hasCodeMirror()) codeMirror.getValue() as String else editor.value
+  override fun readEditorText(): Σᐩ = if (hasCodeMirror()) codeMirror.getValue() as String else editor.value
 
   override fun getCaretPosition(): IntRange =
     if (hasCodeMirror()) cmIndex("from")..cmIndex("to")
@@ -756,9 +744,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
   override fun handleInput() {
     invalidateTerminalCompletionStateIfChanged()
     val t0 = TimeSource.Monotonic.markNow()
-    val freshUserInsertion =
-      if (compositionActive()) false
-      else consumeFreshUserInsertion()
+    val freshUserInsertion = !compositionActive() && consumeFreshUserInsertion()
     val caretInGrammar = caretInGrammar()
     val context = getApplicableContext()
     log("Applicable context:\n$context")
@@ -788,17 +774,11 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
     val activeTerminalResolution = terminalPrefixResolution
       ?.takeIf { it.matchesCurrentContext(cfg) }
-      .also {
-        if (it == null && terminalPrefixResolution != null)
-          clearTerminalCompletionState()
-      }
+      .also { if (it == null && terminalPrefixResolution != null) clearTerminalCompletionState() }
 
     val activeSoftInsertion = softTerminalInsertion
       ?.takeIf { it.matchesCurrentContext(cfg) }
-      .also {
-        if (it == null && softTerminalInsertion != null)
-          clearTerminalCompletionState()
-      }
+      .also { if (it == null && softTerminalInsertion != null) clearTerminalCompletionState() }
 
     val terminalResolutionEligible =
       !caretInGrammar &&
@@ -811,10 +791,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
 
     val terminalCompletion = activeTerminalResolution?.completion
       ?: if (terminalResolutionEligible) tokens.lastOrNull()
-        ?.takeIf {
-          it !in cfg.terminals ||
-            freshUserInsertion && caretAtLastTokenEnd
-        }
+        ?.takeIf { it !in cfg.terminals || freshUserInsertion && caretAtLastTokenEnd }
         ?.let { cfg.cachedTerminalCompletionPlan(tokens) }
       else null
 
@@ -842,23 +819,15 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
       freshUserInsertion
     ) {
       val terminalCommitted =
-        terminalCompletion?.terminalCommitted == true ||
-          unambiguousIncompleteExactTerminal
-      val terminalRemainder = terminalCompletion
-        ?.expandedPrefix
-        ?.removePrefix(terminalCompletion.originalPrefix)
-        .orEmpty()
+        terminalCompletion?.terminalCommitted == true || unambiguousIncompleteExactTerminal
+      val terminalRemainder =
+        terminalCompletion?.expandedPrefix?.removePrefix(terminalCompletion.originalPrefix).orEmpty()
       val continuationTokens =
         terminalCompletion?.forcedContinuation.orEmpty()
       val continuation =
-        if (continuationTokens.isEmpty()) ""
-        else continuationTokens.joinToString(separator = " ", prefix = " ")
+        if (continuationTokens.isEmpty()) "" else continuationTokens.joinToString(separator = " ", prefix = " ")
       val trailingSpace =
-        if (
-          terminalCommitted &&
-          context.lastOrNull()?.isWhitespace() == false
-        ) " "
-        else ""
+        if ( terminalCommitted && context.lastOrNull()?.isWhitespace() == false ) " " else ""
 
       (terminalRemainder + continuation + trailingSpace)
         .takeIf { it.isNotEmpty() }
@@ -918,9 +887,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
         }
       ).hashCode()
     } ?: 0
-    val workHash =
-      abstractUnk.hashCode() + cfg.hashCode() +
-        settingsHash.hashCode() + terminalCompletionHash
+    val workHash = abstractUnk.hashCode() + cfg.hashCode() + settingsHash.hashCode() + terminalCompletionHash
     if (workHash == currentWorkHash) return
     currentWorkHash = workHash
 
@@ -947,7 +914,7 @@ open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: N
         STUB -> cfg.enumNTSmall(tokens[0].stripStub()).take(100)
         COMPLETION -> if (!gpuAvailable) cfg.enumSeqSmart(tokens) else completeCode(cfg, tokens).stripEpsilon()
         SUFFIX_COMPLETION ->
-          terminalCompletion?.branches?.take(MAX_TERMINAL_COMPLETION_BRANCHES)
+          terminalCompletion?.enumerationBranches()
             ?.map(cfg::enumTerminalSuffixes)
             ?.let(::fairMerge)?.distinct()
             ?: cfg.enumSuffixes(tokens, scenario.data).distinct()

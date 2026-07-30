@@ -1,5 +1,6 @@
 import ai.hypergraph.kaliningraph.parsing.CFG
 import ai.hypergraph.kaliningraph.parsing.noEpsilon
+import ai.hypergraph.kaliningraph.parsing.noEpsilonOrNonterminalStubs
 import ai.hypergraph.kaliningraph.parsing.parseCFG
 import ai.hypergraph.kaliningraph.parsing.terminals
 import ai.hypergraph.tidyparse.MAX_DISP_RESULTS
@@ -194,6 +195,157 @@ class JSTidyEditorTest {
       MAX_TERMINAL_COMPLETION_BRANCHES,
       completion.branches.size
     )
+  }
+
+  @Test
+  fun exactTerminalAndCompleteStubPrefixBothReachForwardCompletion() = runTest {
+    val cfg = """
+      START -> EXP
+      EXP -> ID | ID ( ) | ID < ID | ID . EXP | ID EXP
+    """.trimIndent().parseCFG(validate = true).noEpsilon
+
+    val completion = assertNotNull(
+      cfg.terminalCompletionPlan(listOf("ID", "<"))
+    )
+    assertEquals(2, completion.lexicalCandidateCount)
+    assertEquals("<", completion.originalPrefix)
+    assertEquals("<", completion.expandedPrefix)
+    assertFalse(completion.terminalCommitted)
+    assertTrue(completion.forcedContinuation.isEmpty())
+    assertEquals(
+      mapOf("<" to listOf(1), "<EXP>" to listOf(0)),
+      completion.branches.associate {
+        it.terminal to it.suffixLengths
+      }
+    )
+
+    val (editor, input) = editorFor("ID <")
+    editor.cfg = cfg
+    val typedText = input.value
+    val typedCaret = input.selectionStart
+
+    editor.handleFreshUserInsertion()
+    assertNotNull(editor.runningJob).join()
+
+    assertEquals(typedText, input.value)
+    assertEquals(typedCaret, input.selectionStart)
+    assertNull(editor.pendingTerminalCompletionInsertion)
+    val display = editor.output.textContent ?: ""
+    assertTrue(display.startsWith("-> Forward completion"))
+    assertContains(display, "ID < ID")
+    assertContains(display, "ID <EXP>")
+  }
+
+  @Test
+  fun completeExactTerminalRetainsACompleteStubPrefixInterpretation() {
+    val cfg = """
+      START -> ID < | ID EXP
+      EXP -> ID
+    """.trimIndent().parseCFG(validate = true).noEpsilon
+
+    val completion = assertNotNull(
+      cfg.terminalCompletionPlan(listOf("ID", "<"))
+    )
+
+    assertFalse(completion.terminalCommitted)
+    assertEquals(
+      mapOf("<" to listOf(0), "<EXP>" to listOf(0)),
+      completion.branches.associate {
+        it.terminal to it.suffixLengths
+      }
+    )
+  }
+
+  @Test
+  fun ordinaryPartialTerminalStillRequiresAContinuation() {
+    val cfg = "START -> done".parseCFG().noEpsilon
+
+    assertNull(cfg.terminalCompletionPlan(listOf("do")))
+  }
+
+  @Test
+  fun partialStubStillRequiresAContinuationWithoutAnExactTerminalConflict() {
+    val cfg = """
+      START -> EXP
+      EXP -> ID
+    """.trimIndent().parseCFG().noEpsilon
+
+    assertNull(cfg.terminalCompletionPlan(listOf("<E")))
+  }
+
+  @Test
+  fun disabledNonterminalStubsLeaveOnlyTheExactTerminalInterpretation() {
+    val cfg = """
+      START -> EXP
+      EXP -> ID | ID < ID | ID EXP
+    """.trimIndent().parseCFG(validate = true)
+      .noEpsilonOrNonterminalStubs
+
+    assertFalse("<EXP>" in cfg.terminals)
+    val completion = assertNotNull(
+      cfg.terminalCompletionPlan(listOf("ID", "<"))
+    )
+    assertEquals(listOf("<"), completion.branches.map { it.terminal })
+    assertTrue(completion.terminalCommitted)
+    assertEquals(listOf("ID"), completion.forcedContinuation)
+  }
+
+  @Test
+  fun branchLimitRetainsExactTerminalAndShortestStubInterpretation() = runTest {
+    val cfg = """
+      START -> S ;
+      S -> ID :: ID < FLOATONE
+      S -> ID :: ID ARITHMETIC_OPERATOR ID
+      S -> ID :: ID ASSIGNMENT_OPERATOR ID
+      S -> ID :: ID POSTFIX_OPERATOR
+      ARITHMETIC_OPERATOR -> +
+      ASSIGNMENT_OPERATOR -> =
+      POSTFIX_OPERATOR -> ++ | --
+    """.trimIndent().parseCFG(validate = true).noEpsilon
+    val (editor, input) = editorFor("ID :: ID <")
+    editor.cfg = cfg
+    val typedText = input.value
+    val typedCaret = input.selectionStart
+    val completion = assertNotNull(
+      cfg.terminalCompletionPlan(listOf("ID", "::", "ID", "<"))
+    )
+
+    assertEquals(
+      listOf(
+        "<",
+        "<ARITHMETIC_OPERATOR>",
+        "<ASSIGNMENT_OPERATOR>",
+        "<POSTFIX_OPERATOR>"
+      ),
+      completion.branches.map { it.terminal }
+    )
+    assertTrue(
+      completion.branches.indexOfFirst {
+        it.terminal == "<POSTFIX_OPERATOR>"
+      } >= MAX_TERMINAL_COMPLETION_BRANCHES
+    )
+    assertEquals(
+      listOf(2),
+      completion.branches
+        .first { it.terminal == "<" }
+        .suffixLengths
+    )
+    assertEquals(
+      listOf(1),
+      completion.branches
+        .first { it.terminal == "<POSTFIX_OPERATOR>" }
+        .suffixLengths
+    )
+
+    editor.handleFreshUserInsertion()
+    assertNotNull(editor.runningJob).join()
+
+    assertEquals(typedText, input.value)
+    assertEquals(typedCaret, input.selectionStart)
+    assertNull(editor.pendingTerminalCompletionInsertion)
+    val display = editor.output.textContent ?: ""
+    assertContains(display, "ID :: ID < FLOATONE ;")
+    assertContains(display, "ID :: ID <POSTFIX_OPERATOR> ;")
   }
 
   @Test
