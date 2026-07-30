@@ -16,11 +16,7 @@ val cnfInputField by lazy { document.getElementById("tidyparse-input") as HTMLTe
 val cnfOutputField by lazy { document.getElementById("tidyparse-output") as Node }
 
 // ---- Minimal CNF-only editor ----
-class JSTidyCNFEditor(
-  override val editor: HTMLTextAreaElement,
-  override val output: Node
-) : JSTidyEditor(editor, output) {
-
+class JSTidyCNFEditor(editor: HTMLTextAreaElement, output: Node) : JSTidyEditor(editor, output) {
   /** Load a CNF from text and refresh highlighting */
   fun loadCNFFromText(text: String) { cfg = text.parseCNF() }
 

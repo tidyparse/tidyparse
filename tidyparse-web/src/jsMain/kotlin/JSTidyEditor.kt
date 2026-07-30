@@ -273,7 +273,7 @@ private fun CFG.enumTerminalSuffixes(
 }.distinct()
 
 /** Compare with [ai.hypergraph.tidyparse.IJTidyEditor] */
-open class JSTidyEditor(open val editor: HTMLTextAreaElement, open val output: Node): TidyEditor() {
+open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): TidyEditor() {
   private data class SoftTerminalInsertion(
     val editorText: Σᐩ,
     val caret: IntRange,

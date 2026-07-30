@@ -86,6 +86,18 @@ class JSTidyEditorTest {
     return RecordingEditor(input, output, cfg, softPreviewAvailable) to input
   }
 
+  @OptIn(ExperimentalUnsignedTypes::class)
+  @Test
+  fun pythonEditorConstructionUsesInitializedDomProperties() {
+    val (_, input) = editorFor("")
+    val output = document.getElementById("tidyparse-output") as HTMLDivElement
+
+    val pythonEditor = JSTidyPyEditor(input, output)
+
+    assertSame(input, pythonEditor.editor)
+    assertSame(output, pythonEditor.output)
+  }
+
   private fun RecordingEditor.handleFreshUserInsertion() {
     recordFreshUserInsertion()
     handleInput()
