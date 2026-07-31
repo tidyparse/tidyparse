@@ -140,6 +140,9 @@ fun String.withoutEmbeddedWebResources(): String =
 val productionBundleDir = layout.buildDirectory.dir("kotlin-webpack/js/productionExecutable")
 val productionJsFile = productionBundleDir.map { it.file("tidyparse-web.js").asFile }
 val productionJsMapFile = productionBundleDir.map { it.file("tidyparse-web.js.map").asFile }
+val hostedCoreBundleDir = layout.buildDirectory.dir("kotlin-webpack/js/hostedCore")
+val hostedCoreJsFile = hostedCoreBundleDir.map { it.file("tidyparse-core.js").asFile }
+val hostedCoreJsMapFile = hostedCoreBundleDir.map { it.file("tidyparse-core.js.map").asFile }
 val webDeployStagingDir = layout.buildDirectory.dir("web-deploy")
 
 val ngramFile = layout.projectDirectory.file("src/jsMain/resources/python_4grams.txt").asFile
@@ -171,6 +174,95 @@ fun embeddedRuntimeResources(includeExamples: Boolean = true): String =
     rawRerankerWeightsGzipB64 = gzipBase64(rerankerWeightsFile.readBytes()),
     rawExamplesGzipB64 = if (includeExamples) gzipBase64(jsObjectLiteral(exampleResourceMap())) else ""
   )
+
+// Measure the ASCII payload actually added to JavaScript, after gzip/base64 encoding.
+val maxHostedInlinePayloadBytes = 1L * 1024L * 1024L
+val maxHostedInitialJavaScriptGzipBytes = 2L * 1024L * 1024L
+
+fun hostedGzipBase64(bytes: ByteArray): String =
+  gzipBase64(bytes).takeIf { it.length.toLong() <= maxHostedInlinePayloadBytes } ?: ""
+
+fun hostedGzipBase64(text: String): String = hostedGzipBase64(text.toByteArray())
+
+fun embeddedHostedIndexResources(): String =
+  embeddedWebResourcesScript(
+    rawNgramsGzipB64 = "",
+    rawWdfaGzipB64 = "",
+    rawRerankerWeightsGzipB64 = "",
+    rawExamplesGzipB64 = hostedGzipBase64(jsObjectLiteral(exampleResourceMap()))
+  )
+
+fun embeddedHostedPythonResources(): String =
+  embeddedWebResourcesScript(
+    rawNgramsGzipB64 = hostedGzipBase64(ngramFile.readBytes()),
+    rawWdfaGzipB64 = hostedGzipBase64(wdfaFile.readBytes()),
+    rawRerankerWeightsGzipB64 = hostedGzipBase64(rerankerWeightsFile.readBytes()),
+    rawExamplesGzipB64 = ""
+  )
+
+val generatedHostedWebpackDir = layout.buildDirectory.dir("generated/hosted-webpack")
+val hostedWebpackConfigFile = generatedHostedWebpackDir.map { it.file("webpack.config.js") }
+val generatedWebpackPackageDir = rootProject.layout.buildDirectory.dir(
+  "js/packages/${rootProject.name}-${project.name}"
+)
+val generatedWebpackConfigFile = generatedWebpackPackageDir.map { it.file("webpack.config.js") }
+val webpackExecutable = rootProject.layout.buildDirectory.file("js/node_modules/.bin/webpack")
+
+val prepareHostedWebpackConfig = tasks.register("prepareHostedWebpackConfig") {
+  val configContents = """
+    const config = require(${jsString(generatedWebpackConfigFile.get().asFile.absolutePath)});
+    const cppOnlyRequest =
+      /^(?:@codingame\/monaco-vscode|monaco-languageclient(?:\/|${'$'})|monaco-editor(?:\/|${'$'})|vscode${'$'})/;
+    const existingExternals =
+      config.externals == null
+        ? []
+        : Array.isArray(config.externals)
+          ? config.externals
+          : [config.externals];
+
+    config.externals = [
+      ...existingExternals,
+      ({ request }, callback) =>
+        cppOnlyRequest.test(request || "")
+          ? callback(null, "commonjs " + request)
+          : callback()
+    ];
+    config.output.path = ${jsString(hostedCoreBundleDir.get().asFile.absolutePath)};
+    config.output.filename = "tidyparse-core.js";
+    config.output.clean = true;
+
+    module.exports = config;
+  """.trimIndent() + "\n"
+
+  inputs.property("contents", configContents)
+  outputs.file(hostedWebpackConfigFile)
+
+  doLast {
+    hostedWebpackConfigFile.get().asFile.apply {
+      parentFile.mkdirs()
+      writeText(configContents)
+    }
+  }
+}
+
+val jsBrowserHostedCoreWebpack = tasks.register<Exec>("jsBrowserHostedCoreWebpack") {
+  group = "build"
+  description = "Builds the hosted non-C++ bundle without Monaco/VS Code dependencies"
+
+  dependsOn("jsBrowserProductionWebpack", prepareHostedWebpackConfig)
+
+  inputs.files(productionJsFile, generatedWebpackConfigFile, hostedWebpackConfigFile)
+  outputs.files(hostedCoreJsFile, hostedCoreJsMapFile)
+
+  doFirst {
+    workingDir(generatedWebpackPackageDir.get().asFile)
+    commandLine(
+      webpackExecutable.get().asFile.absolutePath,
+      "--config",
+      hostedWebpackConfigFile.get().asFile.absolutePath
+    )
+  }
+}
 
 fun File.withInlineSourceMap(mapFile: File): String {
   val jsCode = readText()
@@ -392,7 +484,7 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
     group = "deployment"
     description = "Stages tidyparse-web files for deployment to tidyparse.github.io"
 
-    dependsOn("jsBrowserProductionWebpack")
+    dependsOn(jsBrowserHostedCoreWebpack)
 
     into(webDeployStagingDir)
     from("src/jsMain/resources") {
@@ -402,19 +494,68 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
       exclude(".idea/**")
     }
     from(productionBundleDir) {
+      include("tidyparse-web.js")
       include("tidyparse-web.js.map")
     }
+    from(hostedCoreBundleDir) {
+      include("tidyparse-core.js")
+      include("tidyparse-core.js.map")
+    }
 
-    inputs.files(productionJsFile, ngramFile, wdfaFile, rerankerWeightsFile, exampleFiles, deployExampleFiles)
+    inputs.files(
+      productionJsFile,
+      hostedCoreJsFile,
+      ngramFile,
+      wdfaFile,
+      rerankerWeightsFile,
+      exampleFiles,
+      deployExampleFiles
+    )
     outputs.file(webDeployStagingDir.map { it.file("tidyparse-web.js") })
+    outputs.file(webDeployStagingDir.map { it.file("tidyparse-core.js") })
+    outputs.file(webDeployStagingDir.map { it.file("tidyparse-index-resources.js") })
+    outputs.file(webDeployStagingDir.map { it.file("tidyparse-python-resources.js") })
 
     doLast {
-      val stagedJsBundle = webDeployStagingDir.get().asFile.resolve("tidyparse-web.js")
-      val embeddedResources = embeddedRuntimeResources()
+      val outDir = webDeployStagingDir.get().asFile
+      val fullBundle = outDir.resolve("tidyparse-web.js")
+      val coreBundle = outDir.resolve("tidyparse-core.js")
+      val indexResources = outDir.resolve("tidyparse-index-resources.js")
+      val pythonResources = outDir.resolve("tidyparse-python-resources.js")
+      val originalBundleScript = """<script src="tidyparse-web.js"></script>"""
 
-      stagedJsBundle.writeText(embeddedResources + productionJsFile.get().readText().withoutEmbeddedWebResources())
+      indexResources.writeText(embeddedHostedIndexResources())
+      pythonResources.writeText(embeddedHostedPythonResources())
+
+      fun rewriteHostedPage(page: String, resourceScript: String? = null) {
+        val htmlFile = outDir.resolve(page)
+        val html = htmlFile.readText()
+        check(originalBundleScript in html) { "Could not find the web bundle script in ${htmlFile.absolutePath}" }
+        val replacement = buildString {
+          if (resourceScript != null) appendLine("""<script src="$resourceScript"></script>""")
+          append("""<script src="tidyparse-core.js"></script>""")
+        }
+        htmlFile.writeText(html.replace(originalBundleScript, replacement))
+      }
+
+      rewriteHostedPage("index.html", "tidyparse-index-resources.js")
+      rewriteHostedPage("cnf.html")
+      rewriteHostedPage("python.html", "tidyparse-python-resources.js")
+
+      val indexInitialJavaScriptGzipBytes =
+        gzip(coreBundle.readBytes()).size.toLong() + gzip(indexResources.readBytes()).size.toLong()
+      check(indexInitialJavaScriptGzipBytes <= maxHostedInitialJavaScriptGzipBytes) {
+        "Hosted index JavaScript exceeds the ${maxHostedInitialJavaScriptGzipBytes}-byte gzip budget: " +
+          "$indexInitialJavaScriptGzipBytes bytes"
+      }
+
       println("✓ Staged tidyparse-web deployment at ${webDeployStagingDir.get().asFile.absolutePath}")
-      println("  Embedded gzip-compressed python_4grams.txt, wdfa.bin, reranker_2000.q8.safetensors, and ${exampleFiles.files.size} examples into ${stagedJsBundle.absolutePath}")
+      println("  Hosted core: ${coreBundle.length()} bytes")
+      println("  C++/worker bundle: ${fullBundle.length()} bytes")
+      println("  Index resources: ${indexResources.length()} bytes (${exampleFiles.files.size} examples)")
+      println("  Python resources: ${pythonResources.length()} bytes (small resources only)")
+      println("  Index initial JavaScript: $indexInitialJavaScriptGzipBytes gzip bytes")
+      println("  Compressed/base64 resource payloads larger than $maxHostedInlinePayloadBytes bytes stay as individual files")
     }
   }
 
