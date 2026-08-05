@@ -1,1 +1,4 @@
 latex/** linguist-detectable=false
+
+# Keep the vendored ANTLR grammar byte-for-byte identical to its pinned upstream file.
+tidyparse-web/grammar/cpp/CPP14Parser.g4 whitespace=-blank-at-eof

@@ -213,7 +213,7 @@ private class CppPlayground {
           <section id="cpp-editor-pane" aria-label="Source editor">
             <div class="cpp-pane-header">
               <span id="cpp-file-name">main.cpp</span>
-              <span class="cpp-pane-hint">Ctrl/⌘-click or F12 for definition · Shift+F12 for references · Ctrl/⌘+Enter to run</span>
+              <span class="cpp-pane-hint">Ctrl/⌘+Space to complete · F12 for definition · Shift+F12 for references · Ctrl/⌘+Enter to run</span>
             </div>
             <div id="cpp-editor">
               <pre id="cpp-line-numbers" aria-hidden="true">1</pre>
@@ -409,6 +409,14 @@ private class CppPlayground {
   }
 
   private fun handleEditorKey(event: KeyboardEvent) {
+    if (event.key == " " && (event.ctrlKey || event.metaKey)) {
+      // Monaco owns the grammar-backed completion provider. The textarea is only an emergency
+      // fallback and has no suggestion widget capable of presenting several shortest suffixes.
+      event.preventDefault()
+      setStatus("warning", "Completion requires Monaco")
+      return
+    }
+
     if (event.key == "Escape") {
       runButton.focus()
       return
@@ -1246,6 +1254,11 @@ private val CPP_CSS = """
   #cpp-monaco .monaco-editor-background,
   #cpp-monaco .monaco-editor .margin {
     background-color: var(--cpp-editor);
+  }
+
+  /* Keep the completion label intact when the focused row also reveals Monaco's detail text. */
+  #cpp-monaco .suggest-widget .monaco-list-row > .contents > .main > .left {
+    flex-shrink: 0;
   }
 
   #cpp-line-numbers,

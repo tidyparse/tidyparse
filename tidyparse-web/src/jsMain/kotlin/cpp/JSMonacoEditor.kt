@@ -1,11 +1,20 @@
 import kotlinx.browser.window
-import kotlinx.coroutines.await
+import kotlinx.coroutines.*
+import kotlinx.coroutines.promise
 import org.w3c.dom.HTMLElement
 import kotlin.js.Promise
+import kotlin.math.ceil
 
 private const val CPP_WORKSPACE_PATH = "/home/web_user"
 private const val CPP_WORKSPACE_URI = "file://$CPP_WORKSPACE_PATH"
 private const val CPP_CLANGD_WORKER_NAME = "tidyparse-clangd"
+private const val CPP_COMPLETION_CONTEXT_TIMEOUT_MS = 1_200L
+private const val CPP_COMPLETION_AST_TIMEOUT_MS = 1_000L
+private const val CPP_COMPLETION_WORKER_TIMEOUT_MS = 4_000L
+private const val CPP_COMPLETION_TOTAL_TIMEOUT_MS = 5_500L
+private const val CPP_COMPLETION_SHORTCUT_WINDOW_MS = 1_000.0
+private const val CPP_COMPLETION_LIMIT = 10
+private const val CPP_COMPLETION_WIDGET_CHROME_PX = 80.0
 
 enum class ClangdClientState {
   STARTING,
@@ -34,6 +43,57 @@ data class ClangdDiagnostic(
   val source: String?,
   val code: String?
 )
+
+private class CachedCppGrammarCompletion(
+  val key: String,
+  val reply: dynamic
+)
+
+private class CachedCppAstContext(
+  val key: String,
+  val context: dynamic
+)
+
+/** Links Monaco cancellation to one owned vscode-jsonrpc cancellation source. */
+private class CppLspCancellation(
+  private val source: dynamic,
+  upstream: dynamic
+) {
+  private var registration: dynamic = null
+  val token: dynamic = if (defined(source)) source.token else upstream
+
+  init {
+    try {
+      if (defined(source) && completionTokenCancelled(upstream)) {
+        source.cancel()
+      } else if (defined(source) && defined(upstream?.onCancellationRequested)) {
+        registration = upstream.onCancellationRequested { source.cancel() }
+      }
+    } catch (_: Throwable) {
+      // The owned source still enforces the time budget even if a host token is not linkable.
+    }
+  }
+
+  fun cancelAndDispose() {
+    try {
+      registration?.dispose()
+    } catch (_: Throwable) {
+    }
+    registration = null
+    if (!defined(source)) return
+    try {
+      source.cancel()
+    } catch (_: Throwable) {
+    }
+    try {
+      source.dispose()
+    } catch (_: Throwable) {
+    }
+  }
+}
+
+private fun completionTokenCancelled(token: dynamic): Boolean =
+  token?.isCancellationRequested as? Boolean == true
 
 /**
  * The only C/C++ editor integration we own.
@@ -65,6 +125,13 @@ class JSMonacoEditor(
   private var languageClientPort: dynamic = null
   private var diagnosticsSubscription: dynamic = null
   private val editorDisposables = mutableListOf<dynamic>()
+  private val completionScope = MainScope()
+  private var completionWorker: CppCompletionWorkerClient? = null
+  private var explicitCompletionUntil = 0.0
+  private var latestRawDiagnostics: dynamic = null
+  private var cachedGrammarCompletion: CachedCppGrammarCompletion? = null
+  private var cachedCppAstContext: CachedCppAstContext? = null
+  private var cppCompletionContextEpoch = 0
   private var requestedReadOnly = false
   private var disposed = false
 
@@ -100,6 +167,12 @@ class JSMonacoEditor(
     editorApp = js("new EditorApp(appConfig)")
     editorApp.registerOnTextChangedCallback { changes: dynamic ->
       val text = changes.modified as? String ?: return@registerOnTextChangedCallback
+      cachedGrammarCompletion = null
+      cachedCppAstContext = null
+      cppCompletionContextEpoch++
+      // VS Code diagnostics do not carry the model version. Never apply ranges published for the
+      // previous text to a newly edited statement while clangd is still reparsing it.
+      latestRawDiagnostics = null
       onChange(text)
       reportStatus(ClangdClientState.BUSY, "clangd analyzing…")
     }
@@ -123,6 +196,9 @@ class JSMonacoEditor(
     statusListener = onStatus
     diagnosticsListener = onDiagnostics
     reportStatus(ClangdClientState.STARTING, "Starting clangd…")
+    // Parse the shared completion bundle in parallel with clangd startup. The ready handshake
+    // keeps its one-time script evaluation outside the per-request grammar deadline.
+    ensureCppCompletionWorker()
 
     try {
       val clangdWorker = createClangdWorker()
@@ -146,7 +222,7 @@ class JSMonacoEditor(
       config.connection.options.messagePort = channel.port1
       config.clientOptions = js("{}")
       config.clientOptions.documentSelector = arrayOf("cpp", "c")
-      config.clientOptions.middleware = sameDocumentNavigationMiddleware()
+      config.clientOptions.middleware = clangdEditorMiddleware()
       config.clientOptions.initializationOptions = js("({ clangdFileStatus: true })")
       config.clientOptions.workspaceFolder = js("{}")
       config.clientOptions.workspaceFolder.index = 0
@@ -197,6 +273,16 @@ class JSMonacoEditor(
   suspend fun setDocument(nextFileName: String, text: String) {
     val app = editorApp ?: return
     fileName = nextFileName
+    cachedGrammarCompletion = null
+    cachedCppAstContext = null
+    cppCompletionContextEpoch++
+    latestRawDiagnostics = null
+    if (nextFileName.endsWith(".c", ignoreCase = true)) {
+      completionWorker?.dispose()
+      completionWorker = null
+    } else if (languageClientWrapper != null) {
+      ensureCppCompletionWorker()
+    }
     awaitPromise(app.updateCodeResources(codeResources(nextFileName, text)))
     editor = app.getEditor()
     editor?.setPosition(js("({ lineNumber: 1, column: 1 })"))
@@ -227,6 +313,10 @@ class JSMonacoEditor(
   fun dispose() {
     if (disposed) return
     disposed = true
+
+    completionWorker?.dispose()
+    completionWorker = null
+    completionScope.cancel()
 
     editorDisposables.forEach(::disposeSafely)
     editorDisposables.clear()
@@ -343,52 +433,14 @@ class JSMonacoEditor(
     return resources
   }
 
-  private fun editorOptions(): dynamic {
-    val options = js("{}")
-    options.automaticLayout = true
-    options.fontFamily =
-      "\"SFMono-Regular\", Consolas, \"Liberation Mono\", Menlo, monospace"
-    options.fontSize = 15
-    options.lineHeight = 25
-    options.tabSize = 2
-    options.insertSpaces = true
-    options.detectIndentation = false
-    options.wordBasedSuggestions = "off"
-    options.quickSuggestions = js("({ other: true, comments: false, strings: false })")
-    options.quickSuggestionsDelay = 200
-    options.suggestOnTriggerCharacters = true
-    options.acceptSuggestionOnEnter = "on"
-    options.parameterHints = js("({ enabled: true, cycle: true })")
-    options.hover = js("({ enabled: true, delay: 300, sticky: true })")
-    options.inlayHints = js("({ enabled: 'offUnlessPressed' })")
-    options["semanticHighlighting.enabled"] = true
-    options.bracketPairColorization =
-      js("({ enabled: true, independentColorPoolPerBracketType: true })")
-    options.guides =
-      js("({ bracketPairs: true, bracketPairsHorizontal: 'active', highlightActiveBracketPair: true })")
-    options.glyphMargin = true
-    options.folding = true
-    options.foldingHighlight = true
-    options.showFoldingControls = "mouseover"
-    options.lightbulb = js("({ enabled: 'on' })")
-    options.renderValidationDecorations = "on"
-    options.renderWhitespace = "selection"
-    options.scrollBeyondLastLine = false
-    options.smoothScrolling = true
-    options.padding = js("({ top: 14, bottom: 28 })")
-    options.minimap = js("({ enabled: false })")
-    options.fixedOverflowWidgets = true
-    options.occurrencesHighlight = "singleFile"
-    options.selectionHighlight = true
-    options.links = true
-    return options
-  }
+  private fun editorOptions(): dynamic = cppMonacoEditorOptions()
 
   private fun userConfigurationJson(): String {
     val configuration = js("{}")
     configuration["workbench.colorTheme"] =
       if (darkTheme) "Default Dark Modern" else "Default Light Modern"
     configuration["editor.wordBasedSuggestions"] = "off"
+    configuration["editor.autoClosingBrackets"] = "never"
     configuration["editor.inlayHints.enabled"] = "offUnlessPressed"
     configuration["editor.quickSuggestionsDelay"] = 200
     configuration["editor.semanticHighlighting.enabled"] = true
@@ -422,11 +474,423 @@ class JSMonacoEditor(
       }
     editorDisposables.add(monaco.editor.registerEditorOpener(editorOpener))
 
+    installCppGrammarCompletion(activeEditor, monaco)
+    installCppCompletionWidgetSizing(activeEditor)
+
     val runKey = number(monaco.KeyMod.CtrlCmd) or number(monaco.KeyCode.Enter)
     activeEditor.addCommand(runKey, { onRun() })
     activeEditor.setPosition(js("({ lineNumber: 1, column: 1 })"))
     updateReadOnly()
   }
+
+  /** Adds the full-statement grammar as the only user-visible C++ LSP completion provider. */
+  private fun installCppGrammarCompletion(activeEditor: dynamic, monaco: dynamic) {
+    editorDisposables.add(activeEditor.onKeyDown { event: dynamic ->
+      if (isCppCompletionShortcut(event)) {
+        explicitCompletionUntil = window.performance.now() + CPP_COMPLETION_SHORTCUT_WINDOW_MS
+      }
+    })
+
+    val provider = js("({})")
+    provider.provideCompletionItems =
+      { model: dynamic, position: dynamic, _: dynamic, cancellation: dynamic ->
+        val explicitlyRequested = consumeExplicitCppCompletion()
+        val isCpp = model?.getLanguageId() as? String == "cpp"
+        val worker = if (explicitlyRequested && isCpp) ensureCppCompletionWorker() else null
+        if (!explicitlyRequested || !isCpp || worker == null) null
+        else completionScope.promise {
+          withTimeoutOrNull(CPP_COMPLETION_TOTAL_TIMEOUT_MS) {
+            provideCppGrammarCompletions(model, position, cancellation, monaco)
+          } ?: emptyCppCompletionResult()
+        }
+      }
+    editorDisposables.add(monaco.languages.registerCompletionItemProvider("cpp", provider))
+  }
+
+  /**
+   * Expands Monaco's completion list to the longest currently filtered label.
+   *
+   * Monaco calculates a preferred width from an 85th-percentile label length, but only applies it
+   * after a manual sash reset. There is no public suggest-width option. The pinned widget's resize
+   * routine is used here because it updates the virtualized list and recomputes overflow placement
+   * together; changing CSS width alone leaves both geometries at the old 430-pixel default.
+   */
+  private fun installCppCompletionWidgetSizing(activeEditor: dynamic) {
+    val controller = try {
+      activeEditor.getContribution("editor.contrib.suggestController")
+    } catch (_: Throwable) {
+      null
+    }
+    if (!defined(controller)) return
+
+    val subscription = try {
+      controller.model.onDidSuggest { event: dynamic ->
+        resizeCppCompletionWidget(controller, event?.completionModel)
+      }
+    } catch (_: Throwable) {
+      null
+    }
+    if (defined(subscription)) editorDisposables.add(subscription)
+  }
+
+  private fun resizeCppCompletionWidget(controller: dynamic, completionModel: dynamic) {
+    try {
+      val items = completionModel?.items
+      if (!defined(items) || js("Array.isArray(items)") as Boolean == false) return
+      var longestLabelCharacters = 0
+      for (index in 0 until number(items.length)) {
+        val item = items[index]
+        val rawLabel = item?.completion?.label
+        val label = item?.textLabel as? String
+          ?: rawLabel as? String
+          ?: rawLabel?.label as? String
+        if (label != null) longestLabelCharacters = maxOf(longestLabelCharacters, label.length)
+      }
+      if (longestLabelCharacters == 0) return
+
+      val widget = controller.widget?.value
+      val element = widget?.element
+      val size = element?.size
+      val layout = widget?.getLayoutInfo()
+      val currentWidth = (size?.width as? Number)?.toDouble() ?: return
+      val currentHeight = (size.height as? Number)?.toDouble() ?: return
+      val maximumWidth = (element.maxSize?.width as? Number)?.toDouble() ?: return
+      val halfwidth = (layout?.typicalHalfwidthCharacterWidth as? Number)?.toDouble() ?: return
+      val targetWidth = cppCompletionWidgetTargetWidth(
+        longestLabelCharacters = longestLabelCharacters,
+        typicalHalfwidthCharacterWidth = halfwidth,
+        currentWidth = currentWidth,
+        maximumWidth = maximumWidth
+      )
+      if (targetWidth <= currentWidth) return
+
+      val resize = widget["_resize"]
+      if (jsTypeOf(resize) == "function") resize.call(widget, targetWidth, currentHeight)
+    } catch (_: Throwable) {
+      // Suggest sizing is cosmetic. A Monaco upgrade must not suppress completion results.
+    }
+  }
+
+  private fun isCppCompletionShortcut(event: dynamic): Boolean =
+    js(
+      """(event) => {
+        const browser = event && event.browserEvent || event || {};
+        const modified = !!(event && (event.ctrlKey || event.metaKey) || browser.ctrlKey || browser.metaKey);
+        const shifted = !!(event && event.shiftKey || browser.shiftKey);
+        return modified && !shifted && !(event && event.altKey || browser.altKey) &&
+          (browser.key === " " || browser.key === "Spacebar" || browser.code === "Space");
+      }"""
+    )(event) as Boolean
+
+  private fun ensureCppCompletionWorker(): CppCompletionWorkerClient? {
+    completionWorker?.let { return it }
+    if (fileName.endsWith(".c", ignoreCase = true)) return null
+    completionWorker = try {
+      CppCompletionWorkerClient()
+    } catch (failure: Throwable) {
+      console.warn("The C++ grammar completion worker could not start.", failure)
+      null
+    }
+    return completionWorker
+  }
+
+  private fun consumeExplicitCppCompletion(): Boolean {
+    val requested = window.performance.now() <= explicitCompletionUntil
+    explicitCompletionUntil = 0.0
+    return requested
+  }
+
+  private suspend fun provideCppGrammarCompletions(
+    model: dynamic,
+    position: dynamic,
+    cancellation: dynamic,
+    monaco: dynamic
+  ): dynamic {
+    val empty = emptyCppCompletionResult()
+    if (completionCancelled(cancellation)) return empty
+    val source = model?.getValue() as? String ?: return empty
+    val line = number(position?.lineNumber) - 1
+    val character = number(position?.column) - 1
+    val snapshot = cppEditorStatementSnapshot(source, line, character) ?: return empty
+    val version = number(model.getVersionId())
+    val modelUri = model.uri?.toString() as? String ?: documentUri()
+    val contextEpoch = cppCompletionContextEpoch
+    val resultKey = "$modelUri:$version:$contextEpoch:${snapshot.cacheKey}"
+    val sourceKey = "$modelUri:$version"
+    val astKey = "$sourceKey:${snapshot.line}:${snapshot.character}"
+
+    val reply = cachedGrammarCompletion?.takeIf { it.key == resultKey }?.reply ?: try {
+      val lspCancellation = cppLspCancellation(cancellation)
+      val queriedFacts = try {
+        withTimeoutOrNull(CPP_COMPLETION_CONTEXT_TIMEOUT_MS) {
+          requestCppCompletionFacts(source, snapshot, astKey, lspCancellation.token)
+        }
+      } finally {
+        // Cancelling after success is harmless; after a timeout it sends $/cancelRequest for any
+        // unresolved work instead of leaving it queued in the single WASM-clangd process.
+        lspCancellation.cancelAndDispose()
+      }
+      val facts = queriedFacts ?: CppCompletionSemanticFacts()
+      if (
+        contextEpoch != cppCompletionContextEpoch ||
+        !cppCompletionStillCurrent(model, version, snapshot) ||
+        completionCancelled(cancellation)
+      )
+        return empty
+
+      val request = cppCompletionWorkerRequest(
+        cacheKey = resultKey,
+        source = source,
+        snapshot = snapshot,
+        facts = facts.copy(diagnostics = latestRawDiagnostics),
+        limit = CPP_COMPLETION_LIMIT
+      )
+      val activeWorker = requireNotNull(completionWorker)
+      val completed = withTimeout(CPP_COMPLETION_WORKER_TIMEOUT_MS) {
+        // [complete] owns the ready handshake as part of the same bounded operation. Keeping a
+        // separate 15-second readiness wait made Monaco legitimately display "Loading..." long
+        // after an interactive request was useful.
+        activeWorker.complete(request)
+      }
+      if (
+        contextEpoch != cppCompletionContextEpoch ||
+        !cppCompletionStillCurrent(model, version, snapshot) ||
+        completionCancelled(cancellation)
+      )
+        return empty
+      // A cold AST timeout is intentionally retryable: return the degraded suggestions once, but
+      // do not permanently suppress return/this/member facts at this unchanged cursor.
+      if (queriedFacts != null && defined(queriedFacts.ast))
+        cachedGrammarCompletion = CachedCppGrammarCompletion(resultKey, completed)
+      completed
+    } catch (cancelled: CancellationException) {
+      return empty
+    } catch (failure: Throwable) {
+      console.warn("C++ grammar completion failed.", failure)
+      return empty
+    }
+
+    return monacoCompletionResult(reply, snapshot, position, monaco)
+  }
+
+  private suspend fun requestCppCompletionFacts(
+    source: String,
+    snapshot: CppEditorStatementSnapshot,
+    astKey: String,
+    cancellation: dynamic
+  ): CppCompletionSemanticFacts = coroutineScope {
+    val client = try {
+      languageClientWrapper?.getLanguageClient()
+    } catch (_: Throwable) {
+      null
+    }
+    if (!defined(client)) return@coroutineScope CppCompletionSemanticFacts()
+
+    // clangd's AST extension is a whole-document request. The clangd worker reduces it at this
+    // caret before returning anything to Monaco. Give a cold parse one full second, while keeping
+    // a small outer-context margin in which the parallel completion requests can settle cleanly.
+    val ast = async {
+      cachedCppAstContext?.takeIf { it.key == astKey }?.let { return@async it.context }
+      val astCancellation = cppLspCancellation(cancellation)
+      val params = js("({})")
+      params.textDocument = js("({})")
+      params.textDocument.uri = documentUri()
+      params[CPP_AST_CONTEXT_REQUEST_FIELD] = js("({})")
+      params[CPP_AST_CONTEXT_REQUEST_FIELD].source = source
+      params[CPP_AST_CONTEXT_REQUEST_FIELD].line = snapshot.line
+      params[CPP_AST_CONTEXT_REQUEST_FIELD].character = snapshot.character
+      val rawAst = try {
+        withTimeoutOrNull(CPP_COMPLETION_AST_TIMEOUT_MS) {
+          optionalClangdRequest(client, "textDocument/ast", params, astCancellation.token)
+        }
+      } finally {
+        astCancellation.cancelAndDispose()
+      }
+      if (!defined(rawAst)) return@async null
+      val normalized = if (rawAst[CPP_NORMALIZED_AST_CONTEXT_FIELD] as? Boolean == true) rawAst
+      else cppClangdAstContextDto(rawAst, source, snapshot.line, snapshot.character)
+      cachedCppAstContext = CachedCppAstContext(astKey, normalized)
+      normalized
+    }
+    val receiverOperator = cppReceiverOperator(snapshot.prefixText)
+    val base = async {
+      optionalClangdRequest(
+        client,
+        "textDocument/completion",
+        cppCompletionParams(snapshot.line, snapshot.character, receiverOperator),
+        cancellation
+      )
+    }
+    val scopeCharacter = snapshot.statementStartCharacter +
+      snapshot.prefixText.takeWhile { it == ' ' || it == '\t' }.length
+    val scope = if (scopeCharacter == snapshot.character) null else async {
+      optionalClangdRequest(
+        client,
+        "textDocument/completion",
+        cppCompletionParams(snapshot.line, scopeCharacter, null),
+        cancellation
+      )
+    }
+    val signatures = if (hasOpenCppCall(snapshot.prefixText)) async {
+      optionalClangdRequest(
+        client,
+        "textDocument/signatureHelp",
+        cppTextDocumentPositionParams(snapshot.line, snapshot.character),
+        cancellation
+      )
+    } else null
+    val hoverCharacter = cppReceiverHoverCharacter(snapshot.prefixText, receiverOperator)
+      ?.let { snapshot.statementStartCharacter + it }
+    val hover = hoverCharacter?.let { hoverAt -> async {
+      optionalClangdRequest(
+        client,
+        "textDocument/hover",
+        cppTextDocumentPositionParams(snapshot.line, hoverAt),
+        cancellation
+      )
+    } }
+
+    val groups = mutableListOf<CppClangdCompletionGroup>()
+    val baseResult: dynamic = base.await()
+    if (defined(baseResult))
+      groups.add(CppClangdCompletionGroup(baseResult, receiverOperator != null, receiverOperator))
+    val scopeResult: dynamic = scope?.await()
+    if (defined(scopeResult)) groups.add(CppClangdCompletionGroup(scopeResult))
+    CppCompletionSemanticFacts(groups, signatures?.await(), hover?.await(), ast = ast.await())
+  }
+
+  private suspend fun optionalClangdRequest(
+    client: dynamic,
+    method: String,
+    params: dynamic,
+    cancellation: dynamic
+  ): dynamic = try {
+    val request = if (defined(cancellation)) client.sendRequest(method, params, cancellation)
+    else client.sendRequest(method, params)
+    awaitPromise(request)
+  } catch (cancelled: CancellationException) {
+    throw cancelled
+  } catch (_: Throwable) {
+    null
+  }
+
+  private fun cppLspCancellation(upstream: dynamic): CppLspCancellation {
+    val constructor = modules?.vscode?.CancellationTokenSource
+    val source = try {
+      if (defined(constructor)) js("(Ctor) => new Ctor()")(constructor) else null
+    } catch (_: Throwable) {
+      null
+    }
+    return CppLspCancellation(source, upstream)
+  }
+
+  private fun cppCompletionParams(line: Int, character: Int, receiverOperator: String?): dynamic {
+    val params = cppTextDocumentPositionParams(line, character)
+    params.context = js("({})")
+    if (receiverOperator == null) {
+      params.context.triggerKind = 1
+    } else {
+      params.context.triggerKind = 2
+      params.context.triggerCharacter = receiverOperator.last().toString()
+    }
+    return params
+  }
+
+  private fun cppTextDocumentPositionParams(line: Int, character: Int): dynamic {
+    val params = js("({})")
+    params.textDocument = js("({})")
+    params.textDocument.uri = documentUri()
+    params.position = js("({})")
+    params.position.line = line
+    params.position.character = character
+    return params
+  }
+
+  private fun cppReceiverOperator(prefixText: String): String? =
+    prefixText.trimEnd().let { prefix ->
+      when {
+        prefix.endsWith("->") -> "->"
+        prefix.endsWith("::") -> "::"
+        prefix.endsWith('.') -> "."
+        else -> null
+      }
+    }
+
+  private fun cppReceiverHoverCharacter(prefixText: String, operator: String?): Int? {
+    operator ?: return null
+    val beforeOperator = prefixText.trimEnd().dropLast(operator.length)
+    val character = beforeOperator.indexOfLast { it.isLetterOrDigit() || it == '_' }
+    return character.takeIf { it >= 0 }
+  }
+
+  private fun hasOpenCppCall(prefixText: String): Boolean {
+    var depth = 0
+    prefixText.forEach { character -> when (character) {
+      '(' -> depth++
+      ')' -> if (depth > 0) depth--
+    } }
+    return depth > 0
+  }
+
+  private fun cppCompletionStillCurrent(
+    model: dynamic,
+    version: Int,
+    snapshot: CppEditorStatementSnapshot
+  ): Boolean {
+    val activeEditor = editor ?: return false
+    if (activeEditor.getModel() !== model || number(model.getVersionId()) != version) return false
+    val current = activeEditor.getPosition() ?: return false
+    return number(current.lineNumber) - 1 == snapshot.line &&
+      number(current.column) - 1 == snapshot.character
+  }
+
+  private fun completionCancelled(cancellation: dynamic): Boolean =
+    cancellation?.isCancellationRequested as? Boolean == true
+
+  private fun monacoCompletionResult(
+    reply: dynamic,
+    snapshot: CppEditorStatementSnapshot,
+    position: dynamic,
+    monaco: dynamic
+  ): dynamic {
+    val suggestions = reply?.suggestions
+    if (!defined(suggestions) ||
+      js("(value) => Array.isArray(value)")(suggestions) as Boolean == false)
+      return emptyCppCompletionResult()
+    val lineNumber = number(position.lineNumber)
+    val range = js("(Range, line, start, end) => new Range(line, start, line, end)")(
+      monaco.Range,
+      lineNumber,
+      snapshot.replacementStartCharacter + 1,
+      snapshot.replacementEndCharacter + 1
+    )
+    val items = (0 until number(suggestions.length)).mapNotNull { index ->
+      val suggestion = suggestions[index]
+      val insertion = suggestion?.insertion as? String
+        ?: suggestion?.insertionText as? String
+        ?: return@mapNotNull null
+      if (insertion.isEmpty()) return@mapNotNull null
+      val display = suggestion?.displayText as? String
+        ?: (snapshot.prefixText + insertion).trim()
+      val tokenLength = cppCompletionInt(suggestion?.tokenLength ?: suggestion?.length, 0)
+      val item = js("({})")
+      item.label = display
+      item.detail = "Tidyparse · shortest C++ statement completion"
+      item.documentation = "Generated from the full C++ statement grammar (${tokenLength} tokens)."
+      item.kind = monaco.languages.CompletionItemKind.Snippet
+      item.insertText = insertion
+      item.range = range
+      item.sortText = "0000_${tokenLength.toString().padStart(2, '0')}_${index.toString().padStart(2, '0')}"
+      item.preselect = index == 0
+      item
+    }
+    val result = js("({})")
+    result.suggestions = items.toTypedArray()
+    result.incomplete = false
+    return result
+  }
+
+  private fun emptyCppCompletionResult(): dynamic = js("({ suggestions: [], incomplete: false })")
 
   private fun updateReadOnly() {
     val activeEditor = editor ?: return
@@ -449,6 +913,9 @@ class JSMonacoEditor(
     val vscode = modules?.vscode ?: return
     val uri = vscode.Uri.parse(documentUri())
     val diagnostics = vscode.languages.getDiagnostics(uri)
+    cachedGrammarCompletion = null
+    cppCompletionContextEpoch++
+    latestRawDiagnostics = diagnostics
     val mapped = (0 until number(diagnostics.length)).map { index ->
       val diagnostic = diagnostics[index]
       val codeValue = diagnostic.code
@@ -561,8 +1028,15 @@ class JSMonacoEditor(
     }
   }
 
-  // Keep location-based features, including Peek, inside their source document.
-  private fun sameDocumentNavigationMiddleware(): dynamic =
+  /**
+   * Keep clangd's semantic services, but do not publish its completion provider to Monaco.
+   *
+   * Grammar completion still sends narrowly scoped `textDocument/completion` requests directly
+   * through the language client to collect semantic names. Middleware only wraps requests made by
+   * the language-client feature providers, so returning an empty list here cannot intercept those
+   * private context requests or diagnostics, hover, signature help, and AST requests.
+   */
+  private fun clangdEditorMiddleware(): dynamic =
     js(
       """() => {
         const filterLocations = (document, result) => {
@@ -579,6 +1053,7 @@ class JSMonacoEditor(
         const filter = (document, result) =>
           Promise.resolve(result).then(value => filterLocations(document, value));
         return {
+          provideCompletionItem: () => [],
           provideDefinition: (document, position, token, next) =>
             filter(document, next(document, position, token)),
           provideDeclaration: (document, position, token, next) =>
@@ -615,6 +1090,62 @@ class JSMonacoEditor(
     } catch (_: Throwable) {
     }
   }
+}
+
+internal fun cppMonacoEditorOptions(): dynamic {
+  val options = js("{}")
+  options.automaticLayout = true
+  options.fontFamily =
+    "\"SFMono-Regular\", Consolas, \"Liberation Mono\", Menlo, monospace"
+  options.fontSize = 15
+  options.lineHeight = 25
+  options.tabSize = 2
+  options.insertSpaces = true
+  options.detectIndentation = false
+  options.autoClosingBrackets = "never"
+  options.wordBasedSuggestions = "off"
+  options.quickSuggestions = js("({ other: true, comments: false, strings: false })")
+  options.quickSuggestionsDelay = 200
+  options.suggestOnTriggerCharacters = true
+  options.acceptSuggestionOnEnter = "on"
+  options.parameterHints = js("({ enabled: true, cycle: true })")
+  options.hover = js("({ enabled: true, delay: 300, sticky: true })")
+  options.inlayHints = js("({ enabled: 'offUnlessPressed' })")
+  options["semanticHighlighting.enabled"] = true
+  options.bracketPairColorization =
+    js("({ enabled: true, independentColorPoolPerBracketType: true })")
+  options.guides =
+    js("({ bracketPairs: true, bracketPairsHorizontal: 'active', highlightActiveBracketPair: true })")
+  options.glyphMargin = true
+  options.folding = true
+  options.foldingHighlight = true
+  options.showFoldingControls = "mouseover"
+  options.lightbulb = js("({ enabled: 'on' })")
+  options.renderValidationDecorations = "on"
+  options.renderWhitespace = "selection"
+  options.scrollBeyondLastLine = false
+  options.smoothScrolling = true
+  options.padding = js("({ top: 14, bottom: 28 })")
+  options.minimap = js("({ enabled: false })")
+  options.fixedOverflowWidgets = true
+  options.occurrencesHighlight = "singleFile"
+  options.selectionHighlight = true
+  options.links = true
+  return options
+}
+
+internal fun cppCompletionWidgetTargetWidth(
+  longestLabelCharacters: Int,
+  typicalHalfwidthCharacterWidth: Double,
+  currentWidth: Double,
+  maximumWidth: Double
+): Double {
+  require(longestLabelCharacters >= 0) { "Completion label length must be nonnegative" }
+  require(typicalHalfwidthCharacterWidth >= 0.0) { "Completion character width must be nonnegative" }
+  val contentWidth = ceil(
+    longestLabelCharacters * typicalHalfwidthCharacterWidth + CPP_COMPLETION_WIDGET_CHROME_PX
+  )
+  return maxOf(currentWidth, contentWidth).coerceAtMost(maximumWidth)
 }
 
 private suspend fun awaitPromise(value: dynamic): dynamic =

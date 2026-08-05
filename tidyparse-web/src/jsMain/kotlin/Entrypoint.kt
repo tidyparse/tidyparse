@@ -52,6 +52,10 @@ fun main() {
     setupCppCoiServiceWorker()
     return
   }
+  if (isCppCompletionWorkerRuntime()) {
+    setupCppCompletionWorker()
+    return
+  }
   if (isCppClangdWorkerRuntime()) {
     setupCppClangdWorker()
     return

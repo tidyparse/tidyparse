@@ -1,5 +1,6 @@
 @file:OptIn(ExperimentalEncodingApi::class)
 
+import buildlogic.GenerateCppStatementGrammar
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
@@ -13,6 +14,7 @@ import org.gradle.api.tasks.TaskAction
 import org.jetbrains.kotlin.gradle.targets.js.testing.KotlinJsTest
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpack
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.DEVELOPMENT
+import org.jetbrains.kotlin.gradle.tasks.BaseKotlinCompile
 import org.jetbrains.letsPlot.*
 import org.jetbrains.letsPlot.export.ggsave
 import org.jetbrains.letsPlot.geom.geomLine
@@ -110,6 +112,19 @@ val generateClangdArtifactVersion = tasks.register<GenerateClangdArtifactVersion
   outputFile.set(generatedClangdVersionDir.map { it.file("JSClangdArtifactVersion.kt") })
 }
 
+val generatedCppStatementGrammarDir = layout.buildDirectory.dir("generated/cpp-statement-grammar")
+val generateCppStatementGrammar = tasks.register<GenerateCppStatementGrammar>(
+  "generateCppStatementGrammar"
+) {
+  parserGrammar.set(layout.projectDirectory.file("grammar/cpp/CPP14Parser.g4"))
+  lexerGrammar.set(rootProject.layout.projectDirectory.file("tidyparse-core/antlr/cpp/CPP14Lexer.g4"))
+  expectedParserSha256.set("628062e9f75710ba1d1436ced8bd7d9d8f2f08c31a6e962c175e06b28994ff27")
+  expectedLexerSha256.set("739a8782e05279318dccab76bf05af1ff5e3ff9e43f1b5b0d04e14d91d4fff47")
+  outputFile.set(generatedCppStatementGrammarDir.map {
+    it.file("cppcompletion/Cpp14StatementGrammar.generated.kt")
+  })
+}
+
 val buildClangdWasm = tasks.register<Exec>("buildClangdWasm") {
   group = "build"
   description = "Builds the pinned, self-hosted clangd WebAssembly artifact"
@@ -189,15 +204,25 @@ kotlin {
         devtool = "source-map" // For debugging; remove for production
       }
 
-      testTask { useKarma { useChromeHeadless() } }
+      testTask {
+        useKarma { useChromeHeadless() }
+        if (System.getenv("CPP_COMPLETION_BENCHMARK") == "1") {
+          // The compiler-backed sweep is intentionally isolated from the fast grammar/service
+          // regressions. Benchmark mode should measure the full discovered completion corpus, not rerun the
+          // surrounding unit suite before starting its one-minute clock.
+          filter.includeTestsMatching("cppcompletion.CppCompletionBenchmarkRunTest.*")
+        }
+      }
     }
   }
 
   sourceSets {
     getByName("jsMain") {
       kotlin.srcDir(generatedClangdVersionDir)
+      kotlin.srcDir(generatedCppStatementGrammarDir)
       dependencies {
         implementation(project(":tidyparse-core"))
+        implementation("com.ionspin.kotlin:bignum:0.3.10")
         implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2026.6.3")
         // Keep this family pinned together. monaco-languageclient 10 is the
         // maintained successor to the now-discontinued monaco-editor-wrapper
@@ -213,12 +238,19 @@ kotlin {
     }
 
     getByName("jsTest") {
+      kotlin.srcDir("src/jsTest/cppCompletion/kotlin")
+      resources.srcDir("src/jsTest/cppCompletion/resources")
       dependencies {
         implementation(kotlin("test-js"))
         implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+        implementation("com.ionspin.kotlin:bignum:0.3.10")
       }
     }
   }
+}
+
+tasks.withType<BaseKotlinCompile>().configureEach {
+  dependsOn(generateCppStatementGrammar)
 }
 
 tasks.named("compileKotlinJs") {
@@ -306,6 +338,12 @@ fun String.withoutEmbeddedWebResources(): String =
 val productionBundleDir = layout.buildDirectory.dir("kotlin-webpack/js/productionExecutable")
 val productionJsFile = productionBundleDir.map { it.file("tidyparse-web.js").asFile }
 val productionJsMapFile = productionBundleDir.map { it.file("tidyparse-web.js.map").asFile }
+val productionExecutableJsFile = layout.buildDirectory.file(
+  "compileSync/js/main/productionExecutable/kotlin/${rootProject.name}-${project.name}.js"
+)
+val hostedCoreBundleDir = layout.buildDirectory.dir("kotlin-webpack/js/hostedCore")
+val hostedCoreJsFile = hostedCoreBundleDir.map { it.file("tidyparse-core.js").asFile }
+val hostedCoreJsMapFile = hostedCoreBundleDir.map { it.file("tidyparse-core.js.map").asFile }
 val webDeployStagingDir = layout.buildDirectory.dir("web-deploy")
 
 val ngramFile = layout.projectDirectory.file("src/jsMain/resources/python_4grams.txt").asFile
@@ -337,6 +375,106 @@ fun embeddedRuntimeResources(includeExamples: Boolean = true): String =
     rawRerankerWeightsGzipB64 = gzipBase64(rerankerWeightsFile.readBytes()),
     rawExamplesGzipB64 = if (includeExamples) gzipBase64(jsObjectLiteral(exampleResourceMap())) else ""
   )
+
+// Measure the ASCII payload actually added to JavaScript, after gzip/base64 encoding.
+val maxHostedInlinePayloadBytes = 1L * 1024L * 1024L
+val maxHostedInitialJavaScriptGzipBytes = 2L * 1024L * 1024L
+
+fun hostedGzipBase64(bytes: ByteArray): String =
+  gzipBase64(bytes).takeIf { it.length.toLong() <= maxHostedInlinePayloadBytes } ?: ""
+
+fun hostedGzipBase64(text: String): String = hostedGzipBase64(text.toByteArray())
+
+fun embeddedHostedIndexResources(): String =
+  embeddedWebResourcesScript(
+    rawNgramsGzipB64 = "",
+    rawWdfaGzipB64 = "",
+    rawRerankerWeightsGzipB64 = "",
+    rawExamplesGzipB64 = hostedGzipBase64(jsObjectLiteral(exampleResourceMap()))
+  )
+
+fun embeddedHostedPythonResources(): String =
+  embeddedWebResourcesScript(
+    rawNgramsGzipB64 = hostedGzipBase64(ngramFile.readBytes()),
+    rawWdfaGzipB64 = hostedGzipBase64(wdfaFile.readBytes()),
+    rawRerankerWeightsGzipB64 = hostedGzipBase64(rerankerWeightsFile.readBytes()),
+    rawExamplesGzipB64 = ""
+  )
+
+val generatedHostedWebpackDir = layout.buildDirectory.dir("generated/hosted-webpack")
+val hostedWebpackConfigFile = generatedHostedWebpackDir.map { it.file("webpack.config.js") }
+val generatedWebpackPackageDir = rootProject.layout.buildDirectory.dir(
+  "js/packages/${rootProject.name}-${project.name}"
+)
+val generatedWebpackConfigFile = generatedWebpackPackageDir.map { it.file("webpack.config.js") }
+val webpackExecutable = rootProject.layout.buildDirectory.file("js/node_modules/.bin/webpack")
+
+val prepareHostedWebpackConfig = tasks.register("prepareHostedWebpackConfig") {
+  val configContents = """
+    const config = require(${jsString(generatedWebpackConfigFile.get().asFile.absolutePath)});
+    // Development and production webpack tasks share this generated package directory. A
+    // concurrently running development server can therefore replace its entry with the larger
+    // development compiler output. Pin the hosted build to the stable production compiler output.
+    config.entry = {
+      main: [${jsString(productionExecutableJsFile.get().asFile.absolutePath)}]
+    };
+    const cppOnlyRequest =
+      /^(?:@codingame\/monaco-vscode|monaco-languageclient(?:\/|${'$'})|monaco-editor(?:\/|${'$'})|vscode${'$'})/;
+    const existingExternals =
+      config.externals == null
+        ? []
+        : Array.isArray(config.externals)
+          ? config.externals
+          : [config.externals];
+
+    config.externals = [
+      ...existingExternals,
+      ({ request }, callback) =>
+        cppOnlyRequest.test(request || "")
+          ? callback(null, "commonjs " + request)
+          : callback()
+    ];
+    config.output.path = ${jsString(hostedCoreBundleDir.get().asFile.absolutePath)};
+    config.output.filename = "tidyparse-core.js";
+    config.output.clean = true;
+
+    module.exports = config;
+  """.trimIndent() + "\n"
+
+  inputs.property("contents", configContents)
+  outputs.file(hostedWebpackConfigFile)
+
+  doLast {
+    hostedWebpackConfigFile.get().asFile.apply {
+      parentFile.mkdirs()
+      writeText(configContents)
+    }
+  }
+}
+
+val jsBrowserHostedCoreWebpack = tasks.register<Exec>("jsBrowserHostedCoreWebpack") {
+  group = "build"
+  description = "Builds the hosted non-C++ bundle without Monaco/VS Code dependencies"
+
+  dependsOn("jsBrowserProductionWebpack", prepareHostedWebpackConfig)
+
+  inputs.files(
+    productionJsFile,
+    productionExecutableJsFile,
+    generatedWebpackConfigFile,
+    hostedWebpackConfigFile
+  )
+  outputs.files(hostedCoreJsFile, hostedCoreJsMapFile)
+
+  doFirst {
+    workingDir(generatedWebpackPackageDir.get().asFile)
+    commandLine(
+      webpackExecutable.get().asFile.absolutePath,
+      "--config",
+      hostedWebpackConfigFile.get().asFile.absolutePath
+    )
+  }
+}
 
 fun File.withInlineSourceMap(mapFile: File): String {
   val jsCode = readText()
@@ -407,6 +545,14 @@ tasks {
   withType<KotlinJsTest>().configureEach {
     val testTaskPath = path
     val browserConsoleTailProcess = AtomicReference<Process?>()
+    val streamBrowserConsole = System.getenv("CPP_COMPLETION_BENCHMARK") != "1"
+    // Gradle otherwise considers two diagnostic benchmark ranges the same up-to-date invocation.
+    // These values affect selection/scoring but not the compiled test executable.
+    inputs.property("cppCompletionBenchmark", System.getenv("CPP_COMPLETION_BENCHMARK") ?: "")
+    inputs.property("cppCompletionStart", System.getenv("CPP_COMPLETION_START_INSTANCE") ?: "")
+    inputs.property("cppCompletionMax", System.getenv("CPP_COMPLETION_MAX_INSTANCES") ?: "")
+    inputs.property("cppCompletionSamples", System.getenv("CPP_COMPLETION_SAMPLES_PER_INSTANCE") ?: "")
+    inputs.property("cppCompletionDeadline", System.getenv("CPP_COMPLETION_TIME_LIMIT_MS") ?: "")
     usesService(browserConsoleTailService)
 
     testLogging {
@@ -419,24 +565,26 @@ tasks {
     }
 
     doFirst {
-      val browserConsoleLog = rootProject.layout.buildDirectory.file("ci-logs/browser-console.log").get().asFile
-      browserConsoleLog.parentFile.mkdirs()
-      browserConsoleLog.writeText("")
+      if (streamBrowserConsole) {
+        val browserConsoleLog = rootProject.layout.buildDirectory.file("ci-logs/browser-console.log").get().asFile
+        browserConsoleLog.parentFile.mkdirs()
+        browserConsoleLog.writeText("")
 
-      val tailProcess = ProcessBuilder("tail", "-n", "+1", "-f", browserConsoleLog.absolutePath)
-        .redirectErrorStream(true)
-        .start()
+        val tailProcess = ProcessBuilder("tail", "-n", "+1", "-f", browserConsoleLog.absolutePath)
+          .redirectErrorStream(true)
+          .start()
 
-      browserConsoleTailService.get().stop(browserConsoleTailProcess.getAndSet(tailProcess))
-      browserConsoleTailService.get().register(tailProcess)
-      Thread {
-        tailProcess.inputStream.bufferedReader().useLines { lines ->
-          lines.forEach { println(it) }
+        browserConsoleTailService.get().stop(browserConsoleTailProcess.getAndSet(tailProcess))
+        browserConsoleTailService.get().register(tailProcess)
+        Thread {
+          tailProcess.inputStream.bufferedReader().useLines { lines ->
+            lines.forEach { println(it) }
+          }
+        }.apply {
+          name = "browser-console-tail-$testTaskPath"
+          isDaemon = true
+          start()
         }
-      }.apply {
-        name = "browser-console-tail-$testTaskPath"
-        isDaemon = true
-        start()
       }
     }
 
@@ -558,7 +706,7 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
     group = "deployment"
     description = "Stages tidyparse-web files for deployment to tidyparse.github.io"
 
-    dependsOn("jsBrowserProductionWebpack", refreshClangdResources)
+    dependsOn(jsBrowserHostedCoreWebpack, refreshClangdResources)
 
     into(webDeployStagingDir)
     from("src/jsMain/resources") {
@@ -568,19 +716,68 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
       exclude(".idea/**")
     }
     from(productionBundleDir) {
+      include("tidyparse-web.js")
       include("tidyparse-web.js.map")
     }
+    from(hostedCoreBundleDir) {
+      include("tidyparse-core.js")
+      include("tidyparse-core.js.map")
+    }
 
-    inputs.files(productionJsFile, ngramFile, wdfaFile, rerankerWeightsFile, exampleFiles, deployExampleFiles)
+    inputs.files(
+      productionJsFile,
+      hostedCoreJsFile,
+      ngramFile,
+      wdfaFile,
+      rerankerWeightsFile,
+      exampleFiles,
+      deployExampleFiles
+    )
     outputs.file(webDeployStagingDir.map { it.file("tidyparse-web.js") })
+    outputs.file(webDeployStagingDir.map { it.file("tidyparse-core.js") })
+    outputs.file(webDeployStagingDir.map { it.file("tidyparse-index-resources.js") })
+    outputs.file(webDeployStagingDir.map { it.file("tidyparse-python-resources.js") })
 
     doLast {
-      val stagedJsBundle = webDeployStagingDir.get().asFile.resolve("tidyparse-web.js")
-      val embeddedResources = embeddedRuntimeResources()
+      val outDir = webDeployStagingDir.get().asFile
+      val fullBundle = outDir.resolve("tidyparse-web.js")
+      val coreBundle = outDir.resolve("tidyparse-core.js")
+      val indexResources = outDir.resolve("tidyparse-index-resources.js")
+      val pythonResources = outDir.resolve("tidyparse-python-resources.js")
+      val originalBundleScript = """<script src="tidyparse-web.js"></script>"""
 
-      stagedJsBundle.writeText(embeddedResources + productionJsFile.get().readText().withoutEmbeddedWebResources())
+      indexResources.writeText(embeddedHostedIndexResources())
+      pythonResources.writeText(embeddedHostedPythonResources())
+
+      fun rewriteHostedPage(page: String, resourceScript: String? = null) {
+        val htmlFile = outDir.resolve(page)
+        val html = htmlFile.readText()
+        check(originalBundleScript in html) { "Could not find the web bundle script in ${htmlFile.absolutePath}" }
+        val replacement = buildString {
+          if (resourceScript != null) appendLine("""<script src="$resourceScript"></script>""")
+          append("""<script src="tidyparse-core.js"></script>""")
+        }
+        htmlFile.writeText(html.replace(originalBundleScript, replacement))
+      }
+
+      rewriteHostedPage("index.html", "tidyparse-index-resources.js")
+      rewriteHostedPage("cnf.html")
+      rewriteHostedPage("python.html", "tidyparse-python-resources.js")
+
+      val indexInitialJavaScriptGzipBytes =
+        gzip(coreBundle.readBytes()).size.toLong() + gzip(indexResources.readBytes()).size.toLong()
+      check(indexInitialJavaScriptGzipBytes <= maxHostedInitialJavaScriptGzipBytes) {
+        "Hosted index JavaScript exceeds the ${maxHostedInitialJavaScriptGzipBytes}-byte gzip budget: " +
+          "$indexInitialJavaScriptGzipBytes bytes"
+      }
+
       println("✓ Staged tidyparse-web deployment at ${webDeployStagingDir.get().asFile.absolutePath}")
-      println("  Embedded gzip-compressed python_4grams.txt, wdfa.bin, reranker_2000.q8.safetensors, and ${exampleFiles.files.size} examples into ${stagedJsBundle.absolutePath}")
+      println("  Hosted core: ${coreBundle.length()} bytes")
+      println("  C++/worker bundle: ${fullBundle.length()} bytes")
+      println("  Index resources: ${indexResources.length()} bytes (${exampleFiles.files.size} examples)")
+      println("  Python resources: ${pythonResources.length()} bytes (small resources only)")
+      println("  Index initial JavaScript: $indexInitialJavaScriptGzipBytes gzip bytes")
+      println("  Compressed/base64 resource payloads larger than $maxHostedInlinePayloadBytes bytes stay as individual files")
     }
   }
 

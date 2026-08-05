@@ -6,6 +6,7 @@ on:
       - '**.kt'
       - '**.kts'
       - '**.js'
+      - 'tidyparse-web/src/jsTest/cppCompletion/**'
       - '**.tidy'
       - '**.zip'
       - '.github/workflows/build.yml'

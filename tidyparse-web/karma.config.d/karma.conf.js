@@ -2,10 +2,13 @@ const fs = require('fs');
 const path = require('path');
 
 const isCi = process.env.GITHUB_ACTIONS === 'true';
+const isCppCompletionBenchmark = process.env.CPP_COMPLETION_BENCHMARK === '1';
 const chromeFlags = ['--window-size=1,1'];
 const chromeHeapMb = process.env.CHROME_V8_HEAP_MB || '8192';
-const localKarmaTimeoutMs = 540000;
-const ciKarmaTimeoutMs = 30 * 60 * 1000;
+const benchmarkHarnessMs = Number(process.env.CPP_COMPLETION_TIME_LIMIT_MS || 60 * 1000);
+const benchmarkTimeoutMs = benchmarkHarnessMs + 60 * 1000;
+const localKarmaTimeoutMs = isCppCompletionBenchmark ? benchmarkTimeoutMs : 540000;
+const ciKarmaTimeoutMs = isCppCompletionBenchmark ? benchmarkTimeoutMs : 30 * 60 * 1000;
 const karmaTimeoutMs = isCi ? ciKarmaTimeoutMs : localKarmaTimeoutMs;
 const pingTimeoutMs = karmaTimeoutMs;
 const browserDisconnectTimeoutMs = karmaTimeoutMs;
@@ -46,7 +49,9 @@ config.set({
     client: { captureConsole: true, mocha: { timeout: karmaTimeoutMs } },
     browserConsoleLogOptions: {
         level: 'debug',
-        terminal: true,
+        // Kotlin's test adapter consumes the browser protocol internally. Printing the raw
+        // console in benchmark mode duplicates every result as noisy --END_KOTLIN_TEST-- JSON.
+        terminal: !isCppCompletionBenchmark,
         path: browserConsoleLog
     },
     customLaunchers: {
@@ -66,3 +71,25 @@ config.set({
     },
     browsers: ['ChromeHeadlessWebGPU']
 });
+
+// The implementation stays with the experiment under src/jsTest; this small
+// hook only makes its local clangd/compiler service visible to Karma.
+let benchmarkSearchDir = __dirname;
+let benchmarkService = null;
+for (let depth = 0; depth < 10 && benchmarkService == null; depth++) {
+    for (const relative of [
+        'src/jsTest/cppCompletion/karma/benchmark-service.js',
+        'tidyparse-web/src/jsTest/cppCompletion/karma/benchmark-service.js'
+    ]) {
+        const candidate = path.join(benchmarkSearchDir, relative);
+        if (fs.existsSync(candidate)) {
+            benchmarkService = candidate;
+            break;
+        }
+    }
+    benchmarkSearchDir = path.dirname(benchmarkSearchDir);
+}
+if (benchmarkService == null) {
+    throw new Error('Unable to locate the C++ completion benchmark Karma service');
+}
+require(benchmarkService)(config);

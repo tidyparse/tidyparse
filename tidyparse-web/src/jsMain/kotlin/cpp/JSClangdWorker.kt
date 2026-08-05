@@ -168,7 +168,14 @@ private fun installClangdWorkspace(clangd: dynamic) {
 private class ClangdMessagePort(
   private val input: ClangdLspInput
 ) {
+  private data class PendingAstContext(
+    val source: String,
+    val line: Int,
+    val character: Int
+  )
+
   private var port: dynamic = null
+  private val pendingAstContexts = mutableMapOf<String, PendingAstContext>()
 
   fun connect(candidate: dynamic) {
     if (candidate == null || candidate == js("undefined")) {
@@ -184,7 +191,7 @@ private class ClangdMessagePort(
     port = candidate
     candidate.onmessage = { event: dynamic ->
       try {
-        input.enqueue(event.data)
+        input.enqueue(prepareRequest(event.data))
       } catch (failure: Throwable) {
         postClangdProtocolError(failure.message ?: "Unable to queue LSP message")
       }
@@ -200,14 +207,73 @@ private class ClangdMessagePort(
     if (target == null || target == js("undefined")) {
       error("clangd produced an LSP message before its port was connected")
     }
-    target.postMessage(message)
+    target.postMessage(prepareResponse(message))
   }
 
   fun close() {
     val target = port
     port = null
+    pendingAstContexts.clear()
     if (target != null && target != js("undefined")) target.close()
   }
+
+  /**
+   * Carries cursor metadata beside clangd's AST request, then removes it before serializing the
+   * LSP message. The raw tree is reduced in this worker, so a large recovery AST can never block
+   * Monaco's UI thread after the request itself has completed.
+  */
+  private fun prepareRequest(message: dynamic): dynamic {
+    if (message == null || message == js("undefined")) return message
+    val params: dynamic = message["params"]
+    if (message["method"] as? String == "\$/cancelRequest") {
+      cppClangdMessageId(if (cppClangdDefined(params)) params["id"] else null)
+        ?.let(pendingAstContexts::remove)
+      return message
+    }
+    if (message["method"] as? String != "textDocument/ast" || !cppClangdDefined(params)) return message
+    val metadata: dynamic = params[CPP_AST_CONTEXT_REQUEST_FIELD]
+    if (!cppClangdDefined(metadata)) return message
+    val source = metadata["source"] as? String ?: return message
+    val line = (metadata["line"] as? Number)?.toInt() ?: return message
+    val character = (metadata["character"] as? Number)?.toInt() ?: return message
+    val id = cppClangdMessageId(message["id"]) ?: return message
+    pendingAstContexts[id] = PendingAstContext(source, line, character)
+    return js(
+      """(message, field) => {
+        const forwarded = { ...message, params: { ...message.params } };
+        delete forwarded.params[field];
+        return forwarded;
+      }"""
+    )(message, CPP_AST_CONTEXT_REQUEST_FIELD)
+  }
+
+  private fun prepareResponse(message: dynamic): dynamic {
+    if (message == null || message == js("undefined")) return message
+    val id = cppClangdMessageId(message["id"]) ?: return message
+    val context = pendingAstContexts.remove(id) ?: return message
+    val result: dynamic = message["result"]
+    if (!cppClangdDefined(result)) return message
+    val normalized = cppClangdAstContextDto(
+      rawAst = result,
+      source = context.source,
+      cursorLine = context.line,
+      cursorCharacter = context.character
+    )
+    normalized[CPP_NORMALIZED_AST_CONTEXT_FIELD] = true
+    return js("(message, result) => Object.assign({}, message, { result: result })")(
+      message,
+      normalized
+    )
+  }
+
+  private fun cppClangdMessageId(value: dynamic): String? = when (value) {
+    is String -> "s:$value"
+    is Number -> "n:${value.toDouble()}"
+    else -> null
+  }
+
+  private fun cppClangdDefined(value: dynamic): Boolean =
+    value != null && value != js("undefined")
 }
 
 private class ClangdLspInput {
