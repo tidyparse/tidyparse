@@ -26,6 +26,7 @@ class CppCompletionWorkerProtocolTest {
     assertEquals(0, request.id)
     assertEquals("main.cpp@7:4", request.cacheKey)
     assertEquals("  value =", request.statementPrefixText)
+    assertEquals("  value =", request.semanticPrefixText)
     assertEquals(source, request.source)
     assertEquals(4, request.limit)
     assertEquals("IDENTIFIER", request.prefixTokens[0].kind)
@@ -54,8 +55,9 @@ class CppCompletionWorkerProtocolTest {
 
   @Test
   fun workerRehydratesStructuredClonePrefixTokens() {
-    val source = "value ="
-    val snapshot = requireNotNull(cppEditorStatementSnapshot(source, 0, source.length))
+    val source = "std::string"
+    val character = "std::str".length
+    val snapshot = requireNotNull(cppEditorStatementSnapshot(source, 0, character))
     val request = cppCompletionWorkerRequest(
       cacheKey = "main.cpp@3:9",
       source = source,
@@ -67,9 +69,13 @@ class CppCompletionWorkerProtocolTest {
     val cloned = cppCompletionJsonClone(request)
     val tokens = cppCompletionPrefixTokens(cloned.prefixTokens, cloned.statementPrefixText)
 
-    assertEquals(2, tokens.size)
-    assertEquals(CppToken("value", 0, 5, CppTokenKind.IDENTIFIER), tokens[0])
-    assertEquals(CppToken("=", 6, 7, CppTokenKind.OTHER), tokens[1])
+    assertEquals(3, tokens.size)
+    assertEquals(CppToken("std", 0, 3, CppTokenKind.IDENTIFIER), tokens[0])
+    assertEquals(CppToken("::", 3, 5, CppTokenKind.OTHER), tokens[1])
+    assertEquals(CppToken("str", 5, 8, CppTokenKind.IDENTIFIER, "string"), tokens[2])
+    assertEquals("str", snapshot.activeFragment?.text)
+    assertEquals(listOf("std", "::"), snapshot.stableTokens.map(CppToken::text))
+    assertEquals("std::", snapshot.stablePrefixText)
   }
 
   @Test

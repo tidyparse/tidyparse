@@ -1,33 +1,47 @@
 import ai.hypergraph.tidyparse.lexCppTokenSpans
 import cppcompletion.CppCompletionContext
+import cppcompletion.CppCompletionQuery
 import cppcompletion.CppConversion
 import cppcompletion.CppParameter
 import cppcompletion.CppReceiver
 import cppcompletion.CppReference
 import cppcompletion.CppSignature
 import cppcompletion.CppToken
+import cppcompletion.CppTokenKind
 import cppcompletion.CppTypeMembers
+import cppcompletion.CPP_MAX_INTERACTIVE_COMPLETIONS
 import cppcompletion.cppLines
-import cppcompletion.projectCppTokens
 
 /** Immutable, editor-independent input for one full-statement completion request. */
 data class CppEditorStatementSnapshot(
   val line: Int,
   val character: Int,
-  val lineStartOffset: Int,
   val statementStartCharacter: Int,
-  val statementStartOffset: Int,
-  val caretOffset: Int,
   val prefixText: String,
+  val semanticPrefixText: String,
   val tokens: List<CppToken>,
-  val projectedTokens: List<String>,
-  val replacementStartCharacter: Int,
   val replacementEndCharacter: Int,
-  val replacementStartOffset: Int,
-  val replacementEndOffset: Int,
   val cacheKey: String,
   val seed: Int
-)
+) {
+  /** The lexer token touching the caret, shortened to the typed fragment when necessary. */
+  val activeFragment: CppToken?
+    get() = tokens.lastOrNull()?.takeIf { it.end == prefixText.length }
+
+  /** Fully committed tokens before [activeFragment]. */
+  val stableTokens: List<CppToken>
+    get() = if (activeFragment == null) tokens else tokens.dropLast(1)
+
+  /** Exact source preceding [activeFragment], including the original statement indentation. */
+  val stablePrefixText: String
+    get() = prefixText.substring(0, activeFragment?.start ?: prefixText.length)
+}
+
+fun CppEditorStatementSnapshot.completionQuery(
+  identifiers: Set<String>,
+  limit: Int = CPP_MAX_INTERACTIVE_COMPLETIONS,
+  seed: Int = this.seed
+) = CppCompletionQuery(stableTokens, stablePrefixText, identifiers, activeFragment, limit, seed)
 
 /** One clangd completion response together with the cursor that produced it. */
 data class CppClangdCompletionGroup(
@@ -57,10 +71,9 @@ private data class CppCommentSpan(val start: Int, val end: Int, val inclusiveEnd
 /**
  * Extracts the current physical statement prefix using 0-based LSP coordinates.
  *
- * The hot path lexes only the selected line and rejects ambiguous mid-token cursors. Prefix length
- * is deliberately not capped here: the context-independent syntax engine supports arbitrary
- * single-line statement lengths, while the semantic lane may independently decline expensive
- * enrichment work for unusually long statements.
+ * The hot path lexes only the selected line. A token intersected by the caret retains both its
+ * typed fragment and complete lexer spelling, so grammar filtering and whole-statement replacement
+ * work for identifiers, literals and maximal-munch operators alike. Prefix length is not capped.
  */
 fun cppEditorStatementSnapshot(source: String, line: Int, character: Int): CppEditorStatementSnapshot? {
   if (line < 0 || character < 0) return null
@@ -75,18 +88,28 @@ fun cppEditorStatementSnapshot(source: String, line: Int, character: Int): CppEd
     }) return null
 
   val lineTokens = cppLines(physical.text).single().tokens
-  if (lineTokens.any { token -> token.start < character && character < token.end }) return null
+  val intersectedToken = lineTokens.singleOrNull { token ->
+    token.start < character && character < token.end
+  }
   val statementStartCharacter = cppStatementStartCharacter(lineTokens, character)
-  val rawPrefixTokens = lineTokens.filter { token ->
+  val completePrefixTokens = lineTokens.filter { token ->
     token.start >= statementStartCharacter && token.end <= character
   }
-  val prefixTokens = rawPrefixTokens.map { token ->
+  val prefixTokens = completePrefixTokens.map { token ->
     token.copy(
       start = token.start - statementStartCharacter,
       end = token.end - statementStartCharacter
     )
+  }.toMutableList()
+  if (intersectedToken != null && intersectedToken.start >= statementStartCharacter) {
+    val fragmentText = physical.text.substring(intersectedToken.start, character)
+    prefixTokens += intersectedToken.copy(
+      text = fragmentText,
+      start = intersectedToken.start - statementStartCharacter,
+      end = character - statementStartCharacter,
+      completeText = intersectedToken.text
+    )
   }
-  val projected = projectCppTokens(prefixTokens)
 
   val replacementEndCharacter = cppStatementReplacementEndCharacter(
     lineText = physical.text,
@@ -96,28 +119,44 @@ fun cppEditorStatementSnapshot(source: String, line: Int, character: Int): CppEd
     statementStartCharacter = statementStartCharacter,
     character = character
   )
-  val replacementEndOffset = physical.start + replacementEndCharacter
   val prefixText = physical.text.substring(statementStartCharacter, character)
-  val identity = "$line:$statementStartCharacter:$character:${prefixText.hashCode()}:" +
-    projected.joinToString("\u0001").hashCode()
+  val activeFragment = prefixTokens.lastOrNull()?.takeIf { it.end == prefixText.length }
+  val semanticPrefixText = when {
+    activeFragment?.isCppWordFragment() == true ->
+      prefixText.substring(0, activeFragment.start)
+    intersectedToken != null ->
+      physical.text.substring(statementStartCharacter, intersectedToken.end)
+    else -> prefixText
+  }
+  val identity = "$line:$statementStartCharacter:$character:$replacementEndCharacter:" +
+    "${prefixText.hashCode()}:${prefixTokens.hashCode()}"
   return CppEditorStatementSnapshot(
     line = line,
     character = character,
-    lineStartOffset = physical.start,
     statementStartCharacter = statementStartCharacter,
-    statementStartOffset = physical.start + statementStartCharacter,
-    caretOffset = caretOffset,
     prefixText = prefixText,
+    semanticPrefixText = semanticPrefixText,
     tokens = prefixTokens,
-    projectedTokens = projected,
-    replacementStartCharacter = character,
     replacementEndCharacter = replacementEndCharacter.coerceAtLeast(character),
-    replacementStartOffset = caretOffset,
-    replacementEndOffset = replacementEndOffset.coerceAtLeast(caretOffset),
     cacheKey = identity,
     seed = identity.hashCode()
   )
 }
+
+private fun CppTokenKind.isCppLiteral(): Boolean = when (this) {
+  CppTokenKind.INTEGER,
+  CppTokenKind.FLOATING,
+  CppTokenKind.CHARACTER,
+  CppTokenKind.STRING,
+  CppTokenKind.USER_DEFINED_INTEGER,
+  CppTokenKind.USER_DEFINED_FLOATING,
+  CppTokenKind.USER_DEFINED_CHARACTER,
+  CppTokenKind.USER_DEFINED_STRING -> true
+  else -> false
+}
+
+private fun CppToken.isCppWordFragment(): Boolean =
+  !kind.isCppLiteral() && text.matches(CPP_IDENTIFIER_REGEX)
 
 private data class CppStatementScope(
   var startCharacter: Int,
@@ -206,7 +245,11 @@ private fun cppStatementReplacementEndCharacter(
     val localStart = span.start - lineStartOffset
     val localEnd = span.end - lineStartOffset
     localStart >= character && lineTokens.none { token -> token.start >= localEnd }
-  }.map { it.start - lineStartOffset }.minOrNull() ?: lineText.length
+  }.map { span ->
+    var start = span.start - lineStartOffset
+    while (start > character && lineText[start - 1].isWhitespace()) start--
+    start
+  }.minOrNull() ?: lineText.length
 
   var round = 0
   var square = 0
@@ -378,8 +421,8 @@ fun cppCompletionContextDto(
   val memberGroups = completionGroups.filter(CppClangdCompletionGroup::receiverMember)
   val receiverMembers = completionReferences.filter(CppReference::receiverMember)
   val receiverOperator = memberGroups.firstNotNullOfOrNull(CppClangdCompletionGroup::receiverOperator)
-    ?: cppReceiverOperator(snapshot?.prefixText)
-  val receiverExpression = cppReceiverExpression(snapshot?.prefixText, receiverOperator)
+    ?: cppReceiverOperator(snapshot?.semanticPrefixText)
+  val receiverExpression = cppReceiverExpression(snapshot?.semanticPrefixText, receiverOperator)
   val receiverType = hoverFacts.type
     ?: values.firstOrNull { it.name == receiverExpression }?.type
   val ownedMembers = receiverMembers.map { member ->

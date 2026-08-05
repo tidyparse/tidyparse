@@ -14,30 +14,48 @@ class CppCompletionBrowserAdapterTest {
 
     assertEquals(1, snapshot.line)
     assertEquals(prefix.length, snapshot.character)
-    assertEquals("int before;\r\n".length, snapshot.lineStartOffset)
-    assertEquals(snapshot.lineStartOffset + prefix.length, snapshot.caretOffset)
     assertEquals(prefix, snapshot.prefixText)
     assertEquals(listOf("value", "="), snapshot.tokens.map { it.text })
     assertEquals(listOf(CppTokenKind.IDENTIFIER, CppTokenKind.OTHER), snapshot.tokens.map { it.kind })
-    assertEquals(prefix.length, snapshot.replacementStartCharacter)
-    assertEquals(source.substring(snapshot.lineStartOffset, source.indexOf("/*")),
-      source.substring(snapshot.lineStartOffset, snapshot.replacementEndOffset))
-    assertEquals(source.indexOf("/*") - snapshot.lineStartOffset, snapshot.replacementEndCharacter)
+    assertEquals("=", snapshot.activeFragment?.text)
+    assertEquals(listOf("value"), snapshot.stableTokens.map { it.text })
+    assertEquals("  value ", snapshot.stablePrefixText)
+    assertEquals(prefix, snapshot.semanticPrefixText)
+    val physicalLine = source.lines()[1]
+    assertEquals(physicalLine.indexOf("/*") - 1, snapshot.replacementEndCharacter)
+    assertTrue(physicalLine.substring(snapshot.replacementEndCharacter).startsWith(" /* keep"))
+    assertEquals(
+      "  value = 0; /* keep this comment */",
+      physicalLine.replaceRange(
+        snapshot.statementStartCharacter,
+        snapshot.replacementEndCharacter,
+        "  value = 0;"
+      )
+    )
     assertTrue(snapshot.cacheKey.isNotBlank())
   }
 
   @Test
-  fun snapshotRejectsUnsafeLocationsWithoutRejectingLongStatements() {
+  fun snapshotRejectsDirectivesAndCommentsWithoutCappingStatements() {
     assertNull(cppEditorStatementSnapshot("#include <vector>", 0, 4))
     val continuedDirective = """
       #define VALUE \
         7
     """.trimIndent()
     assertNull(cppEditorStatementSnapshot(continuedDirective, 1, 2))
-    assertNull(cppEditorStatementSnapshot("identifier", 0, 4))
     assertNull(cppEditorStatementSnapshot("value // explanation", 0, 10))
     assertNull(cppEditorStatementSnapshot("/* open\nstill open", 1, "still open".length))
     assertNull(cppEditorStatementSnapshot("value /* explanation */", 0, 12))
+    listOf("123" to 1, "\"text\"" to 3, "'x'" to 2, "42_km" to 2).forEach { (text, caret) ->
+      val literal = assertNotNull(cppEditorStatementSnapshot(text, 0, caret))
+      assertEquals(text, literal.activeFragment?.completeText)
+      assertEquals(text.substring(0, caret), literal.activeFragment?.text)
+    }
+
+    val identifier = assertNotNull(cppEditorStatementSnapshot("identifier", 0, 4))
+    assertEquals("iden", identifier.activeFragment?.text)
+    assertEquals(emptyList(), identifier.stableTokens)
+    assertEquals("", identifier.stablePrefixText)
 
     val quoted = "const char* text = R\"tag(// not a comment)tag\";"
     assertNotNull(cppEditorStatementSnapshot(quoted, 0, quoted.length))
@@ -47,8 +65,43 @@ class CppCompletionBrowserAdapterTest {
       96,
       assertNotNull(
         cppEditorStatementSnapshot(longStatement, 0, longStatement.length)
-      ).projectedTokens.size
+      ).tokens.size
     )
+  }
+
+  @Test
+  fun snapshotPartitionsSafeWordAndOperatorFragmentsAtTheCaret() {
+    data class Case(
+      val source: String,
+      val character: Int,
+      val fragment: String,
+      val stablePrefix: String,
+      val semanticPrefix: String
+    )
+
+    listOf(
+      Case("std::string", "std::str".length, "str", "std::", "std::"),
+      Case("records.try_emplace", "records.try_emp".length,
+        "try_emp", "records.", "records."),
+      Case("true", 3, "tru", "", ""),
+      Case("nullptr", 5, "nullp", "", ""),
+      Case("!=", 1, "!", "", "!="),
+      Case("ptr ->field", "ptr -".length, "-", "ptr ", "ptr ->"),
+      Case("std::string", "std:".length, ":", "std", "std::"),
+      Case("value >>= rhs", "value >>".length, ">>", "value ", "value >>="),
+      Case("u8\"text\"", "u8\"text\"".length, "u8\"text\"", "", "u8\"text\""),
+      Case("std::", "std::".length, "::", "std", "std::"),
+      Case("visit(", "visit(".length, "(", "visit", "visit(")
+    ).forEach { case ->
+      val snapshot = assertNotNull(
+        cppEditorStatementSnapshot(case.source, 0, case.character),
+        "Expected a snapshot for `${case.source}` at ${case.character}"
+      )
+      assertEquals(case.fragment, snapshot.activeFragment?.text, case.source)
+      assertEquals(case.stablePrefix, snapshot.stablePrefixText, case.source)
+      assertEquals(case.semanticPrefix, snapshot.semanticPrefixText, case.source)
+      assertEquals(case.fragment, snapshot.prefixText.substring(snapshot.activeFragment!!.start))
+    }
   }
 
   @Test
@@ -102,6 +155,17 @@ class CppCompletionBrowserAdapterTest {
     assertEquals(" use", loopSnapshot.prefixText)
     assertEquals(loop.indexOf(';', useCaret) + 1, loopSnapshot.replacementEndCharacter)
     assertEquals(" } later;", loop.substring(loopSnapshot.replacementEndCharacter))
+
+    val splitToken = "return; later(); // keep"
+    val partial = assertNotNull(cppEditorStatementSnapshot(splitToken, 0, "ret".length))
+    assertEquals(
+      splitToken,
+      splitToken.replaceRange(
+        partial.statementStartCharacter,
+        partial.replacementEndCharacter,
+        "return;"
+      )
+    )
   }
 
   @Test
@@ -203,7 +267,7 @@ class CppCompletionBrowserAdapterTest {
       bool helper(int count);
       int main() {
         std::vector<Widget> items;
-        missing = items.
+        missing = items.push_ba
       }
     """.trimIndent()
     val line = source.lines().indexOfFirst { "missing" in it }

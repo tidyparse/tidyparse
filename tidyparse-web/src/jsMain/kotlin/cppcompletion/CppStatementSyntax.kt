@@ -63,23 +63,43 @@ private data class CachedCppSyntaxCompletion(
 )
 
 /** Worker-confined LRU. Generic identifier projection lets equivalent prefixes share a forest. */
-private val cppSyntaxCompletionCache = linkedMapOf<List<String>, CachedCppSyntaxCompletion>()
+private val cppSyntaxCompletionCache =
+  linkedMapOf<Pair<List<String>, Set<String>?>, CachedCppSyntaxCompletion>()
 
 internal fun cppSingleStatementSyntaxRecognizes(tokens: List<CppToken>): Boolean =
   projectCppCompletionTokens(tokens, CppProjectionMode.SYNTAX).matches(cppSingleStatementSyntax)
 
-/** Returns a finite CFG containing every shortest syntactic continuation of [prefix]. */
-internal fun cppSingleStatementSyntaxCompletion(prefix: List<CppToken>): CppSuffixGrammar? {
+/**
+ * Returns every shortest syntactic continuation of [prefix]. When [tokenPrefix] is present, the
+ * first emitted grammar terminal must have a concrete spelling that starts with it.
+ * The returned forest emits that whole terminal; the caller replaces the partial source token.
+ */
+internal fun cppSingleStatementSyntaxCompletion(
+  prefix: List<CppToken>,
+  tokenPrefix: CppToken? = null
+): CppSuffixGrammar? {
   val projectedPrefix = projectCppCompletionTokens(prefix, CppProjectionMode.SYNTAX)
-  val cacheKey = projectedPrefix.toList()
+  val allowedFirstTerminals = tokenPrefix?.let { token ->
+    cppSingleStatementSyntaxIndex.terminalsWithSourcePrefix(token.text) { terminal ->
+      cppCompletionTerminalSpellings(terminal, token)
+    }
+  }
+  val cacheKey = projectedPrefix.toList() to allowedFirstTerminals
   val cached = cppSyntaxCompletionCache.remove(cacheKey) ?: run {
-    val minimumSuffixLength = cppSingleStatementSyntaxIndex.minimumSuffixLength(projectedPrefix)
+    val minimumSuffixLength = cppSingleStatementSyntaxIndex.minimumSuffixLength(
+      projectedPrefix,
+      allowedFirstTerminals
+    )
     val bounded = when (minimumSuffixLength) {
       null -> null
       0 -> setOf(START_SYMBOL to emptyList<String>()).freeze().boundedAcyclic(0)
       else -> {
         val suffixForest = checkNotNull(
-          cppSingleStatementSyntaxIndex.completeShortestSuffix(projectedPrefix, minimumSuffixLength)
+          cppSingleStatementSyntaxIndex.completeShortestSuffix(
+            projectedPrefix,
+            minimumSuffixLength,
+            allowedFirstTerminals
+          )
         ) {
           "C++ syntax prefix analysis found a $minimumSuffixLength-token continuation, but its exact forest was empty"
         }
@@ -142,6 +162,14 @@ internal class CppStatementSyntaxIndex(private val grammar: CFG) {
       }
   }
 
+  /** Concrete grammar terminals whose source spelling can extend [sourcePrefix]. */
+  fun terminalsWithSourcePrefix(
+    sourcePrefix: String,
+    spellings: (String) -> Iterable<String> = { listOf(it) }
+  ): Set<String> = terminalMap.keys.filterTo(linkedSetOf()) { terminal ->
+    spellings(terminal).any { spelling -> spelling.startsWith(sourcePrefix) }
+  }
+
   private fun minimumWordLengths(): IntArray {
     val result = IntArray(variableCount) { CPP_SYNTAX_INFINITY }
     grammar.forEach { (lhs, rhs) ->
@@ -173,8 +201,15 @@ internal class CppStatementSyntaxIndex(private val grammar: CFG) {
    * (Full[B,i,k] + cost[C,k]). Same-position edges have positive weights, so Dijkstra handles
    * left-recursive grammar cycles without a token horizon.
    */
-  fun minimumSuffixLength(prefix: List<String>): Int? {
-    if (prefix.isEmpty()) return minimumWordLength[start]
+  fun minimumSuffixLength(
+    prefix: List<String>,
+    allowedFirstTerminals: Set<String>? = null
+  ): Int? {
+    if (allowedFirstTerminals?.isEmpty() == true) return null
+    val constrainedMinimum = allowedFirstTerminals?.let(::minimumWordLengthsStartingWith)
+    if (prefix.isEmpty())
+      return (constrainedMinimum ?: minimumWordLength)[start]
+        .takeIf { it < CPP_SYNTAX_INFINITY }
     val size = prefix.size
     val full = Array(size + 1) { Array(size + 1) { KBitSet(variableCount) } }
     prefix.forEachIndexed { index, terminal ->
@@ -196,11 +231,25 @@ internal class CppStatementSyntaxIndex(private val grammar: CFG) {
     }
 
     val completion = Array(size + 1) { IntArray(variableCount) { CPP_SYNTAX_INFINITY } }
-    minimumWordLength.copyInto(completion[size])
+    (constrainedMinimum ?: minimumWordLength).copyInto(completion[size])
     val heap = CppSyntaxMinHeap()
     for (begin in size - 1 downTo 0) {
       val distance = completion[begin]
-      for (variable in full[begin][size].iterator()) distance[variable] = 0
+      if (constrainedMinimum == null) {
+        for (variable in full[begin][size].iterator()) distance[variable] = 0
+      } else {
+        // The left child can end exactly at the cursor without emitting a token. Keep that state
+        // separate from a positive constrained completion: the first output must then come from
+        // the right child.
+        for (leftVariable in full[begin][size].iterator()) {
+          val adjacency = leftAdjacency[leftVariable] ?: continue
+          for (edge in adjacency.other.indices) {
+            val rightCost = constrainedMinimum[adjacency.other[edge]]
+            if (rightCost < distance[adjacency.aIdx[edge]])
+              distance[adjacency.aIdx[edge]] = rightCost
+          }
+        }
+      }
       for (split in begin + 1 until size) {
         for (leftVariable in full[begin][split].iterator()) {
           val adjacency = leftAdjacency[leftVariable] ?: continue
@@ -211,27 +260,54 @@ internal class CppStatementSyntaxIndex(private val grammar: CFG) {
           }
         }
       }
-      heap.clear()
-      distance.forEachIndexed { variable, cost -> if (cost < CPP_SYNTAX_INFINITY) heap.push(variable, cost) }
-      while (heap.isNotEmpty()) {
-        val packed = heap.pop()
-        val variable = packed.toInt()
-        val cost = (packed ushr 32).toInt()
-        if (cost != distance[variable]) continue
-        weightedParents[variable].forEach { edge ->
-          val candidate = cost + edge.appendedLength
-          if (candidate < distance[edge.parent]) {
-            distance[edge.parent] = candidate
-            heap.push(edge.parent, candidate)
-          }
-        }
-      }
+      closeWeightedParents(distance, heap)
     }
     return completion[0][start].takeIf { it < CPP_SYNTAX_INFINITY }
   }
 
+  /** Minimum word lengths whose first terminal belongs to [allowedTerminals]. */
+  private fun minimumWordLengthsStartingWith(allowedTerminals: Set<String>): IntArray {
+    val result = IntArray(variableCount) { CPP_SYNTAX_INFINITY }
+    val heap = CppSyntaxMinHeap()
+    allowedTerminals.forEach { terminal ->
+      val terminalIndex = terminalMap[terminal] ?: return@forEach
+      terminalParents[terminalIndex].forEach { parent ->
+        if (result[parent] > 1) result[parent] = 1
+      }
+    }
+    closeWeightedParents(result, heap)
+    return result
+  }
+
+  private fun closeWeightedParents(distance: IntArray, heap: CppSyntaxMinHeap) {
+    heap.clear()
+    distance.forEachIndexed { variable, cost ->
+      if (cost < CPP_SYNTAX_INFINITY) heap.push(variable, cost)
+    }
+    while (heap.isNotEmpty()) {
+      val packed = heap.pop()
+      val variable = packed.toInt()
+      val cost = (packed ushr 32).toInt()
+      if (cost != distance[variable]) continue
+      weightedParents[variable].forEach { edge ->
+        val candidate = cost + edge.appendedLength
+        if (candidate < distance[edge.parent]) {
+          distance[edge.parent] = candidate
+          heap.push(edge.parent, candidate)
+        }
+      }
+    }
+  }
+
   /** Sparse two-pass CYK forest whose fixed-prefix leaves emit epsilon and holes emit terminals. */
-  fun completeShortestSuffix(prefix: List<String>, suffixLength: Int): GRE? {
+  fun completeShortestSuffix(
+    prefix: List<String>,
+    suffixLength: Int,
+    allowedFirstTerminals: Set<String>? = null
+  ): GRE? {
+    if (allowedFirstTerminals?.isEmpty() == true ||
+      allowedFirstTerminals != null && suffixLength == 0
+    ) return null
     val template = prefix + List(suffixLength) { "_" }
     val tokenCount = template.size
     val active = Array(tokenCount + 1) {
@@ -241,8 +317,15 @@ internal class CppStatementSyntaxIndex(private val grammar: CFG) {
       val terminal = template[index]
       val target = active[index][index + 1]
       if (index >= prefix.size) {
-        grammar.unitNonterminals.forEach { nonterminal ->
-          target.set(grammar.bindex[nonterminal])
+        if (index == prefix.size && allowedFirstTerminals != null) {
+          allowedFirstTerminals.forEach { allowed ->
+            val terminalIndex = terminalMap[allowed] ?: return@forEach
+            terminalParents[terminalIndex].forEach(target::set)
+          }
+        } else {
+          grammar.unitNonterminals.forEach { nonterminal ->
+            target.set(grammar.bindex[nonterminal])
+          }
         }
       } else {
         val terminalIndex = terminalMap[terminal] ?: return null
@@ -265,6 +348,8 @@ internal class CppStatementSyntaxIndex(private val grammar: CFG) {
     if (!active[0][tokenCount][start]) return null
 
     val holeLeaves: Array<GRE?> = arrayOfNulls(variableCount)
+    val constrainedHoleLeaves: Array<GRE?>? =
+      allowedFirstTerminals?.let { arrayOfNulls(variableCount) }
     grammar.unitNonterminals.forEach { nonterminal ->
       val variable = grammar.bindex[nonterminal]
       val terminals = grammar.bimap.UNITS[nonterminal].orEmpty()
@@ -272,6 +357,12 @@ internal class CppStatementSyntaxIndex(private val grammar: CFG) {
       val choices = KBitSet(grammar.tmLst.size)
       terminals.forEach { terminal -> grammar.tmMap[terminal]?.let(choices::set) }
       if (!choices.isEmpty()) holeLeaves[variable] = GRE.SET(choices)
+      constrainedHoleLeaves?.let { leaves ->
+        val constrained = KBitSet(grammar.tmLst.size)
+        terminals.filter { terminal -> allowedFirstTerminals?.contains(terminal) == true }
+          .forEach { terminal -> grammar.tmMap[terminal]?.let(constrained::set) }
+        if (!constrained.isEmpty()) leaves[variable] = GRE.SET(constrained)
+      }
     }
     val forest = Array(tokenCount + 1) {
       Array(tokenCount + 1) { mutableMapOf<Int, GRE>() }
@@ -281,8 +372,12 @@ internal class CppStatementSyntaxIndex(private val grammar: CFG) {
       if (index < prefix.size) {
         for (variable in active[index][index + 1].iterator()) target[variable] = GRE.EPS()
       } else {
-        for (variable in active[index][index + 1].iterator())
-          holeLeaves[variable]?.let { target[variable] = it }
+        for (variable in active[index][index + 1].iterator()) {
+          val leaf = if (index != prefix.size || allowedFirstTerminals == null) {
+            holeLeaves[variable]
+          } else constrainedHoleLeaves?.get(variable)
+          leaf?.let { target[variable] = it }
+        }
       }
     }
     for (span in 2..tokenCount) for (begin in 0..tokenCount - span) {

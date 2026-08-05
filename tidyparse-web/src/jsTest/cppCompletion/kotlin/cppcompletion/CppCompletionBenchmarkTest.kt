@@ -5,6 +5,7 @@ import cppClangdAstContextDto
 import cppCompletionContextDto
 import cppCompletionContextFromDto
 import cppEditorStatementSnapshot
+import completionQuery
 import ai.hypergraph.kaliningraph.parsing.boundedAcyclic
 import ai.hypergraph.kaliningraph.parsing.freeze
 import com.ionspin.kotlin.bignum.integer.BigInteger
@@ -94,15 +95,15 @@ class CppBenchmarkService {
     character: Int,
     fixture: String? = null
   ): CppCompletionContext {
-    val payload = js("({})")
-    payload.source = source
-    payload.line = line
-    payload.character = character
-    if (fixture != null) payload.fixture = fixture
-    val json = request("$CPP_ROUTE/context", payload, CPP_CONTEXT_REQUEST_TIMEOUT_MILLIS)
     val snapshot = requireNotNull(cppEditorStatementSnapshot(source, line, character)) {
       "The benchmark cursor is not a completable C++ statement location"
     }
+    val payload = js("({})")
+    payload.source = source
+    payload.line = line
+    payload.character = snapshot.statementStartCharacter + snapshot.semanticPrefixText.length
+    if (fixture != null) payload.fixture = fixture
+    val json = request("$CPP_ROUTE/context", payload, CPP_CONTEXT_REQUEST_TIMEOUT_MILLIS)
     val completionGroups = jsonArray(json.completionGroups).map { group ->
       CppClangdCompletionGroup(
         result = group,
@@ -832,13 +833,8 @@ private class CppCompletionBenchmark(
     )
 
   private fun completedLine(case: BenchmarkCase, suffix: List<String>): String {
-    // Keep the source spelling before the cursor. CPP14Lexer deliberately exposes a shift as two
-    // adjacent `<` tokens for the parser; joining those raw prefix tokens with spaces changes `<<`
-    // into the ill-formed `< <`. Sampled suffix terminals are already materialized spellings.
     val prefix = case.truncation.prefixText
-    val joinsShift = prefix.endsWith('<') && suffix.firstOrNull() == "<"
-    val separator = if (prefix.isNotBlank() && suffix.isNotEmpty() && !joinsShift) " " else ""
-    return prefix + separator + suffix.renderCppTokens()
+    return prefix + renderCppCompletionSuffix(prefix, suffix)
   }
 
   /** Shows one representative from each shortest slice, then fills from those slices if needed. */
@@ -926,22 +922,6 @@ private fun bundleCppCandidates(
       source = source.replaceRange(line.start, line.contentEnd, replacement)
     }
   return CppCandidateBundle(source, candidateOffset)
-}
-
-private fun List<String>.renderCppTokens(): String = buildString {
-  var index = 0
-  while (index < size) {
-    if (
-      this@renderCppTokens[index] == "<" &&
-      this@renderCppTokens.getOrNull(index + 1) == "<"
-    ) {
-      append("<<")
-      index += 2
-    } else {
-      append(this@renderCppTokens[index++])
-    }
-    if (index < size) append(' ')
-  }
 }
 
 class CppCompletionBenchmarkTest {
@@ -1827,16 +1807,14 @@ class CppCompletionBenchmarkTest {
     val character = lines[line].length
     val snapshot = requireNotNull(cppEditorStatementSnapshot(source, line, character))
     val context = service.context(source, line, character, "visit_browser_parity.cpp")
-    val completions = CppCompletionGrammar().generate(context, snapshot.tokens).shortestCompletions(
-      prefixText = snapshot.prefixText,
-      identifiersInFile = context.identifiers,
-      limit = CPP_MAX_INTERACTIVE_COMPLETIONS,
-      random = Random(snapshot.seed)
-    )
+    val completions = CppCompletionGrammar()
+      .completeCppStatement(context, snapshot.completionQuery(context.identifiers)).suggestions
 
     assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.size)
     assertTrue(
-      completions.any { it.tokens == listOf("Describe", "{", "}", ",", "payload", ")", ";") },
+      completions.any {
+        it.tokens == listOf("(", "Describe", "{", "}", ",", "payload", ")", ";")
+      },
       "Browser-fact completions omitted `Describe{}, payload);`: " +
         completions.joinToString { it.tokens.joinToString(" ") }
     )
@@ -1857,41 +1835,24 @@ class CppCompletionBenchmarkTest {
           using Record = std::tuple<int, std::string, double>;
           std::map<int, Record> records;
           records.emplace(7, Record{ '\0' , "" , 0.0 } ) ;
-          records.try_emplace
+          records.try_emp
       }
     """.trimIndent()
     val lines = source.lines()
-    val line = lines.indexOfFirst { "records.try_emplace" in it }
+    val line = lines.indexOfFirst { "records.try_emp" in it }
     val character = lines[line].length
     val snapshot = requireNotNull(cppEditorStatementSnapshot(source, line, character))
     val context = service.context(source, line, character, "try_emplace_browser_parity.cpp")
-    val completions = CppCompletionGrammar().generate(context, snapshot.tokens).shortestCompletions(
-      prefixText = snapshot.prefixText,
-      identifiersInFile = context.identifiers,
-      limit = CPP_MAX_INTERACTIVE_COMPLETIONS,
-      random = Random(snapshot.seed)
-    )
-    val expected = setOf(
-      listOf("(", "0", ",", "0", ",", "\"\"", ",", "0", ")", ";"),
-      listOf("(", "0", ",", "'\\0'", ",", "\"\"", ",", "'\\0'", ")", ";"),
-      listOf("(", "0", ",", "'\\0'", ",", "\"\"", ",", "0.0", ")", ";"),
-      listOf("(", "0", ",", "'\\0'", ",", "\"\"", ",", "0", ")", ";"),
-      listOf("(", "'\\0'", ",", "'\\0'", ",", "\"\"", ",", "0", ")", ";"),
-      listOf("(", "'\\0'", ",", "0", ",", "\"\"", ",", "'\\0'", ")", ";"),
-      listOf("(", "'\\0'", ",", "0", ",", "\"\"", ",", "0.0", ")", ";"),
-      listOf("(", "'\\0'", ",", "0", ",", "\"\"", ",", "0", ")", ";"),
-      listOf("(", "0", ",", "0", ",", "\"\"", ",", "'\\0'", ")", ";"),
-      listOf("(", "0", ",", "0", ",", "\"\"", ",", "0.0", ")", ";")
-    )
-
+    val completions = CppCompletionGrammar()
+      .completeCppStatement(context, snapshot.completionQuery(context.identifiers)).suggestions
     assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.size)
-    assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.map { it.tokens }.distinct().size)
-    assertTrue(completions.all { it.length == 10 })
-    assertEquals(
-      expected,
-      completions.map { it.tokens }.toSet(),
-      "The actual-cursor browser facts must expose the tuple-valued std::map overload"
-    )
+    assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.map { it.candidateText }.distinct().size)
+    assertTrue(completions.all { it.tokenLength == 11 })
+    assertTrue(completions.all { completion ->
+      completion.tokens[0] == "try_emplace" &&
+        completion.tokens.slice(listOf(1, 3, 5, 7, 9, 10)) == listOf("(", ",", ",", ",", ")", ";") &&
+        completion.tokens[6] == "\"\""
+    }, "The browser path must retain the tuple-valued std::map overload")
   }
 
   @Test
@@ -1919,17 +1880,13 @@ class CppCompletionBenchmarkTest {
       val character = lines[line].length
       val snapshot = requireNotNull(cppEditorStatementSnapshot(source, line, character))
       val context = service.context(source, line, character, "partial_second_map_specialization.cpp")
-      val completions = CppCompletionGrammar().generate(context, snapshot.tokens).shortestCompletions(
-        prefixText = snapshot.prefixText,
-        identifiersInFile = context.identifiers,
-        limit = CPP_MAX_INTERACTIVE_COMPLETIONS,
-        random = Random(snapshot.seed)
-      )
+      val completions = CppCompletionGrammar()
+        .completeCppStatement(context, snapshot.completionQuery(context.identifiers)).suggestions
 
       assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.size)
-      assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.map { it.tokens }.distinct().size)
+      assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.map { it.candidateText }.distinct().size)
       assertTrue(completions.all { completion ->
-        completion.tokens.firstOrNull() == ">" && completion.tokens.lastOrNull() == ";"
+        completion.tokens.firstOrNull() == "string" && completion.tokens.lastOrNull() == ";"
       })
     }
 

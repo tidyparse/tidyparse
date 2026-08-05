@@ -3,11 +3,12 @@ package cppcompletion
 import kotlin.random.Random
 import kotlin.time.TimeSource
 
-/** Immutable input to the production statement-completion pipeline. */
+/** [prefixText]/[prefix] stop before the optional caret-token [tokenPrefix]. */
 data class CppCompletionQuery(
   val prefix: List<CppToken>,
   val prefixText: String,
   val identifiersInFile: Set<String>,
+  val tokenPrefix: CppToken? = null,
   val limit: Int = CPP_MAX_INTERACTIVE_COMPLETIONS,
   val seed: Int = 0
 ) {
@@ -15,6 +16,7 @@ data class CppCompletionQuery(
     require('\n' !in prefixText && '\r' !in prefixText) {
       "A C++ completion query must contain one physical statement prefix"
     }
+    require(tokenPrefix?.text?.isNotEmpty() != false) { "A C++ token prefix cannot be empty" }
     require(limit in 1..CPP_MAX_INTERACTIVE_COMPLETIONS) {
       "Interactive C++ completion limit must be in 1..$CPP_MAX_INTERACTIVE_COMPLETIONS"
     }
@@ -23,7 +25,6 @@ data class CppCompletionQuery(
 
 /** Formatter-ready completion generated without any JavaScript transport types. */
 data class CppEditorCompletion(
-  val insertionText: String,
   val candidateText: String,
   val tokenLength: Int,
   val tokens: List<String>,
@@ -56,16 +57,17 @@ fun PreparedCppCompletionGrammar.completeCppStatement(
   val identifiers = buildSet {
     addAll(query.identifiersInFile)
     query.prefix.mapTo(this) { it.text }
+    query.tokenPrefix?.let { add(it.text) }
   }
   val samples = suffixGrammar.shortestCompletions(
     prefixText = query.prefixText,
     identifiersInFile = identifiers,
+    tokenPrefix = query.tokenPrefix,
     limit = query.limit,
     random = Random(query.seed)
   )
   val suggestions = samples.map { sample ->
     CppEditorCompletion(
-      insertionText = sample.insertionText,
       candidateText = query.prefixText + sample.insertionText,
       tokenLength = sample.length,
       tokens = sample.tokens,

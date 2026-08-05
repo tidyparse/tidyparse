@@ -1,5 +1,7 @@
 package cppcompletion
 
+import completionQuery
+import cppEditorStatementSnapshot
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -26,23 +28,25 @@ class CppSyntaxCompletionTotalityTest {
 
     assertNotNull(truncation, "The reported caret must be an exact C++ token boundary")
     assertEquals(listOf("::", "string", ">", ";"), truncation.suffix.map(CppToken::text))
+    val snapshot = assertNotNull(
+      cppEditorStatementSnapshot(statement, 0, reportedPrefix.length)
+    )
     val context = CppCompletionContext(emptySet())
     val grammar = CppCompletionGrammar()
-    val syntaxResidual = cppSingleStatementSyntaxCompletion(truncation.prefix)
+    val syntaxResidual = cppSingleStatementSyntaxCompletion(
+      snapshot.stableTokens, snapshot.activeFragment
+    )
 
     assertNotNull(syntaxResidual, "The production syntax floor returned no residual")
     assertFalse(syntaxResidual.isEmpty, "The production syntax residual was empty")
     assertTrue(
-      syntaxResidual.recognizes(truncation.suffix),
+      syntaxResidual.recognizes(listOf(requireNotNull(snapshot.activeFragment)) + truncation.suffix),
       "The full-statement syntax check rejected `${truncation.suffixText()}` after `$reportedPrefix`"
     )
-    val execution = grammar.completeCppStatement(context, CppCompletionQuery(
-      prefix = truncation.prefix,
-      prefixText = truncation.prefixText,
-      identifiersInFile = truncation.prefixIdentifiers(),
-      limit = 1,
-      seed = 0x51A7
-    ))
+    val execution = grammar.completeCppStatement(
+      context,
+      snapshot.completionQuery(truncation.prefixIdentifiers(), limit = 1, seed = 0x51A7)
+    )
     assertTrue(execution.suggestions.isNotEmpty(), "The reported prefix produced no sampled completion")
     assertTrue(execution.suggestions.single().tokens.isNotEmpty())
   }

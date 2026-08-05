@@ -1,13 +1,10 @@
 import cppcompletion.CPP_MAX_INTERACTIVE_COMPLETIONS
 import cppcompletion.CppCompletionGrammar
-import cppcompletion.CppCompletionQuery
 import cppcompletion.CppToken
 import cppcompletion.CppTokenKind
 import cppcompletion.PreparedCppCompletionGrammar
 import cppcompletion.cppLines
 import cppcompletion.completeCppStatement
-import kotlin.time.TimeSource
-import cppcompletion.CPP_MAX_INTERACTIVE_COMPLETIONS
 import kotlinx.browser.window
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -45,16 +42,13 @@ fun setupCppCompletionWorker() {
 
 /** All mutable grammar state stays inside the dedicated worker. */
 private class CppCompletionWorkerRuntime(private val scope: dynamic) {
-  private data class PreparedEntry(val grammar: PreparedCppCompletionGrammar)
-
   // Kotlin's LinkedHashMap preserves insertion order. Hits are removed and reinserted, giving
   // this tiny map ordinary LRU behavior without retaining a document-sized cache.
-  private val prepared = linkedMapOf<String, PreparedEntry>()
+  private val prepared = linkedMapOf<String, PreparedCppCompletionGrammar>()
   private val grammar = CppCompletionGrammar()
 
   fun accept(rawRequest: dynamic) {
     val requestId = cppCompletionInt(rawRequest?.id, -1)
-    val totalClock = TimeSource.Monotonic.markNow()
     try {
       require(rawRequest != null && jsTypeOf(rawRequest) != "undefined") { "Missing C++ completion request" }
       require(rawRequest.type as? String == "complete") { "Unsupported C++ completion worker request" }
@@ -63,14 +57,13 @@ private class CppCompletionWorkerRuntime(private val scope: dynamic) {
       val source = rawRequest.source as? String ?: error("Missing C++ source text")
       val prefixText = rawRequest.statementPrefixText as? String
         ?: error("Missing C++ statement prefix text")
+      val semanticPrefixText = rawRequest.semanticPrefixText as? String ?: prefixText
       require('\n' !in prefixText && '\r' !in prefixText) {
         "A C++ completion request must contain one physical statement prefix"
       }
       val prefix = cppCompletionPrefixTokens(rawRequest.prefixTokens, prefixText)
       val limit = cppCompletionInt(rawRequest.limit, CPP_MAX_INTERACTIVE_COMPLETIONS)
-      require(limit in 1..CPP_MAX_INTERACTIVE_COMPLETIONS) {
-        "Interactive C++ completion limit must be in 1..$CPP_MAX_INTERACTIVE_COMPLETIONS"
-      }
+      require(limit in 1..CPP_MAX_INTERACTIVE_COMPLETIONS)
       val seed = cppCompletionInt(rawRequest.seed)
       val line = cppCompletionInt(rawRequest.line, -1)
       val character = cppCompletionInt(rawRequest.character, -1)
@@ -80,22 +73,15 @@ private class CppCompletionWorkerRuntime(private val scope: dynamic) {
       val snapshot = CppEditorStatementSnapshot(
         line = line,
         character = character,
-        lineStartOffset = 0,
         statementStartCharacter = statementStartCharacter,
-        statementStartOffset = 0,
-        caretOffset = 0,
         prefixText = prefixText,
+        semanticPrefixText = semanticPrefixText,
         tokens = prefix,
-        projectedTokens = prefix.map(CppToken::text),
-        replacementStartCharacter = character,
         replacementEndCharacter = replacementEndCharacter,
-        replacementStartOffset = 0,
-        replacementEndOffset = 0,
         cacheKey = rawRequest.cacheKey as? String ?: "",
         seed = seed
       )
 
-      val contextClock = TimeSource.Monotonic.markNow()
       val facts = rawRequest.facts
       val completionGroups = cppCompletionDynamicArray(facts?.completionGroups).map { group ->
         CppClangdCompletionGroup(
@@ -120,53 +106,38 @@ private class CppCompletionWorkerRuntime(private val scope: dynamic) {
         snapshot = snapshot
       )
       val context = cppCompletionContextFromDto(contextDto)
-      val contextMillis = contextClock.elapsedNow().inWholeMilliseconds.toInt()
-      val query = CppCompletionQuery(
-        prefix = prefix,
-        prefixText = prefixText,
-        identifiersInFile = context.identifiers,
-        limit = limit,
-        seed = seed
-      )
+      val query = snapshot.completionQuery(context.identifiers, limit, seed)
 
-      val grammarClock = TimeSource.Monotonic.markNow()
       val cacheKey = rawRequest.cacheKey as? String ?: ""
-      val exactKey = cppCompletionExactPreparedKey(cacheKey, contextDto, prefixText, prefix)
+      val exactKey = cppCompletionExactPreparedKey(
+        cacheKey,
+        contextDto,
+        query.prefixText,
+        query.prefix
+      )
       val cached = exactKey.takeIf(String::isNotEmpty)?.let(prepared::remove)
-      val cacheHit = cached != null
-      val activeGrammar = cached?.grammar ?: grammar.prepare(context, prefix)
+      val activeGrammar = cached ?: grammar.prepare(context, query.prefix)
       if (exactKey.isNotEmpty()) {
-        prepared[exactKey] = PreparedEntry(activeGrammar)
+        prepared[exactKey] = activeGrammar
         while (prepared.size > CPP_COMPLETION_PREPARED_CACHE_SIZE) {
           prepared.remove(prepared.keys.first())
         }
       }
-      val preparationMillis = grammarClock.elapsedNow().inWholeMilliseconds.toInt()
       val execution = activeGrammar.completeCppStatement(query)
       val suggestions = execution.suggestions.map { completion ->
         val suggestion = js("({})")
-        suggestion.insertion = completion.insertionText
         suggestion.candidateText = completion.candidateText
         suggestion.tokenLength = completion.tokenLength
-        suggestion.tokens = completion.tokens.toTypedArray()
-        suggestion.freshNames = completion.freshNames.sorted().toTypedArray()
         suggestion
       }.toTypedArray()
 
       val reply = cppCompletionReply(requestId, ok = true)
       reply.suggestions = suggestions
-      reply.minimumTokenLength = execution.minimumTokenLength
-      reply.contextMillis = contextMillis
-      reply.grammarMillis = preparationMillis + execution.generationMillis
-      reply.samplingMillis = execution.samplingMillis
-      reply.totalMillis = totalClock.elapsedNow().inWholeMilliseconds.toInt()
-      reply.cacheHit = cacheHit
       scope.postMessage(reply)
     } catch (failure: Throwable) {
       val reply = cppCompletionReply(requestId, ok = false)
       reply.error = failure.message ?: failure.toString()
       reply.stack = failure.asDynamic().stack as? String
-      reply.totalMillis = totalClock.elapsedNow().inWholeMilliseconds.toInt()
       scope.postMessage(reply)
     }
   }
@@ -203,7 +174,7 @@ internal fun cppCompletionPrefixTokens(serialized: dynamic, prefixText: String):
       val start = cppCompletionInt(item.start, -1)
       val end = cppCompletionInt(item.end, -1)
       require(start >= 0 && end >= start) { "Invalid source range for C++ prefix token $index" }
-      CppToken(text = text, start = start, end = end, kind = kind)
+      CppToken(text, start, end, kind, item.completeText as? String)
     }
   }
 
@@ -239,9 +210,7 @@ fun cppCompletionWorkerRequest(
   facts: CppCompletionSemanticFacts = CppCompletionSemanticFacts(),
   limit: Int = CPP_MAX_INTERACTIVE_COMPLETIONS
 ): dynamic {
-  require(limit in 1..CPP_MAX_INTERACTIVE_COMPLETIONS) {
-    "Interactive C++ completion limit must be in 1..$CPP_MAX_INTERACTIVE_COMPLETIONS"
-  }
+  require(limit in 1..CPP_MAX_INTERACTIVE_COMPLETIONS)
   require('\n' !in snapshot.prefixText && '\r' !in snapshot.prefixText) {
     "A C++ completion request must contain one physical statement prefix"
   }
@@ -258,12 +227,14 @@ fun cppCompletionWorkerRequest(
   request.statementStartCharacter = snapshot.statementStartCharacter
   request.replacementEndCharacter = snapshot.replacementEndCharacter
   request.statementPrefixText = snapshot.prefixText
+  request.semanticPrefixText = snapshot.semanticPrefixText
   request.prefixTokens = snapshot.tokens.map { token ->
     val serialized = js("({})")
     serialized.text = token.text
     serialized.start = token.start
     serialized.end = token.end
     serialized.kind = token.kind.name
+    serialized.completeText = token.completeText
     serialized
   }.toTypedArray()
   request.seed = snapshot.seed

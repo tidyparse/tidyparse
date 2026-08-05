@@ -1,7 +1,10 @@
 package cppcompletion
 
+import ai.hypergraph.kaliningraph.parsing.BoundedAcyclicCFG
 import ai.hypergraph.kaliningraph.parsing.BoundedLengthSample
 import ai.hypergraph.kaliningraph.parsing.BoundedLengthSampleBatch
+import ai.hypergraph.kaliningraph.parsing.PreindexedAcyclicCFG
+import ai.hypergraph.kaliningraph.parsing.boundedAcyclic
 import com.ionspin.kotlin.bignum.integer.BigInteger
 import kotlin.random.Random
 
@@ -32,8 +35,12 @@ data class CppShortestCompletion(
 class CppCompletionSampler(
   private val language: CppSuffixGrammar,
   identifiersInFile: Set<String>,
-  private val random: Random = Random.Default
+  private val random: Random = Random.Default,
+  private val tokenPrefix: CppToken? = null
 ) {
+  // Syntax fallbacks are constrained while their exact shortest forest is built.
+  private val bounded = tokenPrefix?.takeUnless { language.projectionMode == CppProjectionMode.SYNTAX }
+    ?.let(language.bounded::startingWith) ?: language.bounded
   private val fresh = FreshCppNames(identifiersInFile, random)
   private var preparedLimit: Int? = null
   private var preparedBatch: BoundedLengthSampleBatch? = null
@@ -61,7 +68,7 @@ class CppCompletionSampler(
       }
       return
     }
-    val batch = language.bounded.shortestSampleBatch(
+    val batch = bounded.shortestSampleBatch(
       random = random,
       sampleLimit = count,
       samplesPerLength = 10
@@ -76,25 +83,26 @@ class CppCompletionSampler(
   fun shortestDistinct(count: Int): List<CppCompletionSample> {
     require(count >= 0)
     if (count == 0) return emptyList()
-    var batch = language.bounded.shortestDistinctSampleBatch(
+    var batch = bounded.shortestDistinctSampleBatch(
       random = random,
       sampleLimit = count
     )
-    fun structurallyDistinct() = batch.samples.asSequence()
+    fun structurallyDistinct(limit: Int) = batch.samples.asSequence()
       .filter { it.terminals.isNotEmpty() }
-      .distinctBy { it.terminals.alphaNormalizedCppTerminals() }
-      .take(count)
+      .distinctBy { sample -> sample.terminals.cppCompletionShape(tokenPrefix) }
+      .take(limit)
       .toList()
-    var structurallyDistinct = structurallyDistinct()
-    // Only widen discovery when the raw cap was actually saturated by alpha-equivalent forms.
-    if (structurallyDistinct.size < count && batch.samples.size == count) {
-      batch = language.bounded.shortestDistinctSampleBatch(
+    var distinct = structurallyDistinct(count)
+    // A small bounded widening prevents aliases or alpha-equivalent derivations from consuming
+    // slots intended for distinct source completions.
+    if (distinct.size < count && batch.samples.size == count) {
+      batch = bounded.shortestDistinctSampleBatch(
         random = random,
         sampleLimit = count * CPP_INTERACTIVE_DISCOVERY_MULTIPLIER
       )
-      structurallyDistinct = structurallyDistinct()
+      distinct = structurallyDistinct(count * CPP_INTERACTIVE_DISCOVERY_MULTIPLIER)
     }
-    return materialize(structurallyDistinct)
+    return materialize(distinct).distinctBy(CppCompletionSample::tokens).take(count)
   }
 
   private fun materialize(
@@ -105,7 +113,12 @@ class CppCompletionSampler(
     val projected = language.projectedPrefix + sampled.terminals
     val suffix = sampled.terminals.mapIndexed { suffixIndex, terminal ->
       val absoluteIndex = language.projectedPrefix.size + suffixIndex
-      if (
+      val prefixSpelling = tokenPrefix?.takeIf { suffixIndex == 0 }
+        ?.let { cppCompletionTerminalSpelling(terminal, it) }
+      if (prefixSpelling != null) {
+        if (terminal.startsWith(CPP_BIND_PREFIX)) binders[terminal] = prefixSpelling
+        prefixSpelling
+      } else if (
         terminal == CPP_INTEGER && projected.getOrNull(absoluteIndex - 1) == "<" &&
         projected.getOrNull(absoluteIndex - 2) == "@id:get"
       ) "1" else materializeCppTerminal(terminal) {
@@ -138,7 +151,8 @@ fun CppSuffixGrammar.shortestCompletions(
   prefixText: String,
   identifiersInFile: Set<String>,
   limit: Int = CPP_MAX_INTERACTIVE_COMPLETIONS,
-  random: Random = Random.Default
+  random: Random = Random.Default,
+  tokenPrefix: CppToken? = null
 ): List<CppShortestCompletion> {
   require(limit >= 0) { "Interactive C++ completion limit must be nonnegative" }
   val sampleLimit = limit.coerceAtMost(CPP_MAX_INTERACTIVE_COMPLETIONS)
@@ -147,14 +161,16 @@ fun CppSuffixGrammar.shortestCompletions(
   val primary = shortestCompletionsFromThisGrammar(
     prefixText = prefixText,
     identifiersInFile = identifiersInFile,
+    tokenPrefix = tokenPrefix,
     limit = sampleLimit,
     random = random
   )
   if (primary.size >= sampleLimit) return primary
-  val fallback = completionFallback() ?: return primary
+  val fallback = completionFallback(tokenPrefix) ?: return primary
   val syntactic = fallback.shortestCompletionsFromThisGrammar(
     prefixText = prefixText,
     identifiersInFile = identifiersInFile,
+    tokenPrefix = tokenPrefix,
     limit = sampleLimit,
     random = random
   )
@@ -168,6 +184,7 @@ fun CppSuffixGrammar.shortestCompletions(
 private fun CppSuffixGrammar.shortestCompletionsFromThisGrammar(
   prefixText: String,
   identifiersInFile: Set<String>,
+  tokenPrefix: CppToken?,
   limit: Int,
   random: Random
 ): List<CppShortestCompletion> {
@@ -176,7 +193,7 @@ private fun CppSuffixGrammar.shortestCompletionsFromThisGrammar(
   // forces exact count vectors through the complete suffix horizon. The distinct sampler handles
   // a structurally empty grammar itself and retains the minimum-row fast path whenever that row
   // already supplies the requested result count.
-  val samples = CppCompletionSampler(this, identifiersInFile, random)
+  val samples = CppCompletionSampler(this, identifiersInFile, random, tokenPrefix)
     .shortestDistinct(limit)
   check(samples.zipWithNext().all { (left, right) -> left.length <= right.length }) {
     "Interactive C++ completions are not ordered by exact terminal length"
@@ -190,7 +207,101 @@ private fun CppSuffixGrammar.shortestCompletionsFromThisGrammar(
         length = sample.length
       )
     }
+    .distinctBy(CppShortestCompletion::insertionText)
     .toList()
+}
+
+/** Exact intersection with the regular language whose first terminal extends [prefix]. */
+private fun BoundedAcyclicCFG.startingWith(prefix: CppToken): BoundedAcyclicCFG {
+  val indexed = grammar as? PreindexedAcyclicCFG
+  val grouped = indexed?.let { null } ?: grammar.groupBy { it.first }
+  val nonterminals = indexed?.acyclicNonterminalIndex?.keys ?: grouped!!.keys
+  fun rules(symbol: String) = indexed?.productionsFor(symbol) ?: grouped!![symbol].orEmpty()
+  if (startSymbol !in nonterminals) return this
+  val sourceOrder = indexed?.acyclicCountingOrder
+
+  fun fixedPoint(accepts: (List<String>, Set<String>) -> Boolean): Set<String> {
+    val result = linkedSetOf<String>()
+    if (sourceOrder != null) sourceOrder.forEach { symbol ->
+      if (rules(symbol).any { accepts(it.second, result) }) result += symbol
+    } else {
+      var changed: Boolean
+      do {
+        val before = result.size
+        nonterminals.forEach { symbol ->
+          if (symbol !in result && rules(symbol).any { accepts(it.second, result) }) result += symbol
+        }
+        changed = result.size != before
+      } while (changed)
+    }
+    return result
+  }
+
+  val nullable = fixedPoint { rhs, known -> rhs.all(known::contains) }
+  val matches = mutableMapOf<String, Boolean>()
+  val productive = fixedPoint { rhs, known -> when (rhs.size) {
+    0 -> false
+    1 -> if (rhs[0] in nonterminals) rhs[0] in known
+      else matches.getOrPut(rhs[0]) { cppCompletionTerminalSpelling(rhs[0], prefix) != null }
+    else -> rhs[0] in known || rhs[0] in nullable && rhs[1] in known
+  } }
+  if (startSymbol !in productive)
+    return emptySet<Pair<String, List<String>>>().boundedAcyclic(maxLength)
+
+  val matchedNames = mutableMapOf<String, String>()
+  fun matched(symbol: String) = matchedNames.getOrPut(symbol) { "$symbol\u0000CPP_FIRST" }
+  val matchedQueue = mutableListOf(startSymbol)
+  val matchedSeen = linkedSetOf(startSymbol)
+  val originalQueue = mutableListOf<String>()
+  val originalSeen = linkedSetOf<String>()
+  val constrained = linkedSetOf<Pair<String, List<String>>>()
+  fun includeMatched(symbol: String) {
+    if (symbol in productive && matchedSeen.add(symbol)) matchedQueue += symbol
+  }
+  fun includeOriginal(symbol: String) {
+    if (originalSeen.add(symbol)) originalQueue += symbol
+  }
+
+  var next = 0
+  while (next < matchedQueue.size) {
+    val symbol = matchedQueue[next++]
+    rules(symbol).forEach { (_, rhs) -> when (rhs.size) {
+      1 -> if (rhs[0] in nonterminals) {
+        if (rhs[0] in productive) {
+          constrained += matched(symbol) to listOf(matched(rhs[0]))
+          includeMatched(rhs[0])
+        }
+      } else if (matches.getOrPut(rhs[0]) {
+          cppCompletionTerminalSpelling(rhs[0], prefix) != null
+        }) constrained += matched(symbol) to rhs
+      2 -> {
+        if (rhs[0] in productive) {
+          constrained += matched(symbol) to listOf(matched(rhs[0]), rhs[1])
+          includeMatched(rhs[0]); includeOriginal(rhs[1])
+        }
+        if (rhs[0] in nullable && rhs[1] in productive) {
+          constrained += matched(symbol) to listOf(matched(rhs[1]))
+          includeMatched(rhs[1])
+        }
+      }
+    } }
+  }
+  next = 0
+  while (next < originalQueue.size) {
+    val symbol = originalQueue[next++]
+    rules(symbol).forEach { production ->
+      constrained += production
+      production.second.filter(nonterminals::contains).forEach(::includeOriginal)
+    }
+  }
+  val countingOrder = sourceOrder?.let { order ->
+    order.filter(originalSeen::contains) + order.filter(matchedSeen::contains).map(::matched)
+  }
+  return constrained.boundedAcyclic(
+    maxLength = maxLength,
+    startSymbol = matched(startSymbol),
+    countingOrder = countingOrder
+  )
 }
 
 /** Canonicalizes grammar-only fresh names while preserving their equality pattern. */
@@ -207,6 +318,11 @@ private fun List<String>.alphaNormalizedCppTerminals(): List<String> {
     }
   }
 }
+
+private fun List<String>.cppCompletionShape(prefix: CppToken?): List<String> =
+  alphaNormalizedCppTerminals().toMutableList().also { shape ->
+    prefix?.let { cppCompletionTerminalSpelling(first(), it) }?.let { shape[0] = it }
+  }
 
 private const val CPP_LEXICAL_SEPARATOR_CACHE_SIZE = 512
 

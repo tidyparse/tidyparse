@@ -1,7 +1,6 @@
 import cppcompletion.CppCompletionGrammar
 import cppcompletion.cppLines
-import cppcompletion.shortestCompletions
-import kotlin.random.Random
+import cppcompletion.completeCppStatement
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -335,16 +334,12 @@ class CppClangdAstContextTest {
     )
 
     val snapshot = assertNotNull(cppEditorStatementSnapshot(source, cursorLine, cursorCharacter))
-    val expectedTokens = cppLines("Describe{}, payload);").single().tokens.map { it.text }
-    val completions = CppCompletionGrammar().generate(context, snapshot.tokens).shortestCompletions(
-      prefixText = snapshot.prefixText,
-      identifiersInFile = context.identifiers,
-      limit = 10,
-      random = Random(snapshot.seed)
-    )
+    val expectedTokens = cppLines("(Describe{}, payload);").single().tokens.map { it.text }
+    val completions = CppCompletionGrammar()
+      .completeCppStatement(context, snapshot.completionQuery(context.identifiers)).suggestions
     assertTrue(completions.any { completion ->
       completion.tokens == expectedTokens &&
-        completion.insertionText == "Describe{},payload);"
+        completion.candidateText.endsWith("std::visit(Describe{},payload);")
     })
   }
 

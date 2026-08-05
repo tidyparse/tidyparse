@@ -2,6 +2,8 @@ package cppcompletion
 
 import ai.hypergraph.kaliningraph.parsing.CFG
 import ai.hypergraph.kaliningraph.parsing.boundedAcyclic
+import cppEditorStatementSnapshot
+import completionQuery
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -95,6 +97,86 @@ class CppInteractiveCompletionTest {
   }
 
   @Test
+  fun tokenPrefixIsAppliedBeforeTheInteractiveSampleCap() {
+    val grammar: CFG = buildSet {
+      repeat(40) { index -> add("START" to listOf("other_$index")) }
+      add("START" to listOf("return"))
+    }
+    val prefix = CppToken("ret", 0, 3, CppTokenKind.IDENTIFIER)
+
+    val completions = suffixLanguage(grammar, 1).shortestCompletions(
+      prefixText = "",
+      identifiersInFile = emptySet(),
+      limit = 10,
+      random = Random(9),
+      tokenPrefix = prefix
+    )
+
+    assertEquals(listOf(listOf("return")), completions.map { it.tokens })
+    assertEquals("return", completions.single().insertionText)
+  }
+
+  @Test
+  fun firstTerminalIntersectionHandlesUnitsBinariesAndNullableLeftChildren() {
+    val grammar: CFG = linkedSetOf(
+      "START" to listOf("MAYBE", "WORD"),
+      "MAYBE" to emptyList(),
+      "MAYBE" to listOf("OTHER"),
+      "OTHER" to listOf("other"),
+      "WORD" to listOf("RETURN", "END"),
+      "RETURN" to listOf("return"),
+      "END" to listOf(";")
+    )
+    fun complete(typed: String) = suffixLanguage(grammar, 3).shortestCompletions(
+      prefixText = "",
+      identifiersInFile = emptySet(),
+      random = Random(3),
+      tokenPrefix = CppToken(typed, 0, typed.length, CppTokenKind.IDENTIFIER)
+    ).map(CppShortestCompletion::tokens)
+
+    assertEquals(listOf(listOf("return", ";")), complete("ret"))
+    assertEquals(listOf(listOf("other", "return", ";")), complete("oth"))
+  }
+
+  @Test
+  fun everyGrammarTerminalKindUsesItsMatchingSourceSpelling() {
+    listOf(
+      Triple("return", "ret", "return"),
+      Triple("&&", "an", "and"),
+      Triple("@boolean", "tru", "true"),
+      Triple("@nullptr", "nullp", "nullptr"),
+      Triple(encodeIdentifier("std"), "st", "std")
+    ).forEach { (terminal, typed, expected) ->
+      val prefix = CppToken(typed, 0, typed.length, CppTokenKind.IDENTIFIER)
+      val completion = suffixLanguage(setOf("START" to listOf(terminal)), 1)
+        .shortestCompletions("", emptySet(), random = Random(1), tokenPrefix = prefix)
+        .single()
+      assertEquals(expected, completion.insertionText, "$typed must complete through $terminal")
+    }
+  }
+
+  @Test
+  fun partialLiteralsAndMaximalMunchOperatorsKeepACompleteTokenWitness() {
+    listOf(
+      Triple("\"text\"", 3, "\"text\""),
+      Triple("'x'", 2, "'x'"),
+      Triple("42_km", 2, "42_km"),
+      Triple(">>=", 2, ">>=")
+    ).forEach { (source, caret, expected) ->
+      val snapshot = requireNotNull(cppEditorStatementSnapshot(source, 0, caret))
+      val terminal = projectCppTokens(cppLines(source).single().tokens).single()
+      val completion = suffixLanguage(setOf("START" to listOf(terminal)), 1)
+        .shortestCompletions(
+          snapshot.stablePrefixText,
+          emptySet(),
+          random = Random(2),
+          tokenPrefix = snapshot.activeFragment
+        ).single()
+      assertEquals(expected, completion.insertionText, source)
+    }
+  }
+
+  @Test
   fun alphaEquivalentBindersAreOneStructuralCompletion() {
     val first = "$CPP_BIND_PREFIX:first"
     val second = "$CPP_BIND_PREFIX:second"
@@ -115,7 +197,7 @@ class CppInteractiveCompletionTest {
   @Test
   fun qualifiedStdPrefixProducesTenUsefulShortestFirstStatements() {
     val prefixText = "std::"
-    val prefix = cppLines(prefixText).single().tokens
+    val snapshot = requireNotNull(cppEditorStatementSnapshot(prefixText, 0, prefixText.length))
     val context = CppCompletionContext(
       identifiers = setOf("std", "cout", "value", "flag", "name"),
       sourceIdentifiers = setOf("std", "cout", "value", "flag", "name"),
@@ -127,20 +209,23 @@ class CppInteractiveCompletionTest {
         CppReference("name", type = "const char *", kind = "variable")
       )
     )
-    val completions = CppCompletionGrammar().generate(context, prefix)
-      .shortestCompletions(prefixText, context.identifiers, random = Random(2026))
+    val completions = CppCompletionGrammar().completeCppStatement(
+      context, snapshot.completionQuery(context.identifiers, seed = 2026)
+    ).suggestions
 
     assertEquals(10, completions.size)
-    assertEquals(10, completions.map { it.tokens }.distinct().size)
-    assertTrue(completions.zipWithNext().all { (left, right) -> left.length <= right.length })
-    assertTrue(completions.all { !it.insertionText.startsWith(' ') })
-    assertEquals(listOf("cout", ";"), completions.first().tokens)
+    assertEquals(10, completions.map { it.candidateText }.distinct().size)
+    assertTrue(completions.zipWithNext().all { (left, right) ->
+      left.tokenLength <= right.tokenLength
+    })
+    assertEquals("std::cout;", completions.first().candidateText)
+    assertEquals(listOf("::", "cout", ";"), completions.first().tokens)
   }
 
   @Test
-  fun expandedTupleValuedMapCompletesTryEmplaceWithoutAliasDependentFacts() {
-    val prefixText = "records.try_emplace"
-    val prefix = cppLines(prefixText).single().tokens
+  fun expandedTupleValuedMapCompletesPartialTryEmplaceWithoutAliasDependentFacts() {
+    val text = "records.try_emp"
+    val snapshot = requireNotNull(cppEditorStatementSnapshot(text, 0, text.length))
     val identifiers = setOf(
       "std", "map", "tuple", "string", "Record", "records", "try_emplace"
     )
@@ -157,15 +242,15 @@ class CppInteractiveCompletionTest {
         )
       )
     )
-    val completions = CppCompletionGrammar().generate(context, prefix).shortestCompletions(
-      prefixText = prefixText,
-      identifiersInFile = identifiers,
-      random = Random(2142905409)
-    )
+    val completions = CppCompletionGrammar().completeCppStatement(
+      context, snapshot.completionQuery(identifiers, seed = 2142905409)
+    ).suggestions
 
     assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.size)
     assertTrue(
-      completions.all { it.tokens.firstOrNull() == "(" && it.tokens.lastOrNull() == ";" }
+      completions.all {
+        it.tokens.firstOrNull() == "try_emplace" && it.tokens.lastOrNull() == ";"
+      }
     )
   }
 

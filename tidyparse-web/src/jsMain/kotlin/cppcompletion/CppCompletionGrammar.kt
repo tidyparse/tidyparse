@@ -137,7 +137,8 @@ data class CppToken(
   val text: String,
   val start: Int,
   val end: Int,
-  val kind: CppTokenKind
+  val kind: CppTokenKind,
+  val completeText: String? = null
 )
 
 data class CppLine(
@@ -245,10 +246,10 @@ class CppSuffixGrammar internal constructor(
   val sourceSyntax: CFG = bounded.grammar,
   internal val conditioningMetrics: CppConditioningMetrics = CppConditioningMetrics(),
   internal val projectionMode: CppProjectionMode = CppProjectionMode.SEMANTIC,
-  private val syntaxFallbackFactory: (() -> CppSuffixGrammar?)? = null,
+  private val syntaxFallbackFactory: ((CppToken?) -> CppSuffixGrammar?)? = null,
   private val recognizesCompleteSyntax: Boolean = false
 ) {
-  private val syntaxFallback: CppSuffixGrammar? by lazy { syntaxFallbackFactory?.invoke() }
+  private val syntaxFallback: CppSuffixGrammar? by lazy { syntaxFallbackFactory?.invoke(null) }
   val syntax: CFG get() = bounded.grammar
   val forest: PTree? get() = bounded.forest
   val isEmpty: Boolean get() = bounded.isEmpty && syntaxFallback?.isEmpty != false
@@ -325,7 +326,8 @@ class CppSuffixGrammar internal constructor(
     return matches.distinct()
   }
 
-  internal fun completionFallback(): CppSuffixGrammar? = syntaxFallback
+  internal fun completionFallback(tokenPrefix: CppToken? = null): CppSuffixGrammar? =
+    if (tokenPrefix == null) syntaxFallback else syntaxFallbackFactory?.invoke(tokenPrefix)
 
   internal fun withSyntaxFallback(): CppSuffixGrammar = CppSuffixGrammar(
     bounded = bounded,
@@ -335,7 +337,7 @@ class CppSuffixGrammar internal constructor(
     sourceSyntax = sourceSyntax,
     conditioningMetrics = conditioningMetrics,
     projectionMode = projectionMode,
-    syntaxFallbackFactory = { cppSingleStatementSyntaxCompletion(rawPrefix) }
+    syntaxFallbackFactory = { cppSingleStatementSyntaxCompletion(rawPrefix, it) }
   )
 }
 
@@ -3215,6 +3217,10 @@ private val CPP_DIGRAPH_CANONICAL = mapOf(
   "%>" to "}"
 )
 
+private val CPP_COMPLETION_SOURCE_ALIASES =
+  (CPP_ALTERNATIVE_OPERATOR_CANONICAL.entries + CPP_DIGRAPH_CANONICAL.entries)
+    .groupBy({ it.value }, { it.key })
+
 internal fun projectCppCompletionTokens(
   tokens: List<CppToken>,
   mode: CppProjectionMode
@@ -3239,6 +3245,7 @@ private fun projectCppTokens(
   while (index < tokens.size) {
     val token = tokens[index]
     val next = tokens.getOrNull(index + 1)
+    val literalTerminal = CPP_LITERAL_TERMINAL[token.kind]
     val adjacentPair = next?.takeIf { token.end == it.start }?.let { token.text + it.text }
     val digraph = CPP_DIGRAPH_CANONICAL[adjacentPair]
     when {
@@ -3259,14 +3266,7 @@ private fun projectCppTokens(
       }
       token.text == CPP_FRESH -> add(CPP_FRESH)
       token.kind == CppTokenKind.IDENTIFIER -> add(encodeIdentifier(token.text))
-      token.kind == CppTokenKind.INTEGER -> add(CPP_INTEGER)
-      token.kind == CppTokenKind.FLOATING -> add(CPP_FLOATING)
-      token.kind == CppTokenKind.CHARACTER -> add(CPP_CHARACTER)
-      token.kind == CppTokenKind.STRING -> add(CPP_STRING)
-      token.kind == CppTokenKind.USER_DEFINED_INTEGER -> add(CPP_USER_DEFINED_INTEGER)
-      token.kind == CppTokenKind.USER_DEFINED_FLOATING -> add(CPP_USER_DEFINED_FLOATING)
-      token.kind == CppTokenKind.USER_DEFINED_CHARACTER -> add(CPP_USER_DEFINED_CHARACTER)
-      token.kind == CppTokenKind.USER_DEFINED_STRING -> add(CPP_USER_DEFINED_STRING)
+      literalTerminal != null -> add(literalTerminal)
       token.kind == CppTokenKind.BOOLEAN -> add(CPP_BOOLEAN)
       token.kind == CppTokenKind.NULLPTR -> add(CPP_NULLPTR)
       token.text == "<" -> {
@@ -3304,6 +3304,50 @@ fun materializeCppTerminal(terminal: String, fresh: () -> String): String = when
   terminal == CPP_NULLPTR -> "nullptr"
   else -> terminal
 }
+
+private val CPP_LITERAL_TERMINAL = mapOf(
+  CppTokenKind.INTEGER to CPP_INTEGER,
+  CppTokenKind.FLOATING to CPP_FLOATING,
+  CppTokenKind.CHARACTER to CPP_CHARACTER,
+  CppTokenKind.STRING to CPP_STRING,
+  CppTokenKind.USER_DEFINED_INTEGER to CPP_USER_DEFINED_INTEGER,
+  CppTokenKind.USER_DEFINED_FLOATING to CPP_USER_DEFINED_FLOATING,
+  CppTokenKind.USER_DEFINED_CHARACTER to CPP_USER_DEFINED_CHARACTER,
+  CppTokenKind.USER_DEFINED_STRING to CPP_USER_DEFINED_STRING
+)
+
+/** Source spellings represented by one grammar terminal at a partial-token cursor. */
+internal fun cppCompletionTerminalSpellings(
+  terminal: String,
+  prefix: CppToken
+): List<String> = buildList {
+  when {
+    terminal.startsWith("@id:") -> add(terminal.removePrefix("@id:"))
+    terminal == CPP_FRESH || terminal == CPP_SYNTAX_IDENTIFIER ||
+      terminal.startsWith(CPP_BIND_PREFIX) -> if (prefix.kind == CppTokenKind.IDENTIFIER) {
+        add(prefix.text)
+        prefix.completeText?.let(::add)
+      }
+    CPP_LITERAL_TERMINAL[prefix.kind] == terminal -> add(prefix.completeText ?: prefix.text)
+    terminal == CPP_BOOLEAN -> {
+      add("true")
+      add("false")
+    }
+    terminal == CPP_NULLPTR -> {
+      add("nullptr")
+    }
+    !terminal.startsWith('@') -> {
+      add(terminal)
+      addAll(CPP_COMPLETION_SOURCE_ALIASES[terminal].orEmpty())
+    }
+  }
+}.distinct()
+
+/** The shortest concrete spelling of [terminal] that preserves the characters already typed. */
+internal fun cppCompletionTerminalSpelling(terminal: String, prefix: CppToken): String? =
+  cppCompletionTerminalSpellings(terminal, prefix)
+    .filter { it.startsWith(prefix.text) }
+    .minWithOrNull(compareBy(String::length).thenBy { it })
 
 fun cppLines(source: String): List<CppLine> = buildList {
   var start = 0

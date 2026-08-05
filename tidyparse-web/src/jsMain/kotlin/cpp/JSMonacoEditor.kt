@@ -15,7 +15,6 @@ private const val CPP_COMPLETION_FORMAT_TIMEOUT_MS = 1_200L
 private const val CPP_COMPLETION_FORMAT_CLOSE_TIMEOUT_MS = 250L
 private const val CPP_COMPLETION_TOTAL_TIMEOUT_MS = 7_000L
 private const val CPP_COMPLETION_SHORTCUT_WINDOW_MS = 1_000.0
-private const val CPP_COMPLETION_LIMIT = 10
 private const val CPP_COMPLETION_WIDGET_CHROME_PX = 80.0
 
 enum class ClangdClientState {
@@ -644,11 +643,10 @@ class JSMonacoEditor(
         return empty
 
       val request = cppCompletionWorkerRequest(
-        cacheKey = resultKey,
+        cacheKey = "$modelUri:$contextEpoch",
         source = source,
         snapshot = snapshot,
-        facts = facts.copy(diagnostics = latestRawDiagnostics),
-        limit = CPP_COMPLETION_LIMIT
+        facts = facts.copy(diagnostics = latestRawDiagnostics)
       )
       val activeWorker = requireNotNull(completionWorker)
       val completed = withTimeout(CPP_COMPLETION_WORKER_TIMEOUT_MS) {
@@ -736,14 +734,17 @@ class JSMonacoEditor(
       val formattedSource = applyCppFormatTextEdits(batch.source, edits) ?: return false
       val formatted = extractCppFormattedCompletions(batch, formattedSource) ?: return false
       if (formatted.size != count) return false
+      val seen = mutableSetOf<String>()
+      var kept = 0
       formatted.forEachIndexed { index, completion ->
-        val suggestion = suggestions[index]
-        suggestion.insertion = completion.replacementText
+        if (!seen.add(completion.replacementText)) return@forEachIndexed
+        val suggestion: dynamic = suggestions[index]
         suggestion.candidateText = completion.replacementText
         suggestion.displayText = completion.displayText
-        suggestion.replaceStatement = true
+        suggestions[kept++] = suggestion
       }
-      return true
+      suggestions.length = kept
+      return kept > 0
     } catch (cancelled: CancellationException) {
       throw cancelled
     } catch (failure: Throwable) {
@@ -829,18 +830,20 @@ class JSMonacoEditor(
       cachedCppAstContext = CachedCppAstContext(astKey, normalized)
       normalized
     }
-    val receiverOperator = cppReceiverOperator(snapshot.prefixText)
+    val semanticPrefix = snapshot.semanticPrefixText
+    val semanticCharacter = snapshot.statementStartCharacter + semanticPrefix.length
+    val receiverOperator = cppReceiverOperator(semanticPrefix)
     val base = async {
       optionalClangdRequest(
         client,
         "textDocument/completion",
-        cppCompletionParams(snapshot.line, snapshot.character, receiverOperator),
+        cppCompletionParams(snapshot.line, semanticCharacter, receiverOperator),
         cancellation
       )
     }
     val scopeCharacter = snapshot.statementStartCharacter +
       snapshot.prefixText.takeWhile { it == ' ' || it == '\t' }.length
-    val scope = if (scopeCharacter == snapshot.character) null else async {
+    val scope = if (scopeCharacter == semanticCharacter) null else async {
       optionalClangdRequest(
         client,
         "textDocument/completion",
@@ -856,7 +859,7 @@ class JSMonacoEditor(
         cancellation
       )
     } else null
-    val hoverCharacter = cppReceiverHoverCharacter(snapshot.prefixText, receiverOperator)
+    val hoverCharacter = cppReceiverHoverCharacter(semanticPrefix, receiverOperator)
       ?.let { snapshot.statementStartCharacter + it }
     val hover = hoverCharacter?.let { hoverAt -> async {
       optionalClangdRequest(
@@ -975,12 +978,6 @@ class JSMonacoEditor(
       js("(value) => Array.isArray(value)")(suggestions) as Boolean == false)
       return emptyCppCompletionResult()
     val lineNumber = number(position.lineNumber)
-    val suffixRange = js("(Range, line, start, end) => new Range(line, start, line, end)")(
-      monaco.Range,
-      lineNumber,
-      snapshot.replacementStartCharacter + 1,
-      snapshot.replacementEndCharacter + 1
-    )
     val statementRange = js("(Range, line, start, end) => new Range(line, start, line, end)")(
       monaco.Range,
       lineNumber,
@@ -988,24 +985,25 @@ class JSMonacoEditor(
       snapshot.replacementEndCharacter + 1
     )
     val items = (0 until number(suggestions.length)).mapNotNull { index ->
-      val suggestion = suggestions[index]
-      val insertion = suggestion?.insertion as? String
-        ?: suggestion?.insertionText as? String
-        ?: return@mapNotNull null
-      if (insertion.isEmpty()) return@mapNotNull null
-      val display = suggestion?.displayText as? String
-        ?: suggestion?.candidateText as? String
-        ?: (snapshot.prefixText + insertion).trim()
-      val replacesStatement = suggestion?.replaceStatement as? Boolean == true
-      val tokenLength = cppCompletionInt(suggestion?.tokenLength ?: suggestion?.length, 0)
+      val suggestion: dynamic = suggestions[index]
+      if (!defined(suggestion)) return@mapNotNull null
+      val candidate = suggestion["candidateText"] as? String ?: return@mapNotNull null
+      if (candidate.isEmpty()) return@mapNotNull null
+      val display = suggestion["displayText"] as? String ?: candidate.trim()
+      val rawTokenLength: dynamic = suggestion["tokenLength"]
+      val fallbackLength: dynamic = suggestion["length"]
+      val tokenLength = cppCompletionInt(
+        if (defined(rawTokenLength)) rawTokenLength else fallbackLength,
+        0
+      )
       val item = js("({})")
       item.label = display
       item.detail = "Tidyparse · shortest C++ statement completion"
       item.documentation = "Generated from the full C++ statement grammar (${tokenLength} tokens)."
       item.kind = monaco.languages.CompletionItemKind.Snippet
-      item.insertText = insertion
-      item.range = if (replacesStatement) statementRange else suffixRange
-      item.filterText = if (replacesStatement) snapshot.prefixText else display
+      item.insertText = candidate
+      item.range = statementRange
+      item.filterText = snapshot.prefixText
       if (defined(monaco.languages.CompletionItemInsertTextRule?.KeepWhitespace))
         item.insertTextRules = monaco.languages.CompletionItemInsertTextRule.KeepWhitespace
       item.sortText = "0000_${tokenLength.toString().padStart(2, '0')}_${index.toString().padStart(2, '0')}"

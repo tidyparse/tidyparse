@@ -6,7 +6,9 @@ import ai.hypergraph.kaliningraph.parsing.matches
 import ai.hypergraph.kaliningraph.parsing.tmLst
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 class CppStatementSyntaxAlgorithmTest {
   @Test
@@ -22,6 +24,7 @@ class CppStatementSyntaxAlgorithmTest {
     ).freeze()
     val index = CppStatementSyntaxIndex(grammar)
     val alphabet = listOf("id", "+", ";")
+    val firstTerminalSets = listOf(emptySet(), setOf("id"), setOf("+"), setOf(";"))
 
     (0..4).flatMap { alphabet.words(it) }.forEach { prefix ->
       val witnessesByLength = (0..3).associateWith { length ->
@@ -42,7 +45,54 @@ class CppStatementSyntaxAlgorithmTest {
           )
         }
       }
+
+      firstTerminalSets.forEach { allowed ->
+        val constrainedByLength = witnessesByLength.mapValues { (_, suffixes) ->
+          suffixes.filter { it.firstOrNull() in allowed }
+        }
+        val expectedConstrained = constrainedByLength.entries
+          .firstOrNull { it.value.isNotEmpty() }?.key
+        val actualConstrained = index.minimumSuffixLength(prefix, allowed)
+        assertEquals(
+          expectedConstrained,
+          actualConstrained,
+          "Wrong first-terminal-constrained continuation after $prefix for $allowed"
+        )
+        if (actualConstrained != null) {
+          val forest = assertNotNull(
+            index.completeShortestSuffix(prefix, actualConstrained, allowed)
+          )
+          val residual = forest.toAcyclicCfg(grammar.tmLst).boundedAcyclic(actualConstrained)
+          alphabet.words(actualConstrained).forEach { suffix ->
+            assertEquals(
+              suffix in constrainedByLength.getValue(actualConstrained),
+              residual.recognizes(suffix),
+              "Constrained forest disagrees after $prefix on suffix $suffix for $allowed"
+            )
+          }
+        }
+      }
     }
+  }
+
+  @Test
+  fun productionSyntaxResidualConstrainsTheFirstEmittedTerminal() {
+    val returnResidual = assertNotNull(
+      cppSingleStatementSyntaxCompletion(
+        emptyList(), CppToken("ret", 0, 3, CppTokenKind.IDENTIFIER)
+      )
+    )
+    assertTrue(returnResidual.bounded.recognizes(listOf("return", ";")))
+    assertFalse(returnResidual.bounded.recognizes(listOf("throw", ";")))
+
+    val prefix = cppLines("flag = left").single().tokens
+    val aliasResidual = assertNotNull(cppSingleStatementSyntaxCompletion(
+      prefix, CppToken("an", 0, 2, CppTokenKind.IDENTIFIER)
+    ))
+    assertTrue(
+      aliasResidual.bounded.recognizes(listOf("&&", CPP_SYNTAX_IDENTIFIER, ";")),
+      "The alias callback must constrain by the projected grammar terminal"
+    )
   }
 }
 

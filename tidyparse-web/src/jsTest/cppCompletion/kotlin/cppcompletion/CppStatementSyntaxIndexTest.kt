@@ -58,6 +58,67 @@ class CppStatementSyntaxIndexTest {
       )
     }
   }
+
+  @Test
+  fun firstTerminalConstraintsMatchExhaustiveBruteForce() {
+    val grammar = smallRecursiveCnf()
+    val index = CppStatementSyntaxIndex(grammar)
+    val alphabet = listOf("a", "b", "(", ")", ";")
+    val prefixes = terminalStrings(alphabet, maximumLength = 4)
+    val candidateSuffixes = terminalStrings(alphabet, maximumLength = 3)
+    val allowedSets = listOf(
+      emptySet(), setOf("a"), setOf("b"), setOf(";"), setOf("(", "a"), setOf("a", "b")
+    )
+
+    for (prefix in prefixes) for (allowed in allowedSets) {
+      val validCompletions = candidateSuffixes.filter { suffix ->
+        suffix.firstOrNull() in allowed && smallRecursiveLanguageContains(prefix + suffix)
+      }
+      val expectedMinimum = validCompletions.minOfOrNull(List<String>::size)
+      val actualMinimum = index.minimumSuffixLength(prefix, allowed)
+      assertEquals(
+        expectedMinimum,
+        actualMinimum,
+        "Wrong constrained minimum after `$prefix` with first terminal in $allowed"
+      )
+      if (actualMinimum == null) continue
+
+      val forest = assertNotNull(index.completeShortestSuffix(prefix, actualMinimum, allowed))
+      val bounded = forest.toAcyclicCfg(grammar.tmLst).boundedAcyclic(actualMinimum)
+      val expectedShortest = validCompletions.filter { it.size == actualMinimum }.toSet()
+      val recognized = candidateSuffixes.filter(bounded::recognizes).toSet()
+      assertEquals(
+        expectedShortest,
+        recognized,
+        "Constrained forest changed the language after `$prefix` with first terminal in $allowed"
+      )
+    }
+
+    // `a a` already completes SEQUENCE, but `;` is not allowed first. The recurrence must retain
+    // the distinct positive path that extends the same left-recursive variable with another `a`.
+    assertEquals(2, index.minimumSuffixLength(listOf("a", "a"), setOf("a")))
+    assertEquals(1, index.minimumSuffixLength(listOf("a", "a"), setOf(";")))
+  }
+
+  @Test
+  fun concreteSpellingCallbackMapsAliasesToGrammarTerminals() {
+    val grammar = linkedSetOf(
+      "START" to listOf("OPERATOR", "SEMI"),
+      "OPERATOR" to listOf("&&"),
+      "OPERATOR" to listOf("||"),
+      "SEMI" to listOf(";")
+    ).freeze()
+    val index = CppStatementSyntaxIndex(grammar)
+    val aliases: (String) -> Iterable<String> = { terminal -> when (terminal) {
+      "&&" -> listOf("&&", "and")
+      "||" -> listOf("||", "or")
+      else -> listOf(terminal)
+    } }
+
+    assertEquals(setOf("&&"), index.terminalsWithSourcePrefix("an", aliases))
+    assertEquals(setOf("||"), index.terminalsWithSourcePrefix("o", aliases))
+    assertEquals(2, index.minimumSuffixLength(emptyList(), setOf("&&")))
+  }
 }
 
 /** Strict, epsilon-free CNF for `[ab]{2,};` or `();`. */
