@@ -11,14 +11,30 @@ class CppCompletionWorkerProtocolTest {
   fun requestHelperPublishesOnlyPlainStructuredCloneFields() {
     val source = "  value ="
     val snapshot = requireNotNull(cppEditorStatementSnapshot(source, 0, source.length))
-    val completion = js("({ items: [{ label: 'value', detail: 'int', kind: 6 }] })")
+    val semantic = js(
+      """({
+        schemaVersion: 1,
+        context: { kind: 'Expression' },
+        items: [{
+          name: 'value',
+          insertText: 'value',
+          kind: 6,
+          symbols: [{
+            id: 'c:@value',
+            qualifiedName: 'value',
+            kind: 'VarDecl',
+            provenance: { sema: true, index: false },
+            isValue: true,
+            type: 'int',
+            canonicalType: 'int'
+          }]
+        }]
+      })"""
+    )
     val request = cppCompletionWorkerRequest(
       cacheKey = "main.cpp@7:4",
-      source = source,
       snapshot = snapshot.copy(seed = 73),
-      facts = CppCompletionSemanticFacts(
-        completionGroups = listOf(CppClangdCompletionGroup(completion))
-      ),
+      semantic = semantic,
       limit = 4
     )
 
@@ -27,29 +43,30 @@ class CppCompletionWorkerProtocolTest {
     assertEquals("main.cpp@7:4", request.cacheKey)
     assertEquals("  value =", request.statementPrefixText)
     assertEquals("  value =", request.semanticPrefixText)
-    assertEquals(source, request.source)
     assertEquals(4, request.limit)
     assertEquals("IDENTIFIER", request.prefixTokens[0].kind)
     assertEquals(2, request.prefixTokens[0].start)
     assertEquals("=", request.prefixTokens[1].text)
     assertTrue(js("Array.isArray(request.prefixTokens)") as Boolean)
-    assertTrue(js("Array.isArray(request.facts.completionGroups)") as Boolean)
     assertFalse(
-      request.facts.completionGroups[0].result === completion,
+      request.semantic === semantic,
       "Semantic facts must be converted to an owned plain DTO"
     )
-    assertEquals("value", request.facts.completionGroups[0].result.items[0].label)
+    assertEquals(1, request.semantic.schemaVersion)
+    assertEquals("value", request.semantic.items[0].name)
+    assertEquals("int", request.semantic.items[0].symbols[0].canonicalType)
     assertTrue(JSON.stringify(request).isNotBlank())
   }
 
   @Test
   fun requestHelperRejectsAnUnsafeInteractiveShape() {
     val snapshot = requireNotNull(cppEditorStatementSnapshot("return", 0, 6))
+    val semantic = js("({ schemaVersion: 1, items: [] })")
     assertFailsWith<IllegalArgumentException> {
-      cppCompletionWorkerRequest("key", "return", snapshot, limit = 11)
+      cppCompletionWorkerRequest("key", snapshot, semantic, limit = 11)
     }
     assertFailsWith<IllegalArgumentException> {
-      cppCompletionWorkerRequest("key", "first\nsecond", snapshot.copy(prefixText = "first\nsecond"))
+      cppCompletionWorkerRequest("key", snapshot.copy(prefixText = "first\nsecond"), semantic)
     }
   }
 
@@ -60,8 +77,8 @@ class CppCompletionWorkerProtocolTest {
     val snapshot = requireNotNull(cppEditorStatementSnapshot(source, 0, character))
     val request = cppCompletionWorkerRequest(
       cacheKey = "main.cpp@3:9",
-      source = source,
-      snapshot = snapshot.copy(seed = 7)
+      snapshot = snapshot.copy(seed = 7),
+      semantic = js("({ schemaVersion: 1, items: [] })")
     )
 
     // JSON cloning mirrors the browser Worker structured-clone boundary while ensuring that the
@@ -100,7 +117,10 @@ class CppCompletionWorkerProtocolTest {
   }
 
   @Test
-  fun cppEditorDisablesMonacoBracketPairInsertion() {
-    assertEquals("never", cppMonacoEditorOptions().autoClosingBrackets)
+  fun cppEditorUsesOnlyExplicitCompletionWithoutBracketPairInsertion() {
+    val options = cppMonacoEditorOptions()
+    assertEquals("never", options.autoClosingBrackets)
+    assertEquals(false, options.quickSuggestions)
+    assertEquals(false, options.suggestOnTriggerCharacters)
   }
 }

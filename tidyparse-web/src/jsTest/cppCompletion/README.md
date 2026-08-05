@@ -87,19 +87,20 @@ and the full browser console remains in `build/ci-logs/browser-console.log` for 
 
 1. The pinned grammars-v4 `CPP14Lexer` produces token text and exact source spans through
    `lexCppTokens(String)` and `lexCppTokenSpans(String)`.
-2. The test-only native bridge asks clangd for the recovery AST, scoped completions, receiver
-   members, signatures, hover types, constructors, and inheritance conversions. It also extracts
-   the translation unit's included header names. Independent scope and receiver probes preserve
-   locals and member tables when `.`, `->`, or `::` filters the main completion request.
-   On an exhaustive run it primes the first fixture's preamble while Karma launches Chrome, and
-   immutable fixture resources are read once per Karma run. The first scored context and baseline
-   compiler validation then overlap through the existing bounded native-worker pool.
-3. Once per statement, the deletion-at-index-0 context is used to prepare a shared, depth-indexed
-   semantic CFG. Identifiers are exact scoped terminals; calls are emitted only for assignable
-   argument tuples; member access uses compatible receiver types; pointer, smart-pointer,
-   constructor, stream, conditional, and arithmetic forms are type-specialized. Source headers are
-   semantic evidence too—for example, `<algorithm>` keeps `std::sort` available even when the
-   damaged line no longer spells it.
+2. The bundled clangd extension answers one `tidyparse/semanticCompletion` request at the exact
+   caret, with a second position identifying the statement's surrounding scope. The response keeps
+   the declarations and active call overloads discovered by that completion Sema alive long enough
+   to serialize their canonical type identities, parameters, ownership, and cv/ref structure. Sema
+   declarations are the sole authority for typed CFG edges. The clangd index
+   augments the accessible name inventory, but its display signatures and return types never become
+   type facts.
+3. Once per statement, those declaration records prepare a shared, depth-indexed semantic CFG.
+   Identifiers are exact terminals copied from accessible declaration and insertion names. Type
+   spellings enter the inventory only when their Sema `CppTypeInfo` is concrete and source-spellable;
+   dependent and unspellable implementation types remain opaque. Calls are emitted only for
+   assignable argument tuples, and member access uses compatible receiver types. There is no
+   hardcoded standard-library or project-name catalog: library and user symbols are available only
+   when clang reports them in the current translation unit and scope.
 4. At every cursor index, a memoized CFG derivative computes the exact left quotient of that
    statement base by the tokens before the cursor. Prefix-introduced correlated binders, such as
    generic-lambda parameters, receive a prefix-sensitive prepared base. The resulting residual is
@@ -108,8 +109,8 @@ and the full browser console remains in `build/ci-logs/browser-console.log` for 
    and indexed uniform sampling. Kotlin/JS keeps its hot count vectors, ranks, and decoding weights
    in native exact `bigint` values; the public Galoisenne API remains `BigInteger`. Recognition-only
    CYK indexes are lazy, so count/sample-only residuals do not build them. Both the semantic base and
-   every residual are acyclic and finite. Complete statements use an explicit epsilon residual;
-   every other suffix is bounded so the complete statement never exceeds 48 projected tokens.
+   every semantic residual are acyclic and finite. Complete statements use an explicit epsilon
+   residual; every other semantic suffix is bounded so it never exceeds 48 projected tokens.
    Decoding choices are compiled once to grammar-local integer indexes, and compact CFG statistics
    come directly from the bounded grammar without populating unrelated global CFG caches.
 6. The seeded sampler visits exact terminal-yield lengths in ascending order, skips empty slices,
@@ -132,21 +133,21 @@ a 48-token complete-statement ceiling. At a prefix of length `p`, the residual h
 `48 - p` projected tokens.
 
 In the production editor, Ctrl/⌘+Space invokes the grammar as the only user-visible C++ completion
-provider; clangd's public completion items are suppressed. The grammar still issues private clangd
-queries for semantic context. The provider runs only for that explicit keystroke, isolates the
-current same-line statement at the caret, and requests at most ten source-distinct terminal
+provider; clangd's public completion items are suppressed. The provider makes the same single,
+cancellable `tidyparse/semanticCompletion` request used by the benchmark, only for that explicit
+keystroke. It isolates the current same-line statement at the caret and requests at most ten
+source-distinct terminal
 sequences in increasing exact token length. Ambiguous derivations and alpha-renamed fresh binders
 are collapsed; when the global-minimum slice has fewer than ten useful forms, the sampler inspects
 successive exact lengths until it fills the cap or reaches the finite horizon. Its edit range stops
 at that statement's semicolon, an enclosing `}`, or a trailing comment, preserving neighboring
 code. Semantic CFG construction and decoding
 run in a dedicated worker; document-version and cursor checks discard stale replies, while active
-LSP cancellation prevents obsolete context probes from queueing in WebAssembly clangd. Source
-lexical facts and exact-caret AST reductions are cached independently, and a context epoch prevents
-an in-flight request from repopulating the cache after diagnostics or text change. The browser path
-uses source, scoped clangd completions, and a bounded reduction of clangd's recovery AST; it does
-not call the benchmark's native compiler oracle. Like the benchmark grammar it completes at ANTLR
-token boundaries within the 48-projected-token finite statement horizon.
+LSP cancellation prevents obsolete semantic requests from queueing in WebAssembly clangd. The
+browser path consumes the structured declaration DTO directly and does not call the benchmark's
+native compiler oracle. The semantic lane uses the 48-token finite horizon; an exact min-plus
+quotient of the generated full-statement syntax grammar handles longer prefixes without inventing
+identifier spellings.
 
 `cpp_statements.tidy` documents the broader single-line coverage target: qualified/template names
 with `<`, `>`, and `::`; pointers and references using `*`, `&`, and `&&`; calls and arbitrary
@@ -179,7 +180,8 @@ true, false    -> @boolean
 nullptr        -> @nullptr
 ```
 
-An identifier such as `cout`, `push_back`, or `Dog` is an exact terminal. `@fresh` is the sole
+An accessible identifier such as `ambientFlux`, `scanBands`, or `Widget` is an exact terminal.
+These names come from the cursor's clang response rather than a grammar-side catalog. `@fresh` is the sole
 wildcard. For recall, each possible `@fresh` alignment is guarded by substituting a newly generated
 identifier absent from the translation unit and compiling that modified ground-truth file. It only
 counts when the substitution compiles.

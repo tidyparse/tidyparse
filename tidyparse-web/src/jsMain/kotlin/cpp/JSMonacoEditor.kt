@@ -1,3 +1,4 @@
+import cppcompletion.CppTokenKind
 import kotlinx.browser.window
 import kotlinx.coroutines.*
 import kotlinx.coroutines.promise
@@ -8,8 +9,8 @@ import kotlin.math.ceil
 private const val CPP_WORKSPACE_PATH = "/home/web_user"
 private const val CPP_WORKSPACE_URI = "file://$CPP_WORKSPACE_PATH"
 private const val CPP_CLANGD_WORKER_NAME = "tidyparse-clangd"
-private const val CPP_COMPLETION_CONTEXT_TIMEOUT_MS = 1_200L
-private const val CPP_COMPLETION_AST_TIMEOUT_MS = 1_000L
+private const val CPP_COMPLETION_CONTEXT_TIMEOUT_MS = 2_000L
+private const val CPP_SEMANTIC_COMPLETION_LIMIT = 128
 private const val CPP_COMPLETION_WORKER_TIMEOUT_MS = 4_000L
 private const val CPP_COMPLETION_FORMAT_TIMEOUT_MS = 1_200L
 private const val CPP_COMPLETION_FORMAT_CLOSE_TIMEOUT_MS = 250L
@@ -48,11 +49,6 @@ data class ClangdDiagnostic(
 private class CachedCppGrammarCompletion(
   val key: String,
   val reply: dynamic
-)
-
-private class CachedCppAstContext(
-  val key: String,
-  val context: dynamic
 )
 
 private class CppFormattingResponse(val edits: dynamic)
@@ -133,7 +129,6 @@ class JSMonacoEditor(
   private var explicitCompletionUntil = 0.0
   private var latestRawDiagnostics: dynamic = null
   private var cachedGrammarCompletion: CachedCppGrammarCompletion? = null
-  private var cachedCppAstContext: CachedCppAstContext? = null
   private var cppCompletionContextEpoch = 0
   private var nextCppFormatDocumentId = 1
   private var requestedReadOnly = false
@@ -172,7 +167,6 @@ class JSMonacoEditor(
     editorApp.registerOnTextChangedCallback { changes: dynamic ->
       val text = changes.modified as? String ?: return@registerOnTextChangedCallback
       cachedGrammarCompletion = null
-      cachedCppAstContext = null
       cppCompletionContextEpoch++
       // VS Code diagnostics do not carry the model version. Never apply ranges published for the
       // previous text to a newly edited statement while clangd is still reparsing it.
@@ -278,7 +272,6 @@ class JSMonacoEditor(
     val app = editorApp ?: return
     fileName = nextFileName
     cachedGrammarCompletion = null
-    cachedCppAstContext = null
     cppCompletionContextEpoch++
     latestRawDiagnostics = null
     if (nextFileName.endsWith(".c", ignoreCase = true)) {
@@ -445,8 +438,9 @@ class JSMonacoEditor(
       if (darkTheme) "Default Dark Modern" else "Default Light Modern"
     configuration["editor.wordBasedSuggestions"] = "off"
     configuration["editor.autoClosingBrackets"] = "never"
+    configuration["editor.quickSuggestions"] = false
+    configuration["editor.suggestOnTriggerCharacters"] = false
     configuration["editor.inlayHints.enabled"] = "offUnlessPressed"
-    configuration["editor.quickSuggestionsDelay"] = 200
     configuration["editor.semanticHighlighting.enabled"] = true
     return JSON.stringify(configuration)
   }
@@ -620,21 +614,20 @@ class JSMonacoEditor(
     val modelUri = model.uri?.toString() as? String ?: documentUri()
     val contextEpoch = cppCompletionContextEpoch
     val resultKey = "$modelUri:$version:$contextEpoch:${snapshot.cacheKey}"
-    val sourceKey = "$modelUri:$version"
-    val astKey = "$sourceKey:${snapshot.line}:${snapshot.character}"
-
     val reply = cachedGrammarCompletion?.takeIf { it.key == resultKey }?.reply ?: try {
       val lspCancellation = cppLspCancellation(cancellation)
-      val queriedFacts = try {
+      val queriedSemantic = try {
         withTimeoutOrNull(CPP_COMPLETION_CONTEXT_TIMEOUT_MS) {
-          requestCppCompletionFacts(source, snapshot, astKey, lspCancellation.token)
+          requestCppSemanticCompletion(snapshot, lspCancellation.token)
         }
       } finally {
         // Cancelling after success is harmless; after a timeout it sends $/cancelRequest for any
         // unresolved work instead of leaving it queued in the single WASM-clangd process.
         lspCancellation.cancelAndDispose()
       }
-      val facts = queriedFacts ?: CppCompletionSemanticFacts()
+      // The editor has one semantic authority. A timeout is retryable, but must not silently
+      // switch this request back to lexical/AST name synthesis.
+      val semantic = queriedSemantic?.takeIf(::defined) ?: return empty
       if (
         contextEpoch != cppCompletionContextEpoch ||
         !cppCompletionStillCurrent(model, version, snapshot) ||
@@ -644,9 +637,8 @@ class JSMonacoEditor(
 
       val request = cppCompletionWorkerRequest(
         cacheKey = "$modelUri:$contextEpoch",
-        source = source,
         snapshot = snapshot,
-        facts = facts.copy(diagnostics = latestRawDiagnostics)
+        semantic = semantic
       )
       val activeWorker = requireNotNull(completionWorker)
       val completed = withTimeout(CPP_COMPLETION_WORKER_TIMEOUT_MS) {
@@ -668,10 +660,8 @@ class JSMonacoEditor(
         completionCancelled(cancellation)
       )
         return empty
-      // A cold AST timeout is intentionally retryable: return the degraded suggestions once, but
-      // do not permanently suppress return/this/member facts at this unchanged cursor. A format
-      // timeout is retryable for the same reason; the lexical suggestions remain available once.
-      if (formatted && queriedFacts != null && defined(queriedFacts.ast))
+      // A semantic or formatting timeout is retryable at the unchanged cursor.
+      if (formatted)
         cachedGrammarCompletion = CachedCppGrammarCompletion(resultKey, completed)
       completed
     } catch (cancelled: CancellationException) {
@@ -791,92 +781,33 @@ class JSMonacoEditor(
     }
   }
 
-  private suspend fun requestCppCompletionFacts(
-    source: String,
+  private suspend fun requestCppSemanticCompletion(
     snapshot: CppEditorStatementSnapshot,
-    astKey: String,
     cancellation: dynamic
-  ): CppCompletionSemanticFacts = coroutineScope {
+  ): dynamic {
     val client = try {
       languageClientWrapper?.getLanguageClient()
     } catch (_: Throwable) {
       null
     }
-    if (!defined(client)) return@coroutineScope CppCompletionSemanticFacts()
+    if (!defined(client)) return null
 
-    // clangd's AST extension is a whole-document request. The clangd worker reduces it at this
-    // caret before returning anything to Monaco. Give a cold parse one full second, while keeping
-    // a small outer-context margin in which the parallel completion requests can settle cleanly.
-    val ast = async {
-      cachedCppAstContext?.takeIf { it.key == astKey }?.let { return@async it.context }
-      val astCancellation = cppLspCancellation(cancellation)
-      val params = js("({})")
-      params.textDocument = js("({})")
-      params.textDocument.uri = documentUri()
-      params[CPP_AST_CONTEXT_REQUEST_FIELD] = js("({})")
-      params[CPP_AST_CONTEXT_REQUEST_FIELD].source = source
-      params[CPP_AST_CONTEXT_REQUEST_FIELD].line = snapshot.line
-      params[CPP_AST_CONTEXT_REQUEST_FIELD].character = snapshot.character
-      val rawAst = try {
-        withTimeoutOrNull(CPP_COMPLETION_AST_TIMEOUT_MS) {
-          optionalClangdRequest(client, "textDocument/ast", params, astCancellation.token)
-        }
-      } finally {
-        astCancellation.cancelAndDispose()
-      }
-      if (!defined(rawAst)) return@async null
-      val normalized = if (rawAst[CPP_NORMALIZED_AST_CONTEXT_FIELD] as? Boolean == true) rawAst
-      else cppClangdAstContextDto(rawAst, source, snapshot.line, snapshot.character)
-      cachedCppAstContext = CachedCppAstContext(astKey, normalized)
-      normalized
-    }
     val semanticPrefix = snapshot.semanticPrefixText
-    val semanticCharacter = snapshot.statementStartCharacter + semanticPrefix.length
+    val semanticCharacter = snapshot.character
     val receiverOperator = cppReceiverOperator(semanticPrefix)
-    val base = async {
-      optionalClangdRequest(
-        client,
-        "textDocument/completion",
-        cppCompletionParams(snapshot.line, semanticCharacter, receiverOperator),
-        cancellation
-      )
-    }
-    val scopeCharacter = snapshot.statementStartCharacter +
+    val params = cppCompletionParams(snapshot.line, semanticCharacter, receiverOperator)
+    params.limit = CPP_SEMANTIC_COMPLETION_LIMIT
+    params.allScopes = snapshot.activeFragment?.kind == CppTokenKind.IDENTIFIER
+    params.scopePosition = js("({})")
+    params.scopePosition.line = snapshot.line
+    params.scopePosition.character = snapshot.statementStartCharacter +
       snapshot.prefixText.takeWhile { it == ' ' || it == '\t' }.length
-    val scope = if (scopeCharacter == semanticCharacter) null else async {
-      optionalClangdRequest(
-        client,
-        "textDocument/completion",
-        cppCompletionParams(snapshot.line, scopeCharacter, null),
-        cancellation
-      )
-    }
-    val signatures = if (hasOpenCppCall(snapshot.prefixText)) async {
-      optionalClangdRequest(
-        client,
-        "textDocument/signatureHelp",
-        cppTextDocumentPositionParams(snapshot.line, snapshot.character),
-        cancellation
-      )
-    } else null
-    val hoverCharacter = cppReceiverHoverCharacter(semanticPrefix, receiverOperator)
-      ?.let { snapshot.statementStartCharacter + it }
-    val hover = hoverCharacter?.let { hoverAt -> async {
-      optionalClangdRequest(
-        client,
-        "textDocument/hover",
-        cppTextDocumentPositionParams(snapshot.line, hoverAt),
-        cancellation
-      )
-    } }
-
-    val groups = mutableListOf<CppClangdCompletionGroup>()
-    val baseResult: dynamic = base.await()
-    if (defined(baseResult))
-      groups.add(CppClangdCompletionGroup(baseResult, receiverOperator != null, receiverOperator))
-    val scopeResult: dynamic = scope?.await()
-    if (defined(scopeResult)) groups.add(CppClangdCompletionGroup(scopeResult))
-    CppCompletionSemanticFacts(groups, signatures?.await(), hover?.await(), ast = ast.await())
+    return optionalClangdRequest(
+      client,
+      "tidyparse/semanticCompletion",
+      params,
+      cancellation
+    )
   }
 
   private suspend fun optionalClangdRequest(
@@ -935,22 +866,6 @@ class JSMonacoEditor(
         else -> null
       }
     }
-
-  private fun cppReceiverHoverCharacter(prefixText: String, operator: String?): Int? {
-    operator ?: return null
-    val beforeOperator = prefixText.trimEnd().dropLast(operator.length)
-    val character = beforeOperator.indexOfLast { it.isLetterOrDigit() || it == '_' }
-    return character.takeIf { it >= 0 }
-  }
-
-  private fun hasOpenCppCall(prefixText: String): Boolean {
-    var depth = 0
-    prefixText.forEach { character -> when (character) {
-      '(' -> depth++
-      ')' -> if (depth > 0) depth--
-    } }
-    return depth > 0
-  }
 
   private fun cppCompletionStillCurrent(
     model: dynamic,
@@ -1159,10 +1074,8 @@ class JSMonacoEditor(
   /**
    * Keep clangd's semantic services, but do not publish its completion provider to Monaco.
    *
-   * Grammar completion still sends narrowly scoped `textDocument/completion` requests directly
-   * through the language client to collect semantic names. Middleware only wraps requests made by
-   * the language-client feature providers, so returning an empty list here cannot intercept those
-   * private context requests or diagnostics, hover, signature help, and AST requests.
+   * Grammar completion uses the private `tidyparse/semanticCompletion` request, which returns the
+   * merged Sema/index declarations without registering clangd's ordinary suggestion UI.
    */
   private fun clangdEditorMiddleware(): dynamic =
     js(
@@ -1232,9 +1145,8 @@ internal fun cppMonacoEditorOptions(): dynamic {
   options.detectIndentation = false
   options.autoClosingBrackets = "never"
   options.wordBasedSuggestions = "off"
-  options.quickSuggestions = js("({ other: true, comments: false, strings: false })")
-  options.quickSuggestionsDelay = 200
-  options.suggestOnTriggerCharacters = true
+  options.quickSuggestions = false
+  options.suggestOnTriggerCharacters = false
   options.acceptSuggestionOnEnter = "on"
   options.parameterHints = js("({ enabled: true, cycle: true })")
   options.hover = js("({ enabled: true, delay: 300, sticky: true })")

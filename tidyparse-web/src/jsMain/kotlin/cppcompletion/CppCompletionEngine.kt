@@ -50,7 +50,14 @@ fun PreparedCppCompletionGrammar.completeCppStatement(
   query: CppCompletionQuery
 ): CppCompletionExecution {
   val generationClock = TimeSource.Monotonic.markNow()
-  val suffixGrammar = generate(query.prefix)
+  val generated = generate(query.prefix)
+  val activeIdentifier = query.tokenPrefix?.takeIf {
+    it.kind == CppTokenKind.IDENTIFIER &&
+      it.text in query.identifiersInFile && it.text.isCppIdentifierName()
+  }?.text
+  val suffixGrammar = activeIdentifier?.let {
+    generated.withSyntaxFallback(generated.identifierInventory + it)
+  } ?: generated
   val generationMillis = generationClock.elapsedNow().inWholeMilliseconds.toInt()
 
   val samplingClock = TimeSource.Monotonic.markNow()

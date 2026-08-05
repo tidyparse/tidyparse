@@ -54,7 +54,6 @@ private class CppCompletionWorkerRuntime(private val scope: dynamic) {
       require(rawRequest.type as? String == "complete") { "Unsupported C++ completion worker request" }
       require(requestId >= 0) { "A C++ completion request id must be nonnegative" }
 
-      val source = rawRequest.source as? String ?: error("Missing C++ source text")
       val prefixText = rawRequest.statementPrefixText as? String
         ?: error("Missing C++ statement prefix text")
       val semanticPrefixText = rawRequest.semanticPrefixText as? String ?: prefixText
@@ -82,29 +81,11 @@ private class CppCompletionWorkerRuntime(private val scope: dynamic) {
         seed = seed
       )
 
-      val facts = rawRequest.facts
-      val completionGroups = cppCompletionDynamicArray(facts?.completionGroups).map { group ->
-        CppClangdCompletionGroup(
-          result = group.result,
-          receiverMember = group.receiverMember as? Boolean ?: false,
-          receiverOperator = group.receiverOperator as? String
-        )
+      val semantic = rawRequest.semantic
+      require(semantic != null && semantic != js("undefined")) {
+        "Missing clang/Sema completion facts"
       }
-      val rawAst = facts?.ast
-      val ast = if (
-        rawAst != null && rawAst != js("undefined") &&
-        rawAst[CPP_NORMALIZED_AST_CONTEXT_FIELD] as? Boolean == true
-      ) rawAst
-      else cppClangdAstContextDto(rawAst, source, line, character)
-      val contextDto = cppCompletionContextDto(
-        source = source,
-        completionGroups = completionGroups,
-        signatures = facts?.signatures,
-        hover = facts?.hover,
-        diagnostics = facts?.diagnostics,
-        ast = ast,
-        snapshot = snapshot
-      )
+      val contextDto = cppSemanticCompletionContextDto(semantic, snapshot)
       val context = cppCompletionContextFromDto(contextDto)
       val query = snapshot.completionQuery(context.identifiers, limit, seed)
 
@@ -199,18 +180,20 @@ private fun cppCompletionReply(requestId: Int, ok: Boolean): dynamic {
 /**
  * Creates the plain JavaScript request consumed by [CppCompletionWorkerClient].
  *
- * This is the browser's single completion boundary: the page supplies source, one immutable
- * statement snapshot, and browser-available clangd facts. Context normalization and the complete
- * grammar pipeline both run behind this request in the dedicated worker.
+ * This is the browser's single completion boundary: the page supplies one immutable statement
+ * snapshot and clang/Sema facts. Context normalization and the complete grammar pipeline both run
+ * behind this request in the dedicated worker.
  */
 fun cppCompletionWorkerRequest(
   cacheKey: String,
-  source: String,
   snapshot: CppEditorStatementSnapshot,
-  facts: CppCompletionSemanticFacts = CppCompletionSemanticFacts(),
+  semantic: dynamic,
   limit: Int = CPP_MAX_INTERACTIVE_COMPLETIONS
 ): dynamic {
   require(limit in 1..CPP_MAX_INTERACTIVE_COMPLETIONS)
+  require(semantic != null && semantic != js("undefined")) {
+    "A C++ completion request requires clang/Sema facts"
+  }
   require('\n' !in snapshot.prefixText && '\r' !in snapshot.prefixText) {
     "A C++ completion request must contain one physical statement prefix"
   }
@@ -221,7 +204,6 @@ fun cppCompletionWorkerRequest(
   // the DTO makes the wire shape explicit and lets protocol fixtures use the same helper.
   request.id = 0
   request.cacheKey = cacheKey
-  request.source = source
   request.line = snapshot.line
   request.character = snapshot.character
   request.statementStartCharacter = snapshot.statementStartCharacter
@@ -238,18 +220,7 @@ fun cppCompletionWorkerRequest(
     serialized
   }.toTypedArray()
   request.seed = snapshot.seed
-  request.facts = js("({})")
-  request.facts.completionGroups = facts.completionGroups.map { group ->
-    val serialized = js("({})")
-    serialized.result = group.result
-    serialized.receiverMember = group.receiverMember
-    serialized.receiverOperator = group.receiverOperator
-    serialized
-  }.toTypedArray()
-  request.facts.signatures = facts.signatures
-  request.facts.hover = facts.hover
-  request.facts.diagnostics = facts.diagnostics
-  request.facts.ast = facts.ast
+  request.semantic = semantic
   request.limit = limit
   // Raw LSP values and Kotlin arrays become one owned graph of plain structured-clone fields.
   return cppCompletionJsonClone(request)

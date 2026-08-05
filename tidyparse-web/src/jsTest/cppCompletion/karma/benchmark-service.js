@@ -1823,6 +1823,20 @@ class ClangdLspSession {
           return null;
         }
       };
+      // Exercise the same single structured request as the browser whenever the selected clangd
+      // contains tidyparse's private Sema endpoint. Stock clangd remains available only for the
+      // historical native-oracle diagnostics below.
+      if (!includeOracle) {
+        const semantic = await optionalRequest("tidyparse/semanticCompletion", {
+          textDocument: { uri: this.uri },
+          position: { line, character },
+          scopePosition: { line, character: scopeCharacter },
+          allScopes: /[A-Za-z_][A-Za-z_0-9]*$/.test(beforeCursor),
+          limit: 128,
+          context: { triggerKind: 1 }
+        }, "clangd semantic completion");
+        if (semantic?.schemaVersion === 1) return { semantic };
+      }
       // The AST request waits for the current document version. Without this barrier clangd may
       // legitimately answer completion from its lexical fallback index while rebuilding the AST,
       // which admits out-of-scope and even comment words as candidates.

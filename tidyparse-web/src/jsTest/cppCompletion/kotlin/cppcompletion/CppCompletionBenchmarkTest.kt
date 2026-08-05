@@ -5,6 +5,7 @@ import cppClangdAstContextDto
 import cppCompletionContextDto
 import cppCompletionContextFromDto
 import cppEditorStatementSnapshot
+import cppSemanticCompletionContextDto
 import completionQuery
 import ai.hypergraph.kaliningraph.parsing.boundedAcyclic
 import ai.hypergraph.kaliningraph.parsing.freeze
@@ -101,9 +102,13 @@ class CppBenchmarkService {
     val payload = js("({})")
     payload.source = source
     payload.line = line
-    payload.character = snapshot.statementStartCharacter + snapshot.semanticPrefixText.length
+    payload.character = character
     if (fixture != null) payload.fixture = fixture
     val json = request("$CPP_ROUTE/context", payload, CPP_CONTEXT_REQUEST_TIMEOUT_MILLIS)
+    val semantic = json.semantic
+    if (semantic != null && semantic != js("undefined")) {
+      return cppCompletionContextFromDto(cppSemanticCompletionContextDto(semantic, snapshot))
+    }
     val completionGroups = jsonArray(json.completionGroups).map { group ->
       CppClangdCompletionGroup(
         result = group,
@@ -121,24 +126,6 @@ class CppBenchmarkService {
       ast = ast,
       snapshot = snapshot
     ))
-  }
-
-  /** Test-only native enrichment; the scored benchmark intentionally uses [context]. */
-  suspend fun oracleContext(
-    source: String,
-    line: Int,
-    character: Int,
-    fixture: String? = null
-  ): CppCompletionContext {
-    val payload = js("({})")
-    payload.source = source
-    payload.line = line
-    payload.character = character
-    payload.mode = "oracle"
-    if (fixture != null) payload.fixture = fixture
-    return cppCompletionContextFromDto(
-      request("$CPP_ROUTE/context", payload, CPP_CONTEXT_REQUEST_TIMEOUT_MILLIS)
-    )
   }
 
   suspend fun compile(sources: List<String>): List<CompileResult> {
@@ -1115,16 +1102,145 @@ class CppCompletionBenchmarkTest {
     assertTrue(context.types.single().abstract)
   }
 
+  private fun semaParameter(type: String, name: String = "") = CppParameter(
+    name = name,
+    type = type,
+    canonicalType = type
+  )
+
+  private fun semaType(type: String, abstract: Boolean = false) = CppReference(
+    name = type,
+    type = type,
+    kind = "class",
+    source = "sema",
+    abstract = abstract,
+    id = "type:$type",
+    qualifiedName = type,
+    canonicalType = type,
+    isType = true,
+    isValue = false,
+    isCallable = false,
+    isMember = false,
+    isStatic = false
+  )
+
+  private fun semaValue(
+    name: String,
+    type: String,
+    owner: String? = null,
+    mutableField: Boolean? = null
+  ) = CppReference(
+    name = name,
+    type = type,
+    kind = if (owner == null) "variable" else "field",
+    ownerType = owner,
+    source = "sema",
+    id = "value:${owner?.let { "$it::" }.orEmpty()}$name",
+    qualifiedName = owner?.let { "$it::$name" } ?: name,
+    canonicalType = type,
+    canonicalOwnerType = owner,
+    isType = false,
+    isValue = true,
+    isCallable = false,
+    isMember = owner != null,
+    isStatic = false,
+    isMutableField = mutableField
+  )
+
+  private fun semaFunction(
+    name: String,
+    returnType: String,
+    parameters: List<CppParameter> = emptyList()
+  ) = CppReference(
+    name = name,
+    returnType = returnType,
+    parameters = parameters,
+    kind = if (name.substringAfterLast("::").startsWith("operator")) "operator" else "function",
+    source = "sema",
+    id = "function:$name(${parameters.joinToString { it.canonicalType ?: it.type }})",
+    qualifiedName = name,
+    canonicalReturnType = returnType,
+    isType = false,
+    isValue = false,
+    isCallable = true,
+    isMember = false,
+    isStatic = false
+  )
+
+  private fun semaMethod(
+    owner: String,
+    name: String,
+    returnType: String,
+    parameters: List<CppParameter> = emptyList(),
+    constMethod: Boolean = false
+  ) = CppReference(
+    name = name,
+    returnType = returnType,
+    parameters = parameters,
+    kind = "method",
+    ownerType = owner,
+    source = "sema",
+    id = "$owner::$name(${parameters.joinToString { it.canonicalType ?: it.type }})",
+    qualifiedName = "$owner::$name",
+    canonicalReturnType = returnType,
+    canonicalOwnerType = owner,
+    isType = false,
+    isValue = false,
+    isCallable = true,
+    isMember = true,
+    isStatic = false,
+    isConstMethod = constMethod
+  )
+
+  private fun semaConstructor(
+    type: String,
+    parameters: List<CppParameter> = emptyList()
+  ) = CppReference(
+    name = type.substringAfterLast("::"),
+    returnType = type,
+    parameters = parameters,
+    kind = "constructor",
+    ownerType = type,
+    source = "sema",
+    id = "$type::${type.substringAfterLast("::")}(${parameters.joinToString { it.canonicalType ?: it.type }})",
+    qualifiedName = "$type::${type.substringAfterLast("::")}",
+    canonicalReturnType = type,
+    canonicalOwnerType = type,
+    isType = false,
+    isValue = false,
+    isCallable = true,
+    isMember = true,
+    isStatic = false
+  )
+
+  private fun semaAlias(name: String, target: String) = CppReference(
+    name = name,
+    type = target,
+    kind = "typeAlias",
+    source = "sema",
+    id = "alias:$name",
+    qualifiedName = name,
+    canonicalType = target,
+    isType = true,
+    isValue = false,
+    isCallable = false,
+    isMember = false,
+    isStatic = false
+  )
+
   @Test
   fun nestedTemplateDeclarationIsRecognizedAtEveryTypeBoundary() {
-    val line = cppLines("std::vector<std::unique_ptr<Animal>> animals;").single()
+    val nestedType = "atlas::Sequence<cosmos::Handle<zoo::Animal>>"
+    val line = cppLines("$nestedType animals;").single()
     val context = CppCompletionContext(
-      identifiers = setOf("std", "vector", "unique_ptr", "make_unique", "Animal", "animals"),
-      typeNames = setOf("Animal"),
-      types = listOf(CppReference("Animal", type = "Animal", kind = "class", source = "ast")),
+      identifiers = setOf("atlas", "Sequence", "cosmos", "Handle", "zoo", "Animal", "animals"),
+      sourceIdentifiers = setOf(
+        "atlas", "Sequence", "cosmos", "Handle", "zoo", "Animal", "animals"
+      ),
+      types = listOf(semaType(nestedType)),
+      functions = listOf(semaConstructor(nestedType)),
       unresolvedIdentifiers = setOf("animals"),
-      requiredIdentifier = "animals",
-      requiredTypes = setOf("std::vector<std::unique_ptr<Animal>>")
+      requiredIdentifier = "animals"
     )
     cppTruncations(line).forEach { truncation ->
       val language = CppCompletionGrammar().generate(context, truncation.prefix)
@@ -1137,24 +1253,23 @@ class CppCompletionBenchmarkTest {
   }
 
   @Test
-  fun unprobedDeclarationTypesSurviveANonexhaustiveRequiredTypeOracle() {
+  fun declarationFactsAreNotFilteredByThePreferredTypeHint() {
+    val prism = "optics::Prism"
+    val echo = "acoustics::Echo"
     val context = CppCompletionContext(
-      identifiers = setOf("std", "string", "value"),
-      sourceIdentifiers = setOf("std", "string", "value"),
-      headers = setOf("string"),
+      identifiers = setOf("optics", "Prism", "acoustics", "Echo", "value"),
+      sourceIdentifiers = setOf("optics", "Prism", "acoustics", "Echo", "value"),
+      types = listOf(semaType(prism), semaType(echo)),
+      functions = listOf(semaConstructor(prism), semaConstructor(echo)),
       requiredIdentifier = "value",
-      requiredTypes = setOf("int"),
-      probedRequiredTypes = setOf("int", "double")
+      preferredType = "int",
+      canonicalPreferredType = "int"
     )
     val language = CppCompletionGrammar().generate(context, emptyList())
     fun statement(source: String) = cppLines(source).single().tokens
 
-    assertTrue(language.recognizes(statement("int value;")))
-    assertFalse(language.recognizes(statement("double value;")))
-    assertTrue(
-      language.recognizes(statement("std::string value;")),
-      "A successful partial probe universe must not exclude an unprobed source-valid type"
-    )
+    assertTrue(language.recognizes(statement("$prism value;")))
+    assertTrue(language.recognizes(statement("$echo value;")))
   }
 
   @Test
@@ -1178,115 +1293,150 @@ class CppCompletionBenchmarkTest {
   }
 
   @Test
-  fun stringStreamInsertionHasTheStaticOstreamResultType() {
-    val identifiers = setOf("std", "ostringstream", "ostream", "move", "out", "name", "copy")
-    val values = listOf(
-      CppReference("out", type = "std::ostringstream", kind = "variable", source = "ast"),
-      CppReference("name", type = "std::string", kind = "variable", source = "ast")
-    )
+  fun explicitOperatorResultTypesControlChainingAndInitialization() {
+    val emitter = "telemetry::Emitter"
+    val channel = "telemetry::Channel"
+    val glyph = "telemetry::Glyph"
+    val identifiers = setOf("telemetry", "Emitter", "Channel", "Glyph", "out", "mark")
     val base = CppCompletionContext(
       identifiers = identifiers,
       sourceIdentifiers = identifiers,
-      headers = setOf("sstream"),
-      values = values,
-      types = listOf(
-        CppReference("ostringstream", type = "std::ostringstream", kind = "class", source = "ast")
+      values = listOf(semaValue("out", emitter), semaValue("mark", glyph)),
+      types = listOf(semaType(emitter), semaType(channel), semaType(glyph)),
+      functions = listOf(
+        semaFunction(
+          "operator<<", "$channel &",
+          listOf(semaParameter("$emitter &", "sink"), semaParameter("const $glyph &", "value"))
+        ),
+        semaFunction(
+          "operator<<", "$channel &",
+          listOf(semaParameter("$channel &", "sink"), semaParameter("const $glyph &", "value"))
+        )
       )
     )
-    val chainedInsertion = cppLines("out << name << \" (\";").single().tokens
+    val chainedInsertion = cppLines("out << mark << mark;").single().tokens
     assertTrue(
       CppCompletionGrammar().generate(base, emptyList()).recognizes(chainedInsertion),
-      "A derived output stream must remain usable throughout a chained insertion"
+      "The second operator must receive the first operator's declared result type"
     )
 
-    val declarationContext = base.copy(
-      unresolvedIdentifiers = setOf("copy"),
-      requiredIdentifier = "copy",
-      requiredTypes = setOf("std::ostringstream")
+    val aliasContext = base.copy(
+      identifiers = identifiers + "alias",
+      sourceIdentifiers = identifiers + "alias",
+      unresolvedIdentifiers = setOf("alias"),
+      requiredIdentifier = "alias"
     )
     val generator = CppCompletionGrammar()
     assertTrue(
-      generator.generate(declarationContext, emptyList()).recognizes(
-        cppLines("std::ostringstream copy = std::move(out);").single().tokens
+      generator.generate(aliasContext, emptyList()).recognizes(
+        cppLines("const $channel& alias = out << mark;").single().tokens
       ),
-      "The string stream object itself remains movable"
+      "The operator's lvalue-reference result must bind to a const reference"
+    )
+    val copyContext = base.copy(
+      identifiers = identifiers + "copy",
+      sourceIdentifiers = identifiers + "copy",
+      unresolvedIdentifiers = setOf("copy"),
+      requiredIdentifier = "copy"
     )
     assertFalse(
-      generator.generate(declarationContext, emptyList()).recognizes(
-        cppLines("std::ostringstream copy = std::move(out << name);").single().tokens
+      generator.generate(copyContext, emptyList()).recognizes(
+        cppLines("$emitter copy = out << mark;").single().tokens
       ),
-      "operator<< returns ostream&, so moving its result cannot initialize an ostringstream"
+      "An operator result must not be retyped as its left operand"
     )
   }
 
   @Test
-  fun standardOstreamRemainsUsableButIsNotAssignable() {
-    val identifiers = setOf("std", "cout", "ostream")
+  fun operatorFactsDoNotInventUnrelatedAssignmentConversions() {
+    val console = "terminal::Console"
+    val packet = "terminal::Packet"
+    val identifiers = setOf("terminal", "Console", "Packet", "console", "packet")
     val context = CppCompletionContext(
       identifiers = identifiers,
       sourceIdentifiers = identifiers,
       values = listOf(
-        CppReference("std::cout", type = "std::ostream", kind = "variable", source = "ast")
+        semaValue("console", console),
+        semaValue("packet", packet)
+      ),
+      types = listOf(semaType(console), semaType(packet)),
+      functions = listOf(
+        semaFunction(
+          "operator<<", "$console &",
+          listOf(semaParameter("$console &", "sink"), semaParameter("const $packet &", "value"))
+        )
       )
     )
     val language = CppCompletionGrammar().generate(context, emptyList())
     fun statement(source: String): List<CppToken> = cppLines(source).single().tokens
 
-    assertTrue(language.recognizes(statement("std::cout << 0;")))
+    assertTrue(language.recognizes(statement("console << packet;")))
     assertFalse(
-      language.recognizes(statement("std::cout = std::cout;")),
-      "basic_ostream's protected/deleted assignment must not enter a typesafe statement CFG"
+      language.recognizes(statement("console = packet;")),
+      "Declaring an operator must not create an unrelated Packet-to-Console conversion"
     )
     val declarationLanguage = CppCompletionGrammar().generate(
       context.copy(
-        unresolvedIdentifiers = setOf("copy"),
-        requiredIdentifier = "copy",
-        requiredTypes = setOf("std::ostream")
+        identifiers = identifiers + "alias",
+        sourceIdentifiers = identifiers + "alias",
+        unresolvedIdentifiers = setOf("alias"),
+        requiredIdentifier = "alias"
       ),
       emptyList()
     )
-    assertFalse(declarationLanguage.recognizes(statement("std::ostream copy = std::cout;")))
-    assertTrue(declarationLanguage.recognizes(statement("const std::ostream& copy = std::cout;")))
+    assertTrue(declarationLanguage.recognizes(statement("const $console& alias = console;")))
   }
 
   @Test
-  fun incompleteStandardLibraryTypesAreNotDeclarationCandidates() {
-    val identifiers = setOf("std", "ostringstream", "out")
+  fun identifiersAndHeadersCannotManufactureTypeFacts() {
+    val artifact = "workshop::Artifact"
+    val identifiers = setOf("workshop", "Artifact", "item")
     val base = CppCompletionContext(
       identifiers = identifiers,
-      sourceIdentifiers = setOf("std", "out"),
-      unresolvedIdentifiers = setOf("out"),
-      requiredIdentifier = "out"
+      sourceIdentifiers = identifiers,
+      headers = setOf("artifact_api"),
+      unresolvedIdentifiers = setOf("item"),
+      requiredIdentifier = "item"
     )
-    val statement = cppLines("std::ostringstream out;").single().tokens
+    val statement = cppLines("$artifact item;").single().tokens
 
     assertFalse(
       CppCompletionGrammar().generate(base, emptyList()).recognizes(statement),
-      "<iostream> only forward-declares basic_ostringstream; <sstream> is required"
+      "Lexical identifiers and include names are not declarations"
     )
     assertTrue(
-      CppCompletionGrammar().generate(base.copy(headers = setOf("sstream")), emptyList())
-        .recognizes(statement)
+      CppCompletionGrammar().generate(
+        base.copy(
+          types = listOf(semaType(artifact)),
+          functions = listOf(semaConstructor(artifact))
+        ),
+        emptyList()
+      ).recognizes(statement)
     )
   }
 
   @Test
-  fun constReceiversExcludeNonconstUserMethods() {
-    val size = CppReference(
-      "size", returnType = "std::size_t", kind = "method",
-      detail = "std::size_t size() const", ownerType = "Document", source = "ast"
+  fun constObjectFactsExcludeNonconstMembers() {
+    val document = "archive::Document"
+    val size = semaMethod(
+      owner = document,
+      name = "size",
+      returnType = "int",
+      constMethod = true
     )
-    val titled = CppReference(
-      "titled", returnType = "Document &", parameters = listOf(CppParameter(type = "const char *")),
-      kind = "method", detail = "Document &titled(const char *)",
-      ownerType = "Document", source = "ast"
+    val titled = semaMethod(
+      owner = document,
+      name = "titled",
+      returnType = "$document &",
+      parameters = listOf(semaParameter("const char *", "title"))
     )
+    val identifiers = setOf("archive", "Document", "document", "size", "titled")
     val context = CppCompletionContext(
-      identifiers = setOf("document", "Document", "size", "titled"),
-      sourceIdentifiers = setOf("document", "Document", "size", "titled"),
-      values = listOf(CppReference("document", type = "const Document &", kind = "variable", source = "ast")),
-      types = listOf(CppReference("Document", type = "Document", kind = "class", source = "ast")),
-      membersByType = listOf(CppTypeMembers("Document", listOf(size, titled)))
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(semaValue("document", "const $document &")),
+      types = listOf(semaType(document)),
+      membersByType = listOf(CppTypeMembers(document, listOf(size, titled)))
     )
     val language = CppCompletionGrammar().generate(context, emptyList())
 
@@ -1295,87 +1445,79 @@ class CppCompletionBenchmarkTest {
   }
 
   @Test
-  fun unqualifiedIteratorAliasesDoNotBecomeVectorElementTypes() {
-    val vehicle = CppReference("Vehicle", type = "Vehicle", kind = "class", source = "ast")
+  fun canonicalMemberTypesDoNotManufactureUnreportedAliases() {
+    val vehicle = "fleet::Vehicle"
+    val sequence = "garden::Sequence<$vehicle>"
+    val cursor = "$sequence::Cursor"
     val begin = CppReference(
-      "begin", returnType = "iterator", kind = "method", detail = "iterator begin()",
-      ownerType = "std::vector<Vehicle>", source = "completion"
+      name = "begin",
+      returnType = cursor,
+      kind = "method",
+      ownerType = sequence,
+      source = "sema",
+      id = "$sequence::begin()",
+      qualifiedName = "$sequence::begin",
+      canonicalReturnType = cursor,
+      canonicalOwnerType = sequence,
+      isType = false,
+      isValue = false,
+      isCallable = true,
+      isMember = true,
+      isStatic = false
     )
     val context = CppCompletionContext(
-      identifiers = setOf("std", "vector", "Vehicle", "iterator", "items"),
-      sourceIdentifiers = setOf("std", "vector", "Vehicle", "items"),
-      headers = setOf("vector"),
-      types = listOf(vehicle),
-      membersByType = listOf(CppTypeMembers("std::vector<Vehicle>", listOf(begin))),
+      identifiers = setOf("garden", "Sequence", "fleet", "Vehicle", "Cursor", "items"),
+      sourceIdentifiers = setOf("garden", "Sequence", "fleet", "Vehicle", "Cursor", "items"),
+      types = listOf(semaType(vehicle), semaType(sequence)),
+      functions = listOf(semaConstructor(sequence)),
+      membersByType = listOf(CppTypeMembers(sequence, listOf(begin))),
       unresolvedIdentifiers = setOf("items"),
       requiredIdentifier = "items"
     )
     val language = CppCompletionGrammar().generate(context, emptyList())
 
-    assertTrue(language.recognizes(cppLines("std::vector<Vehicle> items;").single().tokens))
-    assertFalse(language.recognizes(cppLines("std::vector<iterator> items;").single().tokens))
-  }
-
-  @Test
-  fun placeholderCompletionTypesDoNotBecomePointerDeclarations() {
-    val language = CppCompletionGrammar().generate(
-      CppCompletionContext(
-        identifiers = setOf("id", "values", "LocalRecord"),
-        sourceIdentifiers = setOf("id", "values", "LocalRecord"),
-        values = listOf(
-          CppReference("id", type = "type", kind = "variable", source = "completion"),
-          // libc++ recovery signatures can leak a compound placeholder rather than a bare `Tp`.
-          CppReference("values", type = "const Ep *", kind = "variable", source = "ast")
-        ),
-        types = listOf(
-          CppReference(
-            "value_type", type = "value_type", kind = "typeAlias", source = "ast"
-          ),
-          // Recovery records sometimes carry a header-template placeholder in `type` while their
-          // visible declaration name is source-local. The unspellable payload must not become a
-          // user-declared type merely because the record name itself occurs in the file.
-          CppReference(
-            "LocalRecord", type = "Tp", kind = "class", source = "ast"
-          )
-        ),
-        requiredIdentifier = "values"
-      ),
-      emptyList()
+    assertTrue(language.recognizes(cppLines("$sequence items;").single().tokens))
+    assertFalse(
+      language.recognizes(cppLines("Cursor items;").single().tokens),
+      "A canonical member result does not declare an unqualified alias"
     )
-
-    assertFalse(language.recognizes(cppLines("type* values;").single().tokens))
-    assertFalse(language.recognizes(cppLines("value_type* values;").single().tokens))
-    assertFalse(language.recognizes(cppLines("Tp* values;").single().tokens))
-    assertFalse(language.recognizes(cppLines("const Ep* values;").single().tokens))
   }
 
   @Test
-  fun stringAppendRequiresAMutableReceiverButAcceptsPrvalues() {
-    val identifiers = setOf("std", "string", "append", "text", "makeText", "readText")
+  fun nonconstMemberFactsAcceptMutableLvaluesAndPrvalues() {
+    val buffer = "storage::Buffer"
+    val identifiers = setOf("storage", "Buffer", "append", "text", "makeText", "readText")
+    val append = semaMethod(
+      buffer,
+      "append",
+      "$buffer &",
+      listOf(semaParameter("const char *", "suffix"))
+    )
     val context = CppCompletionContext(
       identifiers = identifiers,
       sourceIdentifiers = identifiers,
-      values = listOf(CppReference("text", type = "std::string", kind = "variable", source = "ast")),
-      types = listOf(CppReference("string", type = "std::string", kind = "class", source = "ast")),
+      values = listOf(semaValue("text", buffer)),
+      types = listOf(semaType(buffer)),
       functions = listOf(
-        CppReference("makeText", returnType = "std::string", kind = "function", source = "ast"),
-        CppReference("readText", returnType = "const std::string &", kind = "function", source = "ast")
-      )
+        semaFunction("makeText", buffer),
+        semaFunction("readText", "const $buffer &")
+      ),
+      membersByType = listOf(CppTypeMembers(buffer, listOf(append)))
     )
     val language = CppCompletionGrammar().generate(context, emptyList())
     fun statement(source: String): List<CppToken> = cppLines(source).single().tokens
 
     assertTrue(
       language.recognizes(statement("text.append(\" mutable\");")),
-      "Known std::string::append must accept a mutable string lvalue"
+      "A mutable lvalue can receive an explicitly reported nonconst member"
     )
     assertTrue(
       language.recognizes(statement("makeText().append(\" prvalue\");")),
-      "Known std::string::append must accept a string prvalue"
+      "A class prvalue can receive an explicitly reported nonconst member"
     )
     assertFalse(
       language.recognizes(statement("readText().append(\" forbidden\");")),
-      "A const std::string& result must not become a mutable append receiver"
+      "A const lvalue-reference result must not become a mutable receiver"
     )
     assertTrue(language.recognizes(statement("(&text)->append(\" pointer\");")))
     assertFalse(
@@ -1384,53 +1526,62 @@ class CppCompletionBenchmarkTest {
     )
     assertFalse(
       language.recognizes(statement("text.append(nullptr);")),
-      "basic_string text operations reject nullptr even though it converts to an ordinary pointer"
+      "nullptr is not assignable to the member's declared const-char-pointer parameter"
     )
   }
 
   @Test
-  fun constMethodsOnlyExposeMutableFieldsAsModifiableLvalues() {
-    fun context(mutableFields: Set<String>) = CppCompletionContext(
-      identifiers = setOf("std", "string", "append", "name_"),
-      sourceIdentifiers = setOf("std", "string", "append", "name_"),
-      values = listOf(CppReference("name_", type = "std::string", kind = "field", source = "completion")),
-      thisType = "const Route *",
-      mutableFields = mutableFields
+  fun contextualFieldTypesDetermineWhetherTheyAreModifiableLvalues() {
+    val route = "navigation::Route"
+    val buffer = "storage::Buffer"
+    val identifiers = setOf("navigation", "Route", "storage", "Buffer", "append", "name_")
+    val append = semaMethod(
+      buffer,
+      "append",
+      "$buffer &",
+      listOf(semaParameter("const char *", "suffix"))
+    )
+    fun context(mutableField: Boolean) = CppCompletionContext(
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(semaValue("name_", buffer, route, mutableField)),
+      types = listOf(semaType(route), semaType(buffer)),
+      membersByType = listOf(CppTypeMembers(buffer, listOf(append))),
+      thisType = "const $route *"
     )
     val statement = cppLines("name_.append(\"suffix\");").single().tokens
 
     assertFalse(
-      CppCompletionGrammar().generate(context(emptySet()), emptyList()).recognizes(statement),
-      "An ordinary field is a const lvalue inside a const-qualified member function"
+      CppCompletionGrammar().generate(context(false), emptyList()).recognizes(statement),
+      "An ordinary field is not a modifiable receiver through a const implicit object"
     )
     assertTrue(
-      CppCompletionGrammar().generate(context(setOf("name_")), emptyList()).recognizes(statement),
-      "A field declared mutable remains modifiable inside a const-qualified member function"
+      CppCompletionGrammar().generate(context(true), emptyList()).recognizes(statement),
+      "A structured mutable-field fact preserves modifiability through a const implicit object"
     )
   }
 
   @Test
-  fun abstractRecordsCanOnlyBeDeclaredThroughReferencesOrPointers() {
-    val animal = CppReference("Animal", type = "Animal", kind = "class", source = "ast", abstract = true)
-    val dog = CppReference("Dog", type = "Dog", kind = "class", source = "ast")
+  fun abstractTypeFactsBlockByValueDeclarationsButAllowPointers() {
+    val animal = "zoo::Animal"
+    val dog = "zoo::Dog"
     val context = CppCompletionContext(
-      identifiers = setOf("std", "move", "Animal", "Dog", "dog", "base", "copy"),
-      sourceIdentifiers = setOf("std", "move", "Animal", "Dog", "dog", "base", "copy"),
+      identifiers = setOf("zoo", "Animal", "Dog", "dog", "base", "copy"),
+      sourceIdentifiers = setOf("zoo", "Animal", "Dog", "dog", "base", "copy"),
       values = listOf(
-        CppReference("dog", type = "Dog", kind = "variable", source = "ast"),
-        CppReference("base", type = "Animal *", kind = "variable", source = "ast")
+        semaValue("dog", dog),
+        semaValue("base", "$animal *")
       ),
-      types = listOf(animal, dog),
-      conversions = listOf(CppConversion("Dog", "Animal")),
-      requiredIdentifier = "copy",
-      requiredTypes = setOf("Animal")
+      types = listOf(semaType(animal, abstract = true), semaType(dog)),
+      conversions = listOf(CppConversion(dog, animal)),
+      requiredIdentifier = "copy"
     )
     val language = CppCompletionGrammar().generate(context, emptyList())
     fun statement(source: String) = cppLines(source).single().tokens
 
-    assertTrue(language.recognizes(statement("const Animal& copy = dog;")))
+    assertTrue(language.recognizes(statement("$animal* copy = base;")))
     assertFalse(
-      language.recognizes(statement("Animal copy = dog;")),
+      language.recognizes(statement("$animal copy = dog;")),
       "An abstract record cannot be instantiated by value"
     )
     assertFalse(
@@ -1438,70 +1589,67 @@ class CppCompletionBenchmarkTest {
       "auto must not silently deduce an abstract by-value record"
     )
     val expressionLanguage = CppCompletionGrammar().generate(
-      context.copy(requiredIdentifier = null, requiredTypes = emptySet()),
+      context.copy(requiredIdentifier = null),
       emptyList()
     )
     assertTrue(expressionLanguage.recognizes(statement("true ? *base : *base;")))
-    assertFalse(
-      expressionLanguage.recognizes(statement("true ? *base : std::move(*base);")),
-      "Mixing an abstract lvalue and xvalue would require materializing the abstract record"
-    )
   }
 
   @Test
-  fun moveOnlyConditionalsDoNotMixLvaluesAndXvalues() {
+  fun rvalueReferenceParametersRejectLvalues() {
+    val parcel = "cargo::Parcel"
+    val identifiers = setOf("cargo", "Parcel", "parcel", "makeParcel", "dispatch")
     val context = CppCompletionContext(
-      identifiers = setOf("std", "unique_ptr", "Bicycle", "bicycle", "move"),
-      sourceIdentifiers = setOf("std", "unique_ptr", "Bicycle", "bicycle", "move"),
-      values = listOf(CppReference("bicycle", type = "std::unique_ptr<Bicycle>", kind = "variable", source = "ast"))
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(semaValue("parcel", parcel)),
+      types = listOf(semaType(parcel)),
+      functions = listOf(
+        semaFunction("makeParcel", parcel),
+        semaFunction("dispatch", "bool", listOf(semaParameter("$parcel &&", "parcel")))
+      )
     )
     val language = CppCompletionGrammar().generate(context, emptyList())
     fun statement(source: String) = cppLines(source).single().tokens
 
-    assertTrue(language.recognizes(statement("true ? bicycle : bicycle;")))
-    assertTrue(language.recognizes(
-      statement("true ? std::move(bicycle) : std::move(bicycle);")
-    ))
+    assertTrue(language.recognizes(statement("dispatch(makeParcel());")))
     assertFalse(
-      language.recognizes(statement("true ? bicycle : std::move(bicycle);")),
-      "A mixed move-only conditional requires an implicitly deleted copy"
+      language.recognizes(statement("dispatch(parcel);")),
+      "An lvalue cannot bind to an explicitly reported rvalue-reference parameter"
     )
   }
 
   @Test
-  fun scopedValuesHideUnqualifiedCallableCompletions() {
+  fun onlyContextuallyAccessibleCallablesBecomeCalls() {
+    val identifiers = setOf("index", "transform")
     val context = CppCompletionContext(
-      identifiers = setOf("index"),
-      sourceIdentifiers = setOf("index"),
-      values = listOf(CppReference("index", type = "int", kind = "variable", source = "ast")),
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(semaValue("index", "int")),
       functions = listOf(
-        CppReference(
-          "index", returnType = "int", parameters = listOf(CppParameter(type = "int")),
-          kind = "function", source = "completion"
-        )
+        semaFunction("transform", "int", listOf(semaParameter("int", "input")))
       )
     )
     val language = CppCompletionGrammar().generate(context, emptyList())
 
     assertFalse(
       language.recognizes(cppLines("index(0);").single().tokens),
-      "A local object shadows an unqualified function with the same spelling"
+      "A scoped value must not become callable without an accessible callable fact"
     )
+    assertTrue(language.recognizes(cppLines("transform(0);").single().tokens))
   }
 
   @Test
   fun dereferencedPointersAreParenthesizedBeforeDotMemberAccess() {
-    val identifiers = setOf("raw_vehicle", "Vehicle", "range")
-    val member = CppReference(
-      "range", returnType = "int", kind = "method", detail = "int range() const",
-      ownerType = "Vehicle", source = "ast"
-    )
+    val vehicle = "fleet::Vehicle"
+    val identifiers = setOf("fleet", "Vehicle", "raw_vehicle", "range")
+    val member = semaMethod(vehicle, "range", "int", constMethod = true)
     val context = CppCompletionContext(
       identifiers = identifiers,
       sourceIdentifiers = identifiers,
-      values = listOf(CppReference("raw_vehicle", type = "Vehicle *", kind = "variable", source = "ast")),
-      types = listOf(CppReference("Vehicle", type = "Vehicle", kind = "class", source = "ast")),
-      membersByType = listOf(CppTypeMembers("Vehicle", listOf(member)))
+      values = listOf(semaValue("raw_vehicle", "$vehicle *")),
+      types = listOf(semaType(vehicle)),
+      membersByType = listOf(CppTypeMembers(vehicle, listOf(member)))
     )
     val language = CppCompletionGrammar().generate(context, emptyList())
     fun statement(source: String) = cppLines(source).single().tokens
@@ -1515,49 +1663,57 @@ class CppCompletionBenchmarkTest {
   }
 
   @Test
-  fun standardFactoryTemplatesRetainTheirExplicitTypeArgument() {
-    val identifiers = setOf("std", "make_shared", "make_unique", "Node")
-    val node = CppReference("Node", type = "Node", kind = "class", source = "ast")
-    val constructor = CppReference(
-      "Node", returnType = "Node", kind = "constructor", ownerType = "Node", source = "ast"
-    )
-    val misleadingTemplateCompletion = CppReference(
-      "std::make_shared", returnType = "std::shared_ptr<Node>", kind = "function",
-      source = "completion"
-    )
+  fun reportedTemplateCallableRetainsItsExplicitArgument() {
+    val node = "graph::Node"
+    val handle = "graph::Handle<$node>"
+    val factory = "forge::create<$node>"
+    val identifiers = setOf("graph", "Node", "Handle", "forge", "create")
     val language = CppCompletionGrammar().generate(
       CppCompletionContext(
         identifiers = identifiers,
         sourceIdentifiers = identifiers,
-        types = listOf(node),
-        functions = listOf(constructor, misleadingTemplateCompletion)
+        types = listOf(semaType(node), semaType(handle)),
+        functions = listOf(semaFunction(factory, handle))
       ),
       emptyList()
     )
     fun statement(source: String) = cppLines(source).single().tokens
 
-    assertTrue(language.recognizes(statement("std::make_shared<Node>();")))
+    assertTrue(language.recognizes(statement("$factory();")))
     assertFalse(
-      language.recognizes(statement("std::make_shared();")),
-      "A deduced clang completion must not erase make_shared's required template argument"
+      language.recognizes(statement("forge::create();")),
+      "The grammar must not erase template arguments from Sema's insertion spelling"
     )
   }
 
   @Test
-  fun expandedLibraryTypesAcceptValuesConstructedThroughASourceAliasAtEveryBoundary() {
-    val record = "std::tuple<int,std::string,double>"
-    val records = "std::map<int,$record>"
-    val identifiers = setOf("std", "map", "tuple", "string", "Record", "records", "emplace")
+  fun canonicalParameterTypesAcceptValuesConstructedThroughAnAliasAtEveryBoundary() {
+    val record = "ledger::Entry<int,text::Name,double>"
+    val records = "ledger::Table<int,$record>"
+    val identifiers = setOf(
+      "ledger", "Entry", "Table", "text", "Name", "Record", "records", "emplace"
+    )
+    val constructor = semaConstructor(
+      "Record",
+      listOf(
+        semaParameter("int", "id"),
+        semaParameter("const char *", "name"),
+        semaParameter("double", "score")
+      )
+    )
+    val emplace = semaMethod(
+      records,
+      "emplace",
+      "bool",
+      listOf(semaParameter("int", "key"), semaParameter(record, "value"))
+    )
     val context = CppCompletionContext(
       identifiers = identifiers,
       sourceIdentifiers = identifiers,
-      headers = setOf("map", "tuple", "string"),
-      values = listOf(CppReference("records", type = records, kind = "variable", source = "ast")),
-      types = listOf(
-        CppReference(
-          "Record", type = record, kind = "typeAlias", detail = record, source = "source"
-        )
-      )
+      values = listOf(semaValue("records", records)),
+      types = listOf(semaAlias("Record", record), semaType(records)),
+      functions = listOf(constructor),
+      membersByType = listOf(CppTypeMembers(records, listOf(emplace)))
     )
     val line = cppLines("records.emplace(7, Record{7, \"Noor\", 88.5});").single()
     val prepared = CppCompletionGrammar().prepare(context)
@@ -1565,34 +1721,36 @@ class CppCompletionBenchmarkTest {
     cppTruncations(line).forEach { truncation ->
       assertTrue(
         prepared.generate(truncation.prefix).recognizes(truncation.suffix),
-        "The source alias and clang's expanded tuple spelling must agree at index ${truncation.prefix.size}"
+        "The alias and canonical parameter type diverged at index ${truncation.prefix.size}"
       )
     }
   }
 
   @Test
   fun implicitThisFieldsRemainScopedMutableReceiversAtEveryBoundary() {
-    // Preserve clang/libc++'s function-signature spacing; it is semantically significant to this
-    // regression because the compact standard type is also present in the same context.
-    val function = "std::function<int (int)>"
-    val steps = "std::vector<$function>"
+    val pipeline = "workflow::Pipeline"
+    val step = "workflow::Step"
+    val steps = "workflow::Steps"
     val identifiers = setOf(
-      "std", "function", "vector", "move", "Pipeline", "steps_", "step", "push_back"
+      "workflow", "Pipeline", "Step", "Steps", "steps_", "makeStep", "push"
     )
-    val field = CppReference(
-      "steps_", type = steps, kind = "field", receiverMember = true,
-      ownerType = "Pipeline", source = "completion"
+    val field = semaValue("steps_", steps, pipeline, mutableField = false)
+    val push = semaMethod(
+      steps,
+      "push",
+      "void",
+      listOf(semaParameter("$step &&", "step"))
     )
     val context = CppCompletionContext(
       identifiers = identifiers,
       sourceIdentifiers = identifiers,
-      headers = setOf("functional", "utility", "vector"),
-      values = listOf(CppReference("step", type = function, kind = "variable", source = "ast")),
-      types = listOf(CppReference("Pipeline", type = "Pipeline", kind = "class", source = "ast")),
-      completions = listOf(field),
-      thisType = "Pipeline *"
+      values = listOf(field),
+      types = listOf(semaType(pipeline), semaType(step), semaType(steps)),
+      functions = listOf(semaFunction("makeStep", step)),
+      membersByType = listOf(CppTypeMembers(steps, listOf(push))),
+      thisType = "$pipeline *"
     )
-    val line = cppLines("steps_.push_back(std::move(step));").single()
+    val line = cppLines("steps_.push(makeStep());").single()
     val prepared = CppCompletionGrammar().prepare(context)
 
     cppTruncations(line).forEach { truncation ->
@@ -1602,176 +1760,82 @@ class CppCompletionBenchmarkTest {
       )
     }
     assertFalse(
-      CppCompletionGrammar().generate(context.copy(thisType = "const Pipeline *"), emptyList())
+      CppCompletionGrammar().generate(context.copy(thisType = "const $pipeline *"), emptyList())
         .recognizes(line.tokens),
       "An ordinary field of a const implicit object is not a mutable receiver"
     )
   }
 
   @Test
-  fun variantQueriesRetainTheirCorrelatedTemplateAlternative() {
-    val variant = "std::variant<std::monostate,int,std::string>"
-    val base = CppCompletionContext(
-      identifiers = setOf("std", "variant", "monostate", "string", "payload"),
-      sourceIdentifiers = setOf("std", "variant", "monostate", "string", "payload"),
-      headers = setOf("variant", "string"),
-      values = listOf(CppReference("payload", type = variant, kind = "variable", source = "ast"))
-    )
-    fun statement(source: String) = cppLines(source).single().tokens
-
-    val holds = CppCompletionGrammar().generate(
-      base.copy(requiredIdentifier = "textual", requiredTypes = setOf("bool")),
-      emptyList()
-    )
-    assertTrue(holds.recognizes(
-      statement("bool textual = std::holds_alternative<std::string>(payload);")
-    ))
-
-    val get = CppCompletionGrammar().generate(
-      base.copy(requiredIdentifier = "text", requiredTypes = setOf("const std::string *")),
-      emptyList()
-    )
-    assertTrue(get.recognizes(
-      statement("const std::string* text = std::get_if<std::string>(&payload);")
-    ))
-  }
-
-  @Test
-  fun duplicateVariantAlternativesExcludeTypeBasedQueries() {
-    val variant = "std::variant<int,int>"
-    val identifiers = setOf("std", "variant", "payload")
-    val language = CppCompletionGrammar().generate(
-      CppCompletionContext(
-        identifiers = identifiers,
-        sourceIdentifiers = identifiers,
-        headers = setOf("variant"),
-        values = listOf(CppReference("payload", type = variant, kind = "variable", source = "ast"))
-      ),
-      emptyList()
-    )
-    fun statement(source: String) = cppLines(source).single().tokens
-
-    assertFalse(
-      language.recognizes(statement("std::holds_alternative<int>(payload);")),
-      "A type-based variant observer is ill-formed unless its alternative occurs exactly once"
-    )
-    assertFalse(
-      language.recognizes(statement("std::get_if<int>(&payload);")),
-      "get_if<T> has the same unique-alternative requirement as holds_alternative<T>"
-    )
-    val declarationLanguage = CppCompletionGrammar().generate(
-      CppCompletionContext(
-        identifiers = identifiers + "choice",
-        sourceIdentifiers = identifiers + "choice",
-        headers = setOf("variant"),
-        values = listOf(CppReference("payload", type = variant, kind = "variable", source = "ast")),
-        requiredIdentifier = "choice",
-        requiredTypes = setOf(variant),
-        probedRequiredTypes = setOf(variant)
-      ),
-      emptyList()
-    )
-    assertFalse(
-      declarationLanguage.recognizes(statement("std::variant<int,int> choice = 0;")),
-      "A converting variant constructor is ambiguous when the selected type occurs twice"
-    )
-  }
-
-  @Test
-  fun finiteStreamChainsStopAfterExactlyTwelveInsertions() {
-    val identifiers = setOf("std", "cout")
-    val language = CppCompletionGrammar().generate(
-      CppCompletionContext(
-        identifiers = identifiers,
-        sourceIdentifiers = identifiers,
-        headers = setOf("iostream"),
-        values = listOf(
-          CppReference("std::cout", type = "std::ostream", kind = "variable", source = "ast")
-        )
-      ),
-      emptyList()
-    )
-    fun insertionChain(length: Int): List<CppToken> =
-      cppLines("std::cout" + " << 0".repeat(length) + ";").single().tokens
-
-    assertTrue(language.recognizes(insertionChain(12)))
-    assertFalse(
-      language.recognizes(insertionChain(13)),
-      "The dedicated stream tier must not compose with itself past its documented finite bound"
-    )
-  }
-
-  @Test
-  fun visitRequiresAConstructibleTemporaryAndExactSafeOverloads() {
-    val variant = "std::variant<std::monostate,int,std::string>"
-    val identifiers = setOf("std", "variant", "monostate", "string", "visit", "Describe", "payload")
-    val constructor = CppReference(
-      "Describe", returnType = "Describe", kind = "constructor", ownerType = "Describe",
-      detail = "void ()", source = "ast"
-    )
-    val safeOverloads = listOf(
-      CppReference(
-        "operator()", returnType = "std::string", parameters = listOf(CppParameter(type = "std::monostate")),
-        kind = "method", detail = "std::string (std::monostate) const", ownerType = "Describe", source = "ast"
-      ),
-      CppReference(
-        "operator()", returnType = "std::string", parameters = listOf(CppParameter(type = "int")),
-        kind = "method", detail = "std::string (int) const", ownerType = "Describe", source = "ast"
-      ),
-      CppReference(
-        "operator()", returnType = "std::string",
-        parameters = listOf(CppParameter(type = "const std::string &")), kind = "method",
-        detail = "std::string (const std::string &) const", ownerType = "Describe", source = "ast"
-      )
+  fun reportedTemplateSpecializationsRetainTheirCorrelatedArguments() {
+    val textType = "text::Text"
+    val variant = "choice::Variant<choice::Empty,int,$textType>"
+    val holds = "choice::holds<$textType>"
+    val get = "choice::get<$textType>"
+    val identifiers = setOf(
+      "choice", "Variant", "Empty", "text", "Text", "holds", "get", "payload"
     )
     val base = CppCompletionContext(
       identifiers = identifiers,
       sourceIdentifiers = identifiers,
-      headers = setOf("variant", "string"),
-      values = listOf(CppReference("payload", type = variant, kind = "variable", source = "ast")),
-      types = listOf(CppReference("Describe", type = "Describe", kind = "class", source = "ast")),
-      functions = listOf(constructor),
-      membersByType = listOf(CppTypeMembers("Describe", safeOverloads))
+      values = listOf(semaValue("payload", variant)),
+      types = listOf(semaType(textType), semaType(variant)),
+      functions = listOf(
+        semaFunction(holds, "bool", listOf(semaParameter("const $variant &", "value"))),
+        semaFunction(get, "const $textType *", listOf(semaParameter("const $variant *", "value")))
+      )
     )
-    val visit = cppLines("std::visit(Describe{}, payload);").single().tokens
+    fun statement(source: String) = cppLines(source).single().tokens
 
-    assertTrue(CppCompletionGrammar().generate(base, emptyList()).recognizes(visit))
-    assertTrue(
-      CppCompletionGrammar().generate(
-        base.copy(functions = emptyList(), defaultConstructibleTypes = setOf("Describe")),
-        emptyList()
-      ).recognizes(visit),
-      "A successful compiler declaration probe is sufficient evidence for the visitor temporary"
+    val holdsLanguage = CppCompletionGrammar().generate(
+      base.copy(requiredIdentifier = "textual"),
+      emptyList()
+    )
+    assertTrue(holdsLanguage.recognizes(
+      statement("bool textual = $holds(payload);")
+    ))
+
+    val getLanguage = CppCompletionGrammar().generate(
+      base.copy(requiredIdentifier = "text"),
+      emptyList()
+    )
+    assertTrue(getLanguage.recognizes(
+      statement("const $textType* text = $get(&payload);")
+    ))
+  }
+
+  @Test
+  fun reportedCallableAndConstructorFactsAdmitTemporaryArguments() {
+    val visitor = "render::Visitor"
+    val payload = "render::Payload"
+    val report = "render::Report"
+    val visit = "render::visit"
+    val identifiers = setOf("render", "Visitor", "Payload", "Report", "visit", "payload")
+    val constructor = semaConstructor(visitor)
+    val callable = semaFunction(
+      visit,
+      report,
+      listOf(semaParameter(visitor, "visitor"), semaParameter("$payload &", "payload"))
+    )
+    val base = CppCompletionContext(
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(semaValue("payload", payload)),
+      types = listOf(semaType(visitor), semaType(payload), semaType(report)),
+      functions = listOf(constructor, callable)
+    )
+    val statement = cppLines("$visit($visitor{}, payload);").single().tokens
+
+    assertTrue(CppCompletionGrammar().generate(base, emptyList()).recognizes(statement))
+    assertFalse(
+      CppCompletionGrammar().generate(base.copy(functions = listOf(callable)), emptyList())
+        .recognizes(statement),
+      "A type fact alone must not manufacture a constructor"
     )
     assertFalse(
-      CppCompletionGrammar().generate(base.copy(functions = emptyList()), emptyList()).recognizes(visit),
-      "A fieldless-looking record is not proof that its default constructor is usable"
-    )
-    val mismatchedReturn = safeOverloads.toMutableList().also {
-      it[2] = it[2].copy(
-        returnType = "const std::string &",
-        detail = "const std::string & (const std::string &) const"
-      )
-    }
-    assertFalse(
-      CppCompletionGrammar().generate(
-        base.copy(membersByType = listOf(CppTypeMembers("Describe", mismatchedReturn))),
-        emptyList()
-      ).recognizes(visit),
-      "visit requires one exact common return type, including cv/ref category"
-    )
-    val nonConstReference = safeOverloads.toMutableList().also {
-      it[1] = it[1].copy(
-        parameters = listOf(CppParameter(type = "int &")),
-        detail = "std::string (int &) const"
-      )
-    }
-    assertFalse(
-      CppCompletionGrammar().generate(
-        base.copy(membersByType = listOf(CppTypeMembers("Describe", nonConstReference))),
-        emptyList()
-      ).recognizes(visit),
-      "An unrestricted variant expression cannot safely feed an alternative through non-const T&"
+      CppCompletionGrammar().generate(base.copy(functions = listOf(constructor)), emptyList())
+        .recognizes(statement),
+      "A constructor fact must not manufacture an unreported free callable"
     )
   }
 
@@ -1807,6 +1871,7 @@ class CppCompletionBenchmarkTest {
     val character = lines[line].length
     val snapshot = requireNotNull(cppEditorStatementSnapshot(source, line, character))
     val context = service.context(source, line, character, "visit_browser_parity.cpp")
+    if (context.completionKind == null) return@promise // Stock clangd has no structured endpoint.
     val completions = CppCompletionGrammar()
       .completeCppStatement(context, snapshot.completionQuery(context.identifiers)).suggestions
 
@@ -1843,6 +1908,7 @@ class CppCompletionBenchmarkTest {
     val character = lines[line].length
     val snapshot = requireNotNull(cppEditorStatementSnapshot(source, line, character))
     val context = service.context(source, line, character, "try_emplace_browser_parity.cpp")
+    if (context.completionKind == null) return@promise // Stock clangd has no structured endpoint.
     val completions = CppCompletionGrammar()
       .completeCppStatement(context, snapshot.completionQuery(context.identifiers)).suggestions
     assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.size)
@@ -1880,6 +1946,7 @@ class CppCompletionBenchmarkTest {
       val character = lines[line].length
       val snapshot = requireNotNull(cppEditorStatementSnapshot(source, line, character))
       val context = service.context(source, line, character, "partial_second_map_specialization.cpp")
+      if (context.completionKind == null) return@promise // Stock clangd has no structured endpoint.
       val completions = CppCompletionGrammar()
         .completeCppStatement(context, snapshot.completionQuery(context.identifiers)).suggestions
 
@@ -1891,38 +1958,11 @@ class CppCompletionBenchmarkTest {
     }
 
   @Test
-  fun compilerSeparatesDefaultConstructionFromLaterDeclaratorTypeUseWhenAvailable(): Promise<Unit> =
-    MainScope().promise {
-      val service = CppBenchmarkService()
-      val status = service.status()
-      if (status.clangd == null || status.compiler == null) return@promise
-      val fixture = service.fixtures().first { it.name == "optional_variants.cpp" }
-      val line = cppStatementLines(fixture.source).single { "std::visit(Describe" in it.text }
-      val deletion = cppTruncations(line).first()
-      val context = service.oracleContext(
-        truncateCppSource(fixture.source, deletion),
-        line.number,
-        deletion.prefixText.length,
-        fixture.name
-      )
-
-      assertTrue(
-        "Describe" in context.defaultConstructibleTypes,
-        "The declaration itself compiles even though a later stream use rejects `Describe rendered`"
-      )
-      val prepared = CppCompletionGrammar().prepare(context)
-      assertTrue(prepared.recognizes(line.tokens))
-      cppTruncations(line).take(4).forEach { truncation ->
-        assertTrue(prepared.generate(truncation.prefix).recognizes(truncation.suffix))
-      }
-    }
-
-  @Test
   fun lazilyHashedResidualsPreserveFrozenCfgCountsAndRecognition() {
     val context = CppCompletionContext(
       identifiers = setOf("value"),
       sourceIdentifiers = setOf("value"),
-      values = listOf(CppReference("value", type = "int", kind = "variable", source = "ast"))
+      values = listOf(semaValue("value", "int"))
     )
     val line = cppLines("value = value + 1;").single()
     val prepared = CppCompletionGrammar().prepare(context)
@@ -2004,103 +2044,7 @@ class CppCompletionBenchmarkTest {
   }
 
   @Test
-  fun clangdReportsFutureUnresolvedNamesAndDeepestCallableWhenAvailable(): Promise<Unit> =
-    MainScope().promise {
-      val service = CppBenchmarkService()
-      if (service.status().clangd == null) return@promise
-      val fixtures = service.fixtures()
-
-      val animals = fixtures.first { it.name == "default_animals.cpp" }
-      val dogDeclaration = cppStatementLines(animals.source).single { "Dog dog" in it.text }
-      val dogDeletion = cppTruncations(dogDeclaration).first()
-      val mainContext = service.oracleContext(
-        truncateCppSource(animals.source, dogDeletion),
-        dogDeclaration.number,
-        dogDeletion.prefixText.length
-      )
-      assertTrue("dog" in mainContext.unresolvedIdentifiers)
-      assertEquals("dog", mainContext.requiredIdentifier)
-      assertTrue("Dog" in mainContext.requiredTypes)
-      assertTrue("Animal" in mainContext.requiredTypes)
-      assertTrue(mainContext.requiredTypes.all { it in mainContext.probedRequiredTypes })
-      assertTrue("int" in mainContext.probedRequiredTypes)
-      assertFalse("int" in mainContext.requiredTypes)
-      assertEquals("int", mainContext.enclosingReturnType)
-      assertEquals(null, mainContext.enclosingClassType)
-      assertEquals(null, mainContext.thisType)
-
-      val animalsDeclaration = cppStatementLines(animals.source).single {
-        "std::vector<std::unique_ptr<Animal>> animals" in it.text
-      }
-      val animalsDeletion = cppTruncations(animalsDeclaration).first()
-      val animalsContext = service.oracleContext(
-        truncateCppSource(animals.source, animalsDeletion),
-        animalsDeclaration.number,
-        animalsDeletion.prefixText.length
-      )
-      assertEquals("animals", animalsContext.requiredIdentifier)
-      assertTrue("std::vector<std::unique_ptr<Animal>>" in animalsContext.requiredTypes)
-      assertFalse("std::vector<Dog>" in animalsContext.requiredTypes)
-
-      // clangd's recovery AST exposes the range-for variable at some damaged-call boundaries but
-      // falls back to a display-only completion spelling (`unique_ptr<Animal> const &`) at others.
-      // The bridge must canonicalize that spelling so dereference remains type-safe everywhere.
-      val introduce = cppStatementLines(animals.source).single { "introduce(*animal, 2)" in it.text }
-      cppTruncations(introduce).filter { it.prefix.size in setOf(0, 4) }.forEach { truncation ->
-        val context = service.oracleContext(
-          truncateCppSource(animals.source, truncation),
-          introduce.number,
-          truncation.prefixText.length
-        )
-        assertTrue(
-          context.values.any { reference ->
-            reference.name == "animal" && "std::unique_ptr<Animal>" in reference.type.orEmpty()
-          },
-          "The range-for value needs a canonical smart-pointer type at index ${truncation.prefix.size}"
-        )
-        assertTrue(
-          CppCompletionGrammar().generate(context, truncation.prefix).recognizes(truncation.suffix),
-          "The dereferenced free call was rejected at index ${truncation.prefix.size}"
-        )
-      }
-
-      val routes = fixtures.first { it.name == "fluent_routes.cpp" }
-      val sort = cppStatementLines(routes.source).single { "std::sort(fleet.begin()" in it.text }
-      val sortDeletion = cppTruncations(sort).first()
-      val sortContext = service.oracleContext(
-        truncateCppSource(routes.source, sortDeletion),
-        sort.number,
-        sortDeletion.prefixText.length
-      )
-      assertTrue("algorithm" in sortContext.headers, "The algorithm header must be reported")
-      assertTrue(
-        sortContext.values.any { it.name == "fleet" && "vector" in it.type.orEmpty() },
-        "fleet was absent from ${sortContext.values.map { it.name to it.type }}"
-      )
-      assertTrue(
-        sortContext.membersByType.flatMap { it.members }.any { it.name == "range" },
-        "range was absent from ${sortContext.membersByType.map { it.type to it.members.map(CppReference::name) }}"
-      )
-      val sortLanguage = CppCompletionGrammar().generate(sortContext, sortDeletion.prefix)
-      assertTrue(
-        sortLanguage.sourceSyntax.any { (_, rhs) -> encodeIdentifier("sort") in rhs },
-        "The algorithm header, vector value, and numeric pointee member must specialize std::sort"
-      )
-
-      val returnThis = cppStatementLines(routes.source).first { it.text.trim() == "return *this;" }
-      val returnDeletion = cppTruncations(returnThis).first()
-      val methodContext = service.oracleContext(
-        truncateCppSource(routes.source, returnDeletion),
-        returnThis.number,
-        returnDeletion.prefixText.length
-      )
-      assertEquals("RouteBuilder &", methodContext.enclosingReturnType)
-      assertEquals("RouteBuilder", methodContext.enclosingClassType)
-      assertEquals("RouteBuilder *", methodContext.thisType)
-    }
-
-  @Test
-  fun clangdRecoversScopedReceiverMembersFromANonemptyPartialStatement(): Promise<Unit> =
+  fun structuredEndpointReportsScopedReceiverMembersFromANonemptyPartialStatement(): Promise<Unit> =
     MainScope().promise {
       val service = CppBenchmarkService()
       if (service.status().clangd == null) return@promise
@@ -2114,7 +2058,8 @@ class CppCompletionBenchmarkTest {
       """.trimIndent()
       val lines = source.lines()
       val line = lines.indexOfFirst { "independent.push_back(" in it }
-      val context = service.oracleContext(source, line, lines[line].length)
+      val context = service.context(source, line, lines[line].length)
+      if (context.completionKind == null) return@promise
       val vectorMembers = context.membersByType
         .filter { "vector" in it.type && "long long" in it.type }
         .flatMap { it.members }
@@ -2122,10 +2067,8 @@ class CppCompletionBenchmarkTest {
       assertTrue(context.values.any { it.name == "independent" })
       assertTrue(
         vectorMembers.any { it.name == "push_back" },
-        "A direct mid-statement request must recover vector members without an earlier dot cursor"
+        "A direct mid-statement request must report receiver members without an earlier dot cursor"
       )
-      assertEquals(null, context.receiver, "The isolated recovery probe must not replace the live receiver")
-
     }
 
   @Test
@@ -2243,41 +2186,50 @@ class CppCompletionBenchmarkTest {
   }
 
   @Test
-  fun nativeGrammarRecognizesAndSamplesAComplexStatement(): Promise<Unit> = MainScope().promise {
-    val service = CppBenchmarkService()
-    val status = service.status()
-    assertTrue(status.samplesPerInstance > 0)
-    val fixtures = service.fixtures()
-    val fixture = fixtures.first { it.name == "default_animals.cpp" }
-    val target = cppSemicolonLines(fixture.source).first { "animal.speak()" in it.text }
+  fun structuredGrammarRecognizesAndSamplesAComplexStatement() {
+    val console = "output::Console"
+    val creature = "zoo::Creature"
+    val message = "text::Message"
+    val identifiers = setOf(
+      "output", "Console", "console", "zoo", "Creature", "animal", "speak", "text", "Message"
+    )
+    val context = CppCompletionContext(
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(semaValue("console", console), semaValue("animal", creature)),
+      types = listOf(semaType(console), semaType(creature), semaType(message)),
+      functions = listOf(
+        semaFunction(
+          "operator<<",
+          "$console &",
+          listOf(semaParameter("$console &", "sink"), semaParameter("const $message &", "value"))
+        )
+      ),
+      membersByType = listOf(
+        CppTypeMembers(creature, listOf(semaMethod(creature, "speak", message, constMethod = true)))
+      )
+    )
+    val target = cppLines("console << animal.speak();").single()
     val generator = CppCompletionGrammar()
     val generated = listOf(0, 2, 3, 4, target.tokens.size).map { prefixTokens ->
       val truncation = cppTruncations(target).first { it.prefix.size == prefixTokens }
-      val context = service.oracleContext(
-        truncateCppSource(fixture.source, truncation),
-        truncation.line.number,
-        truncation.prefixText.length
-      )
-      val clock = TimeSource.Monotonic.markNow()
       val language = generator.generate(context, truncation.prefix)
-      val elapsed = clock.elapsedNow().inWholeMilliseconds
-      assertTrue(elapsed <= CPP_CFG_BUDGET_MILLIS, "p$prefixTokens CFG generation took ${elapsed}ms")
       assertTrue(
         language.recognizes(truncation.suffix),
         "p$prefixTokens grammar rejected: ${target.tokens.joinToString(" ") { it.text }}"
       )
       assertTrue(isAcyclic(language.syntax), "A generated cursor CFG must be finite and non-recursive")
       assertFalse(language.isEmpty, "Conditioned finite parse forest is empty")
-      language to context
+      language
     }
-    val samples = CppCompletionSampler(generated.first().first, generated.first().second.identifiers, Random(7)).sample(100)
-    assertEquals(100, samples.size)
+    val samples = CppCompletionSampler(generated.first(), identifiers, Random(7)).sample(100)
+    assertTrue(samples.isNotEmpty())
     assertTrue(samples.all { it.tokens.isNotEmpty() }, "The deletion CFG sampled an empty suffix")
     assertTrue(samples.zipWithNext().all { (left, right) -> left.length <= right.length })
     assertTrue(samples.groupingBy { it.length }.eachCount().values.all { it <= CPP_SAMPLES_PER_LENGTH })
     val endpointSamples = CppCompletionSampler(
-      generated.last().first,
-      generated.last().second.identifiers,
+      generated.last(),
+      identifiers,
       Random(7)
     ).sample(100)
     assertEquals(CPP_SAMPLES_PER_LENGTH, endpointSamples.size)

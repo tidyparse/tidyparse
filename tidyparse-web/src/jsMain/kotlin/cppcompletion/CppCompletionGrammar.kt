@@ -25,10 +25,6 @@ internal const val CPP_INTEGER = "@integer"
 private const val CPP_FLOATING = "@floating"
 private const val CPP_CHARACTER = "@character"
 private const val CPP_STRING = "@string"
-internal const val CPP_USER_DEFINED_INTEGER = "@ud_integer"
-internal const val CPP_USER_DEFINED_FLOATING = "@ud_floating"
-internal const val CPP_USER_DEFINED_CHARACTER = "@ud_character"
-internal const val CPP_USER_DEFINED_STRING = "@ud_string"
 private const val CPP_BOOLEAN = "@boolean"
 private const val CPP_NULLPTR = "@nullptr"
 private const val SOURCE_EPSILON_RULE = 0
@@ -88,35 +84,6 @@ private class IndexedChunkedCppCfg(
   override fun equals(other: Any?): Boolean =
     other === this || other is Set<*> && size == other.size && all { it in other }
 }
-
-private val COMMON_CPP_MEMBER_NAMES = setOf(
-  "add", "append", "at", "back", "begin", "capacity", "clear", "data", "empty", "end",
-  "emplace", "erase", "find", "find_first_not_of", "find_last_not_of", "front", "get", "label",
-  "lock", "max_size", "name", "named", "push_back", "render", "replace", "reserve", "size",
-  "speak", "str", "substr", "summary", "titled", "value_or", "with_limit"
-)
-/** Standard completion overload sets modeled by compact, type-safe productions below. */
-private val CPP_SPECIALIZED_STANDARD_CALLS = setOf(
-  "addressof", "get", "get_if", "holds_alternative", "make_shared", "make_unique", "move", "sort", "visit"
-)
-private val CPP_STANDARD_MUTATING_MEMBERS = setOf(
-  "append", "at", "emplace", "erase", "insert", "lower_bound", "push_back", "replace", "try_emplace"
-)
-private val CPP_OVERLOAD_SENSITIVE_STRING_MEMBERS = setOf(
-  "find", "find_first_not_of", "find_last_not_of"
-)
-private val CPP_COMPACT_STANDARD_STRING_MEMBERS = CPP_OVERLOAD_SENSITIVE_STRING_MEMBERS + setOf(
-  "append", "empty", "erase", "length", "replace", "size", "substr"
-)
-private val CPP_COMPACT_STANDARD_MEMBERS = mapOf(
-  "vector" to setOf("at", "capacity", "empty", "max_size", "push_back", "size"),
-  "map" to setOf("at", "emplace", "lower_bound", "size", "try_emplace"),
-  "set" to setOf("insert", "size"),
-  "optional" to setOf("emplace", "value_or"),
-  "unique_ptr" to setOf("get"),
-  "shared_ptr" to setOf("get"),
-  "weak_ptr" to setOf("lock")
-)
 
 enum class CppTokenKind {
   IDENTIFIER,
@@ -188,9 +155,41 @@ data class CppCompletionContext(
   /** User types whose ordinary `T name;` form clang++ proved valid at this damaged line. */
   val defaultConstructibleTypes: Set<String> = emptySet(),
   val enclosingReturnType: String? = null,
+  val canonicalEnclosingReturnType: String? = null,
+  val enclosingReturnTypeInfo: CppTypeInfo? = null,
   val enclosingClassType: String? = null,
+  val canonicalEnclosingClassType: String? = null,
+  val enclosingClassTypeInfo: CppTypeInfo? = null,
   val thisType: String? = null,
-  val mutableFields: Set<String> = emptySet()
+  val canonicalThisType: String? = null,
+  val thisTypeInfo: CppTypeInfo? = null,
+  val mutableFields: Set<String> = emptySet(),
+  /** Structured cursor state reported directly by clang/Sema. */
+  val completionKind: String? = null,
+  val preferredType: String? = null,
+  val canonicalPreferredType: String? = null,
+  val preferredTypeInfo: CppTypeInfo? = null,
+  val baseType: String? = null,
+  val canonicalBaseType: String? = null,
+  val baseTypeInfo: CppTypeInfo? = null,
+  val queryScopes: List<String> = emptyList(),
+  val accessibleScopes: List<String> = emptyList()
+)
+
+/** Opaque type identity and safety facts captured while clang's Sema AST is alive. */
+data class CppTypeInfo(
+  val id: String? = null,
+  val canonicalId: String? = null,
+  val valueCanonicalId: String? = null,
+  val kind: String? = null,
+  val isConst: Boolean = false,
+  val isVolatile: Boolean = false,
+  val pointeeCanonicalId: String? = null,
+  val pointeeIsConst: Boolean = false,
+  val pointeeIsVolatile: Boolean = false,
+  val isDependent: Boolean = false,
+  val isInstantiationDependent: Boolean = false,
+  val isSourceSpellable: Boolean? = null
 )
 
 /** Compact, transport-friendly clang semantic facts used to specialize one cursor CFG. */
@@ -198,7 +197,11 @@ data class CppParameter(
   val label: String = "",
   val name: String = "",
   val type: String = "",
-  val defaultValue: String? = null
+  val defaultValue: String? = null,
+  val canonicalType: String? = null,
+  val typeInfo: CppTypeInfo? = null,
+  val hasDefault: Boolean? = null,
+  val isPack: Boolean = false
 )
 
 data class CppReference(
@@ -212,7 +215,27 @@ data class CppReference(
   val ownerType: String? = null,
   val source: String? = null,
   /** Clang's AST marks records containing an unimplemented pure virtual member explicitly. */
-  val abstract: Boolean = false
+  val abstract: Boolean = false,
+  val id: String? = null,
+  val qualifiedName: String? = null,
+  val provenance: String? = source,
+  val canonicalType: String? = null,
+  val canonicalReturnType: String? = null,
+  val canonicalOwnerType: String? = null,
+  val typeInfo: CppTypeInfo? = null,
+  val returnTypeInfo: CppTypeInfo? = null,
+  val ownerTypeInfo: CppTypeInfo? = null,
+  val isType: Boolean? = null,
+  val isValue: Boolean? = null,
+  val isCallable: Boolean? = null,
+  val isMember: Boolean? = null,
+  val isStatic: Boolean? = null,
+  val isConstMethod: Boolean? = null,
+  val isVolatileMethod: Boolean? = null,
+  val refQualifier: String? = null,
+  val isMutableField: Boolean? = null,
+  val isVariadic: Boolean = false,
+  val templateParameters: List<CppParameter> = emptyList()
 )
 
 data class CppSignature(
@@ -246,6 +269,7 @@ class CppSuffixGrammar internal constructor(
   val sourceSyntax: CFG = bounded.grammar,
   internal val conditioningMetrics: CppConditioningMetrics = CppConditioningMetrics(),
   internal val projectionMode: CppProjectionMode = CppProjectionMode.SEMANTIC,
+  internal val identifierInventory: Set<String> = emptySet(),
   private val syntaxFallbackFactory: ((CppToken?) -> CppSuffixGrammar?)? = null,
   private val recognizesCompleteSyntax: Boolean = false
 ) {
@@ -261,7 +285,11 @@ class CppSuffixGrammar internal constructor(
     val full = projectCppCompletionTokens(rawPrefix + rawSuffix, projectionMode)
     val candidate = full.drop(projectedPrefix.size)
     if (candidate.size <= templateTokens && accepts(candidate)) return true
-    if (recognizesCompleteSyntax && cppSingleStatementSyntaxRecognizes(rawPrefix + rawSuffix)) return true
+    if (recognizesCompleteSyntax && rawSuffix.asSequence()
+        .filter { it.kind == CppTokenKind.IDENTIFIER }
+        .all { it.text in identifierInventory } &&
+      cppSingleStatementSyntaxRecognizes(rawPrefix + rawSuffix)
+    ) return true
     // A semantic residual retains semantic membership semantics for compiler-backed precision
     // checks. Its syntax floor is a sampling fallback, not a widening of this predicate.
     return false
@@ -329,7 +357,7 @@ class CppSuffixGrammar internal constructor(
   internal fun completionFallback(tokenPrefix: CppToken? = null): CppSuffixGrammar? =
     if (tokenPrefix == null) syntaxFallback else syntaxFallbackFactory?.invoke(tokenPrefix)
 
-  internal fun withSyntaxFallback(): CppSuffixGrammar = CppSuffixGrammar(
+  internal fun withSyntaxFallback(identifiers: Set<String>): CppSuffixGrammar = CppSuffixGrammar(
     bounded = bounded,
     rawPrefix = rawPrefix,
     projectedPrefix = projectedPrefix,
@@ -337,7 +365,8 @@ class CppSuffixGrammar internal constructor(
     sourceSyntax = sourceSyntax,
     conditioningMetrics = conditioningMetrics,
     projectionMode = projectionMode,
-    syntaxFallbackFactory = { cppSingleStatementSyntaxCompletion(rawPrefix, it) }
+    identifierInventory = identifiers,
+    syntaxFallbackFactory = { cppSingleStatementSyntaxCompletion(rawPrefix, it, identifiers) }
   )
 }
 
@@ -346,19 +375,28 @@ internal enum class CppProjectionMode { SEMANTIC, SYNTAX }
 /** Constructs one finite, cursor-specialized statement grammar from clang's scoped facts. */
 class CppCompletionGrammar {
   fun prepare(context: CppCompletionContext): PreparedCppCompletionGrammar =
-    PreparedCppCompletionGrammar(SemanticCppGrammar(context, emptyList()).build())
+    PreparedCppCompletionGrammar(
+      SemanticCppGrammar(context, emptyList()).build(),
+      context.syntaxIdentifierInventory()
+    )
 
   fun prepare(context: CppCompletionContext, prefix: List<CppToken>): PreparedCppCompletionGrammar =
-    PreparedCppCompletionGrammar(SemanticCppGrammar(context, prefix).build())
+    PreparedCppCompletionGrammar(
+      SemanticCppGrammar(context, prefix).build(),
+      context.syntaxIdentifierInventory() + prefix.sourceIdentifierInventory()
+    )
 
   fun generate(context: CppCompletionContext, prefix: List<CppToken>): CppSuffixGrammar = when {
     prefix.endsCompleteStatement() -> completedStatementGrammar(prefix)
-    else -> PreparedCppCompletionGrammar(SemanticCppGrammar(context, prefix).build()).generate(prefix)
+    else -> prepare(context, prefix).generate(prefix)
   }
 }
 
 /** Reuses one line's scoped semantic grammar while deriving an exact residual at every cursor. */
-class PreparedCppCompletionGrammar internal constructor(private val sourceSyntax: CFG) {
+class PreparedCppCompletionGrammar internal constructor(
+  private val sourceSyntax: CFG,
+  private val identifierInventory: Set<String> = emptySet()
+) {
   private val conditioner = FiniteCppConditioner(sourceSyntax)
 
   /** Exact prepared-language membership without materializing a residual CFG or CYK index. */
@@ -369,7 +407,7 @@ class PreparedCppCompletionGrammar internal constructor(private val sourceSyntax
     if (prefix.endsCompleteStatement()) return completedStatementGrammar(prefix, sourceSyntax)
     val projectedPrefix = projectCppTokens(prefix)
     if (projectedPrefix.size > CPP_MAX_STATEMENT_TOKENS)
-      return emptyCppSuffixGrammar(prefix, sourceSyntax).withSyntaxFallback()
+      return emptyCppSuffixGrammar(prefix, sourceSyntax).withSyntaxFallback(identifierInventory)
     val suffixTokens = CPP_SUFFIX_HORIZON.coerceAtMost(
       (CPP_MAX_STATEMENT_TOKENS - projectedPrefix.size).coerceAtLeast(0)
     )
@@ -380,10 +418,18 @@ class PreparedCppCompletionGrammar internal constructor(private val sourceSyntax
       projectedPrefix = projectedPrefix,
       templateTokens = suffixTokens,
       sourceSyntax = sourceSyntax,
-      conditioningMetrics = conditioner.lastMetrics
-    ).withSyntaxFallback()
+      conditioningMetrics = conditioner.lastMetrics,
+      identifierInventory = identifierInventory
+    ).withSyntaxFallback(identifierInventory)
   }
 }
+
+private fun CppCompletionContext.syntaxIdentifierInventory(): Set<String> =
+  identifiers.filterTo(linkedSetOf(), String::isCppIdentifierName)
+
+private fun List<CppToken>.sourceIdentifierInventory(): Set<String> = asSequence()
+  .filter { it.kind == CppTokenKind.IDENTIFIER && it.text.isCppIdentifierName() }
+  .mapTo(linkedSetOf(), CppToken::text)
 
 private fun emptyCppSuffixGrammar(prefix: List<CppToken>, sourceSyntax: CFG): CppSuffixGrammar =
   CppSuffixGrammar(
@@ -419,1791 +465,579 @@ private class SemanticCppGrammar(
   private val values = linkedSetOf<CppReference>()
   private val functions = linkedSetOf<CppReference>()
   private val members = linkedSetOf<CppReference>()
+  private val constructors = linkedSetOf<CppReference>()
   private val rawTypes = linkedSetOf<String>()
-  private lateinit var typeSymbols: Map<String, String>
-  private val compatibleTypes = mutableMapOf<Pair<String, Boolean>, List<String>>()
-  private val argumentChoices = mutableMapOf<Pair<List<CppParameter>, Boolean>, List<List<String>>>()
-  private val receiverChoices = mutableMapOf<Pair<String, Boolean>, List<Pair<String, String>>>()
+  private val spellings = mutableMapOf<String, LinkedHashSet<String>>()
+  private val normalizedTypes = mutableMapOf<String, String?>()
+  private val typeKeysByCanonicalId = mutableMapOf<String, String>()
+  private val canonicalIdByTypeKey = mutableMapOf<String, String>()
+  private val typeAliases = mutableMapOf<String, String>()
+  private val pointerTypes = mutableMapOf<PointerShape, String>()
+  private val pointerShapes = mutableMapOf<String, PointerShape>()
+  private val pointerInfos = mutableMapOf<String, CppTypeInfo>()
+  private val sourceSpellableTypes = linkedSetOf<String>()
   private val tokenizedNames = mutableMapOf<String, List<String>>()
   private val typeSpellingSymbols = mutableMapOf<String, String>()
-  private val normalizedTypes = mutableMapOf<String, String?>()
-  private val abstractTypes: Set<String> by lazy {
-    context.types.filter(CppReference::abstract).mapNotNullTo(linkedSetOf()) {
-      canonicalType(it.type ?: it.name)
+  private val compatibleTypes = mutableMapOf<String, List<String>>()
+  private val argumentChoices = mutableMapOf<List<CppParameter>, List<List<String>>>()
+  private val receiverChoices = mutableMapOf<Pair<String, String>, List<Pair<String, String>>>()
+  private val qualifiedChoices = mutableMapOf<String, String>()
+  private lateinit var typeSymbols: Map<String, String>
+
+  private data class PointerShape(
+    val pointee: String,
+    val isConst: Boolean = false,
+    val isVolatile: Boolean = false
+  )
+
+  private data class Cv(val isConst: Boolean = false, val isVolatile: Boolean = false) {
+    val code: String get() = when {
+      isConst && isVolatile -> "CV"
+      isConst -> "C"
+      isVolatile -> "V"
+      else -> "U"
     }
   }
-  private val enumTypes: Set<String> by lazy {
-    context.types.filter { it.kind.contains("enum", ignoreCase = true) }
-      .mapNotNullTo(linkedSetOf()) { canonicalType(it.type ?: it.name) }
+
+  private enum class ValueCategory { LVALUE, RVALUE }
+
+  private val cvVariants = listOf(Cv(), Cv(isConst = true), Cv(isVolatile = true), Cv(true, true))
+
+  /** Schema-v1 Sema facts are exact; presentation strings are legacy input only. */
+  private val structuredTypes = context.completionKind != null || sequenceOf(
+    context.preferredTypeInfo,
+    context.baseTypeInfo,
+    context.enclosingReturnTypeInfo,
+    context.enclosingClassTypeInfo,
+    context.thisTypeInfo
+  ).any { it != null } ||
+    (context.values + context.types + context.functions + context.completions +
+      context.membersByType.flatMap(CppTypeMembers::members))
+      .any { it.typeInfo != null || it.returnTypeInfo != null || it.ownerTypeInfo != null }
+
+  private val aliases = linkedMapOf<String, String>()
+  private val abstractTypes = linkedSetOf<String>()
+  private val enumTypes = linkedSetOf<String>()
+  private val defaultConstructibleTypes by lazy {
+    if (structuredTypes) emptySet()
+    else context.defaultConstructibleTypes.mapNotNullTo(linkedSetOf(), ::canonicalType)
   }
-  private val typeAliases: Map<String, String> by lazy {
-    context.types.mapNotNull { reference ->
-      if (!reference.kind.contains("alias", ignoreCase = true)) return@mapNotNull null
-      // Recovery ASTs can expose instantiated library aliases (`value_type`, `type`) that are not
-      // spellable in this scope. A genuine source alias necessarily leaves its own lexical name.
-      if (!sourceMentions(reference)) return@mapNotNull null
-      val alias = canonicalType(reference.name) ?: return@mapNotNull null
-      val detail = reference.detail ?: reference.type ?: return@mapNotNull null
-      val target = canonicalType(detail.substringAfter('=', detail).trim()) ?: return@mapNotNull null
-      (alias to target).takeUnless { it.first == it.second }
-    }.toMap()
-  }
-  private val constructorGroups: Map<String?, List<CppReference>> by lazy {
-    (functions + members + context.types)
-      .filter { it.kind.lowercase().contains("constructor") }
-      .groupBy { canonicalType(it.ownerType ?: it.returnType ?: it.name.substringAfterLast("::")) }
-  }
-  private val defaultConstructibleTypes: Set<String> by lazy {
-    context.defaultConstructibleTypes.mapNotNullTo(linkedSetOf(), ::canonicalType)
-  }
-  private val userDeclaredTypes: Set<String> by lazy {
+  private val explicitConversions by lazy {
     buildSet {
-      context.types.filter { it.source != "completion" && sourceMentions(it) }
-        .mapNotNullTo(this) { canonicalType(it.type ?: it.name) }
-      context.membersByType.mapNotNull { canonicalType(it.type) }
-        .filterTo(this) { type ->
-          lexCppLine(type).any { token ->
-            token.kind == CppTokenKind.IDENTIFIER && token.text != "std" &&
-              token.text in context.sourceIdentifiers
-          }
-        }
-    }.filterTo(linkedSetOf()) { type ->
-      val spellingIdentifiers = lexCppLine(type).filter { token ->
-        token.kind == CppTokenKind.IDENTIFIER && token.text != "std"
+      context.conversions.forEach { conversion ->
+        val from = canonicalType(conversion.from)
+        val to = canonicalType(conversion.to)
+        if (from != null && to != null) add(from to to)
       }
-      type !in CPP_BUILTIN_TYPES && !type.startsWith("std::") && '<' !in type &&
-        !type.endsWith("*") && spellingIdentifiers.isNotEmpty() &&
-        spellingIdentifiers.all { it.text in context.sourceIdentifiers }
+      if (!structuredTypes)
+        aliases.forEach { (alias, target) -> add(alias to target); add(target to alias) }
     }
   }
 
   fun build(): CFG {
     collectFacts()
-    val declaredTypes = declaredTypes()
-    // Completion overloads often expose placeholder spellings such as `iterator` or `_Tp` even
-    // though no such type is declared in this translation unit. Do not turn those bare names into
-    // vector element types; genuine user types are evidenced both lexically and by the scoped AST.
-    val evidencedTypes = rawTypes.mapNotNull(::canonicalType)
-      .filterNot { type -> type.isSyntheticType(declaredTypes) }
-      .filterNot { type -> "sstream" !in context.headers && "ostringstream" in type }
-      .toSet()
-    val canonicalTypes = evidencedTypes.toMutableSet().apply {
-      addAll(listOf("bool", "char", "int", "double", "const char *", "std::nullptr_t"))
-      // Fundamental keywords are absent from lexical identifier sets, but clang's type tables
-      // preserve source-evidenced spellings used in declarations and named casts.
-      listOf("short", "signed", "unsigned", "long", "float", "long double")
-        .filterTo(this) { it in context.typeNames }
-      addAll(typeAliases.keys)
-      addAll(typeAliases.values)
-      if (context.identifiers.any { it == "cout" } || "iostream" in context.headers) add("std::ostream")
-    }
-    addFactoryTypes(canonicalTypes)
-    addKnownStandardMembers(canonicalTypes, evidencedTypes)
-    deduplicateSemanticFacts()
-    // operator<< on a string stream is inherited from basic_ostream and returns the base
-    // `basic_ostream&`, not the derived string-stream type. Keep that result type available even
-    // when clang only mentioned `ostringstream` at this cursor.
-    canonicalTypes.map(String::insertionResultType)
-      .filterTo(canonicalTypes) { it == "std::ostream" }
-    typeSymbols = canonicalTypes.sorted().mapIndexed { index, type -> type to "TYPE_$index" }.toMap()
+    resolvePointerShapes()
+    listOf("bool", "char", "int", "double", "const char *").forEach(::recordType)
+    // A pointer type is language syntax over an accessible pointee type, not a new declaration.
+    // It guarantees a sound declaration completion even when Sema reports no constructor facts.
+    rawTypes.toList().filterNot { it.typeShape() == "void" || isPointer(it) }
+      .forEach(::recordPointerType)
+    typeSymbols = rawTypes.sorted().mapIndexed { index, type -> type to "TYPE_$index" }.toMap()
 
     production("START", "SEMANTIC_STATEMENT")
-
     addAtoms()
     addBooleanCondition(0)
     for (depth in 1..CPP_SEMANTIC_DEPTH) {
-      inheritShallowerExpressions(depth)
-      addParenthesesAndUnary(depth)
-      addCastsAndIndexing(depth)
-      addFreeCalls(depth)
+      inheritExpressions(depth)
+      addLanguageExpressions(depth)
+      addCalls(depth)
       addMemberAccesses(depth)
-      addKnownIteratorAccesses(depth)
-      addKnownTupleAccesses(depth)
       addOperators(depth)
-      addKnownFactories(depth)
-      addKnownStandardCalls(depth)
       addBooleanCondition(depth)
     }
-    addFiniteStreamChains()
     addStatements()
     return finiteAcyclicCnf(productions)
   }
 
+  /** The endpoint is the authority: this layer classifies facts, but never manufactures a name. */
   private fun collectFacts() {
-    // Blank-cursor completion lists contain a large part of the standard library. Scoped AST
-    // declarations are safe and compact; keep completion facts only when clang ties them to the
-    // receiver probe at this cursor.
-    // Value completions are themselves scoped by clang and are few enough to retain. This also
-    // preserves a local when clang's deduplication chose its completion record over the AST copy.
-    fun scopedValue(reference: CppReference): CppReference = when {
-      reference.name == "cout" && reference.valueType()?.isOutputStream() == true ->
-        reference.copy(name = "std::cout", type = "std::ostream")
-      context.thisType.isPointerToConstCppObject() && reference.kind.equals("field", true) &&
-        reference.name.substringAfterLast("::") !in context.mutableFields ->
-        reference.copy(type = reference.type?.asConstFieldLvalue())
-      else -> reference
-    }
-    values += context.values.filter { it.name.isNotBlank() && it.valueType() != null }.map(::scopedValue)
-    // A clang completion callable is still scope-checked. Retain it when its spelling occurs in
-    // this translation unit; that recovers free functions at a fully blank statement cursor while
-    // excluding the thousands of unrelated header/index candidates.
-    functions += context.functions.filter {
-      it.name.isNotBlank() && sourceMentions(it) && !it.isBroadCompletionOperator() &&
-        it.isTrustedCallableFact() &&
-        !it.isShadowedBy(context.values) && !it.isSpecializedStandardCompletion()
-    }
-    val implicitObject = canonicalType(context.thisType)?.dereferenceablePointee()
-    val implicitOwner = implicitObject?.removePrefix("const ")
-    fun isImplicitMember(reference: CppReference): Boolean {
-      val owner = canonicalType(reference.ownerType) ?: return false
-      return implicitOwner != null &&
-        (implicitOwner == owner || implicitOwner to owner in explicitConversions)
-    }
-    context.completions.forEach { reference ->
-      when {
-        reference.receiverMember && context.receiver?.operator == "::" -> Unit
-        (reference.receiverMember || isImplicitMember(reference)) && memberRelevant(reference) ->
-          members += reference
-        reference.isCallable() && sourceMentions(reference) &&
-          !reference.isBroadCompletionOperator() && reference.isTrustedCallableFact() &&
-          !reference.isShadowedBy(context.values) && !reference.isSpecializedStandardCompletion() ->
-          functions += reference
-        reference.source != "completion" && reference.valueType() != null && !reference.isType() ->
-          values += scopedValue(reference)
+    fun add(reference: CppReference, owner: String? = reference.ownerType) {
+      val fact = if (owner == reference.ownerType) reference else reference.copy(ownerType = owner)
+      if (fact.denotesConstructor()) {
+        constructors += fact
+      } else {
+        if (fact.denotesMember()) members += fact
+        if (fact.denotesCallable() && (!fact.denotesMember() || fact.isStaticFact())) functions += fact
+        val implicitOwnerId = context.thisTypeInfo?.pointeeCanonicalId
+        val ownerId = fact.ownerTypeInfo.semanticId()
+        val implicitOwner = canonicalType(context.thisType)?.rawPointee()
+          ?.removePrefix("const ")?.removePrefix("volatile ")
+        val ownerType = canonicalType(fact.canonicalOwnerType ?: fact.ownerType)
+        val isImplicitMember = if (implicitOwnerId != null && ownerId != null)
+          implicitOwnerId == ownerId else ownerType == implicitOwner
+        if (fact.denotesValue() && !fact.denotesCallable() &&
+          (!fact.denotesMember() || fact.isStaticFact() || isImplicitMember)) values += fact
       }
+      recordReferenceTypes(fact)
     }
+
+    context.values.forEach(::add)
+    context.functions.forEach(::add)
+    context.types.forEach { reference ->
+      recordTypeReference(reference)
+      if (reference.denotesConstructor() && isConcrete(reference.typeInfo)) constructors += reference
+    }
+    context.completions.forEach(::add)
     context.membersByType.forEach { group ->
-      group.members.filter(::memberRelevant)
-        .forEach { members += it.copy(ownerType = it.ownerType ?: group.type) }
-      rawTypes += group.type
+      if (!structuredTypes) recordType(group.type)
+      group.members.forEach { add(it, it.ownerType ?: group.type) }
     }
     context.receiver?.let { receiver ->
-      receiver.type?.let(rawTypes::add)
-      if (receiver.operator != "::")
-        receiver.members.filter(::memberRelevant)
-          .forEach { members += it.copy(ownerType = it.ownerType ?: receiver.type) }
+      if (!structuredTypes) recordType(receiver.type)
+      receiver.members.forEach { add(it, it.ownerType ?: receiver.type) }
     }
-    context.types.filter { it.source != "completion" && sourceMentions(it) }.forEach { type ->
-      rawTypes += type.type ?: type.name
-      if (type.kind.contains("alias", ignoreCase = true)) type.detail?.let(rawTypes::add)
-      if (type.isCallable() || type.kind.lowercase().contains("constructor")) functions += type
-    }
-    (values + functions + members).forEach { reference ->
-      reference.valueType()?.let(rawTypes::add)
-      reference.returnType()?.let(rawTypes::add)
-      reference.ownerType?.let(rawTypes::add)
-      reference.parameters.map(CppParameter::type).filter(String::isNotBlank).forEach(rawTypes::add)
-    }
-    rawTypes += context.expectedTypes
-    rawTypes += context.requiredTypes
-    context.enclosingReturnType?.let(rawTypes::add)
-    context.thisType?.let(rawTypes::add)
-    context.conversions.forEach { rawTypes += it.from; rawTypes += it.to }
 
-    // These library entities have language-defined signatures. Only admit them if clang/source
-    // reported the spelling, which keeps the grammar valid for translation units without headers.
-    if ("cout" in context.identifiers && values.none { it.name == "std::cout" })
-      values += CppReference("std::cout", type = "std::ostream", kind = "variable")
+    if (!structuredTypes) {
+      context.typeNames.forEach(::recordType)
+      context.expectedTypes.forEach(::recordType)
+      context.requiredTypes.forEach(::recordType)
+      context.conversions.forEach { recordType(it.from); recordType(it.to) }
+    }
+    recordSemanticType(context.preferredType, context.canonicalPreferredType, context.preferredTypeInfo)
+    recordSemanticType(context.baseType, context.canonicalBaseType, context.baseTypeInfo)
+    recordSemanticType(
+      context.enclosingReturnType,
+      context.canonicalEnclosingReturnType,
+      context.enclosingReturnTypeInfo
+    )
+    recordSemanticType(
+      context.enclosingClassType,
+      context.canonicalEnclosingClassType,
+      context.enclosingClassTypeInfo
+    )
+    recordSemanticType(context.thisType, context.canonicalThisType, context.thisTypeInfo)
+
+    // Taking the address of a declaration is a language operation. Its spelling contains no new
+    // identifier, and recording it before indexing types keeps `&value` fully generic.
+    values.forEach { value ->
+      val type = canonicalType(value.semanticType(), value.typeInfo) ?: return@forEach
+      if (type.typeShape() != "void") recordPointerType(type)
+    }
+    deduplicate(values)
+    deduplicate(functions)
+    deduplicate(members)
+    deduplicate(constructors)
   }
 
-  private fun sourceMentions(reference: CppReference): Boolean {
-    if (context.sourceIdentifiers.isEmpty()) return true
-    val spellings = if (reference.kind.lowercase().contains("constructor"))
-      sequenceOf(reference.name, reference.ownerType)
-    else sequenceOf(reference.name)
-    return spellings
-      .filterNotNull()
-      .flatMap { spelling -> IDENTIFIER_REGEX.findAll(spelling).map { it.value } }
-      .any { it != "std" && it in context.sourceIdentifiers }
-  }
-
-  private fun memberRelevant(reference: CppReference): Boolean {
-    val name = reference.name.substringAfterLast("::")
-    val owner = reference.ownerType.compactStandardStringOwner()
-    if (reference.source == "completion" && owner in setOf("std::string", "std::string_view") &&
-      name in CPP_COMPACT_STANDARD_STRING_MEMBERS) return false
-    val standardFamily = reference.ownerType.standardTemplateFamily()
-    if (reference.source == "completion" &&
-      name in CPP_COMPACT_STANDARD_MEMBERS[standardFamily].orEmpty()) return false
-    return name.startsWith("operator()") || name in COMMON_CPP_MEMBER_NAMES || name in context.sourceIdentifiers
-  }
-
-  /** Different clang channels often report the same callable with different labels/provenance. */
-  private fun deduplicateSemanticFacts() {
-    fun String?.typeSpelling(): String = this.orEmpty()
-      .replace(Regex("\\s*([<>,*&])\\s*"), "$1")
-      .replace(Regex("\\s+"), " ")
-      .trim()
-    fun CppReference.key(): String = buildString {
-      append(name); append('|'); append(ownerType.typeSpelling()); append('|')
-      append((returnType ?: type).typeSpelling()); append('|')
-      append(if (isCallable()) "call" else kind.lowercase()); append('|')
-      parameters.forEach { parameter ->
-        append(parameter.type.typeSpelling())
-        append(if (parameter.defaultValue == null) '!' else '=')
-        append(';')
-      }
-    }
-    fun MutableSet<CppReference>.deduplicate() {
-      val unique = linkedMapOf<String, CppReference>()
-      forEach { reference ->
-        val key = reference.key()
-        val previous = unique[key]
-        if (previous == null || previous.source == "completion" && reference.source != "completion")
-          unique[key] = reference
-      }
-      clear()
-      addAll(unique.values)
-    }
-    values.deduplicate()
-    functions.deduplicate()
-    members.deduplicate()
-  }
-
-  private fun addFactoryTypes(types: MutableSet<String>) {
-    fun sourceUses(name: String, header: String = name): Boolean =
-      name in context.sourceIdentifiers || header in context.headers
-    val projectedPrefix = projectCppTokens(prefix)
-    fun requestedAtCursor(candidate: String): Boolean {
-      if (projectedPrefix.isEmpty()) return false
-      val spelling = candidate.cppNameTokens()
-      return sequenceOf(spelling, listOf("const") + spelling).any { form ->
-        val common = minOf(form.size, projectedPrefix.size)
-        if (common > 0 && form.take(common) == projectedPrefix.take(common)) return@any true
-        // The type can also be nested in a cast or another template. In that case the active
-        // partial spelling is a suffix of the statement prefix rather than its first token.
-        projectedPrefix.indices.any { start ->
-          val activeSuffix = projectedPrefix.drop(start)
-          activeSuffix.size <= form.size && activeSuffix == form.take(activeSuffix.size)
-        }
-      }
-    }
-    fun addFamilyCandidates(family: String, candidates: Iterable<String>) {
-      // An observed specialization only proves that one member of the template family is in
-      // scope. At an incomplete declaration, retain every small source-derived specialization
-      // consistent with the tokens at this cursor. Away from that declaration, preserve the
-      // compact one-family closure used to keep browser grammar construction bounded.
-      val hasObservedSpecialization = types.any { it.startsWith("std::$family<") }
-      candidates.forEach { candidate ->
-        if (!hasObservedSpecialization || requestedAtCursor(candidate)) types += candidate
-      }
-    }
-    val userTypes = declaredTypes().filter { type ->
-      lexCppLine(type).any { token ->
-        token.kind == CppTokenKind.IDENTIFIER && token.text in context.sourceIdentifiers
-      }
-    }
-    userTypes.forEach { type ->
-      if (context.sourceIdentifiers.any { it == "unique_ptr" || it == "make_unique" })
-        types += "std::unique_ptr<$type>"
-      if (context.sourceIdentifiers.any { it == "shared_ptr" || it == "make_shared" })
-        types += "std::shared_ptr<$type>"
-      if ("weak_ptr" in context.sourceIdentifiers) types += "std::weak_ptr<$type>"
-      // Pointer declarations and address-taking are common single-line completions. A pointer
-      // type itself is always legal even when the pointee is abstract or lacks a default ctor.
-      types += "$type *"
-    }
-    if (sourceUses("string")) types += "std::string"
-    if ("sstream" in context.headers) types += "std::ostringstream"
-    if ("size_t" in context.sourceIdentifiers) types += "std::size_t"
-    if ("cstdint" in context.headers) types += "std::uintptr_t"
-    if ("typeinfo" in context.headers) types += "std::type_info"
-    if (types.any(String::isRawPointer)) types += "const void *"
-    if ("memory" in context.headers && "make_unique" in context.sourceIdentifiers)
-      types += "std::unique_ptr<int[]>"
-    if (sourceUses("string_view")) types += "std::string_view"
-    if (sourceUses("monostate", "variant")) types += "std::monostate"
-    if (sourceUses("nullopt", "optional")) types += "std::nullopt_t"
-    if (sourceUses("function", "functional")) types += "std::function<int(int)>"
-    if ("unique_ptr" in context.sourceIdentifiers && "int" in types) types += "std::unique_ptr<int[]>"
-    val ordinaryElements = buildList {
-      add("int")
-      if (sourceUses("string")) add("std::string")
-      addAll(typeAliases.keys)
-      addAll(userTypes)
-    }.distinct()
-    listOf("deque", "list", "set", "optional").forEach { family ->
-      if (sourceUses(family)) addFamilyCandidates(
-        family,
-        ordinaryElements.map { element -> "std::$family<$element>" }
+  private fun recordTypeReference(reference: CppReference) {
+    if (!isConcrete(reference.typeInfo)) return
+    val canonical = reference.canonicalType ?: reference.type ?: reference.name
+    recordType(reference.name, canonical, reference.typeInfo)
+    recordType(reference.type, canonical, reference.typeInfo)
+    if (reference.abstract) canonicalType(canonical, reference.typeInfo)?.let(abstractTypes::add)
+    if (reference.kind.contains("enum", ignoreCase = true))
+      canonicalType(canonical, reference.typeInfo)?.let(enumTypes::add)
+    if (reference.kind.contains("alias", ignoreCase = true)) {
+      val alias = canonicalType(reference.name, reference.typeInfo)
+      val target = canonicalType(
+        reference.canonicalType ?: reference.type ?: reference.detail,
+        reference.typeInfo
       )
-    }
-    if (sourceUses("map")) {
-      val keys = ordinaryElements.filter { it == "int" || it == "std::string" }
-      addFamilyCandidates("map", keys.flatMap { key ->
-        ordinaryElements.map { value -> "std::map<$key,$value>" }
-      })
-    }
-    if (sourceUses("variant") && sourceUses("monostate", "variant") && sourceUses("string"))
-      addFamilyCandidates("variant", listOf("std::variant<std::monostate,int,std::string>"))
-    types.filter { it.startsWith("std::variant<") }.toList().forEach { variant ->
-      types += "$variant *"
-      types += "const $variant *"
-      variant.topLevelTemplateArguments().mapNotNull(::canonicalType).forEach { alternative ->
-        types += "$alternative *"
-        types += "const $alternative *"
+      if (alias != null && target != null && alias != target) {
+        aliases[alias] = target
       }
     }
-    if (sourceUses("vector")) {
-      // Do not transitively wrap every synthesized iterator/container/result type. Exact observed
-      // vectors are already in [types]; this small source-rooted closure exists only to recover a
-      // declaration whose vector type disappeared with the damaged line.
-      val elements = buildSet {
-        addAll(ordinaryElements)
-        types.filterTo(this) { candidate ->
-          candidate.startsWith("std::unique_ptr<") ||
-            candidate.startsWith("std::shared_ptr<") ||
-            candidate.startsWith("std::weak_ptr<") ||
-          candidate.startsWith("std::function<")
-        }
-      }
-      addFamilyCandidates("vector", elements.map { element -> "std::vector<$element>" })
-    }
-    // Only actual scoped lvalues receive address-of productions. Add their pointer types without
-    // admitting the unsound general form `& EXPR`, which also matches literals and temporaries.
-    values.mapNotNull { reference ->
-      val valueType = canonicalType(reference.valueType())?.takeIf { it in types }
-      valueType?.let(::cppAddressType)
-    }.forEach(types::add)
+    recordReferenceTypes(reference)
   }
 
-  /**
-   * Small language-defined signatures needed even when clang recovery cannot issue a receiver
-   * completion (for example `stops_.size()` lies to the right of a blank cursor). Owners are
-   * restricted to types clang actually evidenced at this location; this is not a global library
-   * fallback and every emitted signature has the standard C++ type.
-   */
-  private fun addKnownStandardMembers(types: MutableSet<String>, evidencedTypes: Set<String>) {
-    fun method(owner: String, name: String, result: String, vararg parameters: String) {
-      canonicalType(result)?.let(types::add)
-      members += CppReference(
-        name = name,
-        returnType = result,
-        parameters = parameters.map { CppParameter(type = it) },
-        kind = "method",
-        receiverMember = true,
-        ownerType = owner,
-        source = "standard"
-      )
-    }
+  private fun recordReferenceTypes(reference: CppReference) {
+    if (!reference.denotesCallable())
+      recordSemanticType(reference.type, reference.canonicalType, reference.typeInfo)
+    recordSemanticType(reference.returnType, reference.canonicalReturnType, reference.returnTypeInfo)
+    recordSemanticType(reference.ownerType, reference.canonicalOwnerType, reference.ownerTypeInfo)
+    reference.parameters.forEach { recordSemanticType(it.type, it.canonicalType, it.typeInfo) }
+  }
 
-    val owners = evidencedTypes + types.filter { owner ->
-      owner.startsWith("std::map<") || owner.startsWith("std::set<") ||
-        owner == "std::string" || owner == "std::string_view"
+  private fun recordSemanticType(display: String?, canonical: String?, info: CppTypeInfo?) {
+    if (!structuredTypes || info != null) recordType(display, canonical, info)
+  }
+
+  private fun isConcrete(info: CppTypeInfo?): Boolean =
+    info.isConcrete() && (!structuredTypes || info != null)
+
+  private fun recordType(display: String?, canonical: String? = null, info: CppTypeInfo? = null) {
+    if (info?.isDependent == true || info?.isInstantiationDependent == true) return
+    val normalized = cppType(canonical ?: display) ?: return
+    val canonicalId = info.semanticId()
+    if (info != null && canonicalId == null) return
+    val type = canonicalId?.let { id -> typeKeysByCanonicalId.getOrPut(id) {
+      val key = if (normalized !in canonicalIdByTypeKey) normalized else "$normalized\u0000$id"
+      canonicalIdByTypeKey[key] = id
+      key
+    } } ?: normalized
+    if (normalized !in typeAliases) typeAliases[normalized] = type
+    cppType(display)?.let { if (it !in typeAliases) typeAliases[it] = type }
+    rawTypes += type
+    if (info?.kind == "pointer") {
+      pointerInfos[type] = info
     }
-    owners.forEach { owner ->
-      owner.vectorElementType()?.let { element ->
-        types += "std::size_t"
-        method(owner, "size", "std::size_t")
-        method(owner, "capacity", "std::size_t")
-        method(owner, "max_size", "std::size_t")
-        method(owner, "empty", "bool")
-        method(owner, "at", "$element &", "std::size_t")
-        if (!element.isMoveOnlyCppType()) method(owner, "push_back", "void", "const $element &")
-        method(owner, "push_back", "void", "$element &&")
-      }
-      owner.smartOrRawPointee()?.takeIf { !owner.isRawPointer() }?.let { pointee ->
-        types += "$pointee *"
-        if (!owner.startsWith("std::weak_ptr<")) method(owner, "get", "$pointee *")
-      }
-      if (owner.startsWith("std::weak_ptr<")) {
-        val pointee = owner.smartOrRawPointee() ?: return@forEach
-        method(owner, "lock", "std::shared_ptr<$pointee>")
-      }
-      if (owner.contains("ostringstream") || owner.contains("stringstream"))
-        method(owner, "str", "std::string")
-      if (owner == "std::string") {
-        types += "std::size_t"
-        method(owner, "append", "std::string &", "const char *")
-        method(owner, "append", "std::string &", "const std::string &")
-        method(owner, "size", "std::size_t")
-        method(owner, "length", "std::size_t")
-        method(owner, "empty", "bool")
-        method(owner, "erase", "std::string &")
-        method(owner, "erase", "std::string &", "std::size_t")
-        method(owner, "erase", "std::string &", "std::size_t", "std::size_t")
-        method(owner, "find", "std::size_t", "char")
-        method(owner, "find", "std::size_t", "char", "std::size_t")
-        method(owner, "find_first_not_of", "std::size_t", "char")
-        method(owner, "find_first_not_of", "std::size_t", "char", "std::size_t")
-        method(owner, "find_last_not_of", "std::size_t", "char")
-        method(owner, "find_last_not_of", "std::size_t", "char", "std::size_t")
-        method(owner, "replace", "std::string &", "std::size_t", "std::size_t", "const char *")
-      }
-      if (owner == "std::string_view") {
-        types += "std::size_t"
-        method(owner, "size", "std::size_t")
-        method(owner, "empty", "bool")
-        method(owner, "find", "std::size_t", "char")
-        method(owner, "find", "std::size_t", "char", "std::size_t")
-        method(owner, "substr", "std::string_view")
-        method(owner, "substr", "std::string_view", "std::size_t")
-        method(owner, "substr", "std::string_view", "std::size_t", "std::size_t")
-      }
-      if (owner.startsWith("std::optional<")) {
-        val element = owner.topLevelTemplateArguments().firstOrNull() ?: return@forEach
-        if (element.isProvenCopyableOptionalElement() || element in enumTypes) {
-          method(owner, "emplace", "$element &", element)
-          method(owner, "value_or", element, element)
+    if (info?.isSourceSpellable != false) cppType(display)?.let { spelling ->
+      spellings.getOrPut(type, ::linkedSetOf) += spelling
+      sourceSpellableTypes += type
+    }
+  }
+
+  private fun resolvePointerShapes() = pointerInfos.forEach { (type, info) ->
+    info.pointeeCanonicalId?.let(typeKeysByCanonicalId::get)?.let { pointee ->
+      val shape = PointerShape(pointee, info.pointeeIsConst, info.pointeeIsVolatile)
+      pointerTypes[shape] = type
+      pointerShapes[type] = shape
+    }
+  }
+
+  private fun recordPointerType(pointee: String) {
+    val shape = PointerShape(pointee)
+    val pointer = pointerTypes.getOrPut(shape) {
+      "${pointee.typeShape()} *\u0000ptr:${canonicalIdByTypeKey[pointee] ?: pointee}"
+    }
+    pointerShapes[pointer] = shape
+    rawTypes += pointer
+    if (pointee in sourceSpellableTypes) {
+      spellings.getOrPut(pointer, ::linkedSetOf) += spellings.getValue(pointee).map { "$it *" }
+      sourceSpellableTypes += pointer
+    }
+  }
+
+  private fun deduplicate(references: MutableSet<CppReference>) {
+    val unique = linkedMapOf<String, CppReference>()
+    references.forEach { reference ->
+      val key = buildString {
+        append(reference.id ?: reference.semanticName()); append('|')
+        append(reference.ownerTypeInfo.semanticId() ?: canonicalType(reference.ownerType)); append('|')
+        append(reference.returnTypeInfo.semanticId() ?: reference.typeInfo.semanticId()
+          ?: canonicalType(reference.semanticReturnType() ?: reference.semanticType())); append('|')
+        reference.parameters.forEach {
+          append(it.typeInfo.semanticId() ?: canonicalType(it.semanticType())); append(';')
         }
       }
-      if (owner.startsWith("std::map<")) {
-        val arguments = owner.topLevelTemplateArguments()
-        val key = arguments.getOrNull(0) ?: return@forEach
-        val mapped = arguments.getOrNull(1) ?: return@forEach
-        val iterator = "$owner::iterator"
-        val insertion = "std::pair<$iterator,bool>"
-        types += iterator
-        types += insertion
-        method(owner, "size", "std::size_t")
-        method(owner, "at", "$mapped &", key)
-        method(owner, "lower_bound", iterator, key)
-        method(owner, "emplace", insertion, key, mapped)
-        val tupleArguments = (typeAliases[mapped] ?: mapped).topLevelTemplateArguments()
-        if ((typeAliases[mapped] ?: mapped).startsWith("std::tuple<") && tupleArguments.isNotEmpty())
-          method(owner, "try_emplace", insertion, key, *tupleArguments.toTypedArray())
-      }
-      if (owner.startsWith("std::set<")) {
-        val element = owner.topLevelTemplateArguments().firstOrNull() ?: return@forEach
-        val iterator = "$owner::iterator"
-        types += iterator
-        types += "std::pair<$iterator,bool>"
-        method(owner, "size", "std::size_t")
-        method(owner, "insert", "std::pair<$iterator,bool>", "const $element &")
-      }
+      val previous = unique[key]
+      if (previous == null || previous.provenance == "index" && reference.provenance == "sema")
+        unique[key] = reference
     }
-    if ("std::type_info" in types) method("std::type_info", "name", "const char *")
+    references.clear()
+    references += unique.values
   }
 
   private fun addAtoms() {
-    if ("iostream" in context.headers && "std::ostream" in typeSymbols)
-      lvalueExpression("std::ostream", 0, listOf(encodeIdentifier("std"), "::", encodeIdentifier("cout")))
     values.forEach { reference ->
-      val type = canonicalType(reference.valueType()) ?: return@forEach
-      // Header/type filtering can deliberately reject an incomplete clang recovery fact (for
-      // example ostringstream without <sstream>). Such a value cannot seed a typed expression.
-      if (type !in typeSymbols) return@forEach
-      val name = reference.name.cachedNameTokens()
-      val enumMember = type in enumTypes && reference.kind.contains("enum", ignoreCase = true)
-      if (!enumMember || reference.detail == "unscoped" || "::" in reference.name)
-        postfixExpression(type, 0, name)
-      if (enumMember && "::" !in reference.name) {
-        postfixExpression(type, 0, type.cachedNameTokens() + listOf("::") + name)
+      if (!isConcrete(reference.typeInfo)) return@forEach
+      val type = canonicalType(reference.semanticType(), reference.typeInfo)
+        ?.takeIf { it in typeSymbols } ?: return@forEach
+      val name = reference.semanticName().cachedNameTokens()
+      if (name.isEmpty()) return@forEach
+      val cv = reference.typeInfo?.let { Cv(it.isConst, it.isVolatile) }
+        ?: Cv(isConst = !reference.isMutableValueInContext())
+      exactPostfixExpression(type, 0, ValueCategory.LVALUE, cv, name)
+      val pointer = pointerTypes[PointerShape(type)]?.takeIf { it in typeSymbols }
+      if (pointer != null && type.typeShape() != "void") {
+        movableStableExpression(pointer, 0, listOf("&") + name)
+        movablePostfixExpression(pointer, 0, listOf("(", "&") + name + ")")
       }
-      if (!enumMember && reference.isMutableLvalue()) lvalueExpression(type, 0, name)
-      if (!enumMember) cppAddressType(reference.valueType())
-          ?.takeIf { it in typeSymbols && !type.isOutputStream() }
-          ?.let { pointer ->
-            movableStableExpression(pointer, 0, listOf("&") + name)
-            // Group the unary expression before it enters the shared stable-operator tier.
-            movablePostfixExpression(pointer, 0, listOf("(", "&") + name + ")")
-          }
     }
-    canonicalType(context.thisType)?.takeIf { it in typeSymbols }?.let { thisType ->
-      movablePostfixExpression(thisType, 0, listOf("this"))
+
+    functions.filter { it.isStaticFact() && !it.denotesCallable() }.forEach { reference ->
+      val type = canonicalType(reference.semanticType(), reference.typeInfo)
+        ?.takeIf { it in typeSymbols } ?: return@forEach
+      postfixExpression(type, 0, reference.semanticName().cachedNameTokens())
+    }
+    canonicalType(context.thisType, context.thisTypeInfo)?.takeIf { it in typeSymbols }?.let { type ->
+      movablePostfixExpression(type, 0, listOf("this"))
     }
     typeSymbols.keys.forEach { type ->
       when {
-        type == "bool" -> movablePostfixExpression(type, 0, listOf(CPP_BOOLEAN))
-        type == "char" -> movablePostfixExpression(type, 0, listOf(CPP_CHARACTER))
+        type.typeShape() == "bool" -> movablePostfixExpression(type, 0, listOf(CPP_BOOLEAN))
+        type.typeShape() == "char" -> movablePostfixExpression(type, 0, listOf(CPP_CHARACTER))
         type.isIntegralCppType() -> movablePostfixExpression(type, 0, listOf(CPP_INTEGER))
         type.isFloatingCppType() -> {
           movablePostfixExpression(type, 0, listOf(CPP_FLOATING))
           movablePostfixExpression(type, 0, listOf(CPP_INTEGER))
         }
-        type == "const char *" -> movablePostfixExpression(type, 0, listOf(CPP_STRING))
-        type == "std::nullptr_t" -> movablePostfixExpression(type, 0, listOf(CPP_NULLPTR))
+        type.typeShape() == "const char *" -> movablePostfixExpression(type, 0, listOf(CPP_STRING))
       }
     }
   }
 
-  private fun inheritShallowerExpressions(depth: Int) {
-    typeSymbols.keys.forEach { type ->
-      production(expression(type, depth), expression(type, depth - 1))
-      production(postfix(type, depth), postfix(type, depth - 1))
-      production(stable(type, depth), stable(type, depth - 1))
-      production(lvalue(type, depth), lvalue(type, depth - 1))
-      production(movable(type, depth), movable(type, depth - 1))
-      production(mutablePostfix(type, depth), mutablePostfix(type, depth - 1))
-    }
+  private fun inheritExpressions(depth: Int) = typeSymbols.keys.forEach { type ->
+    production(expression(type, depth), expression(type, depth - 1))
+    production(postfix(type, depth), postfix(type, depth - 1))
+    production(stable(type, depth), stable(type, depth - 1))
+    production(glvalue(type, depth), glvalue(type, depth - 1))
+    production(rvalue(type, depth), rvalue(type, depth - 1))
+    production(lvalue(type, depth), lvalue(type, depth - 1))
+    production(movable(type, depth), movable(type, depth - 1))
+    production(mutablePostfix(type, depth), mutablePostfix(type, depth - 1))
+    cvVariants.forEach { cv -> ValueCategory.entries.forEach { category ->
+      production(qualified(type, depth, category, cv), qualified(type, depth - 1, category, cv))
+      production(
+        qualifiedPostfix(type, depth, category, cv),
+        qualifiedPostfix(type, depth - 1, category, cv)
+      )
+    } }
   }
 
-  private fun addParenthesesAndUnary(depth: Int) {
+  private fun addLanguageExpressions(depth: Int) {
+    val previous = depth - 1
     typeSymbols.keys.forEach { type ->
-      postfixExpression(type, depth, listOf("(", expression(type, depth - 1), ")"))
-      movablePostfixExpression(type, depth, listOf("(", movable(type, depth - 1), ")"))
-      val pointer = canonicalType("$type *")
-      if (pointer in typeSymbols) {
-        stableLvalueExpression(type, depth, listOf("*", stable(pointer!!, depth - 1)))
-      }
-      val pointee = type.dereferenceablePointee()
-      if (pointee in typeSymbols) {
-        stableLvalueExpression(pointee!!, depth, listOf("*", stable(type, depth - 1)))
-      }
+      postfixExpression(type, depth, listOf("(", expression(type, previous), ")"))
+      cvVariants.forEach { cv -> ValueCategory.entries.forEach { category ->
+        exactPostfixExpression(
+          type, depth, category, cv,
+          listOf("(", qualified(type, previous, category, cv), ")")
+        )
+      } }
       if (type.isNumericCppType()) {
-        val result = type.promotedArithmeticType().takeIf { it in typeSymbols } ?: return@forEach
+        val result = type.promotedArithmeticType().takeIf { it in typeSymbols } ?: type
         listOf("+", "-").forEach { operator ->
-          movableStableExpression(result, depth, listOf(operator, stable(type, depth - 1)))
+          movableStableExpression(result, depth, listOf(operator, stable(type, previous)))
         }
       }
       if (type.isIntegralCppType()) {
-        val result = type.promotedArithmeticType().takeIf { it in typeSymbols } ?: return@forEach
-        movableStableExpression(result, depth, listOf("~", stable(type, depth - 1)))
+        val result = type.promotedArithmeticType().takeIf { it in typeSymbols } ?: type
+        movableStableExpression(result, depth, listOf("~", stable(type, previous)))
+      }
+      if (isPointer(type)) {
+        val pointer = pointerShapes[type]
+        val rawPointee = type.rawPointee() ?: return@forEach
+        val pointee = pointer?.pointee
+          ?: canonicalType(rawPointee)?.takeIf { it in typeSymbols }
+          ?: return@forEach
+        val rhs = listOf("*", stable(type, previous))
+        val cv = pointer?.let { Cv(it.isConst, it.isVolatile) }
+          ?: Cv(
+            isConst = rawPointee.startsWith("const "),
+            isVolatile = rawPointee.startsWith("volatile ")
+          )
+        exactStableExpression(pointee, depth, ValueCategory.LVALUE, cv, rhs)
       }
     }
-  }
 
-  /** Typed postfix forms whose validity depends on the source and destination type families. */
-  private fun addCastsAndIndexing(depth: Int) {
-    val previous = depth - 1
-    val numericOrEnum = typeSymbols.keys.filter { it.isArithmeticCppType() || it in enumTypes }
-    val requiredTargets = context.requiredTypes.mapNotNull(::canonicalType).toSet()
-    // Every arithmetic/enum pair is a finite, type-safe named conversion. Do not require another
-    // `static_cast` spelling elsewhere in the file: deleting the target statement often removes
-    // the translation unit's only occurrence.
-    val numericCastTargets = numericOrEnum
-    numericCastTargets.forEach { target -> numericOrEnum.forEach { source ->
+    val numeric = typeSymbols.keys.filter { it.isArithmeticCppType() || it in enumTypes }
+    numeric.filter { it in sourceSpellableTypes }.forEach { target -> numeric.forEach { source ->
       movablePostfixExpression(
         target, depth,
         listOf("static_cast", "<", typeSpelling(target), ">", "(", expression(source, previous), ")")
       )
     } }
-
-    val pointers = typeSymbols.keys.filter(String::isRawPointer)
-    val pointerCastTargets = pointers.filter {
-      it in requiredTargets || "static_cast" in context.sourceIdentifiers || explicitConversions.isNotEmpty()
-    }
-    pointerCastTargets.forEach { target -> pointers.forEach { source ->
-      if (canStaticCastPointer(source, target)) movablePostfixExpression(
-        target, depth,
-        listOf("static_cast", "<", typeSpelling(target), ">", "(", expression(source, previous), ")")
-      )
-      if (canDynamicCastPointer(source, target)) movablePostfixExpression(
-        target, depth,
-        listOf("dynamic_cast", "<", typeSpelling(target), ">", "(", expression(source, previous), ")")
-      )
-      if ("reinterpret_cast" in context.sourceIdentifiers && canReinterpretCastPointer(source, target))
-        movablePostfixExpression(
-        target, depth,
-        listOf("reinterpret_cast", "<", typeSpelling(target), ">", "(", expression(source, previous), ")")
-      )
-    } }
-
-    typeSymbols.keys.filter { it == "std::uintptr_t" || it == "std::intptr_t" }
-      .forEach { target -> pointers.forEach { source ->
-        movablePostfixExpression(
-          target, depth,
-          listOf("reinterpret_cast", "<", typeSpelling(target), ">", "(", expression(source, previous), ")")
-        )
-      } }
-
-    values.filter { it.valueType().isConstLvalueReferenceType() }.forEach { value ->
-      val target = canonicalType(value.valueType()) ?: return@forEach
-      if (target in typeSymbols) lvalueExpression(
-        target, depth,
-        listOf("const_cast", "<", typeSpelling(target), "&", ">", "(") +
-          value.name.cachedNameTokens() + ")"
-      )
-    }
-
-    if ("std::type_info" in typeSymbols) typeSymbols.keys.filterNot { it == "void" }.forEach { source ->
-      postfixExpression(
-        "std::type_info", depth,
-        listOf("typeid", "(", expression(source, previous), ")")
-      )
-    }
-
-    val indexes = typeSymbols.keys.filter(String::isIntegralCppType)
-    typeSymbols.keys.forEach { container ->
-      val rawElement = container.indexElementType() ?: return@forEach
-      val element = canonicalType(rawElement)?.takeIf { it in typeSymbols } ?: return@forEach
-      indexes.forEach { index ->
-        val read = listOf(postfix(container, previous), "[", expression(index, previous), "]")
-        postfixExpression(element, depth, read)
-        if (!rawElement.startsWith("const ")) lvalueExpression(
-          element, depth,
-          listOf(mutablePostfix(container, previous), "[", expression(index, previous), "]")
-        )
-      }
-    }
   }
 
-  private fun canStaticCastPointer(source: String, target: String): Boolean {
-    val from = source.smartOrRawPointee()?.removePrefix("const ") ?: return false
-    val to = target.smartOrRawPointee()?.removePrefix("const ") ?: return false
-    if (source.smartOrRawPointee()!!.startsWith("const ") &&
-      !target.smartOrRawPointee()!!.startsWith("const ")) return false
-    return from == to || to == "void" || from == "void" ||
-      from to to in explicitConversions || to to from in explicitConversions
-  }
-
-  private fun canDynamicCastPointer(source: String, target: String): Boolean {
-    val from = source.smartOrRawPointee()?.removePrefix("const ") ?: return false
-    val to = target.smartOrRawPointee()?.removePrefix("const ") ?: return false
-    if (from == "void" || to == "void") return false
-    if (source.smartOrRawPointee()!!.startsWith("const ") &&
-      !target.smartOrRawPointee()!!.startsWith("const ")) return false
-    return from == to || from to to in explicitConversions ||
-      to to from in explicitConversions && from in abstractTypes
-  }
-
-  private fun canReinterpretCastPointer(source: String, target: String): Boolean =
-    !source.smartOrRawPointee().orEmpty().startsWith("const ") ||
-      target.smartOrRawPointee().orEmpty().startsWith("const ")
-
-  private fun addFreeCalls(depth: Int) {
-    functions.filterNot { it.ownerType != null || it.receiverMember }.forEach { callable ->
-      // clang completion presents function templates as if their deduced specialization were an
-      // ordinary callable. Known-factory productions retain the required `<T>` and constructor
-      // arguments; a bare `std::make_shared(...)` is not a sound fallback.
-      if (callable.isSpecializedStandardCompletion())
-        return@forEach
-      val returnType = canonicalType(callable.returnType()) ?: return@forEach
-      if (returnType !in typeSymbols || !callable.isCallable()) return@forEach
+  private fun addCalls(depth: Int) {
+    functions.filter { !it.denotesMember() || it.isStaticFact() }.forEach { callable ->
+      if (!isConcrete(callable.returnTypeInfo)) return@forEach
+      val result = canonicalType(callable.semanticReturnType(), callable.returnTypeInfo)
+        ?.takeIf { it in typeSymbols }
+        ?: return@forEach
+      val name = callable.semanticName().cachedNameTokens()
+      if (name.isEmpty() || callable.operatorToken() != null) return@forEach
       addCallProductions(
-        resultType = returnType,
-        depth = depth,
-        head = callable.name.cachedNameTokens(),
-        parameters = callable.parameters,
-        returnsLvalue = callable.returnType().isLvalueReferenceType(),
-        returnsConstLvalue = callable.returnType().isConstLvalueReferenceType()
+        result, depth, name, callable.parameters,
+        callable.semanticReturnType(), callable.returnTypeInfo
       )
     }
+
+    constructors.groupBy {
+      if (!isConcrete(it.ownerTypeInfo ?: it.returnTypeInfo)) null
+      else canonicalType(
+        it.canonicalOwnerType ?: it.ownerType ?: it.semanticReturnType() ?: it.name,
+        it.ownerTypeInfo ?: it.returnTypeInfo
+      )
+    }
+      .forEach { (type, overloads) ->
+        if (type == null || type !in typeSymbols || type in abstractTypes ||
+          type !in sourceSpellableTypes) return@forEach
+        overloads.forEach { constructor ->
+          argumentTypeChoices(constructor.parameters).forEach { actuals ->
+            val arguments = commaSeparatedExpressions(actuals, constructor.parameters, depth - 1)
+            movablePostfixExpression(
+              type, depth, listOf(typeSpelling(type), "{") + arguments + "}"
+            )
+            movablePostfixExpression(
+              type, depth, listOf(typeSpelling(type), "(") + arguments + ")"
+            )
+          }
+        }
+      }
   }
 
   private fun addMemberAccesses(depth: Int) {
-    val implicitObject = canonicalType(context.thisType)?.dereferenceablePointee()
-    val implicitOwner = implicitObject?.removePrefix("const ")
-    val implicitConst = implicitObject?.startsWith("const ") == true
     members.forEach { member ->
-      val owner = canonicalType(member.ownerType) ?: return@forEach
-      val result = canonicalType(member.returnType() ?: member.valueType()) ?: return@forEach
-      if (owner !in typeSymbols || result !in typeSymbols) return@forEach
-      val memberName = member.name.substringAfterLast("::").cachedNameTokens()
-      if (memberName.isEmpty() || memberName.firstOrNull() == encodeIdentifier("operator")) return@forEach
-      fun addHead(head: List<String>, mutableField: Boolean = false) {
-        if (member.isCallable())
-          addCallProductions(
-            result, depth, head, member.parameters,
-            member.returnType().isLvalueReferenceType(),
-            member.returnType().isConstLvalueReferenceType(),
-            rejectNullptrArguments = member.isNullRejectingStringOperation(),
-            exactArgumentTypes = member.isOverloadSensitiveStringSearch()
-          )
-        else {
-          postfixExpression(result, depth, head)
-          if (mutableField) lvalueExpression(result, depth, head)
-        }
-      }
-
-      // A non-static member is directly nameable inside its class body. Clang reports that fact as
-      // a receiver member rather than a scoped value, so retain the standard implicit-`this` form.
-      // The owner check prevents unrelated completion/index members from becoming bare names.
-      val implicitMember = implicitOwner != null &&
-        (implicitOwner == owner || implicitOwner to owner in explicitConversions)
-      if (implicitMember && (!member.isCallable() || !implicitConst || !member.requiresMutableReceiver())) {
-        val mutableField = !member.isCallable() && member.isMutableLvalue() &&
-          (!implicitConst || member.name.substringAfterLast("::") in context.mutableFields)
-        addHead(memberName, mutableField)
-      }
-
-      receiversFor(owner, member).forEach { (receiverType, connector) ->
-        val receiverSymbols = when {
-          !member.requiresMutableReceiver() -> listOf(postfix(receiverType, depth - 1))
-          connector == "->" -> listOf(postfix(receiverType, depth - 1))
-          else -> listOf(mutablePostfix(receiverType, depth - 1))
-        }
-        val heads = receiverSymbols.flatMap { receiverSymbol ->
-          listOf(
-            listOf(receiverSymbol, connector) + memberName,
-            listOf("(", receiverSymbol, ")", connector) + memberName
-          )
-        }
-        heads.forEach { head -> addHead(head, member.isMutableLvalue()) }
-      }
-    }
-  }
-
-  /** Recovery completions rarely expand an iterator's proxy `operator->`; model map `second`. */
-  private fun addKnownIteratorAccesses(depth: Int) {
-    val maps = typeSymbols.keys.filter { it.startsWith("std::map<") }
-    maps.forEach { map ->
-      val mapped = map.topLevelTemplateArguments().getOrNull(1) ?: return@forEach
-      val iterator = "$map::iterator"
-      if (mapped !in typeSymbols || iterator !in typeSymbols) return@forEach
-      val rhs = listOf(postfix(iterator, depth - 1), "->", encodeIdentifier("second"))
-      lvalueExpression(mapped, depth, rhs)
-    }
-    values.filter { it.valueType().orEmpty().contains("iterator", ignoreCase = true) }
-      .forEach { iterator -> maps.forEach { map ->
-        val mapped = map.topLevelTemplateArguments().getOrNull(1)
-          ?.takeIf { it in typeSymbols } ?: return@forEach
-        lvalueExpression(
-          mapped,
-          depth,
-          iterator.name.cachedNameTokens() + listOf("->", encodeIdentifier("second"))
-        )
-      } }
-  }
-
-  /** `std::get<1>` is the source-evidenced tuple projection used by the record fixture. */
-  private fun addKnownTupleAccesses(depth: Int) {
-    typeSymbols.keys.forEach { tupleLike ->
-      val tuple = typeAliases[tupleLike] ?: tupleLike
-      if (!tuple.startsWith("std::tuple<")) return@forEach
-      val selected = tuple.topLevelTemplateArguments().getOrNull(1)
-        ?.let(::canonicalType)?.takeIf { it in typeSymbols } ?: return@forEach
-      postfixExpression(
-        selected,
-        depth,
-        listOf(encodeIdentifier("std"), "::", encodeIdentifier("get"), "<", CPP_INTEGER, ">", "(",
-          expression(tupleLike, depth - 1), ")")
+      if (!isConcrete(member.ownerTypeInfo) ||
+        !isConcrete(member.returnTypeInfo) && member.denotesCallable() ||
+        !isConcrete(member.typeInfo) && !member.denotesCallable()) return@forEach
+      val owner = canonicalType(
+        member.canonicalOwnerType ?: member.ownerType ?: context.canonicalBaseType ?: context.baseType,
+        member.ownerTypeInfo ?: context.baseTypeInfo
       )
+        ?: return@forEach
+      val result = canonicalType(
+        member.semanticReturnType() ?: member.semanticType(),
+        if (member.denotesCallable()) member.returnTypeInfo else member.typeInfo
+      )
+        ?.takeIf { it in typeSymbols } ?: return@forEach
+      val memberName = member.semanticName().substringAfterLast("::")
+      val receivers = receiversFor(owner, member)
+
+      fun receiverHead(receiverType: String, connector: String): List<String> {
+        val symbol = if (connector != ".") postfix(receiverType, depth - 1)
+        else memberReceiver(receiverType, depth - 1, member)
+        return listOf(symbol, connector)
+      }
+
+      if (memberName == "operator()" && member.denotesCallable()) {
+        receivers.forEach { (receiverType, connector) ->
+          val receiver = receiverHead(receiverType, connector).first()
+          val callableHead = if (connector == ".") listOf(receiver)
+          else listOf("(", "*", receiver, ")")
+          addCallProductions(
+            result, depth, callableHead,
+            member.parameters,
+            member.semanticReturnType(), member.returnTypeInfo
+          )
+        }
+        return@forEach
+      }
+      if (memberName == "operator[]" && member.parameters.size == 1) {
+        val parameter = member.parameters.single()
+        val actuals = assignableTypes(
+          canonicalType(parameter.semanticType(), parameter.typeInfo) ?: return@forEach
+        )
+        receivers.forEach { (receiverType, connector) -> actuals.forEach { actual ->
+          val receiver = receiverHead(receiverType, connector).first()
+          val base = if (connector == ".") listOf(receiver) else listOf("(", "*", receiver, ")")
+          val rhs = base + listOf(
+            "[",
+            argumentExpression(actual, parameter, depth - 1), "]"
+          )
+          emitPostfixResult(
+            result, depth, rhs, member.semanticReturnType(), member.returnTypeInfo
+          )
+        } }
+        return@forEach
+      }
+      if (!IDENTIFIER_REGEX.matches(memberName)) return@forEach
+
+      val thisPointee = context.thisTypeInfo?.pointeeCanonicalId
+        ?.let(typeKeysByCanonicalId::get)
+        ?: canonicalType(context.thisType, context.thisTypeInfo)?.rawPointee()
+      if (thisPointee == owner && member.refQualifier != "&&" &&
+        (!member.denotesCallable() || member.acceptsCv(Cv(
+          context.thisTypeInfo?.pointeeIsConst == true,
+          context.thisTypeInfo?.pointeeIsVolatile == true
+        )))) {
+        val head = memberName.cachedNameTokens()
+        if (member.denotesCallable()) addCallProductions(
+          result, depth, head, member.parameters,
+          member.semanticReturnType(), member.returnTypeInfo
+        ) else emitField(
+          result, depth, head, ValueCategory.LVALUE,
+          Cv(
+            context.thisTypeInfo?.pointeeIsConst == true,
+            context.thisTypeInfo?.pointeeIsVolatile == true
+          ), member
+        )
+      }
+      receivers.forEach { (receiverType, connector) ->
+        val name = memberName.cachedNameTokens()
+        if (member.denotesCallable()) {
+          addCallProductions(
+            result, depth, receiverHead(receiverType, connector) + name, member.parameters,
+            member.semanticReturnType(), member.returnTypeInfo
+          )
+        } else if (connector == "->") {
+          val baseCv = pointerShapes[receiverType]?.let { Cv(it.isConst, it.isVolatile) } ?: Cv()
+          emitField(
+            result, depth,
+            listOf(postfix(receiverType, depth - 1), connector) + name,
+            ValueCategory.LVALUE, baseCv, member
+          )
+        } else {
+          ValueCategory.entries.forEach { category -> cvVariants.forEach { baseCv ->
+            emitField(
+              result, depth,
+              listOf(qualifiedPostfix(receiverType, depth - 1, category, baseCv), connector) + name,
+              category, baseCv, member
+            )
+          } }
+        }
+      }
     }
   }
 
   private fun addCallProductions(
-    resultType: String,
+    result: String,
     depth: Int,
     head: List<String>,
     parameters: List<CppParameter>,
-    returnsLvalue: Boolean = false,
-    returnsConstLvalue: Boolean = false,
-    rejectNullptrArguments: Boolean = false,
-    exactArgumentTypes: Boolean = false
+    rawReturnType: String?,
+    returnTypeInfo: CppTypeInfo? = null
   ) {
-    val choices = if (exactArgumentTypes) exactArgumentTypeChoices(parameters)
-      else argumentTypeChoices(parameters, rejectNullptrArguments)
-    choices.forEach { argumentTypes ->
-      val rhs = buildList {
-        addAll(head); add("(")
-        argumentTypes.forEachIndexed { index, actual ->
-          if (index > 0) add(",")
-          add(argumentExpression(actual, parameters[index].type, depth - 1))
-        }
-        add(")")
-      }
-      when {
-        returnsConstLvalue -> postfixExpression(resultType, depth, rhs)
-        returnsLvalue -> lvalueExpression(resultType, depth, rhs)
-        else -> movablePostfixExpression(resultType, depth, rhs)
-      }
+    argumentTypeChoices(parameters).forEach { actuals ->
+      val rhs = head + "(" + commaSeparatedExpressions(actuals, parameters, depth - 1) + ")"
+      emitPostfixResult(result, depth, rhs, rawReturnType, returnTypeInfo)
     }
   }
 
-  private fun exactArgumentTypeChoices(parameters: List<CppParameter>): List<List<String>> {
-    val canonical = parameters.map { canonicalType(it.type)?.takeIf { type -> type in typeSymbols } }
-    if (canonical.any { it == null }) return emptyList()
-    val required = parameters.indexOfFirst { it.defaultValue != null }
-      .let { if (it < 0) parameters.size else it }
-    return (required..parameters.size).map { arity -> canonical.take(arity).filterNotNull() }
+  private fun emitPostfixResult(
+    result: String,
+    depth: Int,
+    rhs: List<String>,
+    rawType: String?,
+    info: CppTypeInfo?
+  ) = when {
+    info?.kind == "lvalueReference" -> exactPostfixExpression(
+      result, depth, ValueCategory.LVALUE, Cv(info.isConst, info.isVolatile), rhs
+    )
+    info?.kind == "rvalueReference" || info != null -> exactPostfixExpression(
+      result, depth, ValueCategory.RVALUE, Cv(info.isConst, info.isVolatile), rhs
+    )
+    rawType.isConstRvalueReferenceType() -> rvaluePostfixExpression(result, depth, rhs)
+    rawType.isConstLvalueReferenceType() -> glvaluePostfixExpression(result, depth, rhs)
+    rawType.isLvalueReferenceType() -> lvalueExpression(result, depth, rhs)
+    else -> movablePostfixExpression(result, depth, rhs)
   }
 
-  private fun argumentExpression(actual: String, rawExpected: String, depth: Int): String = when {
-    rawExpected.isLvalueReferenceType() && !rawExpected.isConstLvalueReferenceType() ->
-      lvalue(actual, depth)
-    rawExpected.trim().endsWith("&&") || actual.isMoveOnlyCppType() &&
-      !rawExpected.isConstLvalueReferenceType() -> movable(actual, depth)
-    else -> expression(actual, depth)
+  private fun emitField(
+    result: String,
+    depth: Int,
+    rhs: List<String>,
+    category: ValueCategory,
+    baseCv: Cv,
+    field: CppReference
+  ) {
+    val declared = field.typeInfo?.let { Cv(it.isConst, it.isVolatile) } ?: Cv()
+    val cv = Cv(
+      declared.isConst || baseCv.isConst && field.isMutableField != true,
+      declared.isVolatile || baseCv.isVolatile
+    )
+    exactPostfixExpression(result, depth, category, cv, rhs)
   }
 
-  private fun argumentTypeChoices(
-    parameters: List<CppParameter>,
-    rejectNullptrArguments: Boolean = false
-  ): List<List<String>> {
-    val key = parameters to rejectNullptrArguments
-    return argumentChoices.getOrPut(key) {
-      if (parameters.any { canonicalType(it.type) !in typeSymbols }) return@getOrPut emptyList()
-      val required = parameters.indexOfFirst { it.defaultValue != null }
+  private fun argumentTypeChoices(parameters: List<CppParameter>): List<List<String>> =
+    argumentChoices.getOrPut(parameters) {
+      // clang must expand dependent packs before they can be represented as concrete CFG edges.
+      if (parameters.any {
+          it.isPack || !isConcrete(it.typeInfo) ||
+            canonicalType(it.semanticType(), it.typeInfo) !in typeSymbols
+        })
+        return@getOrPut emptyList()
+      val required = parameters.indexOfFirst(CppParameter::isOptional)
         .let { if (it < 0) parameters.size else it }
       (required..parameters.size).flatMap { arity ->
         parameters.take(arity).fold(listOf(emptyList())) { choices, parameter ->
-          val expected = canonicalType(parameter.type)!!
-          val compatible = assignableTypes(expected, rejectNullptrArguments)
-          choices.flatMap { chosen -> compatible.map { chosen + it } }
+          val expected = canonicalType(parameter.semanticType(), parameter.typeInfo)!!
+          choices.flatMap { chosen -> assignableTypes(expected).map { chosen + it } }
         }
       }
     }
-  }
-
-  private fun addKnownFactories(depth: Int) {
-    val constructorGroups = constructorsByType()
-    declaredTypes().forEach { type ->
-      val constructors = constructorGroups[type].orEmpty()
-      constructors.forEach { constructor ->
-        if ("std::unique_ptr<$type>" in typeSymbols) addCallProductions(
-          resultType = "std::unique_ptr<$type>", depth = depth,
-          head = listOf(encodeIdentifier("std"), "::", encodeIdentifier("make_unique"), "<") +
-            type.cachedNameTokens() + ">",
-          parameters = constructor.parameters
-        )
-        if ("std::shared_ptr<$type>" in typeSymbols) addCallProductions(
-          resultType = "std::shared_ptr<$type>", depth = depth,
-          head = listOf(encodeIdentifier("std"), "::", encodeIdentifier("make_shared"), "<") +
-            type.cachedNameTokens() + ">",
-            parameters = constructor.parameters
-        )
-        argumentTypeChoices(constructor.parameters).forEach { arguments ->
-          val rhs = buildList {
-            addAll(type.cachedNameTokens()); add("{")
-            arguments.forEachIndexed { index, actual ->
-              if (index > 0) add(",")
-              add(argumentExpression(actual, constructor.parameters[index].type, depth - 1))
-            }
-            add("}")
-          }
-          movablePostfixExpression(type, depth, rhs)
-        }
-      }
-    }
-
-    if ("std::string" in typeSymbols) {
-      movablePostfixExpression(
-        "std::string",
-        depth,
-        "std::string".cachedNameTokens() + listOf("{", expression("const char *", depth - 1), "}")
-      )
-    }
-
-    typeAliases.forEach { (alias, target) ->
-      if (alias !in typeSymbols || !target.startsWith("std::tuple<")) return@forEach
-      val arguments = target.topLevelTemplateArguments().mapNotNull(::canonicalType)
-      if (arguments.isEmpty() || arguments.any { it !in typeSymbols }) return@forEach
-      arguments.fold(listOf(emptyList<String>())) { choices, expected ->
-        choices.flatMap { chosen -> assignableTypes(expected).map { chosen + it } }
-      }.forEach { actuals ->
-        movablePostfixExpression(
-          alias,
-          depth,
-          alias.cachedNameTokens() + listOf("{") +
-            actuals.flatMapIndexed { index, type ->
-              (if (index == 0) emptyList() else listOf(",")) + expression(type, depth - 1)
-            } + listOf("}")
-        )
-      }
-    }
-
-    if ("make_unique" in context.sourceIdentifiers || "memory" in context.headers) {
-      typeSymbols.keys.filter { it.startsWith("std::unique_ptr<") && it.endsWith("[]>") }
-        .forEach { pointer ->
-          val element = pointer.substringAfter('<').substringBeforeLast('>').removeSuffix("[]")
-          listOf("std::size_t", "int").firstOrNull { it in typeSymbols }?.let { sizeType ->
-            movablePostfixExpression(
-              pointer, depth,
-              listOf(encodeIdentifier("std"), "::", encodeIdentifier("make_unique"), "<") +
-                element.cachedNameTokens() + listOf("[", "]", ">", "(", expression(sizeType, depth - 1), ")")
-            )
-          }
-        }
-    }
-    if ("std::monostate" in typeSymbols)
-      movablePostfixExpression("std::monostate", depth, "std::monostate".cachedNameTokens() + listOf("{", "}"))
-    if ("std::nullopt_t" in typeSymbols)
-      movablePostfixExpression("std::nullopt_t", depth, listOf(encodeIdentifier("std"), "::", encodeIdentifier("nullopt")))
-
-    // std::move preserves the underlying type category. It is useful for move-only arguments and
-    // is safe for every expression clang reports in the current scope.
-    if ("move" in context.sourceIdentifiers || "utility" in context.headers)
-      typeSymbols.keys.filterNot { it == "void" }.forEach { type ->
-      movablePostfixExpression(
-        type, depth,
-        listOf(encodeIdentifier("std"), "::", encodeIdentifier("move"), "(", expression(type, depth - 1), ")")
-      )
-      }
-  }
-
-  /**
-   * Header-defined function templates whose useful specialization is lost when their only call is
-   * truncated. Every production is correlated with types already proved visible at this cursor;
-   * no unconstrained template argument or unscoped identifier is introduced.
-   */
-  private fun addKnownStandardCalls(depth: Int) {
-    val previous = depth - 1
-
-    if ("memory" in context.headers) {
-      typeSymbols.keys.filterNot { it == "void" }.forEach { value ->
-        val pointer = canonicalType("$value *")?.takeIf { it in typeSymbols } ?: return@forEach
-        movablePostfixExpression(
-          pointer,
-          depth,
-          listOf(encodeIdentifier("std"), "::", encodeIdentifier("addressof"), "(",
-            lvalue(value, previous), ")")
-        )
-      }
-    }
-
-    val variants = typeSymbols.keys.filter { it.startsWith("std::variant<") }
-    variants.forEach { variant ->
-      val alternatives = variant.topLevelTemplateArguments().mapNotNull(::canonicalType)
-      val uniqueAlternatives = alternatives.groupingBy { it }.eachCount()
-        .filterValues { it == 1 }.keys
-      uniqueAlternatives.filter { it in typeSymbols }.forEach { alternative ->
-        if ("bool" in typeSymbols && "variant" in context.headers)
-          movablePostfixExpression(
-            "bool",
-            depth,
-            listOf(encodeIdentifier("std"), "::", encodeIdentifier("holds_alternative"), "<",
-              typeSpelling(alternative), ">", "(", expression(variant, previous), ")")
-          )
-
-        if ("variant" in context.headers) {
-          val mutableVariantPointer = canonicalType("$variant *")
-          val mutableResult = canonicalType("$alternative *")
-          if (mutableVariantPointer in typeSymbols && mutableResult in typeSymbols)
-            movablePostfixExpression(
-              mutableResult!!,
-              depth,
-              listOf(encodeIdentifier("std"), "::", encodeIdentifier("get_if"), "<",
-                typeSpelling(alternative), ">", "(", expression(mutableVariantPointer!!, previous), ")")
-            )
-          val constVariantPointer = canonicalType("const $variant *")
-          val constResult = canonicalType("const $alternative *")
-          if (constVariantPointer in typeSymbols && constResult in typeSymbols)
-            movablePostfixExpression(
-              constResult!!,
-              depth,
-              listOf(encodeIdentifier("std"), "::", encodeIdentifier("get_if"), "<",
-                typeSpelling(alternative), ">", "(", expression(constVariantPointer!!, previous), ")")
-            )
-        }
-      }
-
-      if ("variant" in context.headers) addKnownVisitCalls(variant, alternatives, depth)
-    }
-  }
-
-  /** A visitor is admitted only when clang reports one compatible unary overload per alternative. */
-  private fun addKnownVisitCalls(variant: String, alternatives: List<String>, depth: Int) {
-    if (alternatives.isEmpty() || alternatives.any { it !in typeSymbols }) return
-    val callOperators = members.filter {
-      it.name.substringAfterLast("::").startsWith("operator()") && it.parameters.size == 1
-    }.groupBy { canonicalType(it.ownerType) }
-    callOperators.forEach { (visitor, overloads) ->
-      if (visitor == null || visitor !in typeSymbols) return@forEach
-      val selected = alternatives.map { alternative ->
-        overloads.filter { overload ->
-          val parameter = overload.parameters.single().type
-          canonicalType(parameter) == alternative && parameter.isVisitSafeParameter() &&
-            overload.acceptsTemporaryVisitor()
-        }.singleOrNull() ?: return@forEach
-      }
-      val rawResults = selected.mapNotNull { it.returnType()?.normalizedVisitReturnType() }
-      if (rawResults.size != selected.size || rawResults.distinct().size != 1) return@forEach
-      val result = canonicalType(selected.first().returnType())?.takeIf { it in typeSymbols }
-        ?: return@forEach
-      if (!visitor.hasSafeEmptyConstruction()) return@forEach
-      val call = listOf(encodeIdentifier("std"), "::", encodeIdentifier("visit"), "(") +
-        visitor.cachedNameTokens() + listOf("{", "}", ",", expression(variant, depth - 1), ")")
-      val returnType = selected.first().returnType()
-      when {
-        returnType.isConstLvalueReferenceType() -> postfixExpression(result, depth, call)
-        returnType.isLvalueReferenceType() -> lvalueExpression(result, depth, call)
-        else -> movablePostfixExpression(result, depth, call)
-      }
-    }
-  }
-
-  /**
-   * Long output statements should not consume the general expression-depth budget one insertion
-   * at a time. This compact acyclic tier supports up to twelve typed operands while keeping each
-   * operand rich enough for member calls, casts, indexing and parenthesized conditionals.
-   */
-  private fun addFiniteStreamChains() {
-    val streams = typeSymbols.keys.filter(String::isOutputStream)
-    val printable = typeSymbols.keys.filter(String::isCppStreamPrintable)
-    if (streams.isEmpty() || printable.isEmpty()) return
-    val operand = "FINITE_STREAM_OPERAND"
-    printable.forEach { value ->
-      production(operand, postfix(value, 4))
-      production(operand, listOf("(", expression(value, 4), ")"))
-    }
-    streams.forEachIndexed { streamIndex, stream ->
-      val result = stream.insertionResultType().takeIf { it in typeSymbols } ?: return@forEachIndexed
-      val seed = "FINITE_STREAM_SEED_$streamIndex"
-      values.filter { value ->
-        canonicalType(value.valueType()) == stream && value.isMutableLvalue()
-      }.forEach { value -> production(seed, value.name.cachedNameTokens()) }
-      if (stream == "std::ostream" && "iostream" in context.headers)
-        production(seed, listOf(encodeIdentifier("std"), "::", encodeIdentifier("cout")))
-      if (productions.none { it.first == seed }) return@forEachIndexed
-      var chain = "FINITE_STREAM_${streamIndex}_0"
-      production(chain, seed)
-      for (length in 1..12) {
-        val next = "FINITE_STREAM_${streamIndex}_$length"
-        production(next, listOf(chain, "<", "<", operand))
-        stableExpression(result, CPP_SEMANTIC_DEPTH, listOf(next))
-        chain = next
-      }
-    }
-  }
-
-  /** Empty construction is sound only with an explicit compiler or constructor fact. */
-  private fun String.hasSafeEmptyConstruction(): Boolean {
-    val constructors = constructorsByType()[this].orEmpty()
-    return isDefaultDeclarable(constructors, this in defaultConstructibleTypes)
-  }
-
-  private fun constructorsByType(): Map<String?, List<CppReference>> = constructorGroups
-
-  private fun addOperators(depth: Int) {
-    val previous = depth - 1
-    typeSymbols.keys.filter { it.isNumericCppType() }.forEach { type ->
-      val resultType = type.promotedArithmeticType().takeIf { it in typeSymbols } ?: return@forEach
-      val arithmetic = if (type.isIntegralCppType()) listOf("+", "-", "*", "/", "%")
-      else listOf("+", "-", "*", "/")
-      arithmetic.forEach { operator ->
-        movableStableExpression(resultType, depth, listOf(stable(type, previous), operator, stable(type, previous)))
-      }
-      if (type.isIntegralCppType()) listOf("&", "|", "^").forEach { operator ->
-        movableStableExpression(resultType, depth, listOf(stable(type, previous), operator, stable(type, previous)))
-      }
-      if ("bool" in typeSymbols) {
-        listOf("==", "!=", "<", "<=", ">", ">=").forEach { operator ->
-          movableStableExpression("bool", depth, listOf(stable(type, previous), operator, stable(type, previous)))
-        }
-      }
-    }
-    val integral = typeSymbols.keys.filter(String::isIntegralCppType)
-    integral.forEach { left -> integral.forEach { right ->
-      val result = left.promotedArithmeticType().takeIf { it in typeSymbols } ?: return@forEach
-      movableStableExpression(result, depth, listOf(stable(left, previous), "<", "<", stable(right, previous)))
-      movableStableExpression(result, depth, listOf(stable(left, previous), ">>", stable(right, previous)))
-    } }
-    if ("bool" in typeSymbols) typeSymbols.keys.filter(String::isRawPointer).forEach { pointer ->
-      listOf("==", "!=").forEach { operator ->
-        movableStableExpression("bool", depth, listOf(stable(pointer, previous), operator, stable(pointer, previous)))
-        movableStableExpression("bool", depth, listOf(stable(pointer, previous), operator, stable("std::nullptr_t", previous)))
-      }
-    }
-    (functions + context.functions).filter { it.parameters.size == 2 }.forEach { callable ->
-      val operator = callable.name.substringAfterLast("::").removePrefix("operator").trim()
-      if (operator !in setOf("+", "-", "*", "/", "%", "&", "|", "^", "==", "!=", "<", "<=", ">", ">="))
-        return@forEach
-      val left = canonicalType(callable.parameters[0].type)?.takeIf { it in typeSymbols } ?: return@forEach
-      val right = canonicalType(callable.parameters[1].type)?.takeIf { it in typeSymbols } ?: return@forEach
-      val result = canonicalType(callable.returnType())?.takeIf { it in typeSymbols } ?: return@forEach
-      movableStableExpression(result, depth, listOf(stable(left, previous), operator, stable(right, previous)))
-    }
-    if ("bool" in typeSymbols) {
-      listOf("&&", "||").forEach { operator ->
-        movableStableExpression("bool", depth, listOf(condition(previous), operator, condition(previous)))
-      }
-      movableStableExpression("bool", depth, listOf("!", condition(previous)))
-    }
-    typeSymbols.keys.filterNot { it == "void" }.forEach { type ->
-      if ("bool" in typeSymbols) {
-        // A raw conditional may be a complete expression, but never an operand of the
-        // higher-precedence operator tier. Parenthesizing promotes it back into that tier.
-        if (type.isMoveOnlyCppType() || type in abstractTypes) {
-          val lvalueConditional = listOf(
-            condition(previous), "?", lvalue(type, previous), ":", lvalue(type, previous)
-          )
-          expression(type, depth, lvalueConditional)
-          production(lvalue(type, depth), lvalueConditional)
-          lvalueExpression(type, depth, listOf("(") + lvalueConditional + ")")
-        } else {
-          expression(
-            type, depth,
-            listOf(condition(previous), "?", stable(type, previous), ":", stable(type, previous))
-          )
-          postfixExpression(
-            type, depth,
-            listOf(
-              "(", condition(previous), "?", stable(type, previous),
-              ":", stable(type, previous), ")"
-            )
-          )
-        }
-        expression(
-          type, depth,
-          listOf(condition(previous), "?", movable(type, previous), ":", movable(type, previous))
-        )
-        production(
-          movable(type, depth),
-          listOf(condition(previous), "?", movable(type, previous), ":", movable(type, previous))
-        )
-      }
-    }
-
-    val streams = typeSymbols.keys.filter { it.isOutputStream() }
-    val printable = typeSymbols.keys.filter(String::isCppStreamPrintable)
-    streams.forEach { stream -> printable.forEach { value ->
-      val result = stream.insertionResultType()
-      // `<<` binds more tightly than comparisons and conditional expressions. Restrict the exact
-      // unparenthesized operand to primary/postfix syntax, and retain every other typed expression
-      // through an explicit grouping. This avoids emitting `cout << flag ? a : b`, whose actual
-      // parse does not have the type represented by this production.
-      stableExpression(
-        result, depth,
-        listOf(stable(stream, previous), "<", "<", postfix(value, previous))
-      )
-      stableExpression(
-        result, depth,
-        listOf(stable(stream, previous), "<", "<", "(", expression(value, previous), ")")
-      )
-    } }
-  }
-
-  private fun addBooleanCondition(depth: Int) {
-    if ("bool" !in typeSymbols) return
-    typeSymbols.keys.filter { type -> type.isContextuallyBoolean() }
-      .forEach { type -> production(condition(depth), stable(type, depth)) }
-  }
-
-  private fun addStatements() {
-    val declarationPrefix = declarationPrefix()
-    val prefixName = declarationPrefix?.second
-    val knownTypeWords = buildSet {
-      addAll(CPP_BUILTIN_TYPES)
-      addAll(typeAliases.keys)
-      userDeclaredTypes.flatMapTo(this) { type ->
-        lexCppLine(type).filter { it.kind == CppTokenKind.IDENTIFIER }.map { it.text }
-      }
-    }
-    // clangd preserves the diagnostic ordering explicitly in requiredIdentifier. Prefer it over
-    // the set fallback so a later recovery diagnostic cannot steal the missing declarator.
-    val diagnosticName = sequenceOf(context.requiredIdentifier)
-      .plus(context.unresolvedIdentifiers.asSequence())
-      .filterNotNull()
-      .firstOrNull { identifier ->
-        IDENTIFIER_REGEX.matches(identifier) && identifier !in knownTypeWords
-      }
-    val requiredName = prefixName ?: when {
-      prefix.isEmpty() || declarationPrefix != null -> diagnosticName
-      else -> null
-    }
-    val declarationNames = if (requiredName != null) {
-      listOf(encodeIdentifier(requiredName))
-    } else {
-      buildList {
-        add(CPP_FRESH)
-        prefix.filter { it.kind == CppTokenKind.IDENTIFIER }
-          .mapTo(this) { encodeIdentifier(it.text) }
-      }.distinct()
-    }
-    addDeclarations(declarationNames)
-
-    // Some standard algorithms both introduce the identifier clang reports as missing and contain
-    // a lambda whose parameter is local to the damaged line. Add those correlated productions
-    // before the required-name early exit, but filter them to the required declarator in that mode.
-    addKnownAlgorithmStatements(requiredName)
-    addSpecializedControlStatements(requiredName)
-    addAssociativeRecordStatements(requiredName)
-    addSequenceStatements(requiredName)
-    addEnumBitmaskStatements(requiredName)
-
-    // An undeclared identifier appearing later in the damaged translation unit is a hard
-    // constraint: a fresh or expression-only replacement cannot repair it. Restrict this cursor
-    // to declarations binding clang's earliest unresolved dependency. This is what keeps deletion
-    // CFGs for `Dog dog...` and `vector<...> animals;` sound without seeing the deleted suffix.
-    if (requiredName != null) {
-      production("SEMANTIC_STATEMENT", "SIMPLE_STATEMENT")
-      return
-    }
-
-    typeSymbols.keys.forEach { type ->
-      production("SIMPLE_STATEMENT", expression(type, CPP_SEMANTIC_DEPTH), ";")
-    }
-    addAssignments()
-    addReturnStatements()
-    production("SEMANTIC_STATEMENT", "SIMPLE_STATEMENT")
-    if ("bool" in typeSymbols) {
-      production(
-        "SEMANTIC_STATEMENT",
-        listOf("if", "(", condition(CPP_SEMANTIC_DEPTH), ")", "SIMPLE_STATEMENT")
-      )
-    }
-  }
-
-  /** Longest possible type spelling at the start of the partial line and its declarator, if seen. */
-  private fun declarationPrefix(): Pair<List<String>, String?>? {
-    if (prefix.isEmpty()) return null
-    val projected = projectCppTokens(prefix)
-    val spellings = buildList {
-      add(listOf("auto"))
-      typeSymbols.keys.filterNot { it == "void" }.forEach { type ->
-        type.typeSpellingVariants().forEach { base ->
-          add(base)
-          if (!type.isRawPointer()) {
-            add(listOf("const") + base)
-            add(base + "&")
-            add(listOf("const") + base + "&")
-            add(base + listOf("const", "&"))
-          }
-        }
-      }
-    }.distinct().sortedByDescending(List<String>::size)
-    // A cursor can sit inside a qualified/template/cv-ref spelling (`std::vec|`, `const T|`).
-    // Retain declaration mode in that case so the unresolved future use fixes the eventual name.
-    val spelling = spellings.firstOrNull { candidate ->
-      val common = minOf(candidate.size, projected.size)
-      candidate.take(common) == projected.take(common)
-    } ?: return null
-    val declarator = projected.takeIf { spelling.size <= it.size }?.getOrNull(spelling.size)
-      ?.takeIf { it.startsWith("@id:") }
-      ?.removePrefix("@id:")
-    return spelling to declarator
-  }
-
-  private fun addDeclarations(names: List<String>) {
-    val constructors = constructorsByType()
-    val depth = CPP_SEMANTIC_DEPTH
-    val requiredTypes = context.requiredTypes.mapNotNull(::canonicalType).toSet()
-    val probedRequiredTypes = context.probedRequiredTypes.mapNotNull(::canonicalType).toSet()
-    fun compilerAllows(type: String): Boolean =
-      type !in probedRequiredTypes || type in requiredTypes
-    val declarationTypes = typeSymbols.keys.filter { type ->
-      compilerAllows(type)
-    }
-    val autoTypes = typeSymbols.keys.filter { actual ->
-      actual !in abstractTypes && !actual.isNonAssignableOutputStreamBase() &&
-        compilerAllows(actual)
-    }
-    addTypeAliasDeclarations()
-    addStructuredBindingDeclarations()
-    names.forEach { name ->
-      declarationTypes.filterNot { it == "void" }.forEach { type ->
-        val spelling = listOf(typeSpelling(type))
-        val abstract = type in abstractTypes
-        val byValueDeclarable = !abstract && !type.isNonAssignableOutputStreamBase()
-        if (byValueDeclarable && type.isDefaultDeclarable(
-            constructors[type].orEmpty(),
-            provenByCompiler = type in defaultConstructibleTypes
-          )) {
-          production("SIMPLE_STATEMENT", spelling + name + ";")
-          production("SIMPLE_STATEMENT", spelling + name + listOf("{", "}", ";"))
-        }
-        type.initializerListElementType()?.takeIf { it in typeSymbols }?.let { element ->
-          for (arity in 1..8) production(
-            "SIMPLE_STATEMENT",
-            spelling + name + listOf("{") + (0 until arity).flatMap { index ->
-              (if (index == 0) emptyList() else listOf(",")) + expression(element, depth)
-            } + listOf("}", ";")
-          )
-        }
-        assignableTypes(type)
-          .forEach { actual ->
-            if (byValueDeclarable) {
-              production(
-                "SIMPLE_STATEMENT",
-                spelling + name + listOf(
-                  "=",
-                  if (actual.isMoveOnlyCppType()) movable(actual, depth) else expression(actual, depth),
-                  ";"
-                )
-              )
-              production(
-                "SIMPLE_STATEMENT",
-                listOf("const") + spelling + listOf(
-                  name, "=",
-                  if (actual.isMoveOnlyCppType()) movable(actual, depth) else expression(actual, depth),
-                  ";"
-                )
-              )
-            }
-            if (!type.isRawPointer()) {
-              production(
-                "SIMPLE_STATEMENT",
-                spelling + listOf("&", name, "=", lvalue(actual, depth), ";")
-              )
-              production(
-                "SIMPLE_STATEMENT",
-                listOf("const") + spelling + listOf("&", name, "=", expression(actual, depth), ";")
-              )
-            }
-          }
-        typeSymbols.keys.filter { actual -> actual.canDirectListInitialize(type) }
-          .forEach { actual ->
-            production(
-              "SIMPLE_STATEMENT",
-              spelling + name + listOf(
-                "{",
-                if (actual.isMoveOnlyCppType()) movable(actual, depth) else expression(actual, depth),
-                "}", ";"
-              )
-            )
-          }
-        if (byValueDeclarable) constructors[type].orEmpty().forEach { constructor ->
-          argumentTypeChoices(constructor.parameters).forEach { argumentTypes ->
-            val arguments = commaSeparatedExpressions(argumentTypes, constructor.parameters, depth)
-            production(
-              "SIMPLE_STATEMENT",
-              spelling + name + listOf("{") + arguments + listOf("}", ";")
-            )
-            production(
-              "SIMPLE_STATEMENT",
-              spelling + name + listOf("(") + arguments + listOf(")", ";")
-            )
-          }
-        }
-      }
-      autoTypes.filterNot { it == "void" }.forEach { actual ->
-        production(
-          "SIMPLE_STATEMENT",
-          listOf(
-            "auto", name, "=",
-            if (actual.isMoveOnlyCppType()) movable(actual, depth) else expression(actual, depth),
-            ";"
-          )
-        )
-      }
-    }
-  }
-
-  /** Source-evidenced aliases plus a compact, universally valid tuple spelling. */
-  private fun addTypeAliasDeclarations() {
-    val alias = prefix.getOrNull(1)
-      ?.takeIf { prefix.firstOrNull()?.text == "using" && it.kind == CppTokenKind.IDENTIFIER }
-      ?.text?.let(::encodeIdentifier) ?: CPP_FRESH
-    typeAliases.values.forEach { target ->
-      production("SIMPLE_STATEMENT", listOf("using", alias, "=") + target.cachedNameTokens() + ";")
-    }
-    if ("tuple" in context.headers && "string" in context.headers) {
-      production(
-        "SIMPLE_STATEMENT",
-        listOf("using", alias, "=") +
-          "std::tuple<int,std::string,double>".cachedNameTokens() + ";"
-      )
-    }
-  }
-
-  /** Tuple-like declarations use correlated fresh binders and remain compiler-guarded. */
-  private fun addStructuredBindingDeclarations() {
-    val depth = CPP_SEMANTIC_DEPTH
-    val prefixBinders = prefix.indexOfFirst { it.text == "[" }.takeIf { it >= 0 }?.let { open ->
-      prefix.drop(open + 1).takeWhile { it.text != "]" }
-        .filter { it.kind == CppTokenKind.IDENTIFIER }
-        .map { encodeIdentifier(it.text) }
-    }.orEmpty()
-    typeSymbols.keys.forEach { type ->
-      val target = typeAliases[type] ?: type
-      val arity = target.structuredBindingArity() ?: return@forEach
-      if (arity !in 1..8) return@forEach
-      val binders = (0 until arity).flatMap { index ->
-        val binder = prefixBinders.getOrNull(index) ?: "$CPP_BIND_PREFIX$index"
-        if (index == 0) listOf(binder) else listOf(",", binder)
-      }
-      val head = listOf("auto", "[") + binders + listOf("]", "=")
-      production("SIMPLE_STATEMENT", head + expression(type, depth) + ";")
-      production(
-        "SIMPLE_STATEMENT",
-        listOf("const", "auto", "&", "[") + binders + listOf("]", "=") +
-          expression(type, depth) + ";"
-      )
-    }
-  }
-
-  private fun addAssignments() {
-    val depth = CPP_SEMANTIC_DEPTH
-    typeSymbols.keys.forEach { target ->
-      // basic_ostream's copy assignment is deleted. It remains an lvalue so insertion chains and
-      // reference arguments are available, but must not become the target of `cout = ...`.
-      if (!target.isNonAssignableOutputStreamBase()) {
-        assignableTypes(target)
-          .forEach { actual ->
-            production(
-              "SIMPLE_STATEMENT",
-              listOf(
-                lvalue(target, depth), "=",
-                if (actual.isMoveOnlyCppType()) movable(actual, depth) else expression(actual, depth),
-                ";"
-              )
-            )
-          }
-      }
-      if (target.isArithmeticCppType()) {
-        typeSymbols.keys.filter { it.isArithmeticCppType() }.forEach { actual ->
-          listOf("+=", "-=", "*=", "/=").forEach { operator ->
-            production(
-              "SIMPLE_STATEMENT",
-              listOf(lvalue(target, depth), operator, expression(actual, depth), ";")
-            )
-          }
-        }
-      }
-    }
-  }
-
-  private fun addReturnStatements() {
-    val rawReturn = context.enclosingReturnType ?: return
-    if (canonicalType(rawReturn) == "void") {
-      production("SIMPLE_STATEMENT", "return", ";")
-      return
-    }
-    val expected = canonicalType(rawReturn)?.takeIf { it in typeSymbols } ?: return
-    val returnsReference = rawReturn.trim().removeSuffix("&&").trim().endsWith("&")
-    assignableTypes(expected)
-      .forEach { actual ->
-        production(
-          "SIMPLE_STATEMENT",
-          listOf(
-            "return",
-            if (returnsReference) lvalue(actual, CPP_SEMANTIC_DEPTH)
-            else if (actual.isMoveOnlyCppType()) movable(actual, CPP_SEMANTIC_DEPTH)
-            else expression(actual, CPP_SEMANTIC_DEPTH),
-            ";"
-          )
-        )
-      }
-  }
-
-  /** A long, typed map/tuple/set report without globally deepening every insertion expression. */
-  private fun addAssociativeRecordStatements(requiredName: String?) {
-    if (requiredName != null || "map" !in context.headers || "tuple" !in context.headers ||
-      "set" !in context.headers || "iostream" !in context.headers) return
-    val required = setOf("id", "name", "score", "lower", "names")
-    if (!context.sourceIdentifiers.containsAll(required)) return
-    fun name(identifier: String) = encodeIdentifier(identifier)
-    production(
-      "SIMPLE_STATEMENT",
-      listOf(encodeIdentifier("std"), "::", encodeIdentifier("cout"), "<", "<") +
-        listOf(name("id"), "<", "<", CPP_CHARACTER, "<", "<", name("name"),
-          "<", "<", CPP_CHARACTER, "<", "<", name("score"),
-          "<", "<", CPP_CHARACTER, "<", "<",
-          encodeIdentifier("std"), "::", encodeIdentifier("get"), "<", CPP_INTEGER, ">", "(") +
-        listOf(name("lower"), "->", encodeIdentifier("second"), ")", "<", "<",
-          CPP_CHARACTER, "<", "<", name("names"), ".", encodeIdentifier("size"), "(", ")",
-          "<", "<", CPP_CHARACTER, ";")
-    )
-  }
-
-  /**
-   * Scoped-enum flag code commonly casts operands to an integral representation, combines them,
-   * and casts back. Model that finite typed family directly so nested casts do not consume the
-   * general expression-unrolling budget. Also retain boolean flag predicates in declarations.
-   */
-  private fun addEnumBitmaskStatements(requiredName: String?) {
-    if (enumTypes.isEmpty()) return
-    val integral = typeSymbols.keys.filter { it.isIntegralCppType() && it != "bool" }
-    val result = canonicalType(context.enclosingReturnType)
-    if (requiredName == null && result in enumTypes) {
-      val enum = result ?: return
-      integral.forEach { underlying ->
-        production(
-          "SIMPLE_STATEMENT",
-          listOf("return", "static_cast", "<", typeSpelling(enum), ">", "(",
-            "static_cast", "<", typeSpelling(underlying), ">", "(", expression(enum, 0), ")",
-            "|", "static_cast", "<", typeSpelling(underlying), ">", "(", expression(enum, 0), ")",
-            ")", ";")
-        )
-      }
-    }
-    if (requiredName == null && result == "bool") enumTypes.filter { it in typeSymbols }.forEach { enum ->
-      integral.forEach { underlying ->
-        production(
-          "SIMPLE_STATEMENT",
-          listOf("return", "(", "static_cast", "<", typeSpelling(underlying), ">", "(",
-            expression(enum, 0), ")", "&", "static_cast", "<", typeSpelling(underlying), ">",
-            "(", expression(enum, 0), ")", ")", "!=", CPP_INTEGER, ";")
-        )
-      }
-    }
-    if (requiredName == null || "bool" !in context.requiredTypes.mapNotNull(::canonicalType)) return
-    val numerics = typeSymbols.keys.filter(String::isNumericCppType)
-    (functions + context.functions).filter { callable ->
-      canonicalType(callable.returnType()) == "bool" && callable.parameters.size == 2 &&
-        callable.parameters.all { canonicalType(it.type) in enumTypes }
-    }.forEach { callable ->
-      val enum = canonicalType(callable.parameters.first().type) ?: return@forEach
-      numerics.forEach { numeric ->
-        production(
-          "SIMPLE_STATEMENT",
-          listOf("bool", encodeIdentifier(requiredName), "=") + callable.name.cachedNameTokens() +
-            listOf("(", expression(enum, 0), ",", expression(enum, 0), ")", "&&",
-              stable(numeric, 0), ">=", CPP_INTEGER, ";")
-        )
-      }
-    }
-  }
-
-  /** Iterator-range declarations and intrinsic list sorting from scoped sequence facts. */
-  private fun addSequenceStatements(requiredName: String?) {
-    val sequences = values.mapNotNull { value ->
-      val type = canonicalType(value.valueType()) ?: return@mapNotNull null
-      val element = type.sequenceElementType() ?: return@mapNotNull null
-      Triple(value, type, element)
-    }
-    if (requiredName != null) typeSymbols.keys.forEach { target ->
-      if (!target.startsWith("std::deque<") && !target.startsWith("std::list<")) return@forEach
-      val element = target.sequenceElementType() ?: return@forEach
-      sequences.filter { (_, _, sourceElement) ->
-        isAssignable(sourceElement, element, explicitConversions)
-      }.forEach { (source, _, _) ->
-        listOf("begin" to "end", "cbegin" to "cend").forEach { (begin, end) ->
-          production(
-            "SIMPLE_STATEMENT",
-            target.cachedNameTokens() + encodeIdentifier(requiredName) + listOf("(") +
-              source.name.cachedNameTokens() + listOf(".", encodeIdentifier(begin), "(", ")", ",") +
-              source.name.cachedNameTokens() + listOf(".", encodeIdentifier(end), "(", ")", ")", ";")
-          )
-        }
-      }
-    }
-    if (requiredName == null) sequences.filter { (value, type, _) ->
-      type.startsWith("std::list<") && value.isMutableLvalue()
-    }
-      .forEach { (list, _, _) ->
-        production(
-          "SIMPLE_STATEMENT",
-          list.name.cachedNameTokens() + listOf(".", encodeIdentifier("sort"), "(", ")", ";")
-        )
-      }
-  }
-
-  /**
-   * A finite typed specialization of the ubiquitous sort-with-generic-lambda statement. The two
-   * binder terminals are correlated by the sampler, unlike independent `{fresh}` occurrences.
-   */
-  private fun addKnownAlgorithmStatements(requiredName: String?) {
-    if (context.headers.none { it == "algorithm" }) return
-    val seenLambdaBinder = run {
-      val close = prefix.indexOfLast { it.text == "]" }
-      if (close < 0) null else prefix.indices.drop(close + 1).firstNotNullOfOrNull { index ->
-        prefix[index].text.takeIf {
-          prefix[index].kind == CppTokenKind.IDENTIFIER &&
-            prefix.getOrNull(index - 1)?.text in setOf("bool", "char", "short", "int", "long", "float", "double")
-        }
-      }
-    }
-    val lambdaBinder = seenLambdaBinder?.let(::encodeIdentifier) ?: "$CPP_BIND_PREFIX:lambda"
-    fun String.sequenceElement(): String? = when {
-      startsWith("std::vector<") || startsWith("std::deque<") || startsWith("std::list<") ->
-        substringAfter('<').substringBeforeLast('>').substringBeforeLast(',').trim()
-      this == "std::string" -> "char"
-      else -> null
-    }
-    fun CppReference.nameTokens() = name.cachedNameTokens()
-    val sequences = values.mapNotNull { value ->
-      val type = canonicalType(value.valueType()) ?: return@mapNotNull null
-      val element = type.sequenceElement() ?: return@mapNotNull null
-      Triple(value, type, element)
-    }
-
-    if (requiredName == null && "ranges" in context.headers && "cctype" in context.headers)
-      sequences.filter { (input, type, _) -> type == "std::string" && input.isMutableLvalue() }
-        .forEach { (input, _, _) ->
-          val receiver = input.nameTokens()
-          production(
-            "SIMPLE_STATEMENT",
-            listOf(encodeIdentifier("std"), "::", encodeIdentifier("ranges"), "::",
-              encodeIdentifier("transform"), "(") + receiver + listOf(",") + receiver +
-              listOf(".", encodeIdentifier("begin"), "(", ")", ",", "[", "]", "(",
-                "unsigned", "char", lambdaBinder, ")", "{", "return", "static_cast", "<", "char",
-                ">", "(", encodeIdentifier("std"), "::", encodeIdentifier("toupper"), "(",
-                lambdaBinder, ")", ")", ";", "}", ")", ";")
-          )
-        }
-
-    // These overload families have signatures fixed by the standard, while clang completion often
-    // reports only dependent iterator placeholders. Specializing them from scoped container facts
-    // is both smaller and more precise than admitting those placeholders as synthetic types.
-    if (requiredName == null) sequences.forEach { (input, _, element) ->
-      if (!element.isArithmeticCppType()) return@forEach
-      val receiver = input.nameTokens()
-      production(
-        "SIMPLE_STATEMENT",
-        listOf(encodeIdentifier("std"), "::", encodeIdentifier("transform"), "(") +
-          receiver + listOf(".", encodeIdentifier("begin"), "(", ")", ",") +
-          receiver + listOf(".", encodeIdentifier("end"), "(", ")", ",") +
-          receiver + listOf(".", encodeIdentifier("begin"), "(", ")", ",", "[", "]", "(") +
-          element.cachedNameTokens() + listOf(lambdaBinder, ")", "{", "return", lambdaBinder, "*", lambdaBinder, ";", "}", ")", ";")
-      )
-    }
-
-    if (requiredName != null) sequences.forEach { (input, _, element) ->
-      if (input.name.substringAfterLast("::") == requiredName) return@forEach
-      if (!element.isIntegralCppType()) return@forEach
-      val receiver = input.nameTokens()
-      production(
-        "SIMPLE_STATEMENT",
-        listOf("auto", encodeIdentifier(requiredName), "=", encodeIdentifier("std"), "::", encodeIdentifier("find_if"), "(") +
-          receiver + listOf(".", encodeIdentifier("begin"), "(", ")", ",") +
-          receiver + listOf(".", encodeIdentifier("end"), "(", ")", ",", "[", "]", "(") +
-          element.cachedNameTokens() + listOf(lambdaBinder, ")", "{", "return", lambdaBinder, "%", CPP_INTEGER, "==", CPP_INTEGER, ";", "}", ")", ";")
-      )
-    }
-
-    if (requiredName == null) sequences.forEach { (input, inputType, _) ->
-      val receiver = input.nameTokens()
-      val family = inputType.removePrefix("std::").substringBefore('<')
-      values.filter { candidate ->
-        candidate !== input && candidate.name.substringAfterLast("::") !in context.typeNames &&
-          candidate.valueType().orEmpty().contains("iter", ignoreCase = true) &&
-          candidate.valueType().orEmpty().isIteratorFor(family)
-      }.forEach { middle ->
-        production(
-          "SIMPLE_STATEMENT",
-          listOf(encodeIdentifier("std"), "::", encodeIdentifier("rotate"), "(") +
-            receiver + listOf(".", encodeIdentifier("begin"), "(", ")", ",") + middle.nameTokens() + listOf(",") +
-            receiver + listOf(".", encodeIdentifier("end"), "(", ")", ")", ";")
-        )
-      }
-    }
-
-    if (requiredName == null && "iterator" in context.headers)
-      sequences.forEach { (input, _, element) -> sequences.forEach { (output, _, outputElement) ->
-        if (!element.isArithmeticCppType() || !isAssignable(element, outputElement, explicitConversions)) return@forEach
-        val source = input.nameTokens()
-        production(
-          "SIMPLE_STATEMENT",
-          listOf(encodeIdentifier("std"), "::", encodeIdentifier("copy_if"), "(") +
-            source + listOf(".", encodeIdentifier("cbegin"), "(", ")", ",") +
-            source + listOf(".", encodeIdentifier("cend"), "(", ")", ",", encodeIdentifier("std"), "::", encodeIdentifier("back_inserter"), "(") +
-            output.nameTokens() + listOf(")", ",", "[", "]", "(") + element.cachedNameTokens() +
-            listOf(lambdaBinder, ")", "{", "return", lambdaBinder, ">", CPP_INTEGER, ";", "}", ")", ";")
-        )
-      } }
-
-    if ("numeric" in context.headers) sequences.forEach { (input, _, element) ->
-      if (!element.isArithmeticCppType() || element !in typeSymbols) return@forEach
-      val receiver = input.nameTokens()
-      movablePostfixExpression(
-        // A free call is a primary/postfix expression. Seed it at depth zero so the already-built
-        // operator tiers can consume it (notably `std::cout << std::accumulate(...)`).
-        element, 0,
-        listOf(encodeIdentifier("std"), "::", encodeIdentifier("accumulate"), "(") +
-          receiver + listOf(".", encodeIdentifier("cbegin"), "(", ")", ",") +
-          receiver + listOf(".", encodeIdentifier("cend"), "(", ")", ",", CPP_INTEGER, ")")
-      )
-    }
-
-    if (requiredName != null) return
-    val seenBinders = buildList {
-      val lambdaOpen = prefix.indexOfLast { it.text == "[" }
-      if (lambdaOpen >= 0) {
-        for (index in lambdaOpen until prefix.lastIndex) {
-          if (prefix[index].text == "&" && prefix[index + 1].kind == CppTokenKind.IDENTIFIER) {
-            add(prefix[index + 1].text)
-          }
-        }
-      }
-    }.distinct()
-    fun binder(index: Int): String = seenBinders.getOrNull(index)?.let(::encodeIdentifier)
-      ?: "$CPP_BIND_PREFIX$index"
-
-    values.forEach { container ->
-      val vector = canonicalType(container.valueType()) ?: return@forEach
-      val element = vector.vectorElementType() ?: return@forEach
-      val pointee = element.dereferenceablePointee() ?: return@forEach
-      val comparableMethods = members.filter { member ->
-        canonicalType(member.ownerType) == pointee && member.parameters.isEmpty() &&
-          canonicalType(member.returnType())?.let { it.isNumericCppType() || it == "std::string" } == true
-      }
-      comparableMethods.forEach { method ->
-        val receiver = container.name.cachedNameTokens()
-        val methodName = method.name.substringAfterLast("::").cachedNameTokens()
-        val left = binder(0)
-        val right = binder(1)
-        production(
-          "SIMPLE_STATEMENT",
-          buildList {
-            add(encodeIdentifier("std")); add("::"); add(encodeIdentifier("sort")); add("(")
-            addAll(receiver); add("."); add(encodeIdentifier("begin")); add("("); add(")"); add(",")
-            addAll(receiver); add("."); add(encodeIdentifier("end")); add("("); add(")"); add(",")
-            add("["); add("]"); add("(")
-            add("const"); add("auto"); add("&"); add(left); add(",")
-            add("const"); add("auto"); add("&"); add(right); add(")"); add("{")
-            add("return"); add(left); add("->"); addAll(methodName); add("("); add(")")
-            add("<"); add(right); add("->"); addAll(methodName); add("("); add(")"); add(";")
-            add("}"); add(")"); add(";")
-          }
-        )
-      }
-    }
-  }
-
-  /** Finite correlated schemas for lambda-bearing fluent calls and one-line range-for bodies. */
-  private fun addSpecializedControlStatements(requiredName: String?) {
-    if (requiredName != null) return
-    val prefixBinder = prefix.indices.firstNotNullOfOrNull { index ->
-      prefix[index].text.takeIf {
-        prefix[index].kind == CppTokenKind.IDENTIFIER &&
-          (prefix.getOrNull(index - 1)?.text == "&" ||
-            prefix.getOrNull(index - 1)?.text in setOf("bool", "char", "short", "int", "long", "float", "double"))
-      }
-    }
-    val binder = prefixBinder?.let(::encodeIdentifier) ?: "$CPP_BIND_PREFIX:control"
-
-    val structuredPrefixBinders = prefix.indexOfFirst { it.text == "[" }.takeIf { it >= 0 }
-      ?.let { open ->
-        prefix.drop(open + 1).takeWhile { it.text != "]" }
-          .filter { it.kind == CppTokenKind.IDENTIFIER }
-          .map { encodeIdentifier(it.text) }
-      }.orEmpty()
-    fun structuredBinder(index: Int): String =
-      structuredPrefixBinders.getOrNull(index) ?: "$CPP_BIND_PREFIX:structured:$index"
-
-    values.forEach { input ->
-      val map = canonicalType(input.valueType()) ?: return@forEach
-      if (!map.startsWith("std::map<")) return@forEach
-      val mapped = map.topLevelTemplateArguments().getOrNull(1) ?: return@forEach
-      val tuple = typeAliases[mapped] ?: mapped
-      if (!tuple.startsWith("std::tuple<")) return@forEach
-      val selected = tuple.topLevelTemplateArguments().getOrNull(1) ?: return@forEach
-      values.forEach { output ->
-        val set = canonicalType(output.valueType()) ?: return@forEach
-        val element = set.takeIf { it.startsWith("std::set<") }
-          ?.topLevelTemplateArguments()?.firstOrNull() ?: return@forEach
-        if (!isAssignable(selected, element, explicitConversions)) return@forEach
-        val key = structuredBinder(0)
-        val record = structuredBinder(1)
-        production(
-          "SEMANTIC_STATEMENT",
-          listOf("for", "(", "const", "auto", "&", "[", key, ",", record, "]", ":") +
-            input.name.cachedNameTokens() + listOf(")") + output.name.cachedNameTokens() +
-            listOf(".", encodeIdentifier("insert"), "(", encodeIdentifier("std"), "::",
-              encodeIdentifier("get"), "<", CPP_INTEGER, ">", "(", record, ")", ")", ";")
-        )
-      }
-    }
-
-    // `vector<std::function<R(A)>>` range loops: the element is callable with the loop-carried
-    // value, and assigning its result back to that value is type preserving.
-    values.forEach { container ->
-      val owner = canonicalType(container.valueType()) ?: return@forEach
-      val element = owner.vectorElementType() ?: return@forEach
-      val match = Regex("std::function<\\s*([^()]+)\\s*\\(\\s*([^(),]+)\\s*\\)\\s*>").matchEntire(element)
-        ?: return@forEach
-      val result = canonicalType(match.groupValues[1]) ?: return@forEach
-      val argument = canonicalType(match.groupValues[2]) ?: return@forEach
-      if (result !in typeSymbols || argument !in typeSymbols) return@forEach
-      values.filter { canonicalType(it.valueType()) == argument }.forEach { carried ->
-        production(
-          "SEMANTIC_STATEMENT",
-          listOf("for", "(", "const", "auto", "&", binder, ":") + container.name.cachedNameTokens() +
-            listOf(")") + carried.name.cachedNameTokens() + listOf("=", binder, "(") +
-            carried.name.cachedNameTokens() + listOf(")", ";")
-        )
-      }
-    }
-
-    // A method accepting `std::function<R(A)>` can be completed with correlated noncapturing and
-    // by-value-capturing lambdas. Unroll two fluent calls, which covers the benchmark's pipeline
-    // while keeping the grammar acyclic and the sampled language finite.
-    members.filter { it.name.substringAfterLast("::") == "then" && it.parameters.size == 1 }
-      .forEach { method ->
-        val owner = canonicalType(method.ownerType) ?: return@forEach
-        val signature = canonicalType(method.parameters.single().type) ?: return@forEach
-        val match = Regex("std::function<\\s*([^()]+)\\s*\\(\\s*([^(),]+)\\s*\\)\\s*>").matchEntire(signature)
-          ?: return@forEach
-        val result = canonicalType(match.groupValues[1]) ?: return@forEach
-        val argument = canonicalType(match.groupValues[2]) ?: return@forEach
-        if (result != argument || !result.isArithmeticCppType()) return@forEach
-        values.filter { canonicalType(it.valueType()) == owner }.forEach { receiver ->
-          values.filter { captured -> canonicalType(captured.valueType()) == argument && captured !== receiver }
-            .forEach { capture ->
-              val head = receiver.name.cachedNameTokens() + listOf(".") + method.name.substringAfterLast("::").cachedNameTokens()
-              val first = listOf("(", "[") + capture.name.cachedNameTokens() + listOf("]", "(") +
-                argument.cachedNameTokens() + listOf(binder, ")", "{", "return", binder, "+") +
-                capture.name.cachedNameTokens() + listOf(";", "}", ")")
-              val second = listOf(".") + method.name.substringAfterLast("::").cachedNameTokens() +
-                listOf("(", "[", "]", "(") + argument.cachedNameTokens() +
-                listOf(binder, ")", "{", "return", binder, "*", CPP_INTEGER, ";", "}", ")", ";")
-              production("SIMPLE_STATEMENT", head + first + second)
-            }
-        }
-      }
-  }
 
   private fun commaSeparatedExpressions(
     types: List<String>,
@@ -2212,165 +1046,528 @@ private class SemanticCppGrammar(
   ): List<String> = buildList {
     types.forEachIndexed { index, type ->
       if (index > 0) add(",")
-      add(argumentExpression(type, parameters[index].type, depth))
+      add(argumentExpression(type, parameters[index], depth))
     }
   }
 
-  private fun receiversFor(owner: String, member: CppReference): List<Pair<String, String>> =
-    receiverChoices.getOrPut(owner to !member.requiresMutableReceiver()) {
-      buildList {
-        typeSymbols.keys.forEach { candidate ->
-          val pointee = candidate.dereferenceablePointee()
-          when {
-            candidate == owner -> add(candidate to ".")
-            pointee == owner -> add(candidate to "->")
-            pointee?.removePrefix("const ") == owner && !member.requiresMutableReceiver() ->
-              add(candidate to "->")
-          }
+  private fun argumentExpression(actual: String, parameter: CppParameter, depth: Int): String {
+    val expected = parameter.type.ifBlank { parameter.semanticType() }
+    parameter.typeInfo?.let { info -> when (info.kind) {
+      "lvalueReference" -> return qualifiedReferenceExpression(
+        actual, depth, ValueCategory.LVALUE, Cv(info.isConst, info.isVolatile),
+        includeRvalues = info.isConst && !info.isVolatile
+      )
+      "rvalueReference" -> return qualifiedReferenceExpression(
+        actual, depth, ValueCategory.RVALUE, Cv(info.isConst, info.isVolatile)
+      )
+    } }
+    return when {
+      expected.isLvalueReferenceType() && !expected.isConstLvalueReferenceType() -> lvalue(actual, depth)
+      expected.isConstRvalueReferenceType() -> rvalue(actual, depth)
+      expected.trim().endsWith("&&") -> movable(actual, depth)
+      else -> expression(actual, depth)
+    }
+  }
+
+  private fun qualifiedReferenceExpression(
+    type: String,
+    depth: Int,
+    category: ValueCategory,
+    target: Cv,
+    includeRvalues: Boolean = false
+  ): String {
+    val key = "$type:$depth:${category.name}:${target.code}:$includeRvalues"
+    return qualifiedChoices.getOrPut(key) {
+      val symbol = "REFERENCE_CHOICE_${qualifiedChoices.size}"
+      val categories = if (includeRvalues) ValueCategory.entries else listOf(category)
+      categories.forEach { actualCategory -> cvVariants.filter { actual ->
+        (!actual.isConst || target.isConst) && (!actual.isVolatile || target.isVolatile)
+      }.forEach { cv -> production(symbol, qualified(type, depth, actualCategory, cv)) } }
+      symbol
+    }
+  }
+
+  private fun addOperators(depth: Int) {
+    val previous = depth - 1
+    typeSymbols.keys.filter(String::isNumericCppType).forEach { type ->
+      val result = type.promotedArithmeticType().takeIf { it in typeSymbols } ?: type
+      val arithmetic = if (type.isIntegralCppType()) listOf("+", "-", "*", "/", "%")
+      else listOf("+", "-", "*", "/")
+      arithmetic.forEach { operator ->
+        movableStableExpression(result, depth, listOf(stable(type, previous), operator, stable(type, previous)))
+      }
+      if (type.isIntegralCppType()) listOf("&", "|", "^", "<", ">>").forEach { operator ->
+        val tokens = if (operator == "<") listOf("<", "<") else listOf(operator)
+        movableStableExpression(
+          result, depth, listOf(stable(type, previous)) + tokens + stable(type, previous)
+        )
+      }
+      booleanType()?.let { boolean -> listOf("==", "!=", "<", "<=", ">", ">=").forEach { operator ->
+        movableStableExpression(boolean, depth, listOf(stable(type, previous), operator, stable(type, previous)))
+      }
+      }
+    }
+
+    (functions + members).forEach { callable ->
+      val operator = callable.operatorToken() ?: return@forEach
+      val result = canonicalType(callable.semanticReturnType(), callable.returnTypeInfo)
+        ?.takeIf { it in typeSymbols }
+        ?: return@forEach
+      val operands = if (callable.denotesMember()) {
+        val owner = canonicalType(
+          callable.canonicalOwnerType ?: callable.ownerType,
+          callable.ownerTypeInfo
+        ) ?: return@forEach
+        if (callable.parameters.size != 1) return@forEach
+        listOf(owner, canonicalType(
+          callable.parameters.single().semanticType(),
+          callable.parameters.single().typeInfo
+        ) ?: return@forEach)
+      } else {
+        if (callable.parameters.size != 2) return@forEach
+        callable.parameters.map {
+          canonicalType(it.semanticType(), it.typeInfo) ?: return@forEach
+        }
+      }
+      if (operands.any { it !in typeSymbols }) return@forEach
+      val operatorTokens = if (operator == "<<") listOf("<", "<") else listOf(operator)
+      fun parameterOperand(type: String, parameter: CppParameter): String {
+        val spelling = parameter.type.ifBlank { parameter.semanticType() }
+        parameter.typeInfo?.let { info -> when (info.kind) {
+          "lvalueReference" -> return qualifiedReferenceExpression(
+            type, previous, ValueCategory.LVALUE, Cv(info.isConst, info.isVolatile),
+            includeRvalues = info.isConst && !info.isVolatile
+          )
+          "rvalueReference" -> return qualifiedReferenceExpression(
+            type, previous, ValueCategory.RVALUE, Cv(info.isConst, info.isVolatile)
+          )
+        } }
+        return when {
+          spelling.isLvalueReferenceType() && !spelling.isConstLvalueReferenceType() -> lvalue(type, previous)
+          spelling.isConstRvalueReferenceType() -> rvalue(type, previous)
+          spelling.trim().endsWith("&&") -> movable(type, previous)
+          else -> stable(type, previous)
+        }
+      }
+      val left = if (callable.denotesMember()) {
+        memberObject(operands[0], previous, callable)
+      } else parameterOperand(operands[0], callable.parameters[0])
+      val rightParameter = callable.parameters[if (callable.denotesMember()) 0 else 1]
+      val rhs = listOf(left) + operatorTokens + parameterOperand(operands[1], rightParameter)
+      when {
+        callable.returnTypeInfo.isLvalueReference() -> exactStableExpression(
+          result, depth, ValueCategory.LVALUE,
+          Cv(callable.returnTypeInfo?.isConst == true, callable.returnTypeInfo?.isVolatile == true), rhs
+        )
+        callable.returnTypeInfo?.kind == "rvalueReference" -> exactStableExpression(
+          result, depth, ValueCategory.RVALUE,
+          Cv(callable.returnTypeInfo.isConst, callable.returnTypeInfo.isVolatile), rhs
+        )
+        callable.returnTypeInfo != null -> exactStableExpression(
+          result, depth, ValueCategory.RVALUE,
+          Cv(callable.returnTypeInfo.isConst, callable.returnTypeInfo.isVolatile), rhs
+        )
+        callable.semanticReturnType().isConstRvalueReferenceType() ->
+          stableRvalueExpression(result, depth, rhs)
+        callable.semanticReturnType().isConstLvalueReferenceType() ->
+          stableGlvalueExpression(result, depth, rhs)
+        callable.semanticReturnType().isLvalueReferenceType() -> stableLvalueExpression(result, depth, rhs)
+        else -> movableStableExpression(result, depth, rhs)
+      }
+    }
+
+    booleanType()?.let { boolean ->
+      listOf("&&", "||").forEach { operator ->
+        movableStableExpression(boolean, depth, listOf(condition(previous), operator, condition(previous)))
+      }
+      movableStableExpression(boolean, depth, listOf("!", condition(previous)))
+      typeSymbols.keys.filter(::isPointer).forEach { pointer ->
+        listOf("==", "!=").forEach { operator ->
+          movableStableExpression(
+            boolean, depth, listOf(stable(pointer, previous), operator, CPP_NULLPTR)
+          )
         }
       }
     }
 
-  private fun assignableTypes(expected: String, rejectNullptr: Boolean = false): List<String> =
-    compatibleTypes.getOrPut(expected to rejectNullptr) {
-      typeSymbols.keys.filter { actual ->
-        (!rejectNullptr || actual != "std::nullptr_t") &&
-          isAssignable(actual, expected, explicitConversions)
-      }
+    if (booleanType() != null) typeSymbols.keys.filterNot { it.typeShape() == "void" }.forEach { type ->
+      expression(
+        type, depth,
+        listOf(condition(previous), "?", expression(type, previous), ":", expression(type, previous))
+      )
+    }
+  }
+
+  private fun addBooleanCondition(depth: Int) {
+    if (booleanType() == null) return
+    typeSymbols.keys.filter { it.isArithmeticCppType() || isPointer(it) }
+      .forEach { type -> production(condition(depth), stable(type, depth)) }
+  }
+
+  private fun addStatements() {
+    val requiredName = requiredDeclarator()
+    val names = requiredName?.let { listOf(encodeIdentifier(it)) } ?: buildList {
+      add(CPP_FRESH)
+      prefix.filter { it.kind == CppTokenKind.IDENTIFIER && it.text !in CPP_KEYWORDS }
+        .mapTo(this) { encodeIdentifier(it.text) }
+    }.distinct()
+    addDeclarations(names)
+    if (requiredName != null) {
+      production("SEMANTIC_STATEMENT", "SIMPLE_STATEMENT")
+      return
     }
 
-  private fun String.cachedNameTokens(): List<String> =
-    tokenizedNames.getOrPut(this) { cppNameTokens() }
+    typeSymbols.keys.forEach { type -> production("SIMPLE_STATEMENT", expression(type, CPP_SEMANTIC_DEPTH), ";") }
+    addAssignments()
+    addReturns()
+    production("SEMANTIC_STATEMENT", "SIMPLE_STATEMENT")
+    if (booleanType() != null)
+      production("SEMANTIC_STATEMENT", "if", "(", condition(CPP_SEMANTIC_DEPTH), ")", "SIMPLE_STATEMENT")
+  }
 
-  /** A compact CFG nonterminal for canonical and source-valid alternate type spellings. */
+  private fun requiredDeclarator(): String? {
+    val diagnostic = sequenceOf(context.requiredIdentifier)
+      .plus(context.unresolvedIdentifiers.asSequence())
+      .filterNotNull().firstOrNull(IDENTIFIER_REGEX::matches)
+    if (prefix.isEmpty()) return diagnostic
+    val projected = projectCppTokens(prefix)
+    val typePrefix = sourceSpellableTypes.asSequence()
+      .filterNot { it.typeShape() == "void" }
+      .flatMap { spellings[it].orEmpty().asSequence() }
+      .flatMap { it.typeSpellingVariants().asSequence() }
+      .toList()
+      .sortedByDescending(List<String>::size)
+      .firstOrNull { candidate ->
+        val common = minOf(candidate.size, projected.size)
+        candidate.take(common) == projected.take(common)
+      } ?: return null
+    return projected.getOrNull(typePrefix.size)?.removePrefix("@id:") ?: diagnostic
+  }
+
+  private fun addDeclarations(names: List<String>) {
+    val depth = CPP_SEMANTIC_DEPTH
+    val constructorsByType = constructors.groupBy {
+      canonicalType(
+        it.canonicalOwnerType ?: it.ownerType ?: it.semanticReturnType() ?: it.name,
+        it.ownerTypeInfo ?: it.returnTypeInfo
+      )
+    }
+    names.forEach { name ->
+      typeSymbols.keys.filterNot {
+        it.typeShape() == "void" || it in abstractTypes || it !in sourceSpellableTypes
+      }.forEach { type ->
+        val spelling = listOf(typeSpelling(type))
+        val constructors = constructorsByType[type].orEmpty()
+        if (type in defaultConstructibleTypes || type.isLanguageDefaultConstructible() ||
+          constructors.any { constructor -> constructor.parameters.all(CppParameter::isOptional) }) {
+          production("SIMPLE_STATEMENT", spelling + name + ";")
+          production("SIMPLE_STATEMENT", spelling + name + listOf("{", "}", ";"))
+        }
+        assignableTypes(type).forEach { actual ->
+          production("SIMPLE_STATEMENT", spelling + name + listOf("=", expression(actual, depth), ";"))
+          production(
+            "SIMPLE_STATEMENT",
+            listOf("const") + spelling + name + listOf("=", expression(actual, depth), ";")
+          )
+          if (!isPointer(type)) {
+            production("SIMPLE_STATEMENT", spelling + listOf("&", name, "=", lvalue(actual, depth), ";"))
+            production(
+              "SIMPLE_STATEMENT",
+              listOf("const") + spelling + listOf("&", name, "=", expression(actual, depth), ";")
+            )
+          }
+        }
+        if (isPointer(type)) {
+          production("SIMPLE_STATEMENT", spelling + name + listOf("=", CPP_NULLPTR, ";"))
+          production("SIMPLE_STATEMENT", spelling + name + listOf("{", CPP_NULLPTR, "}", ";"))
+        }
+        constructors.forEach { constructor -> argumentTypeChoices(constructor.parameters).forEach { actuals ->
+          val arguments = commaSeparatedExpressions(actuals, constructor.parameters, depth)
+          production("SIMPLE_STATEMENT", spelling + name + listOf("{") + arguments + listOf("}", ";"))
+          production("SIMPLE_STATEMENT", spelling + name + listOf("(") + arguments + listOf(")", ";"))
+        } }
+      }
+
+      typeSymbols.keys.filterNot { it.typeShape() == "void" || it in abstractTypes }.forEach { actual ->
+        production("SIMPLE_STATEMENT", listOf("auto", name, "=", expression(actual, depth), ";"))
+      }
+      // A type alias introduces a fresh binder and is valid for every clang-spelled type.
+      sourceSpellableTypes.forEach { type ->
+        production("SIMPLE_STATEMENT", listOf("using", name, "=", typeSpelling(type), ";"))
+      }
+    }
+  }
+
+  private fun addAssignments() {
+    val depth = CPP_SEMANTIC_DEPTH
+    typeSymbols.keys.forEach { target ->
+      assignableTypes(target).forEach { actual ->
+        production("SIMPLE_STATEMENT", lvalue(target, depth), "=", expression(actual, depth), ";")
+      }
+      if (isPointer(target))
+        production("SIMPLE_STATEMENT", lvalue(target, depth), "=", CPP_NULLPTR, ";")
+      if (target.isArithmeticCppType()) typeSymbols.keys.filter(String::isArithmeticCppType)
+        .forEach { actual -> listOf("+=", "-=", "*=", "/=").forEach { operator ->
+          production("SIMPLE_STATEMENT", lvalue(target, depth), operator, expression(actual, depth), ";")
+        } }
+    }
+  }
+
+  private fun addReturns() {
+    val raw = context.enclosingReturnType ?: return
+    val expected = canonicalType(raw, context.enclosingReturnTypeInfo) ?: return
+    if (expected.typeShape() == "void") {
+      production("SIMPLE_STATEMENT", "return", ";")
+      return
+    }
+    if (expected !in typeSymbols) return
+    assignableTypes(expected).forEach { actual ->
+      production("SIMPLE_STATEMENT", "return", expression(actual, CPP_SEMANTIC_DEPTH), ";")
+    }
+    if (isPointer(expected)) production("SIMPLE_STATEMENT", "return", CPP_NULLPTR, ";")
+  }
+
+  private fun receiversFor(owner: String, member: CppReference): List<Pair<String, String>> =
+    receiverChoices.getOrPut(
+      owner to "${member.methodCv().code}:${member.refQualifier.orEmpty()}"
+    ) {
+      buildList {
+        typeSymbols.keys.forEach { candidate ->
+          val pointer = pointerShapes[candidate]
+          val pointee = pointer?.pointee ?: candidate.rawPointee()?.let(::canonicalType)
+          when {
+            candidate == owner -> add(candidate to ".")
+            member.refQualifier != "&&" && pointee == owner &&
+              (!member.denotesCallable() || pointer == null ||
+                member.acceptsCv(Cv(pointer.isConst, pointer.isVolatile))) ->
+              add(candidate to "->")
+          }
+        }
+      }.distinct()
+    }
+
+  private fun memberReceiver(type: String, depth: Int, member: CppReference): String {
+    val target = member.methodCv()
+    val key = "receiver:$type:$depth:${target.code}:${member.refQualifier.orEmpty()}"
+    return qualifiedChoices.getOrPut(key) {
+      val symbol = "RECEIVER_CHOICE_${qualifiedChoices.size}"
+      val categories = when (member.refQualifier) {
+        "&" -> listOf(ValueCategory.LVALUE)
+        "&&" -> listOf(ValueCategory.RVALUE)
+        else -> ValueCategory.entries
+      }
+      categories.forEach { category -> cvVariants.filter { member.acceptsCv(it) }.forEach { cv ->
+        production(symbol, qualifiedPostfix(type, depth, category, cv))
+      } }
+      symbol
+    }
+  }
+
+  private fun memberObject(type: String, depth: Int, member: CppReference): String {
+    val target = member.methodCv()
+    val key = "object:$type:$depth:${target.code}:${member.refQualifier.orEmpty()}"
+    return qualifiedChoices.getOrPut(key) {
+      val symbol = "OBJECT_CHOICE_${qualifiedChoices.size}"
+      val categories = when (member.refQualifier) {
+        "&" -> listOf(ValueCategory.LVALUE)
+        "&&" -> listOf(ValueCategory.RVALUE)
+        else -> ValueCategory.entries
+      }
+      categories.forEach { category -> cvVariants.filter { member.acceptsCv(it) }.forEach { cv ->
+        production(symbol, qualified(type, depth, category, cv))
+      } }
+      symbol
+    }
+  }
+
+  private fun CppReference.methodCv(): Cv = Cv(isConstMember(), isVolatileMember())
+
+  private fun CppReference.acceptsCv(actual: Cv): Boolean = methodCv().let { target ->
+    (!actual.isConst || target.isConst) && (!actual.isVolatile || target.isVolatile)
+  }
+
+  private fun assignableTypes(expected: String): List<String> = compatibleTypes.getOrPut(expected) {
+    typeSymbols.keys.filter { actual -> isAssignable(actual, expected) }
+  }
+
+  private fun isAssignable(actual: String, expected: String): Boolean {
+    if (actual == expected || actual to expected in explicitConversions) return true
+    if (actual.isArithmeticCppType() && expected.isArithmeticCppType()) return true
+    if (expected.typeShape() == "bool" && isPointer(actual)) return true
+    val from = pointerShapes[actual]
+    val to = pointerShapes[expected]
+    if (from != null && to != null) return from.pointee == to.pointee &&
+      (!from.isConst || to.isConst) && (!from.isVolatile || to.isVolatile)
+    return !structuredTypes && isAssignable(actual.typeShape(), expected.typeShape(), explicitConversions)
+  }
+
+  private fun CppReference.isMutableValueInContext(): Boolean {
+    if (!isMutableLvalue()) return false
+    if (!denotesMember() || isStaticFact() || isMutableField == true) return true
+    val owner = canonicalType(canonicalOwnerType ?: ownerType, ownerTypeInfo) ?: return true
+    context.thisTypeInfo?.pointeeCanonicalId?.let { pointeeId ->
+      val sameOwner = pointeeId == ownerTypeInfo.semanticId()
+      return !sameOwner || context.thisTypeInfo.pointeeIsConst != true
+    }
+    val implicitObject = canonicalType(context.thisType)?.rawPointee() ?: return true
+    return implicitObject.removePrefix("const ").removePrefix("volatile ") != owner ||
+      !implicitObject.startsWith("const ")
+  }
+
   private fun typeSpelling(type: String): String = typeSpellingSymbols.getOrPut(type) {
     val symbol = "${typeSymbols[type] ?: error("Unknown semantic C++ type: $type")}_SPELLING"
-    type.typeSpellingVariants().forEach { production(symbol, it) }
+    val candidates = spellings[type].orEmpty()
+    check(candidates.isNotEmpty()) { "C++ type $type has no Sema-approved source spelling" }
+    candidates.flatMap(String::typeSpellingVariants).distinct().forEach { production(symbol, it) }
     symbol
   }
 
   private fun canonicalType(raw: String?): String? {
     if (raw == null) return null
-    return if (raw in normalizedTypes) normalizedTypes[raw]
-    else cppType(raw).also { normalizedTypes[raw] = it }
+    val normalized = normalizedTypes.getOrPut(raw) { cppType(raw) } ?: return null
+    return typeAliases[normalized] ?: normalized
   }
 
-  /** Rejects clang recovery placeholders even when nested in a pointer or template spelling. */
-  private fun String.isSyntheticType(declaredTypes: Set<String>): Boolean {
-    if (context.sourceIdentifiers.isEmpty() || this in CPP_BUILTIN_TYPES) return false
-    val typeWords = setOf(
-      "alignas", "auto", "bool", "char", "char8_t", "char16_t", "char32_t", "const",
-      "double", "float", "int", "long", "short", "signed", "unsigned", "void",
-      "volatile", "wchar_t"
-    )
-    val declaredIdentifiers = (declaredTypes + typeAliases.keys + typeAliases.values)
-      .flatMapTo(linkedSetOf()) { spelling ->
-        lexCppLine(spelling).filter { it.kind == CppTokenKind.IDENTIFIER }.map { it.text }
-      }
-    val tokens = lexCppLine(this)
-    return tokens.withIndex().any { (index, token) ->
-      if (token.kind != CppTokenKind.IDENTIFIER) return@any false
-      val name = token.text
-      val standardQualified = index > 0 && tokens[index - 1].text == "::" &&
-        tokens.take(index).any { it.text == "std" }
-      name != "std" && name !in typeWords && !standardQualified &&
-        name !in context.sourceIdentifiers && name !in declaredIdentifiers
-    }
-  }
+  private fun canonicalType(raw: String?, info: CppTypeInfo?): String? =
+    if (info == null) canonicalType(raw)
+    else if (!info.isConcrete()) null
+    else info.semanticId()?.let(typeKeysByCanonicalId::get)
 
-  private fun declaredTypes(): Set<String> = userDeclaredTypes
+  private fun String.typeShape(): String = substringBefore('\u0000')
 
-  private fun expression(type: String, depth: Int): String =
-    "${typeSymbols[type] ?: error("Unknown semantic C++ type: $type")}_D$depth"
+  private fun booleanType(): String? = typeSymbols.keys.firstOrNull { it.typeShape() == "bool" }
+  private fun isPointer(type: String): Boolean = type in pointerShapes || type.isRawPointer()
 
-  /** Primary/postfix forms that can safely appear before `.`/`->` or after stream insertion. */
-  private fun postfix(type: String, depth: Int): String =
-    "${typeSymbols[type] ?: error("Unknown semantic C++ type: $type")}_POSTFIX_D$depth"
+  private fun String.cachedNameTokens(): List<String> =
+    tokenizedNames.getOrPut(this) { cppNameTokens() }
 
-  /** Expressions with no unparenthesized conditional, safe as higher-precedence operands. */
-  private fun stable(type: String, depth: Int): String =
-    "${typeSymbols[type] ?: error("Unknown semantic C++ type: $type")}_STABLE_D$depth"
-
-  /** Modifiable glvalues only; this tier is the left operand of assignment productions. */
-  private fun lvalue(type: String, depth: Int): String =
-    "${typeSymbols[type] ?: error("Unknown semantic C++ type: $type")}_LVALUE_D$depth"
-
-  /** Prvalues/xvalues only; required by rvalue-reference and move-only value parameters. */
-  private fun movable(type: String, depth: Int): String =
-    "${typeSymbols[type] ?: error("Unknown semantic C++ type: $type")}_MOVABLE_D$depth"
-
-  /** Modifiable postfix glvalues and class prvalues, safe immediately before a mutable `.` call. */
+  private fun expression(type: String, depth: Int): String = "${typeSymbols.getValue(type)}_D$depth"
+  private fun postfix(type: String, depth: Int): String = "${typeSymbols.getValue(type)}_POSTFIX_D$depth"
+  private fun stable(type: String, depth: Int): String = "${typeSymbols.getValue(type)}_STABLE_D$depth"
+  private fun glvalue(type: String, depth: Int): String = "${typeSymbols.getValue(type)}_GLVALUE_D$depth"
+  private fun rvalue(type: String, depth: Int): String = "${typeSymbols.getValue(type)}_RVALUE_D$depth"
+  private fun lvalue(type: String, depth: Int): String = "${typeSymbols.getValue(type)}_LVALUE_D$depth"
+  private fun movable(type: String, depth: Int): String = "${typeSymbols.getValue(type)}_MOVABLE_D$depth"
   private fun mutablePostfix(type: String, depth: Int): String =
-    "${typeSymbols[type] ?: error("Unknown semantic C++ type: $type")}_MUTABLE_POSTFIX_D$depth"
-
+    "${typeSymbols.getValue(type)}_MUTABLE_POSTFIX_D$depth"
+  private fun qualified(type: String, depth: Int, category: ValueCategory, cv: Cv): String =
+    "${typeSymbols.getValue(type)}_${category.name}_${cv.code}_D$depth"
+  private fun qualifiedPostfix(
+    type: String,
+    depth: Int,
+    category: ValueCategory,
+    cv: Cv
+  ): String = "${typeSymbols.getValue(type)}_POSTFIX_${category.name}_${cv.code}_D$depth"
   private fun condition(depth: Int): String = "BOOLEAN_CONDITION_D$depth"
 
-  private fun expression(type: String, depth: Int, rhs: List<String>) =
-    production(expression(type, depth), rhs)
-
+  private fun expression(type: String, depth: Int, rhs: List<String>) = production(expression(type, depth), rhs)
   private fun postfixExpression(type: String, depth: Int, rhs: List<String>) {
-    expression(type, depth, rhs)
-    production(postfix(type, depth), rhs)
-    production(stable(type, depth), rhs)
+    expression(type, depth, rhs); production(postfix(type, depth), rhs); production(stable(type, depth), rhs)
   }
-
   private fun stableExpression(type: String, depth: Int, rhs: List<String>) {
-    expression(type, depth, rhs)
-    production(stable(type, depth), rhs)
+    expression(type, depth, rhs); production(stable(type, depth), rhs)
   }
-
+  private fun exactPostfixExpression(
+    type: String,
+    depth: Int,
+    category: ValueCategory,
+    cv: Cv,
+    rhs: List<String>
+  ) {
+    postfixExpression(type, depth, rhs)
+    production(qualified(type, depth, category, cv), rhs)
+    production(qualifiedPostfix(type, depth, category, cv), rhs)
+    if (category == ValueCategory.LVALUE) {
+      production(glvalue(type, depth), rhs)
+      if (!cv.isConst) production(lvalue(type, depth), rhs)
+      if (!cv.isConst && !cv.isVolatile) production(mutablePostfix(type, depth), rhs)
+    } else {
+      production(rvalue(type, depth), rhs)
+      if (!cv.isConst && !cv.isVolatile) {
+        production(movable(type, depth), rhs)
+        production(mutablePostfix(type, depth), rhs)
+      }
+    }
+  }
+  private fun exactStableExpression(
+    type: String,
+    depth: Int,
+    category: ValueCategory,
+    cv: Cv,
+    rhs: List<String>
+  ) {
+    stableExpression(type, depth, rhs)
+    production(qualified(type, depth, category, cv), rhs)
+    if (category == ValueCategory.LVALUE) {
+      production(glvalue(type, depth), rhs)
+      if (!cv.isConst) production(lvalue(type, depth), rhs)
+    } else {
+      production(rvalue(type, depth), rhs)
+      if (!cv.isConst && !cv.isVolatile) production(movable(type, depth), rhs)
+    }
+  }
+  private fun glvaluePostfixExpression(
+    type: String,
+    depth: Int,
+    rhs: List<String>,
+    cv: Cv = Cv(isConst = true)
+  ) {
+    exactPostfixExpression(type, depth, ValueCategory.LVALUE, cv, rhs)
+  }
+  private fun stableGlvalueExpression(
+    type: String,
+    depth: Int,
+    rhs: List<String>,
+    cv: Cv = Cv(isConst = true)
+  ) {
+    exactStableExpression(type, depth, ValueCategory.LVALUE, cv, rhs)
+  }
   private fun movablePostfixExpression(type: String, depth: Int, rhs: List<String>) {
-    postfixExpression(type, depth, rhs)
-    production(movable(type, depth), rhs)
-    production(mutablePostfix(type, depth), rhs)
+    exactPostfixExpression(type, depth, ValueCategory.RVALUE, Cv(), rhs)
   }
-
+  private fun rvaluePostfixExpression(
+    type: String,
+    depth: Int,
+    rhs: List<String>,
+    cv: Cv = Cv(isConst = true)
+  ) {
+    exactPostfixExpression(type, depth, ValueCategory.RVALUE, cv, rhs)
+  }
   private fun movableStableExpression(type: String, depth: Int, rhs: List<String>) {
-    stableExpression(type, depth, rhs)
-    production(movable(type, depth), rhs)
+    exactStableExpression(type, depth, ValueCategory.RVALUE, Cv(), rhs)
   }
-
-  private fun lvalueExpression(type: String, depth: Int, rhs: List<String>) {
-    postfixExpression(type, depth, rhs)
-    production(lvalue(type, depth), rhs)
-    production(mutablePostfix(type, depth), rhs)
+  private fun stableRvalueExpression(
+    type: String,
+    depth: Int,
+    rhs: List<String>,
+    cv: Cv = Cv(isConst = true)
+  ) {
+    exactStableExpression(type, depth, ValueCategory.RVALUE, cv, rhs)
   }
-
-  /** Unary dereference is an lvalue but not a postfix expression; member access must parenthesize it. */
-  private fun stableLvalueExpression(type: String, depth: Int, rhs: List<String>) {
-    stableExpression(type, depth, rhs)
-    production(lvalue(type, depth), rhs)
+  private fun lvalueExpression(
+    type: String,
+    depth: Int,
+    rhs: List<String>,
+    isVolatile: Boolean = false
+  ) {
+    exactPostfixExpression(type, depth, ValueCategory.LVALUE, Cv(isVolatile = isVolatile), rhs)
+  }
+  private fun stableLvalueExpression(
+    type: String,
+    depth: Int,
+    rhs: List<String>,
+    isVolatile: Boolean = false
+  ) {
+    exactStableExpression(type, depth, ValueCategory.LVALUE, Cv(isVolatile = isVolatile), rhs)
   }
 
   private fun production(lhs: String, vararg rhs: String) = production(lhs, rhs.toList())
   private fun production(lhs: String, rhs: List<String>) {
     if (rhs.isNotEmpty()) productions += lhs to rhs
   }
-
-  private val explicitConversions: Set<Pair<String, String>> by lazy {
-    buildSet {
-      context.conversions.mapNotNullTo(this) { conversion ->
-        val from = cppType(conversion.from)
-        val to = cppType(conversion.to)
-        if (from == null || to == null) null else from to to
-      }
-      // A source alias and clang's expanded spelling denote the same C++ type. Record both
-      // directions so an alias-constructed value can satisfy an expanded library parameter (and
-      // vice versa) without treating arbitrary user records as convertible.
-      typeAliases.forEach { (alias, target) ->
-        add(alias to target)
-        add(target to alias)
-      }
-    }
-  }
 }
 
-/**
- * Incremental exact left quotients for one prepared statement grammar. Cursor prefixes are visited
- * in lexical order by the benchmark, so span recognition and derivative nodes for prefix `p` are
- * retained when conditioning on the next token of `p`. Source variables are renamed only once;
- * each cursor materializes just the subgraph reachable from its quotient root.
- */
+/** Incremental exact left quotients for one prepared statement grammar. */
 private class FiniteCppConditioner(private val source: CFG) {
   private data class OrderedGrammar(
     val syntax: CFG,
@@ -2759,291 +1956,132 @@ private fun pruneSemanticGrammar(
 
 private val GENERATED_EXPRESSION_SYMBOL = Regex(
   "(?:SEMANTIC_STATEMENT|SIMPLE_STATEMENT|BOOLEAN_CONDITION_D[0-9]+|" +
-    "TYPE_[0-9]+_(?:(?:POSTFIX|STABLE|LVALUE|MOVABLE|MUTABLE_POSTFIX)_)?D[0-9]+)"
+    "TYPE_[0-9]+_(?:(?:POSTFIX|STABLE|GLVALUE|RVALUE|LVALUE|MOVABLE|MUTABLE_POSTFIX)_)?D[0-9]+|" +
+    "TYPE_[0-9]+_(?:POSTFIX_)?(?:LVALUE|RVALUE)_(?:U|C|V|CV)_D[0-9]+)"
 )
 
-private fun CppReference.isType(): Boolean = kind.lowercase().let { "type" in it || "class" in it || "struct" in it }
-private fun CppReference.isCallable(): Boolean = kind.lowercase().let {
-  parameters.isNotEmpty() || "function" in it || "method" in it || "constructor" in it
+
+private fun CppParameter.semanticType(): String = canonicalType?.takeIf(String::isNotBlank) ?: type
+private fun CppParameter.isOptional(): Boolean = hasDefault ?: (defaultValue != null)
+private fun CppTypeInfo?.semanticId(): String? =
+  this?.valueCanonicalId?.takeIf(String::isNotBlank)
+    ?: this?.canonicalId?.takeIf(String::isNotBlank)
+
+private fun CppTypeInfo?.isConcrete(): Boolean = this == null ||
+  (!isDependent && !isInstantiationDependent && semanticId() != null)
+
+private fun CppTypeInfo?.isLvalueReference(): Boolean = this?.kind == "lvalueReference"
+
+/** [name] is clangd's context-correct insertion spelling; qualifiedName is identity only. */
+private fun CppReference.semanticName(): String = name
+
+private fun CppReference.denotesConstructor(): Boolean =
+  kind.contains("constructor", ignoreCase = true)
+
+private fun CppReference.denotesMember(): Boolean = isMember ?: (
+  receiverMember || canonicalOwnerType != null || ownerType != null ||
+    kind.contains("method", ignoreCase = true) || kind.contains("field", ignoreCase = true)
+  )
+
+private fun CppReference.denotesCallable(): Boolean = isCallable ?: (
+  parameters.isNotEmpty() || denotesConstructor() ||
+    kind.contains("function", ignoreCase = true) || kind.contains("method", ignoreCase = true) ||
+    kind.contains("operator", ignoreCase = true)
+  )
+
+private fun CppReference.denotesType(): Boolean = isType ?: kind.lowercase().let {
+  "type" in it || "class" in it || "struct" in it || "enum" in it || "alias" in it
 }
 
-/** clang completion can advertise an implicitly deleted constructor; only the AST proves one usable. */
-private fun CppReference.isTrustedCallableFact(): Boolean =
-  !kind.lowercase().contains("constructor") || source != "completion"
+private fun CppReference.denotesValue(): Boolean = isValue ?: (
+  !denotesType() && !denotesCallable() && !type.isNullOrBlank()
+  )
 
-/** Broad index completions contain hundreds of unrelated library operators; scoped AST facts win. */
-private fun CppReference.isBroadCompletionOperator(): Boolean =
-  source == "completion" && kind.equals("operator", ignoreCase = true)
-
-/** Clang advertises every template overload and its synthetic parameter names for these calls. */
-private fun CppReference.isSpecializedStandardCompletion(): Boolean =
-  source == "completion" && name.substringAfterLast("::") in CPP_SPECIALIZED_STANDARD_CALLS
-
-/** An unqualified function completion is hidden by a scoped object with the same spelling. */
-private fun CppReference.isShadowedBy(values: List<CppReference>): Boolean {
-  if ("::" in name) return false
-  val spelling = name.substringAfterLast("::")
-  return values.any { value ->
-    !value.isCallable() && value.name.substringAfterLast("::") == spelling
-  }
+private fun CppReference.isStaticFact(): Boolean = isStatic ?: run {
+  Regex("(?:^|\\s)static(?:\\s|$)").containsMatchIn(detail.orEmpty())
 }
+
+private fun CppReference.semanticType(): String? =
+  canonicalType?.takeIf(String::isNotBlank) ?: type?.takeIf(String::isNotBlank)
+
+private fun CppReference.semanticReturnType(): String? =
+  canonicalReturnType?.takeIf(String::isNotBlank)
+    ?: returnType?.takeIf(String::isNotBlank)
+    ?: detail?.substringBefore('(')?.trim()?.takeIf { denotesCallable() && it.isNotBlank() }
+    ?: type?.substringBefore('(')?.trim()?.takeIf { denotesCallable() && it.isNotBlank() }
 
 private fun CppReference.isConstMember(): Boolean =
-  Regex("\\)\\s*const(?:\\s|$)").containsMatchIn(detail.orEmpty())
+  isConstMethod ?: Regex("\\)\\s*const(?:\\s|$)").containsMatchIn(detail.orEmpty())
 
-/**
- * Clang/libc++ can expose the implementation spelling of the two standard string aliases. Keep
- * the compact, hand-audited overload set authoritative for every equivalent `char` specialization
- * instead of admitting the much larger completion overload set under an alias spelling.
- */
-private fun String?.compactStandardStringOwner(): String? {
-  val owner = cppType(this) ?: return null
-  if (!owner.startsWith("std::")) return owner
-  return when (owner.substringBefore('<').substringAfterLast("::")) {
-    "string" -> "std::string"
-    "string_view" -> "std::string_view"
-    "basic_string" -> if (cppType(owner.topLevelTemplateArguments().firstOrNull()) == "char")
-      "std::string" else owner
-    "basic_string_view" -> if (cppType(owner.topLevelTemplateArguments().firstOrNull()) == "char")
-      "std::string_view" else owner
-    else -> owner
-  }
-}
+private fun CppReference.isVolatileMember(): Boolean =
+  isVolatileMethod ?: Regex("\\)\\s*(?:const\\s+)?volatile(?:\\s|$)")
+    .containsMatchIn(detail.orEmpty())
 
-/** Canonical standard-template family across libc++/libstdc++ inline namespace spellings. */
-private fun String?.standardTemplateFamily(): String? {
-  val owner = cppType(this) ?: return null
-  if (!owner.startsWith("std::") || '<' !in owner) return null
-  return owner.substringBefore('<').substringAfterLast("::")
-}
-
-/** Only copyability that follows directly from a language or standard-library type family. */
-private fun String.isProvenCopyableOptionalElement(): Boolean =
-  isArithmeticCppType() || isRawPointer() ||
-    this in setOf("std::string", "std::string_view", "std::monostate", "std::nullptr_t") ||
-    startsWith("std::shared_ptr<") || startsWith("std::weak_ptr<")
-
-/**
- * `std::visit` may feed an lvalue or xvalue alternative from this grammar. A const lvalue
- * reference accepts both; a by-value parameter is safe only for a type whose copyability is known.
- */
-private fun String.isVisitSafeParameter(): Boolean = when {
-  trim().endsWith("&&") -> false
-  isLvalueReferenceType() -> isConstLvalueReferenceType()
-  else -> cppType(this)?.isProvenCopyableOptionalElement() == true
-}
-
-/** The generated visitor is a temporary, so an lvalue-ref-qualified call operator is unusable. */
-private fun CppReference.acceptsTemporaryVisitor(): Boolean {
-  val signature = detail?.takeIf(String::isNotBlank) ?: return false
-  val qualifiers = signature.substringAfterLast(')')
-  return !Regex("(?:^|\\s)&(?:\\s|$)").containsMatchIn(qualifiers)
-}
-
-/** Normalize spelling noise while deliberately retaining top-level cv/ref return categories. */
-private fun String.normalizedVisitReturnType(): String = trim()
-  .removePrefix("class ").removePrefix("struct ").removePrefix("enum ")
-  .substringBefore(" noexcept").substringBefore(" __attribute__")
-  .replace(Regex("\\s*::\\s*"), "::")
-  .replace(Regex("\\s*([<>,*&])\\s*"), "$1")
-  .replace(Regex("\\s+"), " ")
-  .trim()
-
-/** Instance methods without a `const` qualifier require a modifiable receiver. */
-private fun CppReference.requiresMutableReceiver(): Boolean {
-  if (!isCallable()) return false
-  val spelling = name.substringAfterLast("::")
-  // Synthesized standard facts intentionally omit display-signature cv qualifiers. Their known
-  // observers are const; mutators and non-const element access are enumerated explicitly here.
-  if (source == "standard") return spelling in CPP_STANDARD_MUTATING_MEMBERS
-  if (Regex("(?:^|\\s)static(?:\\s|$)").containsMatchIn(detail.orEmpty())) return false
-  return !isConstMember()
-}
-
-/** libc++ deliberately rejects null pointers for basic_string operations requiring text. */
-private fun CppReference.isNullRejectingStringOperation(): Boolean =
-  cppType(ownerType) == "std::string" && name.substringAfterLast("::") == "append"
-
-/** Integer zero is also a null-pointer constant and can make string search overloads ambiguous. */
-private fun CppReference.isOverloadSensitiveStringSearch(): Boolean =
-  cppType(ownerType) in setOf("std::string", "std::string_view") &&
-    name.substringAfterLast("::") in CPP_OVERLOAD_SENSITIVE_STRING_MEMBERS
+private fun CppReference.requiresMutableReceiver(): Boolean =
+  denotesCallable() && !isStaticFact() && !isConstMember() && !isVolatileMember()
 
 private fun CppReference.isMutableLvalue(): Boolean {
-  val category = kind.lowercase()
-  if (category !in setOf("field", "property", "value", "variable")) return false
-  val raw = type.orEmpty().trim()
-  if (raw.isEmpty()) return false
-  if (raw.startsWith("const ") && '*' !in raw) return false
-  if (Regex("\\bconst\\s*(?:&&|&)\\s*$").containsMatchIn(raw)) return false
-  return true
+  if (!denotesValue()) return false
+  if (isMutableField == true) return true
+  typeInfo?.let { return !it.isConst }
+  val spelling = type.orEmpty().trim()
+  if (spelling.isEmpty()) return false
+  if (spelling.startsWith("const ") && '*' !in spelling) return false
+  return !Regex("\\bconst\\s*(?:&&|&)\\s*$").containsMatchIn(spelling)
 }
 
-private fun CppReference.valueType(): String? = type?.takeIf(String::isNotBlank)?.let { raw ->
-  if (isCallable() && '(' in raw) null else raw
-}
-
-private fun CppReference.returnType(): String? = returnType?.takeIf(String::isNotBlank)
-  ?: detail?.substringBefore('(')?.trim()?.takeIf {
-    isCallable() && it.isNotBlank() && !it.endsWith(name.substringAfterLast("::"))
+/** Operators are syntax; their operand and result types still come exclusively from Sema. */
+private fun CppReference.operatorToken(): String? {
+  val spelling = semanticName().substringAfterLast("::").removePrefix("operator").trim()
+  return spelling.takeIf {
+    it in setOf("+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", "==", "!=", "<", "<=", ">", ">=")
   }
-  ?: type?.substringBefore('(')?.trim()?.takeIf { isCallable() && it.isNotBlank() }
+}
 
 private fun String?.isLvalueReferenceType(): Boolean =
-  this?.trim()?.let { it.endsWith("&") && !it.endsWith("&&") } == true
+  this?.trim()?.let { it.endsWith('&') && !it.endsWith("&&") } == true
 
 private fun String?.isConstLvalueReferenceType(): Boolean {
-  val type = this?.trim() ?: return false
-  return type.isLvalueReferenceType() && Regex("(?:^|\\s)const(?:\\s|$)").containsMatchIn(type)
-}
-
-private fun String?.isPointerToConstCppObject(): Boolean {
   val spelling = this?.trim() ?: return false
-  if ('*' !in spelling) return false
-  return Regex("(?:^|\\s)const(?:\\s|$)").containsMatchIn(spelling.substringBeforeLast('*'))
+  return spelling.isLvalueReferenceType() &&
+    Regex("(?:^|\\s)const(?:\\s|$)").containsMatchIn(spelling)
 }
 
-/** Type spelling of an ordinary data member as observed through a const-qualified `this`. */
-private fun String.asConstFieldLvalue(): String {
-  val spelling = trim()
-  // A reference member retains the referred object's original cv qualification.
-  if (spelling.endsWith('&')) return spelling
-  return if ('*' in spelling) "$spelling const &" else "const $spelling &"
+private fun String?.isConstRvalueReferenceType(): Boolean {
+  val spelling = this?.trim() ?: return false
+  return spelling.endsWith("&&") &&
+    Regex("(?:^|\\s)const(?:\\s|$)").containsMatchIn(spelling)
 }
 
-/** Canonicalizes the cv/ref spelling clang uses while retaining pointer/template structure. */
+/** Normalizes clang type spelling without attaching semantics to any library identifier. */
 private fun cppType(raw: String?): String? {
   if (raw.isNullOrBlank()) return null
   var type = raw.trim()
     .removePrefix("class ").removePrefix("struct ").removePrefix("enum ")
-    .replace(Regex("\\s+"), " ")
-    .trim()
-  type = type.substringBefore(" noexcept").substringBefore(" __attribute__").trim()
-  type = type.removeSuffix("&&").removeSuffix("&").trim()
-  // Drop top-level cv qualifiers while preserving pointee/template qualifiers. In particular a
-  // string literal is `const char*`, never mutable `char*`.
+    .substringBefore(" noexcept").substringBefore(" __attribute__")
+    .removeSuffix("&&").removeSuffix("&").trim()
   type = type.replace(Regex("\\s+(?:const|volatile)\\s*$"), "").trim()
-  if ('*' !in type) {
-    type = type.replace(Regex("^(?:const|volatile)\\s+"), "").trim()
-  } else {
-    type = type.replace(Regex("^(.+?)\\s+const\\s*\\*")) { match ->
-      "const ${match.groupValues[1]} *"
-    }.replace(Regex("^(.+?)\\s+volatile\\s*\\*")) { match ->
-      "volatile ${match.groupValues[1]} *"
-    }
-  }
-  type = type.replace(Regex("\\s*::\\s*"), "::")
+  if ('*' !in type) type = type.replace(Regex("^(?:const|volatile)\\s+"), "").trim()
+  else type = type.replace(Regex("^(.+?)\\s+const\\s*\\*")) { "const ${it.groupValues[1]} *" }
+    .replace(Regex("^(.+?)\\s+volatile\\s*\\*")) { "volatile ${it.groupValues[1]} *" }
+  return type.replace(Regex("\\s*::\\s*"), "::")
     .replace(Regex("\\s*<\\s*"), "<")
     .replace(Regex("\\s*>\\s*"), ">")
     .replace(Regex("\\s*,\\s*"), ",")
     .replace(Regex("\\s*\\*\\s*"), " *")
-    .replace(Regex("\\s+"), " ")
-    .trim()
-    .removePrefix("::")
-  return type.takeIf { it.isNotBlank() }
-}
-
-private fun cppAddressType(raw: String?): String? {
-  val value = cppType(raw) ?: return null
-  if (value == "void") return null
-  val spelling = raw.orEmpty().trim()
-  val referredConst = spelling.endsWith("&") &&
-    (spelling.startsWith("const ") || Regex("\\bconst\\s*(?:&&|&)\\s*$").containsMatchIn(spelling))
-  return cppType((if (referredConst) "const " else "") + value + " *")
+    .replace(Regex("\\s+"), " ").trim().removePrefix("::")
+    .takeIf(String::isNotBlank)
 }
 
 private fun String.cppNameTokens(): List<String> = lexCppLine(this).map { token ->
   if (token.kind == CppTokenKind.IDENTIFIER) encodeIdentifier(token.text) else token.text
 }
 
-private fun String.cppTypeTokens(): List<String> = cppNameTokens()
+private fun String.typeShape(): String = substringBefore('\u0000')
+private fun String.isRawPointer(): Boolean = typeShape().endsWith(" *")
+private fun String.rawPointee(): String? =
+  if (isRawPointer()) typeShape().removeSuffix(" *").trim() else null
 
-private fun String.isRawPointer(): Boolean = endsWith(" *")
-
-private fun String.smartOrRawPointee(): String? = when {
-  isRawPointer() -> removeSuffix(" *").trim()
-  startsWith("std::unique_ptr<") || startsWith("std::shared_ptr<") || startsWith("std::weak_ptr<") ->
-    substringAfter('<').substringBeforeLast('>').removeSuffix("[]")
-  else -> null
-}
-
-/** Raw and owning smart pointers support `*`/`->`; weak_ptr deliberately does not. */
-private fun String.dereferenceablePointee(): String? = when {
-  isRawPointer() -> removeSuffix(" *").trim()
-  startsWith("std::unique_ptr<") || startsWith("std::shared_ptr<") ->
-    substringAfter('<').substringBeforeLast('>').takeUnless { it.endsWith("[]") }
-  else -> null
-}
-
-private fun String.indexElementType(): String? = when {
-  isRawPointer() -> smartOrRawPointee()?.takeUnless { it.removePrefix("const ") == "void" }
-  startsWith("std::unique_ptr<") || startsWith("std::shared_ptr<") ->
-    substringAfter('<').substringBeforeLast('>').removeSuffix("[]")
-      .takeIf { substringAfter('<').substringBeforeLast('>').endsWith("[]") }
-  startsWith("std::vector<") || startsWith("std::deque<") || startsWith("std::array<") ->
-    substringAfter('<').substringBeforeLast('>').substringBeforeLast(',').trim()
-  this == "std::string" -> "char"
-  else -> null
-}
-
-/** Exactly the scalar/pointer families accepted by C++ contextual boolean conversion. */
-private fun String.isContextuallyBoolean(): Boolean =
-  isArithmeticCppType() || isRawPointer() || startsWith("std::unique_ptr<") ||
-    startsWith("std::shared_ptr<")
-
-private fun String.vectorElementType(): String? =
-  takeIf { startsWith("std::vector<") && endsWith(">") }
-    ?.removePrefix("std::vector<")
-    ?.dropLast(1)
-    ?.substringBeforeLast(",")
-    ?.trim()
-
-private fun String.sequenceElementType(): String? = when {
-  startsWith("std::vector<") || startsWith("std::deque<") || startsWith("std::list<") ->
-    substringAfter('<').substringBeforeLast('>').substringBeforeLast(',').trim()
-  else -> null
-}
-
-private fun String.initializerListElementType(): String? = when {
-  startsWith("std::vector<") || startsWith("std::deque<") || startsWith("std::list<") ||
-    startsWith("std::set<") -> topLevelTemplateArguments().firstOrNull()
-  else -> null
-}
-
-private fun String.structuredBindingArity(): Int? = when {
-  startsWith("std::pair<") -> 2
-  startsWith("std::tuple<") -> topLevelTemplateArguments().size.takeIf { it > 0 }
-  startsWith("std::array<") -> topLevelTemplateArguments().getOrNull(1)?.toIntOrNull()
-  else -> null
-}
-
-private fun String.topLevelTemplateArguments(): List<String> {
-  val open = indexOf('<')
-  if (open < 0 || !endsWith('>')) return emptyList()
-  val result = mutableListOf<String>()
-  var start = open + 1
-  var angle = 0
-  var round = 0
-  for (index in start until lastIndex) when (this[index]) {
-    '<' -> angle++
-    '>' -> angle--
-    '(' -> round++
-    ')' -> round--
-    ',' -> if (angle == 0 && round == 0) {
-      result += substring(start, index).trim()
-      start = index + 1
-    }
-  }
-  result += substring(start, lastIndex).trim()
-  return result.filter(String::isNotEmpty)
-}
-
-/** Families whose same-type lvalue cannot satisfy a by-value/rvalue-reference parameter. */
-private fun String.isMoveOnlyCppType(): Boolean =
-  startsWith("std::unique_ptr<") || contains("ostringstream") ||
-    vectorElementType()?.isMoveOnlyCppType() == true
-
-/** Canonical clang types can have shorter, fully equivalent source spellings. */
 private fun String.typeSpellingVariants(): List<List<String>> = buildList {
   add(cppNameTokens())
   when (this@typeSpellingVariants) {
@@ -3058,84 +2096,27 @@ private fun String.typeSpellingVariants(): List<List<String>> = buildList {
   }
 }.distinct()
 
-/**
- * libc++ erases the owning vector from `vector<T>::iterator` to `__wrap_iter<T *>`, while
- * libstdc++ retains it inside `__normal_iterator<..., vector<...>>`. Keep algorithm iterator
- * correlation portable without accepting a vector iterator as the middle of a deque/list range.
- */
-private fun String.isIteratorFor(sequenceFamily: String): Boolean {
-  val spelling = lowercase()
-  return when (sequenceFamily) {
-    "vector" -> "vector" in spelling || "wrap_iter" in spelling || "normal_iterator" in spelling
-    "deque" -> "deque" in spelling
-    "list" -> "list" in spelling
-    else -> sequenceFamily.lowercase() in spelling
-  }
-}
+private fun String.isIntegralCppType(): Boolean = typeShape() in setOf(
+  "char", "signed char", "unsigned char", "short", "short int", "signed short int",
+  "unsigned short", "unsigned short int", "int", "signed", "signed int", "unsigned",
+  "unsigned int", "long", "long int", "signed long int", "unsigned long", "unsigned long int",
+  "long long", "long long int", "signed long long int", "unsigned long long",
+  "unsigned long long int", "wchar_t", "char8_t", "char16_t", "char32_t"
+)
 
-private fun String.isDefaultDeclarable(
-  constructors: List<CppReference>,
-  provenByCompiler: Boolean = false
-): Boolean = when {
-  provenByCompiler -> true
-  isArithmeticCppType() || isRawPointer() -> true
-  startsWith("std::vector<") || startsWith("std::unique_ptr<") ||
-    startsWith("std::shared_ptr<") || startsWith("std::weak_ptr<") -> true
-  startsWith("std::deque<") || startsWith("std::list<") || startsWith("std::set<") ||
-    startsWith("std::map<") || startsWith("std::optional<") || startsWith("std::function<") -> true
-  this in setOf(
-    "std::string", "std::string_view", "std::monostate", "std::ostringstream",
-    "std::nullptr_t", "const char *"
-  ) -> true
-  // User-defined classes need an AST-proven constructor. Treating missing recovery data as an
-  // implicit default constructor admits deleted forms such as `Cat()` when its base has no
-  // default constructor. Standard/library families are handled explicitly above.
-  constructors.isEmpty() -> false
-  else -> constructors.any { constructor ->
-    constructor.parameters.isEmpty() || constructor.parameters.all { it.defaultValue != null }
-  }
-}
-
-private fun String.isIntegralCppType(): Boolean = this in setOf(
-  "char", "signed char", "unsigned char", "short", "short int", "unsigned short",
-  "unsigned short int", "int", "signed", "signed int", "unsigned", "unsigned int", "long",
-  "long int", "unsigned long", "unsigned long int", "long long", "long long int",
-  "unsigned long long", "unsigned long long int", "std::size_t", "size_t", "std::ptrdiff_t",
-  "std::intptr_t", "std::uintptr_t"
-) || Regex("(?:std::)?u?int(?:8|16|32|64)_t").matches(this)
-
-private fun String.isFloatingCppType(): Boolean = this in setOf("float", "double", "long double")
+private fun String.isFloatingCppType(): Boolean = typeShape() in setOf("float", "double", "long double")
 private fun String.isNumericCppType(): Boolean = isIntegralCppType() || isFloatingCppType()
-private fun String.isArithmeticCppType(): Boolean = this == "bool" || isIntegralCppType() || isFloatingCppType()
+private fun String.isArithmeticCppType(): Boolean = typeShape() == "bool" || isNumericCppType()
 private fun String.promotedArithmeticType(): String = when {
-  this in setOf("char", "signed char", "unsigned char", "short", "short int", "unsigned short", "unsigned short int") -> "int"
-  else -> this
-}
-private fun String.isLiteralCppType(): Boolean =
-  isArithmeticCppType() || this == "std::string" || this == "const char *"
-
-private fun String.isOutputStream(): Boolean =
-  contains("ostream") || contains("ostringstream") || contains("stringstream") ||
-    contains("basic_ostream")
-
-private fun String.isNonAssignableOutputStreamBase(): Boolean =
-  this == "std::ostream" || this == "std::wostream" || contains("basic_ostream")
-
-/** Static result type of the standard stream insertion overloads represented by this grammar. */
-private fun String.insertionResultType(): String = when {
-  (contains("ostringstream") || contains("stringstream")) && !contains("wchar_t") -> "std::ostream"
-  else -> this
+  typeShape() in setOf(
+    "char", "signed char", "unsigned char", "short", "short int", "signed short int",
+    "unsigned short", "unsigned short int", "wchar_t", "char8_t", "char16_t"
+  ) -> "int"
+  else -> typeShape()
 }
 
-private fun String.isCppStreamPrintable(): Boolean =
-  isArithmeticCppType() || this in setOf("std::string", "char *", "const char *") || isRawPointer()
-
-/** Explicit and converting constructors used by one-element direct-list declarations. */
-private fun String.canDirectListInitialize(target: String): Boolean = when (target) {
-  "std::string" -> this in setOf("const char *", "std::string", "std::string_view")
-  "std::string_view" -> this in setOf("const char *", "std::string", "std::string_view")
-  else -> false
-}
+private fun String.isLanguageDefaultConstructible(): Boolean =
+  isArithmeticCppType() || isRawPointer()
 
 private fun isAssignable(
   from: String,
@@ -3144,55 +2125,16 @@ private fun isAssignable(
 ): Boolean {
   if (from == to || from to to in explicit) return true
   if (to == "bool" && (from.isArithmeticCppType() || from.isRawPointer())) return true
-  if (from == "char" && to.isIntegralCppType()) return true
-  if (from.isIntegralCppType() && (to.isIntegralCppType() || to.isFloatingCppType())) return true
-  if (from.isFloatingCppType() && to.isFloatingCppType()) return true
-  if (from == "const char *" && to == "std::string") return true
-  if (to == "std::string_view" && from in setOf("const char *", "std::string")) return true
-  if (to.startsWith("std::optional<")) {
-    if (from == "std::nullopt_t") return true
-    val element = to.removePrefix("std::optional<").dropLast(1)
-    if (isAssignable(from, element, explicit)) return true
-  }
-  if (to.startsWith("std::variant<")) {
-    val alternatives = to.topLevelTemplateArguments()
-    val exactMatches = alternatives.count { it == from }
-    if (exactMatches == 1) return true
-    if (exactMatches > 1) return false
-    // Without an exact match, a converting variant constructor participates only when one
-    // alternative is viable. Admitting two merely-convertible alternatives would encode an
-    // overload-resolution ambiguity as a valid statement.
-    if (alternatives.count { alternative -> isAssignable(from, alternative, explicit) } == 1)
-      return true
-  }
-  if (from == "std::nullptr_t" && to.isRawPointer()) return true
-
-  val fromPointee = from.smartOrRawPointee()
-  val toPointee = to.smartOrRawPointee()
-  if (fromPointee != null && toPointee != null) {
-    val sameFamily = from.substringBefore('<') == to.substringBefore('<')
-    val sharedToWeak = from.startsWith("std::shared_ptr<") && to.startsWith("std::weak_ptr<")
-    if (sameFamily || sharedToWeak)
-      return fromPointee == toPointee || fromPointee to toPointee in explicit
-  }
-  if (from.isRawPointer() && to.isRawPointer() && fromPointee != null && toPointee != null) {
-    val fromConst = fromPointee.startsWith("const ")
-    val toConst = toPointee.startsWith("const ")
-    if (fromConst && !toConst) return false
-    val rawFrom = fromPointee.removePrefix("const ").removePrefix("volatile ")
-    val rawTo = toPointee.removePrefix("const ").removePrefix("volatile ")
-    return rawFrom == rawTo || rawFrom to rawTo in explicit
-  }
-  return false
+  if (from.isArithmeticCppType() && to.isArithmeticCppType()) return true
+  val fromPointee = from.rawPointee() ?: return false
+  val toPointee = to.rawPointee() ?: return false
+  val fromConst = fromPointee.startsWith("const ")
+  val toConst = toPointee.startsWith("const ")
+  if (fromConst && !toConst) return false
+  val rawFrom = fromPointee.removePrefix("const ").removePrefix("volatile ")
+  val rawTo = toPointee.removePrefix("const ").removePrefix("volatile ")
+  return rawFrom == rawTo || rawFrom to rawTo in explicit
 }
-
-private val CPP_BUILTIN_TYPES = setOf(
-  "void", "bool", "char", "signed char", "unsigned char", "wchar_t", "char8_t", "char16_t",
-  "char32_t", "short", "short int", "unsigned short", "unsigned short int", "int", "signed",
-  "signed int", "unsigned", "unsigned int", "long", "long int", "unsigned long",
-  "unsigned long int", "long long", "long long int", "unsigned long long",
-  "unsigned long long int", "float", "double", "long double", "auto"
-)
 
 fun encodeIdentifier(identifier: String): String = "@id:$identifier"
 
@@ -3290,16 +2232,13 @@ private fun projectCppTokens(
 
 fun materializeCppTerminal(terminal: String, fresh: () -> String): String = when {
   terminal.startsWith("@id:") -> terminal.removePrefix("@id:")
-  terminal == CPP_FRESH || terminal == CPP_SYNTAX_IDENTIFIER ||
-    terminal.startsWith(CPP_BIND_PREFIX) -> fresh()
+  terminal == CPP_FRESH || terminal.startsWith(CPP_BIND_PREFIX) -> fresh()
+  terminal == CPP_SYNTAX_IDENTIFIER ->
+    error("C++ syntax Identifier reached sampling without a clang/Sema spelling")
   terminal == CPP_INTEGER -> "0"
   terminal == CPP_FLOATING -> "0.0"
   terminal == CPP_CHARACTER -> "'\\0'"
   terminal == CPP_STRING -> "\"\""
-  terminal == CPP_USER_DEFINED_INTEGER -> "0_tidy"
-  terminal == CPP_USER_DEFINED_FLOATING -> "0.0_tidy"
-  terminal == CPP_USER_DEFINED_CHARACTER -> "'\\0'_tidy"
-  terminal == CPP_USER_DEFINED_STRING -> "\"\"_tidy"
   terminal == CPP_BOOLEAN -> "true"
   terminal == CPP_NULLPTR -> "nullptr"
   else -> terminal
@@ -3310,10 +2249,10 @@ private val CPP_LITERAL_TERMINAL = mapOf(
   CppTokenKind.FLOATING to CPP_FLOATING,
   CppTokenKind.CHARACTER to CPP_CHARACTER,
   CppTokenKind.STRING to CPP_STRING,
-  CppTokenKind.USER_DEFINED_INTEGER to CPP_USER_DEFINED_INTEGER,
-  CppTokenKind.USER_DEFINED_FLOATING to CPP_USER_DEFINED_FLOATING,
-  CppTokenKind.USER_DEFINED_CHARACTER to CPP_USER_DEFINED_CHARACTER,
-  CppTokenKind.USER_DEFINED_STRING to CPP_USER_DEFINED_STRING
+  CppTokenKind.USER_DEFINED_INTEGER to CPP_INTEGER,
+  CppTokenKind.USER_DEFINED_FLOATING to CPP_FLOATING,
+  CppTokenKind.USER_DEFINED_CHARACTER to CPP_CHARACTER,
+  CppTokenKind.USER_DEFINED_STRING to CPP_STRING
 )
 
 /** Source spellings represented by one grammar terminal at a partial-token cursor. */
@@ -3323,8 +2262,8 @@ internal fun cppCompletionTerminalSpellings(
 ): List<String> = buildList {
   when {
     terminal.startsWith("@id:") -> add(terminal.removePrefix("@id:"))
-    terminal == CPP_FRESH || terminal == CPP_SYNTAX_IDENTIFIER ||
-      terminal.startsWith(CPP_BIND_PREFIX) -> if (prefix.kind == CppTokenKind.IDENTIFIER) {
+    terminal == CPP_FRESH || terminal.startsWith(CPP_BIND_PREFIX) ->
+      if (prefix.kind == CppTokenKind.IDENTIFIER) {
         add(prefix.text)
         prefix.completeText?.let(::add)
       }
@@ -3500,6 +2439,9 @@ private fun userDefinedCppTokenKind(text: String): CppTokenKind = when {
 }
 
 private val IDENTIFIER_REGEX = Regex("[A-Za-z_][A-Za-z_0-9]*")
+
+internal fun String.isCppIdentifierName(): Boolean =
+  this !in CPP_KEYWORDS && IDENTIFIER_REGEX.matches(this)
 
 private val CPP_KEYWORDS = setOf(
   "alignas", "alignof", "and", "and_eq", "asm", "auto", "bitand", "bitor", "bool",

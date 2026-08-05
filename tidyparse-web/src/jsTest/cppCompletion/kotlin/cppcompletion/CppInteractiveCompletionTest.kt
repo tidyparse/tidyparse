@@ -223,134 +223,125 @@ class CppInteractiveCompletionTest {
   }
 
   @Test
-  fun expandedTupleValuedMapCompletesPartialTryEmplaceWithoutAliasDependentFacts() {
-    val text = "records.try_emp"
+  fun semaMemberSignatureCompletesAnArbitraryPartialMemberName() {
+    val text = "archive.record_"
     val snapshot = requireNotNull(cppEditorStatementSnapshot(text, 0, text.length))
-    val identifiers = setOf(
-      "std", "map", "tuple", "string", "Record", "records", "try_emplace"
-    )
+    val identifiers = setOf("Archive", "archive", "record_entry")
     val context = CppCompletionContext(
       identifiers = identifiers,
       sourceIdentifiers = identifiers,
-      headers = setOf("map", "tuple", "string"),
-      values = listOf(
-        CppReference(
-          "records",
-          type = "std::map<int,std::tuple<int,std::string,double>>",
-          kind = "variable",
-          source = "ast"
+      values = listOf(semaValue("archive", "Archive")),
+      membersByType = listOf(
+        CppTypeMembers(
+          "Archive",
+          listOf(
+            semaMethod(
+              "Archive",
+              "record_entry",
+              "void",
+              parameters = listOf(
+                CppParameter(name = "key", type = "int", canonicalType = "int"),
+                CppParameter(
+                  name = "label",
+                  type = "const char *",
+                  canonicalType = "const char *"
+                )
+              )
+            )
+          )
         )
       )
     )
     val completions = CppCompletionGrammar().completeCppStatement(
-      context, snapshot.completionQuery(identifiers, seed = 2142905409)
+      context, snapshot.completionQuery(identifiers, limit = 1, seed = 2142905409)
     ).suggestions
 
-    assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.size)
+    val completion = completions.single()
+    assertEquals("record_entry", completion.tokens.first())
+    assertEquals(";", completion.tokens.last())
+    assertTrue(completion.candidateText.startsWith("archive.record_entry("))
+  }
+
+  @Test
+  fun semaTypeSpellingCompletesAnArbitraryNestedDeclaration() {
+    val type = "atlas::Ledger<int,glyph::Label>"
+    val prefixText = "atlas::Ledger<int, glyph::Lab"
+    val snapshot = requireNotNull(cppEditorStatementSnapshot(prefixText, 0, prefixText.length))
+    val identifiers = setOf("atlas", "Ledger", "glyph", "Label")
+    val context = CppCompletionContext(
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      types = listOf(semaType(type)),
+      defaultConstructibleTypes = setOf(type)
+    )
+    val completion = CppCompletionGrammar().completeCppStatement(
+      context,
+      snapshot.completionQuery(identifiers, limit = 1, seed = 20260804)
+    ).suggestions.single()
+
+    assertEquals("Label", completion.tokens.first())
+    assertEquals(";", completion.tokens.last())
     assertTrue(
-      completions.all {
-        it.tokens.firstOrNull() == "try_emplace" && it.tokens.lastOrNull() == ";"
-      }
+      completion.candidateText.startsWith("atlas::Ledger<int, glyph::Label>"),
+      completion.candidateText
     )
   }
 
   @Test
-  fun observedMapSpecializationDoesNotHideAnotherPartialDeclaration() {
-    val prefixText = "std::map<int, std::string"
-    val prefix = cppLines(prefixText).single().tokens
-    val identifiers = setOf("std", "map", "tuple", "string", "Record", "records")
+  fun independentlyReportedSemaSpecializationsRemainIndependent() {
+    val observedType = "cosmos::Vault<int>"
+    val offeredType = "cosmos::Vault<Signal>"
+    val identifiers = setOf("cosmos", "Vault", "Signal", "existing")
     val context = CppCompletionContext(
       identifiers = identifiers,
       sourceIdentifiers = identifiers,
-      headers = setOf("map", "tuple", "string"),
-      values = listOf(
-        CppReference(
-          "records",
-          type = "std::map<int,std::tuple<int,std::string,double>>",
-          kind = "variable",
-          source = "ast"
-        )
-      )
+      values = listOf(semaValue("existing", observedType)),
+      types = listOf(
+        semaType("Signal"),
+        semaType(offeredType)
+      ),
+      defaultConstructibleTypes = setOf(offeredType)
     )
-    val completions = CppCompletionGrammar().generate(context, prefix).shortestCompletions(
-      prefixText = prefixText,
-      identifiersInFile = identifiers,
-      random = Random(20260804)
-    )
+    val prefixText = "cosmos::Vault<Sign"
+    val snapshot = requireNotNull(cppEditorStatementSnapshot(prefixText, 0, prefixText.length))
+    val completion = CppCompletionGrammar().completeCppStatement(
+      context,
+      snapshot.completionQuery(identifiers, limit = 1, seed = 20260804)
+    ).suggestions.single()
 
-    assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.size)
-    assertTrue(completions.all { it.tokens.firstOrNull() == ">" && it.tokens.lastOrNull() == ";" })
+    assertEquals("Signal", completion.tokens.first())
+    assertEquals(";", completion.tokens.last())
+    assertTrue(completion.candidateText.startsWith(offeredType))
   }
 
   @Test
-  fun observedStandardTemplateFamiliesRetainSiblingDeclarationCandidates() {
-    data class Case(
-      val header: String,
-      val observedType: String,
-      val partialType: String
-    )
-    val cases = listOf(
-      Case("vector", "std::vector<int>", "std::vector<std::string"),
-      Case("set", "std::set<std::string>", "std::set<int"),
-      Case("optional", "std::optional<int>", "std::optional<std::string")
-    )
-    cases.forEach { case ->
-      val identifiers = setOf("std", case.header, "string", "existing")
-      val context = CppCompletionContext(
-        identifiers = identifiers,
-        sourceIdentifiers = identifiers,
-        headers = setOf(case.header, "string"),
-        values = listOf(
-          CppReference("existing", type = case.observedType, kind = "variable", source = "ast")
-        )
-      )
-      val prefix = cppLines(case.partialType).single().tokens
-      val completions = CppCompletionGrammar().generate(context, prefix).shortestCompletions(
-        prefixText = case.partialType,
-        identifiersInFile = identifiers,
-        random = Random(20260804)
-      )
-
-      assertEquals(
-        CPP_MAX_INTERACTIVE_COMPLETIONS,
-        completions.size,
-        "An observed ${case.header} specialization suppressed `${case.partialType}`"
-      )
-      assertTrue(
-        completions.all { it.tokens.firstOrNull() == ">" && it.tokens.lastOrNull() == ";" },
-        "Unexpected ${case.header} completion: ${completions.joinToString { it.tokens.joinToString(" ") }}"
-      )
-    }
-  }
-
-  @Test
-  fun directUniquePtrUseCompletesANestedVectorDeclaration() {
-    val identifiers = setOf("std", "vector", "unique_ptr", "Widget", "widgets")
+  fun explicitlyReportedNestedSemaSpecializationCompletesAtEveryClosingBoundary() {
+    val type = "fabric::Bundle<fabric::Handle<Widget>>"
+    val identifiers = setOf("fabric", "Bundle", "Handle", "Widget")
     val context = CppCompletionContext(
       identifiers = identifiers,
       sourceIdentifiers = identifiers,
-      headers = setOf("memory", "vector"),
-      types = listOf(CppReference("Widget", type = "Widget", kind = "class", source = "ast")),
-      values = listOf(
-        CppReference("widgets", type = "std::vector<int>", kind = "variable", source = "ast")
-      )
+      types = listOf(
+        semaType("Widget"),
+        semaType(type)
+      ),
+      defaultConstructibleTypes = setOf(type)
     )
     listOf(
-      "std::vector<std::unique_ptr<Widget" to listOf(">", ">"),
-      "std::vector<std::unique_ptr<Widget>" to listOf(">")
+      "fabric::Bundle<fabric::Handle<Widget" to listOf(">", ">"),
+      "fabric::Bundle<fabric::Handle<Widget>" to listOf(">")
     ).forEach { (prefixText, closingTokens) ->
       val prefix = cppLines(prefixText).single().tokens
       val completions = CppCompletionGrammar().generate(context, prefix).shortestCompletions(
         prefixText = prefixText,
         identifiersInFile = identifiers,
+        limit = 1,
         random = Random(20260804)
       )
 
-      assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.size)
-      assertTrue(completions.all { completion ->
-        completion.tokens.take(closingTokens.size) == closingTokens &&
-          completion.tokens.lastOrNull() == ";"
-      })
+      val completion = completions.single()
+      assertEquals(closingTokens, completion.tokens.take(closingTokens.size))
+      assertEquals(";", completion.tokens.last())
     }
   }
 
@@ -431,5 +422,46 @@ class CppInteractiveCompletionTest {
     rawPrefix = emptyList(),
     projectedPrefix = emptyList(),
     templateTokens = maxLength
+  )
+
+  private fun semaType(type: String) = CppReference(
+    name = type,
+    type = type,
+    kind = "class",
+    source = "sema",
+    id = "type:$type",
+    qualifiedName = type,
+    canonicalType = type,
+    isType = true
+  )
+
+  private fun semaValue(name: String, type: String) = CppReference(
+    name = name,
+    type = type,
+    kind = "variable",
+    source = "sema",
+    id = "value:$name",
+    canonicalType = type,
+    isValue = true
+  )
+
+  private fun semaMethod(
+    owner: String,
+    name: String,
+    returnType: String,
+    parameters: List<CppParameter>
+  ) = CppReference(
+    name = name,
+    returnType = returnType,
+    parameters = parameters,
+    kind = "method",
+    ownerType = owner,
+    source = "sema",
+    id = "$owner::$name",
+    canonicalReturnType = returnType,
+    canonicalOwnerType = owner,
+    isCallable = true,
+    isMember = true,
+    isStatic = false
   )
 }

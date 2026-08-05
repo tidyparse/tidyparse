@@ -8,6 +8,7 @@ import cppcompletion.CppReference
 import cppcompletion.CppSignature
 import cppcompletion.CppToken
 import cppcompletion.CppTokenKind
+import cppcompletion.CppTypeInfo
 import cppcompletion.CppTypeMembers
 import cppcompletion.CPP_MAX_INTERACTIVE_COMPLETIONS
 import cppcompletion.cppLines
@@ -50,15 +51,55 @@ data class CppClangdCompletionGroup(
   val receiverOperator: String? = null
 )
 
-/** Raw browser-available semantic facts for one completion cursor. */
-data class CppCompletionSemanticFacts(
-  val completionGroups: List<CppClangdCompletionGroup> = emptyList(),
-  val signatures: dynamic = null,
-  val hover: dynamic = null,
-  val diagnostics: dynamic = null,
-  /** A compact DTO produced by the clangd worker, or a raw AST in tests/legacy callers. */
-  val ast: dynamic = null
-)
+/** Typed view of the declaration payload kept alive by clang's completion Sema. */
+private external interface CppSemanticSymbolDto {
+  val kind: String?
+  val provenance: dynamic
+  val isCallable: Boolean?
+  val isValue: Boolean?
+  val isMember: Boolean?
+  val isType: Boolean?
+  val isStatic: Boolean?
+  val isConstMethod: Boolean?
+  val isVolatileMethod: Boolean?
+  val isMutableField: Boolean?
+  val isVariadic: Boolean?
+  val isAbstract: Boolean?
+  val isDependent: Boolean?
+  val isSourceSpellable: Boolean?
+  val refQualifier: String?
+  val type: String?
+  val returnType: String?
+  val ownerType: String?
+  val canonicalType: String?
+  val canonicalReturnType: String?
+  val canonicalOwnerType: String?
+  val typeInfo: dynamic
+  val returnTypeInfo: dynamic
+  val ownerTypeInfo: dynamic
+  val id: String?
+  val qualifiedName: String?
+  val parameters: dynamic
+  val templateParameters: dynamic
+}
+
+private fun cppTypeInfo(value: dynamic): CppTypeInfo? {
+  if (!cppDefined(value)) return null
+  return CppTypeInfo(
+    id = value.id as? String,
+    canonicalId = value.canonicalId as? String,
+    valueCanonicalId = value.valueCanonicalId as? String,
+    kind = value.kind as? String,
+    isConst = value.isConst as? Boolean ?: false,
+    isVolatile = value.isVolatile as? Boolean ?: false,
+    pointeeCanonicalId = value.pointeeCanonicalId as? String,
+    pointeeIsConst = value.pointeeIsConst as? Boolean ?: false,
+    pointeeIsVolatile = value.pointeeIsVolatile as? Boolean ?: false,
+    isDependent = value.isDependent as? Boolean ?: false,
+    isInstantiationDependent = value.isInstantiationDependent as? Boolean ?: false,
+    isSourceSpellable = value.isSourceSpellable as? Boolean
+  )
+}
 
 private data class CppPhysicalLine(
   val start: Int,
@@ -141,6 +182,214 @@ fun cppEditorStatementSnapshot(source: String, line: Int, character: Int): CppEd
     cacheKey = identity,
     seed = identity.hashCode()
   )
+}
+
+/** Decodes the declaration-backed completion slice emitted directly by clangd/Sema. */
+fun cppSemanticCompletionContextDto(
+  result: dynamic,
+  snapshot: CppEditorStatementSnapshot
+): dynamic {
+  if (!cppDefined(result) || cppInt(result.schemaVersion, -1) != 1)
+    return cppCompletionContextToDto(CppCompletionContext(emptySet()))
+
+  val semanticContext = result.context
+  val baseType = semanticContext?.baseType as? String
+  val canonicalBaseType = semanticContext?.canonicalBaseType as? String
+  val receiverOperator = cppReceiverOperator(snapshot.semanticPrefixText)
+  val activeCallee = cppActiveCallee(snapshot.semanticPrefixText)
+  val activeItems = cppDynamicList(result.activeCallables).mapNotNull { raw ->
+    val symbol: CppSemanticSymbolDto = raw
+    val name = symbol.qualifiedName?.takeIf(String::isNotBlank) ?: return@mapNotNull null
+    val insertion = activeCallee.takeIf { symbol.isMember != true } ?: name
+    val item = js("({})")
+    item.name = insertion.substringAfterLast("::")
+    item.insertText = insertion
+    item.returnType = symbol.returnType
+    item.kind = when {
+      symbol.kind?.contains("constructor", ignoreCase = true) == true -> 4
+      symbol.isMember == true -> 2
+      symbol.isCallable == true -> 3
+      symbol.isType == true -> 7
+      else -> 6
+    }
+    item.symbols = arrayOf(raw)
+    item
+  }
+  val items = cppDynamicList(result.items) + cppDynamicList(result.scopeItems) + activeItems
+  val references = cppDistinctReferences(
+    items.flatMap { item ->
+      val itemName = item?.insertText as? String
+        ?: ((item?.requiredQualifier as? String).orEmpty() + (item?.name as? String).orEmpty())
+      if (itemName.isBlank()) return@flatMap emptyList()
+      val itemKind = cppReferenceKind(cppInt(item.kind, -1))
+      cppDynamicList(item.symbols).mapNotNull { symbol ->
+        val declaration: CppSemanticSymbolDto = symbol
+        if (!cppDefined(declaration)) return@mapNotNull null
+        val provenance = declaration.provenance
+        val fromSema = provenance?.sema as? Boolean == true
+        val fromIndex = provenance?.index as? Boolean == true
+        // Index records contribute declaration/insertion names only. Typed CFG edges require an
+        // exact declaration retained while Sema's completion AST is alive.
+        val callable = fromSema && declaration.isCallable == true
+        val value = fromSema && declaration.isValue == true
+        val member = fromSema && declaration.isMember == true
+        val parameters = if (!fromSema) emptyList() else cppDynamicList(declaration.parameters).map { parameter ->
+          val hasDefault = parameter?.hasDefault as? Boolean == true
+          CppParameter(
+            name = parameter?.name as? String ?: "",
+            type = parameter?.type as? String ?: parameter?.canonicalType as? String ?: "",
+            defaultValue = "".takeIf { hasDefault },
+            canonicalType = parameter?.canonicalType as? String,
+            typeInfo = cppTypeInfo(parameter?.typeInfo),
+            hasDefault = hasDefault,
+            isPack = parameter?.isPack as? Boolean == true
+          )
+        }
+        val declaredType = declaration.type
+        val declaredReturnType = declaration.returnType
+        val declaredOwnerType = declaration.ownerType
+        CppReference(
+          name = itemName,
+          type = if (value && !callable) (declaredType ?: item?.returnType as? String) else null,
+          returnType = if (callable) (
+            declaredReturnType ?: item?.returnType as? String
+          ) else null,
+          parameters = parameters,
+          kind = itemKind,
+          detail = item?.signature as? String,
+          receiverMember = member && receiverOperator != null,
+          ownerType = if (member) (
+            declaredOwnerType ?: canonicalBaseType ?: baseType
+          ) else null,
+          source = when {
+            fromSema && fromIndex -> "sema+index"
+            fromSema -> "sema"
+            else -> "index"
+          },
+          abstract = declaration.isAbstract ?: false,
+          id = declaration.id,
+          qualifiedName = declaration.qualifiedName,
+          provenance = when {
+            fromSema && fromIndex -> "sema+index"
+            fromSema -> "sema"
+            else -> "index"
+          },
+          canonicalType = declaration.canonicalType,
+          canonicalReturnType = declaration.canonicalReturnType,
+          canonicalOwnerType = declaration.canonicalOwnerType,
+          typeInfo = cppTypeInfo(declaration.typeInfo),
+          returnTypeInfo = cppTypeInfo(declaration.returnTypeInfo),
+          ownerTypeInfo = cppTypeInfo(declaration.ownerTypeInfo),
+          isType = fromSema && declaration.isType == true,
+          isValue = value,
+          isCallable = callable,
+          isMember = member,
+          isStatic = fromSema && declaration.isStatic == true,
+          isConstMethod = declaration.isConstMethod,
+          isVolatileMethod = declaration.isVolatileMethod,
+          refQualifier = declaration.refQualifier,
+          isMutableField = declaration.isMutableField,
+          isVariadic = declaration.isVariadic == true,
+          templateParameters = cppDynamicList(declaration.templateParameters).map { parameter ->
+            CppParameter(
+              name = parameter?.name as? String ?: "",
+              type = parameter?.kind as? String ?: "",
+              isPack = parameter?.isPack as? Boolean == true
+            )
+          }
+        )
+      }
+    }
+  )
+  val values = references.filter { it.isValue == true && it.isCallable != true }
+  val types = references.filter { it.isType == true }
+  val functions = references.filter { it.isCallable == true }
+  val members = references.filter { it.ownerType != null && it.receiverMember }
+  val receiverType = baseType ?: canonicalBaseType
+  val receiver = receiverOperator?.let { operator ->
+    CppReceiver(
+      operator = operator,
+      expression = cppReceiverExpression(snapshot.semanticPrefixText, operator).orEmpty(),
+      type = receiverType,
+      members = members
+    )
+  }
+  val preferredTypes = listOfNotNull(
+    semanticContext?.preferredType as? String,
+    semanticContext?.canonicalPreferredType as? String
+  ).toSet()
+  fun CppTypeInfo?.concreteSpellings(vararg spellings: String?): Sequence<String> =
+    if (this?.isSourceSpellable == true && !isDependent && !isInstantiationDependent)
+      spellings.asSequence().filterNotNull()
+    else emptySequence()
+  fun CppReference.semanticSpellings(): Sequence<String> =
+    sequenceOf(name, qualifiedName).filterNotNull() +
+      typeInfo.concreteSpellings(type, canonicalType) +
+      returnTypeInfo.concreteSpellings(returnType, canonicalReturnType) +
+      ownerTypeInfo.concreteSpellings(ownerType, canonicalOwnerType) +
+      parameters.asSequence().flatMap { parameter ->
+        parameter.typeInfo.concreteSpellings(parameter.type, parameter.canonicalType)
+      }
+  val declarationItemSpellings = items.asSequence()
+    .filter { item -> cppDynamicList(item?.symbols).isNotEmpty() }
+    .flatMap { item -> sequenceOf(
+      item?.name as? String,
+      item?.insertText as? String
+    ).filterNotNull() }
+  val identifiers = (
+    references.asSequence().flatMap { it.semanticSpellings() } + declarationItemSpellings
+  )
+    .flatMap { CPP_IDENTIFIER_REGEX.findAll(it).map(MatchResult::value) }
+    .toCollection(linkedSetOf())
+  return cppCompletionContextToDto(CppCompletionContext(
+    identifiers = identifiers,
+    sourceIdentifiers = references.filter { it.provenance?.contains("sema") == true }
+      .flatMapTo(linkedSetOf()) { CPP_IDENTIFIER_REGEX.findAll(it.name).map(MatchResult::value).toList() },
+    typeNames = types.mapTo(linkedSetOf()) { it.name },
+    values = values,
+    types = types,
+    functions = functions,
+    completions = references,
+    expectedTypes = preferredTypes,
+    enclosingReturnType = semanticContext?.enclosingReturnType as? String,
+    canonicalEnclosingReturnType = semanticContext?.canonicalEnclosingReturnType as? String,
+    enclosingReturnTypeInfo = cppTypeInfo(semanticContext?.enclosingReturnTypeInfo),
+    enclosingClassType = semanticContext?.enclosingClassType as? String,
+    canonicalEnclosingClassType = semanticContext?.canonicalEnclosingClassType as? String,
+    enclosingClassTypeInfo = cppTypeInfo(semanticContext?.enclosingClassTypeInfo),
+    thisType = semanticContext?.thisType as? String,
+    canonicalThisType = semanticContext?.canonicalThisType as? String,
+    thisTypeInfo = cppTypeInfo(semanticContext?.thisTypeInfo),
+    completionKind = semanticContext?.kind as? String,
+    preferredType = semanticContext?.preferredType as? String,
+    canonicalPreferredType = semanticContext?.canonicalPreferredType as? String,
+    preferredTypeInfo = cppTypeInfo(semanticContext?.preferredTypeInfo),
+    baseType = baseType,
+    canonicalBaseType = canonicalBaseType,
+    baseTypeInfo = cppTypeInfo(semanticContext?.baseTypeInfo),
+    queryScopes = cppDynamicList(semanticContext?.queryScopes).mapNotNull { it as? String },
+    accessibleScopes = cppDynamicList(semanticContext?.accessibleScopes).mapNotNull { it as? String },
+    receiver = receiver,
+    membersByType = members.groupBy { it.ownerType!! }.map { (type, owned) ->
+      CppTypeMembers(type, owned)
+    }
+  ))
+}
+
+/** Source spelling of the innermost open direct call (`visit(`, `ns::visit(`, ...). */
+private fun cppActiveCallee(prefix: String): String? {
+  val tokens = cppLines(prefix).single().tokens
+  val opens = mutableListOf<Int>()
+  tokens.forEachIndexed { index, token -> when (token.text) {
+    "(" -> opens += index
+    ")" -> if (opens.isNotEmpty()) opens.removeAt(opens.lastIndex)
+  } }
+  var index = opens.lastOrNull()?.minus(1) ?: return null
+  if (tokens.getOrNull(index)?.kind != CppTokenKind.IDENTIFIER) return null
+  val end = index
+  while (index >= 2 && tokens[index - 1].text == "::" &&
+    tokens[index - 2].kind == CppTokenKind.IDENTIFIER) index -= 2
+  return tokens.subList(index, end + 1).joinToString("") { it.text }
 }
 
 private fun CppTokenKind.isCppLiteral(): Boolean = when (this) {
@@ -494,9 +743,24 @@ fun cppCompletionContextFromDto(dto: dynamic): CppCompletionContext {
     probedRequiredTypes = cppStringSet(dto.probedRequiredTypes),
     defaultConstructibleTypes = cppStringSet(dto.defaultConstructibleTypes),
     enclosingReturnType = dto.enclosingReturnType as? String,
+    canonicalEnclosingReturnType = dto.canonicalEnclosingReturnType as? String,
+    enclosingReturnTypeInfo = cppTypeInfo(dto.enclosingReturnTypeInfo),
     enclosingClassType = dto.enclosingClassType as? String,
+    canonicalEnclosingClassType = dto.canonicalEnclosingClassType as? String,
+    enclosingClassTypeInfo = cppTypeInfo(dto.enclosingClassTypeInfo),
     thisType = dto.thisType as? String,
-    mutableFields = cppStringSet(dto.mutableFields)
+    canonicalThisType = dto.canonicalThisType as? String,
+    thisTypeInfo = cppTypeInfo(dto.thisTypeInfo),
+    mutableFields = cppStringSet(dto.mutableFields),
+    completionKind = dto.completionKind as? String,
+    preferredType = dto.preferredType as? String,
+    canonicalPreferredType = dto.canonicalPreferredType as? String,
+    preferredTypeInfo = cppTypeInfo(dto.preferredTypeInfo),
+    baseType = dto.baseType as? String,
+    canonicalBaseType = dto.canonicalBaseType as? String,
+    baseTypeInfo = cppTypeInfo(dto.baseTypeInfo),
+    queryScopes = cppDynamicList(dto.queryScopes).mapNotNull { it as? String },
+    accessibleScopes = cppDynamicList(dto.accessibleScopes).mapNotNull { it as? String }
   )
 }
 
@@ -614,26 +878,7 @@ private fun cppReferenceFromCompletion(item: dynamic, receiverMember: Boolean): 
   val label = (if (item.label is String) item.label else item.label?.label) as? String
   val name = cppCompletionSemanticName(item, label) ?: return null
   val detail = (item.detail as? String)?.trim()?.takeIf(String::isNotEmpty)
-  val kind = when (cppInt(item.kind)) {
-    2 -> "method"
-    3 -> "function"
-    4 -> "constructor"
-    5 -> "field"
-    6 -> "variable"
-    7 -> "class"
-    8 -> "typeAlias"
-    9 -> "namespace"
-    10 -> "property"
-    12 -> "value"
-    13 -> "enum"
-    20 -> "enumMember"
-    21 -> "constant"
-    22 -> "struct"
-    24 -> "operator"
-    25 -> "typeParameter"
-    else -> "unknown"
-  }
-  if (name == "main" && kind == "function") return null
+  val kind = cppReferenceKind(cppInt(item.kind))
   val parameters = if (kind in CPP_FUNCTION_REFERENCE_KINDS) {
     val signatureDetail = item.labelDetails?.detail as? String
     cppParameterClause(signatureDetail ?: label ?: name)
@@ -652,6 +897,26 @@ private fun cppReferenceFromCompletion(item: dynamic, receiverMember: Boolean): 
     receiverMember = receiverMember,
     source = "completion"
   )
+}
+
+private fun cppReferenceKind(kind: Int): String = when (kind) {
+  2 -> "method"
+  3 -> "function"
+  4 -> "constructor"
+  5 -> "field"
+  6 -> "variable"
+  7 -> "class"
+  8 -> "typeAlias"
+  9 -> "namespace"
+  10 -> "property"
+  12 -> "value"
+  13 -> "enum"
+  20 -> "enumMember"
+  21 -> "constant"
+  22 -> "struct"
+  24 -> "operator"
+  25 -> "typeParameter"
+  else -> "unknown"
 }
 
 /** Uses display/filter names as semantic facts and treats edit/snippet text as a last resort. */
@@ -878,12 +1143,20 @@ private fun cppTextAtRange(source: String, range: dynamic): String? {
 }
 
 private fun cppDistinctReferences(references: List<CppReference>): List<CppReference> {
-  val seen = linkedSetOf<String>()
-  return references.filter { reference ->
-    seen.add(listOf(reference.name, reference.kind, reference.type, reference.returnType,
-      reference.parameters.joinToString(",") { it.type }, reference.receiverMember, reference.ownerType)
-      .joinToString("\u0000"))
+  val unique = linkedMapOf<String, CppReference>()
+  references.forEach { reference ->
+    val key = listOf(reference.id, reference.name, reference.kind,
+      reference.canonicalType ?: reference.type,
+      reference.canonicalReturnType ?: reference.returnType,
+      reference.parameters.joinToString(",") { it.canonicalType ?: it.type },
+      reference.receiverMember, reference.canonicalOwnerType ?: reference.ownerType)
+      .joinToString("\u0000")
+    val previous = unique[key]
+    if (previous == null || previous.provenance == "index" && reference.provenance != "index") {
+      unique[key] = reference
+    }
   }
+  return unique.values.toList()
 }
 
 private fun cppDistinctTypeMembers(tables: List<CppTypeMembers>): List<CppTypeMembers> =
@@ -1055,7 +1328,7 @@ private class CppClangdAstNormalizer(source: String, private val cursorLine: Int
       }
     }
 
-    if (kind == "Function" && role == "declaration" && name != null && name != "main" &&
+    if (kind == "Function" && role == "declaration" && name != null &&
       declaredBeforeCursor && nearestAncestor { it.kind as? String == "CXXRecord" } == null) {
       cppAstCallable(node, "function", name)?.let(functions::add)
     }
@@ -1325,9 +1598,24 @@ private fun cppCompletionContextToDto(context: CppCompletionContext): dynamic {
   dto.probedRequiredTypes = context.probedRequiredTypes.sorted().toTypedArray()
   dto.defaultConstructibleTypes = context.defaultConstructibleTypes.sorted().toTypedArray()
   dto.enclosingReturnType = context.enclosingReturnType
+  dto.canonicalEnclosingReturnType = context.canonicalEnclosingReturnType
+  dto.enclosingReturnTypeInfo = context.enclosingReturnTypeInfo?.let(::cppTypeInfoToDto)
   dto.enclosingClassType = context.enclosingClassType
+  dto.canonicalEnclosingClassType = context.canonicalEnclosingClassType
+  dto.enclosingClassTypeInfo = context.enclosingClassTypeInfo?.let(::cppTypeInfoToDto)
   dto.thisType = context.thisType
+  dto.canonicalThisType = context.canonicalThisType
+  dto.thisTypeInfo = context.thisTypeInfo?.let(::cppTypeInfoToDto)
   dto.mutableFields = context.mutableFields.sorted().toTypedArray()
+  dto.completionKind = context.completionKind
+  dto.preferredType = context.preferredType
+  dto.canonicalPreferredType = context.canonicalPreferredType
+  dto.preferredTypeInfo = context.preferredTypeInfo?.let(::cppTypeInfoToDto)
+  dto.baseType = context.baseType
+  dto.canonicalBaseType = context.canonicalBaseType
+  dto.baseTypeInfo = context.baseTypeInfo?.let(::cppTypeInfoToDto)
+  dto.queryScopes = context.queryScopes.toTypedArray()
+  dto.accessibleScopes = context.accessibleScopes.toTypedArray()
   return dto
 }
 
@@ -1337,6 +1625,10 @@ private fun cppParameterToDto(parameter: CppParameter): dynamic {
   dto.name = parameter.name
   dto.type = parameter.type
   dto.defaultValue = parameter.defaultValue
+  dto.canonicalType = parameter.canonicalType
+  dto.typeInfo = parameter.typeInfo?.let(::cppTypeInfoToDto)
+  dto.hasDefault = parameter.hasDefault
+  dto.isPack = parameter.isPack
   return dto
 }
 
@@ -1352,6 +1644,43 @@ private fun cppReferenceToDto(reference: CppReference): dynamic {
   dto.ownerType = reference.ownerType
   dto.source = reference.source
   dto.abstract = reference.abstract
+  dto.id = reference.id
+  dto.qualifiedName = reference.qualifiedName
+  dto.provenance = reference.provenance
+  dto.canonicalType = reference.canonicalType
+  dto.canonicalReturnType = reference.canonicalReturnType
+  dto.canonicalOwnerType = reference.canonicalOwnerType
+  dto.typeInfo = reference.typeInfo?.let(::cppTypeInfoToDto)
+  dto.returnTypeInfo = reference.returnTypeInfo?.let(::cppTypeInfoToDto)
+  dto.ownerTypeInfo = reference.ownerTypeInfo?.let(::cppTypeInfoToDto)
+  dto.isType = reference.isType
+  dto.isValue = reference.isValue
+  dto.isCallable = reference.isCallable
+  dto.isMember = reference.isMember
+  dto.isStatic = reference.isStatic
+  dto.isConstMethod = reference.isConstMethod
+  dto.isVolatileMethod = reference.isVolatileMethod
+  dto.refQualifier = reference.refQualifier
+  dto.isMutableField = reference.isMutableField
+  dto.isVariadic = reference.isVariadic
+  dto.templateParameters = reference.templateParameters.map(::cppParameterToDto).toTypedArray()
+  return dto
+}
+
+private fun cppTypeInfoToDto(type: CppTypeInfo): dynamic {
+  val dto = js("({})")
+  dto.id = type.id
+  dto.canonicalId = type.canonicalId
+  dto.valueCanonicalId = type.valueCanonicalId
+  dto.kind = type.kind
+  dto.isConst = type.isConst
+  dto.isVolatile = type.isVolatile
+  dto.pointeeCanonicalId = type.pointeeCanonicalId
+  dto.pointeeIsConst = type.pointeeIsConst
+  dto.pointeeIsVolatile = type.pointeeIsVolatile
+  dto.isDependent = type.isDependent
+  dto.isInstantiationDependent = type.isInstantiationDependent
+  dto.isSourceSpellable = type.isSourceSpellable
   return dto
 }
 
@@ -1394,7 +1723,11 @@ private fun cppParameterFromDto(value: dynamic): CppParameter? {
     label = value.label as? String ?: type,
     name = value.name as? String ?: "",
     type = type,
-    defaultValue = value.defaultValue as? String
+    defaultValue = value.defaultValue as? String,
+    canonicalType = value.canonicalType as? String,
+    typeInfo = cppTypeInfo(value.typeInfo),
+    hasDefault = value.hasDefault as? Boolean,
+    isPack = value.isPack as? Boolean ?: false
   )
 }
 
@@ -1410,7 +1743,27 @@ private fun cppReferenceFromDto(value: dynamic): CppReference? =
     receiverMember = value.receiverMember as? Boolean ?: false,
     ownerType = value.ownerType as? String,
     source = value.source as? String,
-    abstract = value.abstract as? Boolean ?: false
+    abstract = value.abstract as? Boolean ?: false,
+    id = value.id as? String,
+    qualifiedName = value.qualifiedName as? String,
+    provenance = value.provenance as? String,
+    canonicalType = value.canonicalType as? String,
+    canonicalReturnType = value.canonicalReturnType as? String,
+    canonicalOwnerType = value.canonicalOwnerType as? String,
+    typeInfo = cppTypeInfo(value.typeInfo),
+    returnTypeInfo = cppTypeInfo(value.returnTypeInfo),
+    ownerTypeInfo = cppTypeInfo(value.ownerTypeInfo),
+    isType = value.isType as? Boolean,
+    isValue = value.isValue as? Boolean,
+    isCallable = value.isCallable as? Boolean,
+    isMember = value.isMember as? Boolean,
+    isStatic = value.isStatic as? Boolean,
+    isConstMethod = value.isConstMethod as? Boolean,
+    isVolatileMethod = value.isVolatileMethod as? Boolean,
+    refQualifier = value.refQualifier as? String,
+    isMutableField = value.isMutableField as? Boolean,
+    isVariadic = value.isVariadic as? Boolean ?: false,
+    templateParameters = cppDynamicList(value.templateParameters).mapNotNull(::cppParameterFromDto)
   )
 
 private fun cppSignatureFromDto(value: dynamic): CppSignature? =

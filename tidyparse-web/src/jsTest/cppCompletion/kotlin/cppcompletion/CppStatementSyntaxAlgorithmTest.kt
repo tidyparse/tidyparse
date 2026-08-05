@@ -87,10 +87,12 @@ class CppStatementSyntaxAlgorithmTest {
 
     val prefix = cppLines("flag = left").single().tokens
     val aliasResidual = assertNotNull(cppSingleStatementSyntaxCompletion(
-      prefix, CppToken("an", 0, 2, CppTokenKind.IDENTIFIER)
+      prefix,
+      CppToken("an", 0, 2, CppTokenKind.IDENTIFIER),
+      setOf("right")
     ))
     assertTrue(
-      aliasResidual.bounded.recognizes(listOf("&&", CPP_SYNTAX_IDENTIFIER, ";")),
+      aliasResidual.bounded.recognizes(listOf("&&", encodeIdentifier("right"), ";")),
       "The alias callback must constrain by the projected grammar terminal"
     )
   }

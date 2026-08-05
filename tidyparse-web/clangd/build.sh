@@ -131,14 +131,21 @@ clone_pinned \
   "$LLVM_COMMIT" \
   "$LLVM_DIR"
 
-if git -C "$LLVM_DIR" apply --reverse --check "$SCRIPT_DIR/wait_stdin.patch" 2>/dev/null; then
-  :
-elif git -C "$LLVM_DIR" apply --check "$SCRIPT_DIR/wait_stdin.patch"; then
-  git -C "$LLVM_DIR" apply "$SCRIPT_DIR/wait_stdin.patch"
-else
-  echo "The clangd stdin patch does not apply cleanly to LLVM $LLVM_VERSION" >&2
-  exit 1
-fi
+apply_pinned_patch() {
+  local patch_name="$1"
+  local patch_file="$SCRIPT_DIR/$patch_name"
+  if git -C "$LLVM_DIR" apply --reverse --check "$patch_file" 2>/dev/null; then
+    return
+  fi
+  if ! git -C "$LLVM_DIR" apply --check "$patch_file"; then
+    echo "$patch_name does not apply cleanly to LLVM $LLVM_VERSION" >&2
+    exit 1
+  fi
+  git -C "$LLVM_DIR" apply "$patch_file"
+}
+
+apply_pinned_patch wait_stdin.patch
+apply_pinned_patch semantic_completion.patch
 
 NATIVE_BUILD="$ROOT_DIR/build-native"
 cmake -G Ninja -S "$LLVM_DIR/llvm" -B "$NATIVE_BUILD" \
@@ -265,7 +272,8 @@ WASM_GZIP_SHA256="$(shasum -a 256 "$OUTPUT_DIR/clangd.wasm.gz.tmp" | awk '{print
 JS_SIZE="$(wc -c < "$CLANGD_JS" | tr -d ' ')"
 WASM_SIZE="$(wc -c < "$CLANGD_WASM" | tr -d ' ')"
 WASM_GZIP_SIZE="$(wc -c < "$OUTPUT_DIR/clangd.wasm.gz.tmp" | tr -d ' ')"
-PATCH_SHA256="$(shasum -a 256 "$SCRIPT_DIR/wait_stdin.patch" | awk '{print $1}')"
+STDIN_PATCH_SHA256="$(shasum -a 256 "$SCRIPT_DIR/wait_stdin.patch" | awk '{print $1}')"
+SEMANTIC_COMPLETION_PATCH_SHA256="$(shasum -a 256 "$SCRIPT_DIR/semantic_completion.patch" | awk '{print $1}')"
 
 cat > "$OUTPUT_DIR/clangd-manifest.json.tmp" <<EOF
 {
@@ -276,7 +284,8 @@ cat > "$OUTPUT_DIR/clangd-manifest.json.tmp" <<EOF
   "llvm": { "version": "$LLVM_VERSION", "commit": "$LLVM_COMMIT" },
   "emsdk": { "version": "$EMSDK_VERSION", "commit": "$EMSDK_COMMIT" },
   "wasiSysroot": { "version": "$WASI_SDK_VERSION", "sha256": "$WASI_SYSROOT_SHA256" },
-  "stdinPatchSha256": "$PATCH_SHA256",
+  "stdinPatchSha256": "$STDIN_PATCH_SHA256",
+  "semanticCompletionPatchSha256": "$SEMANTIC_COMPLETION_PATCH_SHA256",
   "artifacts": {
     "clangd.js": { "bytes": $JS_SIZE, "sha256": "$JS_SHA256" },
     "clangd.wasm": {

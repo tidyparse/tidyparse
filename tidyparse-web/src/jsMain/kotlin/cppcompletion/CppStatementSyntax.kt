@@ -62,9 +62,15 @@ private data class CachedCppSyntaxCompletion(
   val templateTokens: Int
 )
 
-/** Worker-confined LRU. Generic identifier projection lets equivalent prefixes share a forest. */
+private data class CppSyntaxCompletionKey(
+  val prefix: List<String>,
+  val allowedFirstTerminals: Set<String>?,
+  val identifiers: List<String>
+)
+
+/** Worker-confined LRU. Generic prefix projection lets equivalent requests share a forest. */
 private val cppSyntaxCompletionCache =
-  linkedMapOf<Pair<List<String>, Set<String>?>, CachedCppSyntaxCompletion>()
+  linkedMapOf<CppSyntaxCompletionKey, CachedCppSyntaxCompletion>()
 
 internal fun cppSingleStatementSyntaxRecognizes(tokens: List<CppToken>): Boolean =
   projectCppCompletionTokens(tokens, CppProjectionMode.SYNTAX).matches(cppSingleStatementSyntax)
@@ -76,15 +82,18 @@ internal fun cppSingleStatementSyntaxRecognizes(tokens: List<CppToken>): Boolean
  */
 internal fun cppSingleStatementSyntaxCompletion(
   prefix: List<CppToken>,
-  tokenPrefix: CppToken? = null
+  tokenPrefix: CppToken? = null,
+  identifierInventory: Set<String> = emptySet()
 ): CppSuffixGrammar? {
+  val identifiers = identifierInventory.sorted()
   val projectedPrefix = projectCppCompletionTokens(prefix, CppProjectionMode.SYNTAX)
   val allowedFirstTerminals = tokenPrefix?.let { token ->
     cppSingleStatementSyntaxIndex.terminalsWithSourcePrefix(token.text) { terminal ->
-      cppCompletionTerminalSpellings(terminal, token)
+      if (terminal == CPP_SYNTAX_IDENTIFIER) identifiers.filter { it.startsWith(token.text) }
+      else cppCompletionTerminalSpellings(terminal, token)
     }
   }
-  val cacheKey = projectedPrefix.toList() to allowedFirstTerminals
+  val cacheKey = CppSyntaxCompletionKey(projectedPrefix, allowedFirstTerminals, identifiers)
   val cached = cppSyntaxCompletionCache.remove(cacheKey) ?: run {
     val minimumSuffixLength = cppSingleStatementSyntaxIndex.minimumSuffixLength(
       projectedPrefix,
@@ -104,6 +113,7 @@ internal fun cppSingleStatementSyntaxCompletion(
           "C++ syntax prefix analysis found a $minimumSuffixLength-token continuation, but its exact forest was empty"
         }
         suffixForest.toAcyclicCfg(cppSingleStatementSyntax.tmLst)
+          .withIdentifierInventory(identifiers)
           .boundedAcyclic(minimumSuffixLength)
       }
     }
@@ -120,8 +130,16 @@ internal fun cppSingleStatementSyntaxCompletion(
     templateTokens = cached.templateTokens,
     sourceSyntax = cppSingleStatementSyntax,
     projectionMode = CppProjectionMode.SYNTAX,
+    identifierInventory = identifierInventory,
     recognizesCompleteSyntax = true
   )
+}
+
+private fun CFG.withIdentifierInventory(identifiers: List<String>): CFG = flatMapTo(linkedSetOf()) {
+  (lhs, rhs) ->
+  if (rhs.singleOrNull() == CPP_SYNTAX_IDENTIFIER)
+    identifiers.map { lhs to listOf(encodeIdentifier(it)) }
+  else listOf(lhs to rhs)
 }
 
 /** Immutable sparse indexes plus exact min-plus prefix completion for a recursive binary CFG. */

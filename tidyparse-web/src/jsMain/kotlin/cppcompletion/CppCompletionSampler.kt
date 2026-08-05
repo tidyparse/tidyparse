@@ -38,9 +38,9 @@ class CppCompletionSampler(
   private val random: Random = Random.Default,
   private val tokenPrefix: CppToken? = null
 ) {
-  // Syntax fallbacks are constrained while their exact shortest forest is built.
-  private val bounded = tokenPrefix?.takeUnless { language.projectionMode == CppProjectionMode.SYNTAX }
-    ?.let(language.bounded::startingWith) ?: language.bounded
+  // Syntax forests constrain the lexical category; this final intersection selects an exact
+  // Sema-backed identifier spelling (or keyword/literal spelling) inside that category.
+  private val bounded = tokenPrefix?.let(language.bounded::startingWith) ?: language.bounded
   private val fresh = FreshCppNames(identifiersInFile, random)
   private var preparedLimit: Int? = null
   private var preparedBatch: BoundedLengthSampleBatch? = null
@@ -110,18 +110,13 @@ class CppCompletionSampler(
   ): List<CppCompletionSample> = sampledBatch.map { sampled ->
     val emittedFresh = linkedSetOf<String>()
     val binders = mutableMapOf<String, String>()
-    val projected = language.projectedPrefix + sampled.terminals
     val suffix = sampled.terminals.mapIndexed { suffixIndex, terminal ->
-      val absoluteIndex = language.projectedPrefix.size + suffixIndex
       val prefixSpelling = tokenPrefix?.takeIf { suffixIndex == 0 }
         ?.let { cppCompletionTerminalSpelling(terminal, it) }
       if (prefixSpelling != null) {
         if (terminal.startsWith(CPP_BIND_PREFIX)) binders[terminal] = prefixSpelling
         prefixSpelling
-      } else if (
-        terminal == CPP_INTEGER && projected.getOrNull(absoluteIndex - 1) == "<" &&
-        projected.getOrNull(absoluteIndex - 2) == "@id:get"
-      ) "1" else materializeCppTerminal(terminal) {
+      } else materializeCppTerminal(terminal) {
         if (terminal.startsWith(CPP_BIND_PREFIX)) {
           binders.getOrPut(terminal) { fresh.next().also(emittedFresh::add) }
         } else {
@@ -310,7 +305,7 @@ private fun List<String>.alphaNormalizedCppTerminals(): List<String> {
   var nextAlpha = 0
   return map { terminal ->
     when {
-      terminal == CPP_FRESH || terminal == CPP_SYNTAX_IDENTIFIER -> "@alpha:${nextAlpha++}"
+      terminal == CPP_FRESH -> "@alpha:${nextAlpha++}"
       terminal.startsWith(CPP_BIND_PREFIX) -> binders.getOrPut(terminal) {
         "@alpha:${nextAlpha++}"
       }

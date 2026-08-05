@@ -1,4 +1,6 @@
 import cppcompletion.CppCompletionGrammar
+import cppcompletion.CppParameter
+import cppcompletion.CppReference
 import cppcompletion.cppLines
 import cppcompletion.completeCppStatement
 import kotlin.test.Test
@@ -246,7 +248,7 @@ class CppClangdAstContextTest {
   }
 
   @Test
-  fun implicitEmptyVisitorCompletesVisitAtTheExactEditorBoundary() {
+  fun astDoesNotInventVisitButExplicitSemaFactsCompleteItAtTheExactBoundary() {
     val source = """
       #include <iostream>
       #include <optional>
@@ -335,8 +337,49 @@ class CppClangdAstContextTest {
 
     val snapshot = assertNotNull(cppEditorStatementSnapshot(source, cursorLine, cursorCharacter))
     val expectedTokens = cppLines("(Describe{}, payload);").single().tokens.map { it.text }
-    val completions = CppCompletionGrammar()
+    val grammar = CppCompletionGrammar()
+    val astOnlyCompletions = grammar
       .completeCppStatement(context, snapshot.completionQuery(context.identifiers)).suggestions
+    assertFalse(
+      astOnlyCompletions.any { it.tokens == expectedTokens },
+      "AST recovery must not manufacture the undeclared std::visit overload"
+    )
+
+    val variant = "std::variant<std::monostate, int, std::string>"
+    val semaContext = context.copy(functions = context.functions + listOf(
+      CppReference(
+        name = "Describe",
+        returnType = "Describe",
+        kind = "constructor",
+        ownerType = "Describe",
+        source = "sema",
+        id = "Describe::Describe()",
+        canonicalReturnType = "Describe",
+        canonicalOwnerType = "Describe",
+        isCallable = true,
+        isMember = true,
+        isStatic = false
+      ),
+      CppReference(
+        name = "std::visit",
+        returnType = "std::string",
+        parameters = listOf(
+          CppParameter(name = "visitor", type = "Describe", canonicalType = "Describe"),
+          CppParameter(name = "variant", type = "$variant &", canonicalType = "$variant &")
+        ),
+        kind = "function",
+        source = "sema",
+        id = "std::visit<Describe,$variant>()",
+        qualifiedName = "std::visit",
+        canonicalReturnType = "std::string",
+        isCallable = true,
+        isMember = false,
+        isStatic = true
+      )
+    ))
+    val completions = grammar.completeCppStatement(
+      semaContext, snapshot.completionQuery(semaContext.identifiers)
+    ).suggestions
     assertTrue(completions.any { completion ->
       completion.tokens == expectedTokens &&
         completion.candidateText.endsWith("std::visit(Describe{},payload);")

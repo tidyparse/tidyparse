@@ -7,7 +7,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
-import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class CppSyntaxCompletionTotalityTest {
@@ -20,7 +19,7 @@ class CppSyntaxCompletionTotalityTest {
   }
 
   @Test
-  fun reportedNestedStdPrefixCompletesWithoutAnySemanticFacts() {
+  fun reportedNestedStdPrefixCompletesFromTheSemanticIdentifierInventory() {
     val statement = "using Record = std::tuple<int, std::string, std::string>;"
     val reportedPrefix = "using Record = std::tuple<int, std::string, std"
     val line = cppLines(statement).single()
@@ -31,10 +30,12 @@ class CppSyntaxCompletionTotalityTest {
     val snapshot = assertNotNull(
       cppEditorStatementSnapshot(statement, 0, reportedPrefix.length)
     )
-    val context = CppCompletionContext(emptySet())
+    val identifiers = line.tokens.filter { it.kind == CppTokenKind.IDENTIFIER }
+      .mapTo(linkedSetOf(), CppToken::text)
+    val context = CppCompletionContext(identifiers)
     val grammar = CppCompletionGrammar()
     val syntaxResidual = cppSingleStatementSyntaxCompletion(
-      snapshot.stableTokens, snapshot.activeFragment
+      snapshot.stableTokens, snapshot.activeFragment, identifiers
     )
 
     assertNotNull(syntaxResidual, "The production syntax floor returned no residual")
@@ -123,32 +124,40 @@ class CppSyntaxCompletionTotalityTest {
   }
 
   @Test
-  fun ordinaryAndUserDefinedLiteralCategoriesRemainDistinctAndRoundTrip() {
+  fun userDefinedLiteralsKeepTheirLexerKindsWithoutFabricatingSuffixes() {
     val spellings = listOf(
-      "42" to "42_tag",
-      "1.5" to "1.5_tag",
-      "'x'" to "'x'_tag",
-      "\"text\"" to "\"text\"_tag"
+      Triple("42", "42_tag", CppTokenKind.USER_DEFINED_INTEGER),
+      Triple("1.5", "1.5_tag", CppTokenKind.USER_DEFINED_FLOATING),
+      Triple("'x'", "'x'_tag", CppTokenKind.USER_DEFINED_CHARACTER),
+      Triple("\"text\"", "\"text\"_tag", CppTokenKind.USER_DEFINED_STRING)
     )
 
-    spellings.forEach { (ordinarySpelling, userDefinedSpelling) ->
+    spellings.forEach { (ordinarySpelling, userDefinedSpelling, userDefinedKind) ->
+      val userDefinedToken = cppLines(userDefinedSpelling).single().tokens.single()
       val ordinary = projectedSingleTerminal(ordinarySpelling)
-      val userDefined = projectedSingleTerminal(userDefinedSpelling)
+      val projectedUserDefined = projectCppCompletionTokens(
+        listOf(userDefinedToken), CppProjectionMode.SYNTAX
+      ).single()
 
-      assertNotEquals(
-        ordinary,
-        userDefined,
-        "Ordinary and user-defined literals require different grammar terminals"
+      assertEquals(userDefinedKind, userDefinedToken.kind)
+      assertEquals(
+        ordinary, projectedUserDefined,
+        "A UDL suffix is a declaration-backed name, not a syntax-generated terminal"
+      )
+      assertTrue(
+        cppSingleStatementSyntaxRecognizes(
+          cppLines("return $userDefinedSpelling;").single().tokens
+        ),
+        "A real source UDL must remain valid statement syntax"
       )
       assertEquals(
         ordinary,
         projectedSingleTerminal(materializeCppTerminal(ordinary) { "freshId" }),
         "Ordinary literal materialization did not preserve its projected category"
       )
-      assertEquals(
-        userDefined,
-        projectedSingleTerminal(materializeCppTerminal(userDefined) { "freshId" }),
-        "User-defined literal materialization lost its required suffix/category"
+      assertFalse(
+        '_' in materializeCppTerminal(projectedUserDefined) { "freshId" },
+        "Syntax completion must not invent a user-defined literal operator suffix"
       )
     }
   }
@@ -199,6 +208,8 @@ class CppSyntaxCompletionTotalityTest {
 
 private fun assertSyntaxCompletionAtEveryBoundary(statement: String) {
   val line = cppLines(statement).single()
+  val identifiers = line.tokens.filter { it.kind == CppTokenKind.IDENTIFIER }
+    .mapTo(linkedSetOf(), CppToken::text)
   assertTrue(
     cppSingleStatementSyntaxRecognizes(line.tokens),
     "The generated statement is outside the context-independent syntax grammar: `$statement`"
@@ -206,7 +217,9 @@ private fun assertSyntaxCompletionAtEveryBoundary(statement: String) {
 
   cppTruncations(line).dropLast(1).forEach { truncation ->
     val boundary = truncation.prefix.size
-    val residual = cppSingleStatementSyntaxCompletion(truncation.prefix)
+    val residual = cppSingleStatementSyntaxCompletion(
+      truncation.prefix, identifierInventory = identifiers
+    )
     assertNotNull(
       residual,
       "No syntax residual for `$statement` at token boundary $boundary after `${truncation.prefixText}`"
