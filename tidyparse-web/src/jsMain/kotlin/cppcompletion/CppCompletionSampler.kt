@@ -208,102 +208,71 @@ private fun List<String>.alphaNormalizedCppTerminals(): List<String> {
   }
 }
 
+private const val CPP_LEXICAL_SEPARATOR_CACHE_SIZE = 512
+
 /**
- * Renders materialized grammar terminals as valid C++ source.
+ * Whether two generated terminals need whitespace to retain their intended lexical identities.
  *
- * grammars-v4's C++ lexer exposes shifts as adjacent angle-bracket terminals. Separating every
- * terminal with whitespace would turn them into the ill-formed `< <` or `> >`; joining `> >` is
- * also valid for nested template closers in every language mode supported by this editor.
+ * This is a source codec, not a formatter: it compares the syntax projection with and without a
+ * separator and only retains whitespace when concatenation would create a different C++ token.
+ * Split angle terminals are the grammar's lossless spelling for shifts and nested template closes.
  */
-fun List<String>.renderCppTokens(): String = buildString {
-  var index = 0
-  while (index < size) {
-    val terminal = this@renderCppTokens[index]
-    val next = this@renderCppTokens.getOrNull(index + 1)
-    if ((terminal == "<" && next == "<") || (terminal == ">" && next == ">")) {
-      append(terminal)
-      append(next)
-      index += 2
-    } else {
-      append(this@renderCppTokens[index++])
+private val cppLexicalSeparatorCache = linkedMapOf<String, Boolean>()
+
+private fun needsCppLexicalSeparator(left: String, right: String): Boolean {
+  if (left.isEmpty() || right.isEmpty()) return false
+  val key = "$left\u0000$right"
+  cppLexicalSeparatorCache[key]?.let { cached ->
+    cppLexicalSeparatorCache.remove(key)
+    cppLexicalSeparatorCache[key] = cached
+    return cached
+  }
+  val needsSeparator = when {
+    // The syntax grammar deliberately represents both shifts and adjacent template closes this way.
+    left == "<" && right == "<" || left == ">" && right == ">" -> false
+    // An unterminated block comment is recovered as punctuation by the lexer, so guard it directly.
+    left == "/" && (right == "/" || right == "*") -> true
+    // Three separately generated dots must not silently become one ellipsis preprocessing token.
+    left.endsWith('.') && right.startsWith('.') -> true
+    else -> {
+      val separated = cppLines("$left $right").single().tokens
+      val adjacent = cppLines(left + right).single().tokens
+      projectCppCompletionTokens(separated, CppProjectionMode.SYNTAX) !=
+        projectCppCompletionTokens(adjacent, CppProjectionMode.SYNTAX)
     }
-    if (index < size) append(' ')
+  }
+  cppLexicalSeparatorCache[key] = needsSeparator
+  while (cppLexicalSeparatorCache.size > CPP_LEXICAL_SEPARATOR_CACHE_SIZE)
+    cppLexicalSeparatorCache.remove(cppLexicalSeparatorCache.keys.first())
+  return needsSeparator
+}
+
+/** Serializes grammar terminals with only the whitespace required to preserve their token stream. */
+fun List<String>.renderCppTokens(): String = buildString {
+  this@renderCppTokens.forEachIndexed { index, terminal ->
+    val previous = this@renderCppTokens.getOrNull(index - 1)
+    if (previous != null && needsCppLexicalSeparator(previous, terminal)) append(' ')
+    append(terminal)
   }
 }
 
-/** Returns suffix-only insertion text while preserving a split shift across the cursor. */
+/**
+ * Serializes a generated terminal suffix without making style decisions.
+ *
+ * clang-format owns the final spelling. This function only prevents the first generated terminal
+ * from merging with the last token already present before the caret.
+ */
 fun renderCppCompletionSuffix(prefixText: String, suffixTokens: List<String>): String {
   if (suffixTokens.isEmpty()) return ""
-  val trimmedPrefix = prefixText.trimEnd()
-  val joinsSplitOperator =
-    trimmedPrefix.endsWith('<') && suffixTokens.first() == "<" ||
-      trimmedPrefix.endsWith('>') && suffixTokens.first() == ">"
-  val joinsQualifiedOrPostfix = listOf("::", "->", ".", "(", "[", "<")
-    .any(trimmedPrefix::endsWith)
   val alreadySeparated = prefixText.lastOrNull()?.isWhitespace() == true
+  val lastPrefixToken = if (alreadySeparated) null
+  else cppLines(prefixText).single().tokens.lastOrNull()
+    ?.takeIf { token -> token.end == prefixText.length }
+    ?.text
   val separator = if (
-    prefixText.isNotBlank() && !alreadySeparated && !joinsSplitOperator && !joinsQualifiedOrPostfix
+    lastPrefixToken != null && needsCppLexicalSeparator(lastPrefixToken, suffixTokens.first())
   ) " " else ""
   return separator + suffixTokens.renderCppTokens()
-}
-
-private val CPP_DISPLAY_BINARY_OPERATORS = setOf(
-  "=", "+", "-", "/", "%", "==", "!=", "<=", ">=", "<=>", "&&", "||", "^", "|",
-  "<<", ">>", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", "?", ":"
-)
-private val CPP_DISPLAY_MEMBER_OPERATORS = setOf("::", ".", "->", ".*", "->*")
-private val CPP_DISPLAY_CONTROL_KEYWORDS = setOf("if", "for", "while", "switch", "catch")
-private val CPP_DISPLAY_CLOSING_PUNCTUATION = setOf(")", "]", "}", ",", ";")
-private val CPP_DISPLAY_OPENING_PUNCTUATION = setOf("(", "[", "{")
-private val CPP_DISPLAY_INCREMENT_OPERATORS = setOf("++", "--")
-private val CPP_DISPLAY_PREFIX_OPERATORS = setOf("++", "--", "!", "~")
-private val CPP_DISPLAY_DECLARATOR_OPERATORS = setOf("*", "&")
-
-/**
- * Formats a completed statement for a compact suggestion label.
- *
- * This renderer is intentionally display-only. [renderCppCompletionSuffix] remains the canonical
- * insertion renderer: its conservative spaces prevent independently generated grammar terminals
- * from accidentally merging into a different C++ token. Labels operate on the already atomic
- * terminal sequence, so punctuation can be rendered in ordinary C++ style without that risk.
- */
-fun formatCppCompletionLabel(
-  prefixTokens: List<String>,
-  suffixTokens: List<String>
-): String {
-  val terminals = buildList {
-    val input = prefixTokens + suffixTokens
-    var index = 0
-    while (index < input.size) {
-      when {
-        input[index] == "<" && input.getOrNull(index + 1) == "<" -> {
-          add("<<")
-          index += 2
-        }
-        else -> add(input[index++])
-      }
-    }
-  }
-  return buildString {
-    terminals.forEachIndexed { index, terminal ->
-      val previous = terminals.getOrNull(index - 1)
-      if (previous != null && cppCompletionLabelNeedsSpace(previous, terminal)) append(' ')
-      append(terminal)
-    }
-  }
-}
-
-private fun cppCompletionLabelNeedsSpace(previous: String, terminal: String): Boolean = when {
-  terminal in CPP_DISPLAY_CLOSING_PUNCTUATION -> false
-  previous in CPP_DISPLAY_OPENING_PUNCTUATION -> false
-  terminal in CPP_DISPLAY_MEMBER_OPERATORS || previous in CPP_DISPLAY_MEMBER_OPERATORS -> false
-  terminal == "(" -> previous in CPP_DISPLAY_CONTROL_KEYWORDS
-  terminal == "[" || terminal == "{" -> false
-  terminal == "<" || terminal == ">" || previous == "<" -> false
-  terminal in CPP_DISPLAY_INCREMENT_OPERATORS || previous in CPP_DISPLAY_PREFIX_OPERATORS -> false
-  terminal in CPP_DISPLAY_DECLARATOR_OPERATORS -> false
-  terminal in CPP_DISPLAY_BINARY_OPERATORS || previous in CPP_DISPLAY_BINARY_OPERATORS -> true
-  else -> true
 }
 
 class FreshCppNames(

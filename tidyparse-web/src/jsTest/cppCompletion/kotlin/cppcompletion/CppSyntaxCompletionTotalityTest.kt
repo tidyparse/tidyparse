@@ -113,7 +113,7 @@ class CppSyntaxCompletionTotalityTest {
     assertEquals(">>", listOf(">", ">").renderCppTokens())
     val prefix = "left >"
     assertEquals(
-      "left >> value ;",
+      "left >>value;",
       prefix + renderCppCompletionSuffix(prefix, listOf(">", "value", ";"))
     )
   }

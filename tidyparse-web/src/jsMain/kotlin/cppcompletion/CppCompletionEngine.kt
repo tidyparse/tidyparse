@@ -21,10 +21,10 @@ data class CppCompletionQuery(
   }
 }
 
-/** Editor-ready completion generated without any JavaScript transport types. */
+/** Formatter-ready completion generated without any JavaScript transport types. */
 data class CppEditorCompletion(
   val insertionText: String,
-  val displayText: String,
+  val candidateText: String,
   val tokenLength: Int,
   val tokens: List<String>,
   val freshNames: Set<String>
@@ -39,7 +39,7 @@ data class CppCompletionExecution(
 )
 
 /**
- * Runs the exact production quotient, shortest-distinct sampling and rendering pipeline.
+ * Runs the exact production quotient, shortest-distinct sampling and lexical serialization.
  *
  * Browser transport and prepared-grammar caching deliberately stay outside this function. Tests
  * can therefore exercise the same completion behavior as the worker without constructing dynamic
@@ -66,10 +66,7 @@ fun PreparedCppCompletionGrammar.completeCppStatement(
   val suggestions = samples.map { sample ->
     CppEditorCompletion(
       insertionText = sample.insertionText,
-      displayText = formatCppCompletionLabel(
-        prefixTokens = query.prefix.map(CppToken::text),
-        suffixTokens = sample.tokens
-      ),
+      candidateText = query.prefixText + sample.insertionText,
       tokenLength = sample.length,
       tokens = sample.tokens,
       freshNames = sample.freshNames

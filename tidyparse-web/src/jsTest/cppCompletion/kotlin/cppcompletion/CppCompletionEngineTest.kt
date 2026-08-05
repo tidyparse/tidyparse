@@ -37,10 +37,11 @@ class CppCompletionEngineTest {
     assertTrue(cachedPath.suggestions.isNotEmpty())
     assertTrue(cachedPath.suggestions.all { suggestion ->
       suggestion.insertionText.isNotEmpty() &&
-        suggestion.displayText.startsWith(prefixText) &&
+        suggestion.candidateText.startsWith(prefixText) &&
         suggestion.tokenLength == suggestion.tokens.size
     })
-    assertEquals("std::cout;", cachedPath.suggestions.first().displayText)
+    assertEquals("std::cout;", cachedPath.suggestions.first().candidateText)
+    assertEquals("cout;", cachedPath.suggestions.first().insertionText)
   }
 
   @Test

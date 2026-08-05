@@ -344,7 +344,7 @@ class CppClangdAstContextTest {
     )
     assertTrue(completions.any { completion ->
       completion.tokens == expectedTokens &&
-        completion.insertionText == "Describe { } , payload ) ;"
+        completion.insertionText == "Describe{},payload);"
     })
   }
 

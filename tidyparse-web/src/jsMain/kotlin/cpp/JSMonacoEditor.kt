@@ -11,7 +11,9 @@ private const val CPP_CLANGD_WORKER_NAME = "tidyparse-clangd"
 private const val CPP_COMPLETION_CONTEXT_TIMEOUT_MS = 1_200L
 private const val CPP_COMPLETION_AST_TIMEOUT_MS = 1_000L
 private const val CPP_COMPLETION_WORKER_TIMEOUT_MS = 4_000L
-private const val CPP_COMPLETION_TOTAL_TIMEOUT_MS = 5_500L
+private const val CPP_COMPLETION_FORMAT_TIMEOUT_MS = 1_200L
+private const val CPP_COMPLETION_FORMAT_CLOSE_TIMEOUT_MS = 250L
+private const val CPP_COMPLETION_TOTAL_TIMEOUT_MS = 7_000L
 private const val CPP_COMPLETION_SHORTCUT_WINDOW_MS = 1_000.0
 private const val CPP_COMPLETION_LIMIT = 10
 private const val CPP_COMPLETION_WIDGET_CHROME_PX = 80.0
@@ -53,6 +55,8 @@ private class CachedCppAstContext(
   val key: String,
   val context: dynamic
 )
+
+private class CppFormattingResponse(val edits: dynamic)
 
 /** Links Monaco cancellation to one owned vscode-jsonrpc cancellation source. */
 private class CppLspCancellation(
@@ -132,6 +136,7 @@ class JSMonacoEditor(
   private var cachedGrammarCompletion: CachedCppGrammarCompletion? = null
   private var cachedCppAstContext: CachedCppAstContext? = null
   private var cppCompletionContextEpoch = 0
+  private var nextCppFormatDocumentId = 1
   private var requestedReadOnly = false
   private var disposed = false
 
@@ -658,9 +663,17 @@ class JSMonacoEditor(
         completionCancelled(cancellation)
       )
         return empty
+      val formatted = formatCppCompletionReply(completed, cancellation)
+      if (
+        contextEpoch != cppCompletionContextEpoch ||
+        !cppCompletionStillCurrent(model, version, snapshot) ||
+        completionCancelled(cancellation)
+      )
+        return empty
       // A cold AST timeout is intentionally retryable: return the degraded suggestions once, but
-      // do not permanently suppress return/this/member facts at this unchanged cursor.
-      if (queriedFacts != null && defined(queriedFacts.ast))
+      // do not permanently suppress return/this/member facts at this unchanged cursor. A format
+      // timeout is retryable for the same reason; the lexical suggestions remain available once.
+      if (formatted && queriedFacts != null && defined(queriedFacts.ast))
         cachedGrammarCompletion = CachedCppGrammarCompletion(resultKey, completed)
       completed
     } catch (cancelled: CancellationException) {
@@ -671,6 +684,110 @@ class JSMonacoEditor(
     }
 
     return monacoCompletionResult(reply, snapshot, position, monaco)
+  }
+
+  /** Formats the complete popup in one hidden clangd document and mutates the transport reply. */
+  private suspend fun formatCppCompletionReply(reply: dynamic, upstreamCancellation: dynamic): Boolean {
+    val suggestions = reply?.suggestions
+    if (!defined(suggestions) || js("Array.isArray(suggestions)") as Boolean == false) return false
+    val count = number(suggestions.length)
+    if (count == 0) return false
+    val candidates = (0 until count).map { index ->
+      suggestions[index]?.candidateText as? String ?: return false
+    }
+    val client = try {
+      languageClientWrapper?.getLanguageClient()
+    } catch (_: Throwable) {
+      null
+    }
+    if (!defined(client)) return false
+
+    if (nextCppFormatDocumentId <= 0) nextCppFormatDocumentId = 1
+    val nonce = nextCppFormatDocumentId++
+    val batch = cppCompletionFormatBatch(candidates, nonce)
+    val uri = "$CPP_WORKSPACE_URI/.tidyparse-completion-format-$nonce.cpp"
+    val cancellation = cppLspCancellation(upstreamCancellation)
+    var opened = false
+    try {
+      val response = withTimeoutOrNull(CPP_COMPLETION_FORMAT_TIMEOUT_MS) {
+        val open = js("({})")
+        open.textDocument = js("({})")
+        open.textDocument.uri = uri
+        open.textDocument.languageId = "cpp"
+        open.textDocument.version = 1
+        open.textDocument.text = batch.source
+        awaitPromise(client.sendNotification("textDocument/didOpen", open))
+        opened = true
+
+        val params = js("({})")
+        params.textDocument = js("({})")
+        params.textDocument.uri = uri
+        params.options = js("({})")
+        params.options.tabSize = 4
+        params.options.insertSpaces = true
+        params.options.trimTrailingWhitespace = true
+        params.options.insertFinalNewline = true
+        val request = if (defined(cancellation.token))
+          client.sendRequest("textDocument/formatting", params, cancellation.token)
+        else client.sendRequest("textDocument/formatting", params)
+        CppFormattingResponse(awaitPromise(request))
+      } ?: return false
+      val edits = cppFormatTextEdits(response.edits) ?: return false
+      val formattedSource = applyCppFormatTextEdits(batch.source, edits) ?: return false
+      val formatted = extractCppFormattedCompletions(batch, formattedSource) ?: return false
+      if (formatted.size != count) return false
+      formatted.forEachIndexed { index, completion ->
+        val suggestion = suggestions[index]
+        suggestion.insertion = completion.replacementText
+        suggestion.candidateText = completion.replacementText
+        suggestion.displayText = completion.displayText
+        suggestion.replaceStatement = true
+      }
+      return true
+    } catch (cancelled: CancellationException) {
+      throw cancelled
+    } catch (failure: Throwable) {
+      console.warn("clang-format could not format C++ grammar completions; using lexical source.", failure)
+      return false
+    } finally {
+      cancellation.cancelAndDispose()
+      if (opened) withContext(NonCancellable) {
+        withTimeoutOrNull(CPP_COMPLETION_FORMAT_CLOSE_TIMEOUT_MS) {
+          try {
+            val close = js("({})")
+            close.textDocument = js("({})")
+            close.textDocument.uri = uri
+            awaitPromise(client.sendNotification("textDocument/didClose", close))
+          } catch (_: Throwable) {
+            // clangd may already be stopping; the unique scratch URI is never reused.
+          }
+        }
+      }
+    }
+  }
+
+  private fun cppFormatTextEdits(raw: dynamic): List<CppFormatTextEdit>? {
+    if (!defined(raw)) return emptyList()
+    if (js("Array.isArray(raw)") as Boolean == false) return null
+    return (0 until number(raw.length)).map { index ->
+      val edit = raw[index]
+      val range = edit?.range ?: return null
+      val start = range.start ?: return null
+      val end = range.end ?: return null
+      fun coordinate(value: dynamic): Int? =
+        (value as? Number)?.toInt()?.takeIf { it >= 0 }
+      CppFormatTextEdit(
+        start = CppFormatPosition(
+          coordinate(start.line) ?: return null,
+          coordinate(start.character) ?: return null
+        ),
+        end = CppFormatPosition(
+          coordinate(end.line) ?: return null,
+          coordinate(end.character) ?: return null
+        ),
+        newText = edit.newText as? String ?: return null
+      )
+    }
   }
 
   private suspend fun requestCppCompletionFacts(
@@ -858,10 +975,16 @@ class JSMonacoEditor(
       js("(value) => Array.isArray(value)")(suggestions) as Boolean == false)
       return emptyCppCompletionResult()
     val lineNumber = number(position.lineNumber)
-    val range = js("(Range, line, start, end) => new Range(line, start, line, end)")(
+    val suffixRange = js("(Range, line, start, end) => new Range(line, start, line, end)")(
       monaco.Range,
       lineNumber,
       snapshot.replacementStartCharacter + 1,
+      snapshot.replacementEndCharacter + 1
+    )
+    val statementRange = js("(Range, line, start, end) => new Range(line, start, line, end)")(
+      monaco.Range,
+      lineNumber,
+      snapshot.statementStartCharacter + 1,
       snapshot.replacementEndCharacter + 1
     )
     val items = (0 until number(suggestions.length)).mapNotNull { index ->
@@ -871,7 +994,9 @@ class JSMonacoEditor(
         ?: return@mapNotNull null
       if (insertion.isEmpty()) return@mapNotNull null
       val display = suggestion?.displayText as? String
+        ?: suggestion?.candidateText as? String
         ?: (snapshot.prefixText + insertion).trim()
+      val replacesStatement = suggestion?.replaceStatement as? Boolean == true
       val tokenLength = cppCompletionInt(suggestion?.tokenLength ?: suggestion?.length, 0)
       val item = js("({})")
       item.label = display
@@ -879,7 +1004,10 @@ class JSMonacoEditor(
       item.documentation = "Generated from the full C++ statement grammar (${tokenLength} tokens)."
       item.kind = monaco.languages.CompletionItemKind.Snippet
       item.insertText = insertion
-      item.range = range
+      item.range = if (replacesStatement) statementRange else suffixRange
+      item.filterText = if (replacesStatement) snapshot.prefixText else display
+      if (defined(monaco.languages.CompletionItemInsertTextRule?.KeepWhitespace))
+        item.insertTextRules = monaco.languages.CompletionItemInsertTextRule.KeepWhitespace
       item.sortText = "0000_${tokenLength.toString().padStart(2, '0')}_${index.toString().padStart(2, '0')}"
       item.preselect = index == 0
       item
@@ -949,6 +1077,8 @@ class JSMonacoEditor(
     client.onNotification(
       "textDocument/clangd.fileStatus",
       { status: dynamic ->
+        val uri = status?.uri as? String
+        if (uri != null && uri != documentUri()) return@onNotification
         val state = status?.state as? String ?: return@onNotification
         if (state.equals("idle", ignoreCase = true)) {
           reportStatus(ClangdClientState.READY, "clangd is ready")

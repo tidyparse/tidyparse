@@ -270,62 +270,74 @@ class CppInteractiveCompletionTest {
   }
 
   @Test
-  fun rendererPreservesShiftTokensWithinAndAcrossTheSuffixBoundary() {
+  fun lexicalCodecPreservesShiftTokensWithinAndAcrossTheSuffixBoundary() {
     assertEquals(
-      "std :: cout << value ;",
+      "std::cout<<value;",
       listOf("std", "::", "cout", "<", "<", "value", ";").renderCppTokens()
     )
-    assertEquals(" value ;", renderCppCompletionSuffix("return", listOf("value", ";")))
-    assertEquals("cout ;", renderCppCompletionSuffix("std::", listOf("cout", ";")))
-    assertEquals("size ( )", renderCppCompletionSuffix("value.", listOf("size", "(", ")")))
-    assertEquals("< value ;", renderCppCompletionSuffix("std::cout <", listOf("<", "value", ";")))
+    assertEquals(" value;", renderCppCompletionSuffix("return", listOf("value", ";")))
+    assertEquals("cout;", renderCppCompletionSuffix("std::", listOf("cout", ";")))
+    assertEquals("size()", renderCppCompletionSuffix("value.", listOf("size", "(", ")")))
+    assertEquals("<value;", renderCppCompletionSuffix("std::cout <", listOf("<", "value", ";")))
     assertEquals(
-      "std::cout << value ;",
+      "std::cout <<value;",
       "std::cout <" + renderCppCompletionSuffix("std::cout <", listOf("<", "value", ";"))
     )
-    assertEquals("value ;", renderCppCompletionSuffix("  ", listOf("value", ";")))
+    assertEquals("value;", renderCppCompletionSuffix("  ", listOf("value", ";")))
   }
 
   @Test
-  fun completionLabelsUseCompactCppFormattingWithoutChangingInsertionText() {
+  fun lexicalCodecDoesNotSplitAValidCastAcrossTheCursorBoundary() {
+    val prefix = "Shape& mutable_view = const_cast<Shape"
+    val suffix = listOf("&", ">", "(", "view", ")", ";")
+
+    assertEquals("&>(view);", renderCppCompletionSuffix(prefix, suffix))
     assertEquals(
-      "records.try_emplace(0, 0, \"\", 0.0);",
-      formatCppCompletionLabel(
-        prefixTokens = listOf("records", ".", "try_emplace"),
-        suffixTokens = listOf("(", "0", ",", "0", ",", "\"\"", ",", "0.0", ")", ";")
-      )
+      "Shape& mutable_view = const_cast<Shape&>(view);",
+      prefix + renderCppCompletionSuffix(prefix, suffix)
+    )
+  }
+
+  @Test
+  fun lexicalCodecRetainsOnlyRequiredTokenSeparators() {
+    assertEquals(" value;", renderCppCompletionSuffix("return", listOf("value", ";")))
+    assertEquals("value;", renderCppCompletionSuffix("return ", listOf("value", ";")))
+    assertEquals(" /right;", renderCppCompletionSuffix("left/", listOf("/", "right", ";")))
+    assertEquals(" *right;", renderCppCompletionSuffix("left/", listOf("*", "right", ";")))
+    assertEquals(" >value", renderCppCompletionSuffix("label:", listOf(">", "value")))
+  }
+
+  @Test
+  fun lexicalCodecLeavesAllStylisticWhitespaceToClangFormat() {
+    assertEquals(
+      "records.try_emplace(0,0,\"\",0.0);",
+      listOf(
+        "records", ".", "try_emplace", "(", "0", ",", "0", ",", "\"\"", ",",
+        "0.0", ")", ";"
+      ).renderCppTokens()
     )
     assertEquals(
-      "std::visit(Describe{}, payload);",
-      formatCppCompletionLabel(
-        prefixTokens = listOf("std", "::", "visit", "("),
-        suffixTokens = listOf("Describe", "{", "}", ",", "payload", ")", ";")
-      )
+      "std::visit(Describe{},payload);",
+      listOf("std", "::", "visit", "(", "Describe", "{", "}", ",", "payload", ")", ";")
+        .renderCppTokens()
     )
     assertEquals(
-      "std::cout << value;",
-      formatCppCompletionLabel(
-        prefixTokens = listOf("std", "::", "cout", "<"),
-        suffixTokens = listOf("<", "value", ";")
-      )
+      "std::cout<<value;",
+      listOf("std", "::", "cout", "<", "<", "value", ";").renderCppTokens()
     )
     assertEquals(
-      "std::vector<std::vector<int>> values;",
-      formatCppCompletionLabel(
-        prefixTokens = emptyList(),
-        suffixTokens = listOf(
-          "std", "::", "vector", "<", "std", "::", "vector", "<", "int", ">", ">",
-          "values", ";"
-        )
-      )
+      "std::vector<std::vector<int>>values;",
+      listOf(
+        "std", "::", "vector", "<", "std", "::", "vector", "<", "int", ">", ">",
+        "values", ";"
+      ).renderCppTokens()
     )
     assertEquals(
-      " ( 0 , 0 , \"\" , 0.0 ) ;",
+      "(0,0,\"\",0.0);",
       renderCppCompletionSuffix(
         "records.try_emplace",
         listOf("(", "0", ",", "0", ",", "\"\"", ",", "0.0", ")", ";")
-      ),
-      "Display formatting must not change the conservative insertion renderer"
+      )
     )
   }
 

@@ -146,7 +146,7 @@ private class CppCompletionWorkerRuntime(private val scope: dynamic) {
       val suggestions = execution.suggestions.map { completion ->
         val suggestion = js("({})")
         suggestion.insertion = completion.insertionText
-        suggestion.displayText = completion.displayText
+        suggestion.candidateText = completion.candidateText
         suggestion.tokenLength = completion.tokenLength
         suggestion.tokens = completion.tokens.toTypedArray()
         suggestion.freshNames = completion.freshNames.sorted().toTypedArray()
@@ -488,4 +488,3 @@ internal fun cppCompletionJsonClone(value: dynamic): dynamic =
   js("(value) => JSON.parse(JSON.stringify(value))")(value)
 
 internal fun cppCompletionInt(value: dynamic, fallback: Int = 0): Int = (value as? Number)?.toInt() ?: fallback
-

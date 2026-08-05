@@ -163,6 +163,10 @@ private fun installClangdWorkspace(clangd: dynamic) {
     "$CPP_CLANGD_WORKSPACE_PATH/.clangd",
     """{"CompileFlags":{"CompilationDatabase":"$CPP_CLANGD_WORKSPACE_PATH"}}"""
   )
+  fs.writeFile(
+    "$CPP_CLANGD_WORKSPACE_PATH/.clang-format",
+    CPP_CLANG_FORMAT_CONFIGURATION
+  )
 }
 
 private class ClangdMessagePort(
