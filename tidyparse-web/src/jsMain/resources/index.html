@@ -12,7 +12,7 @@
 <body>
 <!-- Now render the pluginIcon.svg next to the header: -->
 <h1><img style="display: inline;" src="/pluginIcon.svg" width="26">&nbsp;&nbsp;Tidyparse Browser Demonstration</h1>
-<div id="content">
+<div id="content" class="workspace-split">
 <textarea id="tidyparse-input" class="ldt" spellcheck="false"></textarea>
 <div id="tidyparse-output" class="panel">
    Usage Tips:
@@ -24,6 +24,8 @@
    • Modifying the tail of a valid prefix will enter suffix mode.
 
    • Press → in suffix mode to accept the selection's next token.
+
+   • Soft gray text previews a continuation. Press [Tab] to accept it.
 
    • Invalid snippets are marked with <u>a squiggly underline</u>.
 

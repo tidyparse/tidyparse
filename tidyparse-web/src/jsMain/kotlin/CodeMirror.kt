@@ -23,9 +23,52 @@ fun initTidyCodeMirror(options: dynamic = null): dynamic {
 
   val editor = codeMirror.fromTextArea(textarea, js("Object").assign(defaults, options ?: js("{}")))
 
-  editor.on("change") { _: dynamic -> syncCodeMirrorTextareaAndEvents(editor, textarea, dispatchInput = true) }
+  editor.on("change") { _: dynamic, change: dynamic ->
+    val insertedText = change.text.join("\n") as String
+    // A normal insertion is followed by cursorActivity. Advance a matching
+    // ghost first so that event validates the new snapshot instead of
+    // mistaking the edit for independent caret movement.
+    if (!reconcileSoftCodeMirrorInsertion(
+        editor = editor,
+        change = change,
+        insertedText = insertedText
+      )) clearSoftCodeMirrorInsertion(editor)
+    clearFreshCodeMirrorInsertion(editor)
+    if (
+      editor.tidyparseCompletionCommitActive != true &&
+      change.origin in arrayOf("+input", "*compose") &&
+      insertedText.isNotEmpty()
+    ) recordFreshCodeMirrorInsertion(editor)
+    editor.tidyparseLastChangeOrigin = change.origin
+    syncCodeMirrorTextareaAndEvents(editor, textarea, dispatchInput = true)
+  }
 
-  editor.on("cursorActivity") { _: dynamic -> syncCodeMirrorTextareaAndEvents(editor, textarea, dispatchInput = false) }
+  editor.on("cursorActivity") { _: dynamic ->
+    invalidateSoftCodeMirrorInsertion(editor)
+    invalidateFreshCodeMirrorInsertionIfStateChanged(editor)
+    syncCodeMirrorTextareaAndEvents(editor, textarea, dispatchInput = false)
+  }
+
+  editor.on("refresh") { _: dynamic ->
+    val position = editor.tidyparsePositionSoftInsertion
+    if (position != null && position != js("undefined")) position()
+  }
+
+  editor.on("blur") { _: dynamic -> clearSoftCodeMirrorInsertion(editor) }
+
+  editor.getInputField().addEventListener("compositionstart", {
+    clearSoftCodeMirrorInsertion(editor)
+    clearFreshCodeMirrorInsertion(editor)
+  })
+  editor.getInputField().addEventListener("compositionend", {
+    // Contenteditable input reads the committed DOM text on a delayed poll.
+    // Let that change run first so the snapshot describes the committed value.
+    val commitDelay = if (editor.getOption("inputStyle") == "contenteditable") 100 else 0
+    window.setTimeout({
+      invalidateFreshCodeMirrorInsertionIfStateChanged(editor)
+      syncCodeMirrorTextareaAndEvents(editor, textarea, dispatchInput = true)
+    }, commitDelay)
+  })
 
   syncCodeMirrorTextareaAndEvents(editor, textarea, dispatchInput = false)
   w.cmEditor = editor
@@ -43,6 +86,63 @@ fun initPythonCodeMirror(): dynamic {
   options.indentWithTabs = false
 
   return initTidyCodeMirror(options)
+}
+
+private fun clearFreshCodeMirrorInsertion(editor: dynamic) {
+  editor.tidyparseFreshInsertionText = null
+  editor.tidyparseFreshInsertionStart = null
+  editor.tidyparseFreshInsertionEnd = null
+}
+
+private fun clearSoftCodeMirrorInsertion(editor: dynamic) {
+  val clear = editor.tidyparseClearSoftInsertion
+  if (clear != null && clear != js("undefined")) clear()
+}
+
+private fun invalidateSoftCodeMirrorInsertion(editor: dynamic) {
+  val invalidate = editor.tidyparseInvalidateSoftInsertion
+  if (invalidate != null && invalidate != js("undefined")) invalidate()
+  else clearSoftCodeMirrorInsertion(editor)
+}
+
+private fun reconcileSoftCodeMirrorInsertion(
+  editor: dynamic,
+  change: dynamic,
+  insertedText: String
+): Boolean {
+  if (
+    editor.tidyparseCompletionCommitActive == true ||
+    change.origin !in arrayOf("+input", "*compose") ||
+    insertedText.isEmpty() ||
+    (change.removed.join("\n") as String).isNotEmpty()
+  ) return false
+
+  val reconcile = editor.tidyparseReconcileSoftInsertion
+  if (reconcile == null || reconcile == js("undefined")) return false
+
+  val offset = editor.indexFromPos(change.from) as Int
+  return reconcile(insertedText, offset) == true
+}
+
+private fun recordFreshCodeMirrorInsertion(editor: dynamic) {
+  editor.tidyparseFreshInsertionText = editor.getValue()
+  editor.tidyparseFreshInsertionStart =
+    editor.indexFromPos(editor.getCursor("from"))
+  editor.tidyparseFreshInsertionEnd =
+    editor.indexFromPos(editor.getCursor("to"))
+}
+
+private fun invalidateFreshCodeMirrorInsertionIfStateChanged(editor: dynamic) {
+  val text = editor.tidyparseFreshInsertionText
+  if (text == null || text == js("undefined")) return
+
+  val start = editor.indexFromPos(editor.getCursor("from"))
+  val end = editor.indexFromPos(editor.getCursor("to"))
+  if (
+    text != editor.getValue() ||
+    editor.tidyparseFreshInsertionStart != start ||
+    editor.tidyparseFreshInsertionEnd != end
+  ) clearFreshCodeMirrorInsertion(editor)
 }
 
 private fun installFixedHtmlHint() {

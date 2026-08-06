@@ -39,7 +39,7 @@ object RepairReranker {
       true
     } catch (t: Throwable) {
       netReady = null
-      log("Reranker unavailable on page load: ${t.message ?: t}")
+      log("Reranker initialization failed: ${t.message ?: t}")
       false
     }
 

@@ -199,8 +199,14 @@ suspend fun defaultSetup() {
 
   if (hasCmEditor()) cmEditor.on("keydown") { _: dynamic, event: dynamic -> jsEditor.navUpdate(event) }
   else inputField.addEventListener("keydown", { event -> jsEditor.navUpdate(event as KeyboardEvent) })
-  epscheck.addEventListener("change", { log("Changed check"); jsEditor.epsilons = epscheck.checked; log("Checked: ${jsEditor.epsilons}") })
+  epscheck.addEventListener("change", {
+    jsEditor.discardSoftTerminalCompletion()
+    log("Changed check")
+    jsEditor.epsilons = epscheck.checked
+    log("Checked: ${jsEditor.epsilons}")
+  })
   ntscheck.addEventListener("change", {
+    jsEditor.discardSoftTerminalCompletion()
     jsEditor.ntStubs = ntscheck.checked
     try {
       jsEditor.cfg = jsEditor.getGrammarText().parseCFG(validate = true)
@@ -232,9 +238,7 @@ suspend fun pythonSetup() {
         ngrams = jsPyEditor.ngrams.toGpuHash(cfg = jsPyEditor.getLatestCFG()).loadToGPUBuffer()
         log("Loaded n-grams into ${jsPyEditor.ngramTensor.size / 1000000}mb GPU buffer in ${t0.elapsedNow()}")
         loadWDFA()
-        markNeuralRerankerLoading("Neural reranker weights loading")
-        if (RepairReranker.preloadAvailable()) markNeuralRerankerReady()
-        else markNeuralRerankerUnavailable("Neural reranker unavailable")
+        markNeuralRerankerAvailable()
         debugWDFATokenIndexing()
       } else {
         markNeuralRerankerUnavailable("Neural reranker unavailable: WebGPU unavailable")
@@ -263,20 +267,63 @@ private const val NEURAL_RERANKER_CHECKBOX_ID = "neural-reranker-checkbox"
 private const val NEURAL_RERANKER_LABEL_ID = "neural-reranker-label"
 private const val NEURAL_RERANKER_STATUS_ID = "neuralRerankerStatus"
 private var neuralRerankerControlBound = false
+private var neuralRerankerLoaded = false
+private var neuralRerankerLoading = false
 
 private fun initNeuralRerankerControl() {
   neuralRerankerEnabled = false
-  setNeuralRerankerSelectable(false, "Neural reranker weights loading")
-  markNeuralRerankerStatus("pending", "Neural reranker weights loading")
+  setNeuralRerankerSelectable(false, "Neural reranker waiting for WebGPU")
+  markNeuralRerankerStatus("pending", "Neural reranker waiting for WebGPU")
 
   if (neuralRerankerControlBound) return
   val checkbox = document.getElementById(NEURAL_RERANKER_CHECKBOX_ID) as? HTMLInputElement ?: return
 
-  checkbox.addEventListener("change", {
-    neuralRerankerEnabled = !checkbox.disabled && checkbox.checked
-    jsPyEditor.run { continuation { handleInput() } }
+  checkbox.addEventListener("change", change@{
+    if (neuralRerankerLoading) {
+      checkbox.checked = true
+      return@change
+    }
+
+    if (!checkbox.checked) {
+      neuralRerankerEnabled = false
+      jsPyEditor.run { continuation { handleInput() } }
+      return@change
+    }
+
+    if (neuralRerankerLoaded) {
+      neuralRerankerEnabled = true
+      jsPyEditor.run { continuation { handleInput() } }
+      return@change
+    }
+
+    neuralRerankerEnabled = false
+    markNeuralRerankerLoading("Neural reranker weights loading")
+    checkbox.checked = true
+    neuralRerankerLoading = true
+
+    MainScope().launch {
+      try {
+        if (RepairReranker.preloadAvailable()) {
+          neuralRerankerLoaded = true
+          markNeuralRerankerReady()
+          checkbox.checked = true
+          neuralRerankerEnabled = true
+        } else {
+          markNeuralRerankerRetryable()
+        }
+      } finally {
+        neuralRerankerLoading = false
+      }
+      jsPyEditor.run { continuation { handleInput() } }
+    }
   })
   neuralRerankerControlBound = true
+}
+
+private fun markNeuralRerankerAvailable() {
+  val label = "Neural reranker ready to load on demand"
+  setNeuralRerankerSelectable(true, label)
+  markNeuralRerankerStatus("pending", label)
 }
 
 private fun markNeuralRerankerLoading(label: String) {
@@ -287,6 +334,14 @@ private fun markNeuralRerankerLoading(label: String) {
 private fun markNeuralRerankerReady() {
   setNeuralRerankerSelectable(true, "Neural reranker weights loaded")
   markNeuralRerankerStatus("ready", "Neural reranker weights loaded")
+}
+
+private fun markNeuralRerankerRetryable() {
+  val label = "Neural reranker failed to load; enable to retry"
+  neuralRerankerEnabled = false
+  setNeuralRerankerSelectable(true, label)
+  (document.getElementById(NEURAL_RERANKER_CHECKBOX_ID) as? HTMLInputElement)?.checked = false
+  markNeuralRerankerStatus("error", label)
 }
 
 private fun markNeuralRerankerUnavailable(label: String) {

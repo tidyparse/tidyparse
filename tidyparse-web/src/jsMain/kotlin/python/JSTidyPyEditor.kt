@@ -14,7 +14,7 @@ import kotlin.time.DurationUnit
 import kotlin.time.TimeSource
 
 @ExperimentalUnsignedTypes
-class JSTidyPyEditor(override val editor: HTMLTextAreaElement, override val output: Node) : JSTidyEditor(editor, output) {
+class JSTidyPyEditor(editor: HTMLTextAreaElement, output: Node) : JSTidyEditor(editor, output) {
   val ngrams: MutableMap<List<String>, Double> = mutableMapOf()
 
   val order: Int by lazy { ngrams.keys.firstOrNull()!!.size }
