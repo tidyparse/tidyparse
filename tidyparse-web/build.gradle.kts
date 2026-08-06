@@ -1,6 +1,7 @@
 @file:OptIn(ExperimentalEncodingApi::class)
 
 import buildlogic.GenerateCppStatementGrammar
+import groovy.json.JsonSlurper
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
@@ -22,6 +23,11 @@ import org.jetbrains.letsPlot.intern.Plot
 import org.jetbrains.letsPlot.label.ggtitle
 import java.awt.Desktop
 import java.io.ByteArrayOutputStream
+import java.nio.channels.FileChannel
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
 import java.util.*
 import java.util.concurrent.CopyOnWriteArrayList
@@ -91,6 +97,7 @@ val clangdHostId = listOf(
   .lowercase(Locale.ROOT)
   .replace(Regex("[^a-z0-9._-]+"), "-")
 val clangdRecipeDir = layout.projectDirectory.dir("clangd")
+val cppSemanticProfileFile = clangdRecipeDir.file("semantic-profile.json")
 val clangdRecipeFiles = fileTree(clangdRecipeDir) {
   exclude("**/.DS_Store")
 }
@@ -99,17 +106,59 @@ val clangdRecipeSha256 = providers.of(ClangdRecipeSha256Source::class) {
 }
 val clangdRecipeSha256Value = clangdRecipeSha256.get()
 val clangdArtifactVersion = "$clangdArtifactBaseVersion-$clangdRecipeSha256Value"
-val clangdStateDir = rootProject.layout.projectDirectory
-  .dir(".gradle/clangd/$clangdArtifactVersion-$clangdHostId")
+// Project `.gradle` is owned by Gradle's cache cleanup and can be removed by another daemon while
+// this external CMake build is running. Keep the expensive recipe-keyed toolchain in a dedicated
+// Gradle-user-home sibling instead; it survives project `clean` without being project-cache state.
+val clangdCacheDir = gradle.gradleUserHomeDir.resolve("tidyparse-clangd")
+val clangdStateDir = layout.dir(providers.provider {
+  clangdCacheDir.resolve("$clangdArtifactVersion-$clangdHostId")
+}).get()
 val clangdWorkDir = clangdStateDir.dir("work")
 val clangdArtifactDir = clangdStateDir.dir("artifacts")
 val clangdResourceDir = layout.projectDirectory.dir("src/jsMain/resources")
 val generatedClangdVersionDir = layout.buildDirectory.dir("generated/clangd-version")
+val generatedCppSemanticProfileDir = layout.buildDirectory.dir("generated/cpp-semantic-profile")
 val generateClangdArtifactVersion = tasks.register<GenerateClangdArtifactVersion>(
   "generateClangdArtifactVersion"
 ) {
   artifactVersion.set(clangdArtifactVersion)
   outputFile.set(generatedClangdVersionDir.map { it.file("JSClangdArtifactVersion.kt") })
+}
+val generateCppSemanticProfile = tasks.register("generateCppSemanticProfile") {
+  val outputFile = generatedCppSemanticProfileDir.map { it.file("CppSemanticProfile.generated.kt") }
+  inputs.file(cppSemanticProfileFile)
+  outputs.file(outputFile)
+
+  doLast {
+    @Suppress("UNCHECKED_CAST")
+    val profile = JsonSlurper().parse(cppSemanticProfileFile.asFile) as Map<String, Any?>
+    require((profile["schemaVersion"] as? Number)?.toInt() == 1) {
+      "clangd/semantic-profile.json must use schemaVersion 1"
+    }
+    require(profile["language"] == "c++" && profile["standard"] == "c++23") {
+      "clangd/semantic-profile.json must describe the browser C++23 translation unit"
+    }
+    require(profile["target"] == "wasm32-wasi") {
+      "clangd/semantic-profile.json must target wasm32-wasi"
+    }
+    val flags = (profile["flags"] as? List<*>)?.map {
+      require(it is String) { "Every semantic profile flag must be a string" }
+      it
+    } ?: error("clangd/semantic-profile.json is missing flags")
+    require(flags.firstOrNull() == "-xc++") {
+      "The C++ semantic profile must begin with -xc++"
+    }
+    val source = flags.joinToString(
+      prefix = "// Generated from clangd/semantic-profile.json.\n" +
+              "internal val CPP_CLANGD_CPP_SEMANTIC_FLAGS = arrayOf(\n",
+      separator = ",\n",
+      postfix = "\n)\n"
+    ) { flag -> "  \"${flag.replace("\\", "\\\\").replace("\"", "\\\"")}\"" }
+    outputFile.get().asFile.apply {
+      parentFile.mkdirs()
+      if (!exists() || readText() != source) writeText(source)
+    }
+  }
 }
 
 val generatedCppStatementGrammarDir = layout.buildDirectory.dir("generated/cpp-statement-grammar")
@@ -130,7 +179,44 @@ val buildClangdWasm = tasks.register<Exec>("buildClangdWasm") {
   description = "Builds the pinned, self-hosted clangd WebAssembly artifact"
 
   workingDir(clangdRecipeDir)
-  commandLine("bash", clangdRecipeDir.file("build.sh").asFile.absolutePath)
+  val buildScript = clangdRecipeDir.file("build.sh").asFile.absolutePath
+  val buildLock = clangdCacheDir.resolve("browser-clangd-build.lock").absolutePath
+  // Separate Gradle daemons do not coordinate task output locks. Hold one global OS lock while a
+  // configured recipe reads the live patch/build inputs and mutates its persistent CMake tree;
+  // fcntl releases it automatically if the wrapper exits or is killed.
+  commandLine(
+    "python3",
+    "-c",
+    """
+      import fcntl, hashlib, pathlib, subprocess, sys
+      def recipe_digest(root):
+          root = pathlib.Path(root)
+          digest = hashlib.sha256(b"tidyparse-clangd-recipe-v1\0")
+          files = sorted(
+              (path for path in root.rglob("*") if path.is_file() and path.name != ".DS_Store"),
+              key=lambda path: path.relative_to(root).as_posix(),
+          )
+          for path in files:
+              digest.update(path.relative_to(root).as_posix().encode())
+              digest.update(b"\0")
+              digest.update(hashlib.sha256(path.read_bytes()).digest())
+          return digest.hexdigest()
+      with open(sys.argv[1], "w") as lock:
+          print("Waiting for browser clangd build lock:", sys.argv[1], flush=True)
+          fcntl.flock(lock, fcntl.LOCK_EX)
+          print("Acquired browser clangd build lock", flush=True)
+          if recipe_digest(sys.argv[3]) != sys.argv[4]:
+              raise SystemExit("clangd recipe changed before the locked build; rerun Gradle")
+          result = subprocess.run(["bash", sys.argv[2]])
+          if recipe_digest(sys.argv[3]) != sys.argv[4]:
+              raise SystemExit("clangd recipe changed during the locked build; refusing its output")
+          raise SystemExit(result.returncode)
+    """.trimIndent(),
+    buildLock,
+    buildScript,
+    clangdRecipeDir.asFile.absolutePath,
+    clangdRecipeSha256Value
+  )
   environment("ROOT_DIR", clangdWorkDir.asFile.absolutePath)
   environment("OUTPUT_DIR", clangdArtifactDir.asFile.absolutePath)
   environment("CLANGD_RECIPE_SHA256", clangdRecipeSha256Value)
@@ -144,41 +230,172 @@ val buildClangdWasm = tasks.register<Exec>("buildClangdWasm") {
     clangdArtifactDir.file("clangd.wasm.gz"),
     clangdArtifactDir.file("clangd-manifest.json")
   )
+  outputs.file(clangdWorkDir.file("build-native/bin/clang++"))
+  outputs.file(clangdWorkDir.file("native-validator-profile.json"))
+  outputs.dir(clangdWorkDir.dir("browser-sysroot/include"))
 
   doFirst {
+    check(clangdRecipeDigest(clangdRecipeDir.asFile) == clangdRecipeSha256Value) {
+      "The clangd recipe changed after this Gradle invocation was configured; rerun the task"
+    }
     clangdWorkDir.asFile.mkdirs()
     clangdArtifactDir.asFile.mkdirs()
   }
   doLast {
+    check(clangdRecipeDigest(clangdRecipeDir.asFile) == clangdRecipeSha256Value) {
+      "The clangd recipe changed while its artifact was building; refusing to publish it"
+    }
     listOf("clangd.js", "clangd.wasm.gz", "clangd-manifest.json").forEach { name ->
       val artifact = clangdArtifactDir.file(name).asFile
       check(artifact.isFile && artifact.length() > 0) {
         "The clangd build did not produce ${artifact.absolutePath}"
       }
     }
+    listOf(
+      clangdWorkDir.file("build-native/bin/clang++").asFile,
+      clangdWorkDir.file("native-validator-profile.json").asFile
+    ).forEach { artifact ->
+      check(artifact.isFile && artifact.length() > 0) {
+        "The clangd build did not produce ${artifact.absolutePath}"
+      }
+    }
+    check(clangdWorkDir.dir("browser-sysroot/include").asFile.isDirectory) {
+      "The clangd build did not retain its semantic include tree"
+    }
   }
 }
 
-val refreshClangdResources = tasks.register<Sync>("refreshClangdResources") {
+val refreshClangdResources = tasks.register("refreshClangdResources") {
   group = "build"
   description = "Rebuilds and refreshes the ignored clangd browser resources"
   dependsOn(buildClangdWasm)
 
-  into(clangdResourceDir)
-  from(clangdArtifactDir) {
-    include("clangd.js", "clangd.wasm.gz", "clangd-manifest.json")
+  val artifactModule = clangdArtifactDir.file("clangd.js")
+  val artifactWasm = clangdArtifactDir.file("clangd.wasm.gz")
+  val artifactManifest = clangdArtifactDir.file("clangd-manifest.json")
+  val resourceModule = clangdResourceDir.file("clangd.js")
+  val resourceWasm = clangdResourceDir.file("clangd.wasm.gz")
+  val resourceManifest = clangdResourceDir.file("clangd-manifest.json")
+  val publicationLock = clangdCacheDir.resolve("browser-clangd-publish.lock")
+  inputs.files(artifactModule, artifactWasm, artifactManifest)
+  inputs.property("clangdRecipeSha256", clangdRecipeSha256Value)
+  outputs.files(resourceModule, resourceWasm, resourceManifest)
+
+  doLast {
+    check(clangdRecipeDigest(clangdRecipeDir.asFile) == clangdRecipeSha256Value) {
+      "The clangd recipe changed before resource publication; rerun the task"
+    }
+    val sourceManifest = JsonSlurper().parse(artifactManifest.asFile) as Map<*, *>
+    check(sourceManifest["artifactVersion"] == clangdArtifactVersion) {
+      "Built browser clangd manifest does not match $clangdArtifactVersion"
+    }
+
+    clangdResourceDir.asFile.mkdirs()
+    publicationLock.parentFile.mkdirs()
+    FileChannel.open(
+      publicationLock.toPath(),
+      StandardOpenOption.CREATE,
+      StandardOpenOption.WRITE
+    ).use { channel ->
+      channel.lock().use {
+        check(clangdRecipeDigest(clangdRecipeDir.asFile) == clangdRecipeSha256Value) {
+          "The clangd recipe changed while waiting to publish resources; rerun the task"
+        }
+
+        val sources = listOf(artifactModule, artifactWasm, artifactManifest)
+        val targets = listOf(resourceModule, resourceWasm, resourceManifest)
+        val temporaries = targets.map { target ->
+          target.asFile.toPath().resolveSibling(
+            ".${target.asFile.name}.${clangdRecipeSha256Value.take(12)}.tmp"
+          )
+        }
+        fun atomicMove(source: java.nio.file.Path, target: java.nio.file.Path) {
+          try {
+            Files.move(
+              source,
+              target,
+              StandardCopyOption.ATOMIC_MOVE,
+              StandardCopyOption.REPLACE_EXISTING
+            )
+          } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING)
+          }
+        }
+
+        try {
+          sources.zip(temporaries).forEach { (source, temporary) ->
+            Files.copy(source.asFile.toPath(), temporary, StandardCopyOption.REPLACE_EXISTING)
+          }
+          // The manifest is the commit marker. Remove it before changing either payload and
+          // publish the replacement only after both payload moves and a final live-recipe check.
+          Files.deleteIfExists(resourceManifest.asFile.toPath())
+          atomicMove(temporaries[0], resourceModule.asFile.toPath())
+          atomicMove(temporaries[1], resourceWasm.asFile.toPath())
+          check(clangdRecipeDigest(clangdRecipeDir.asFile) == clangdRecipeSha256Value) {
+            "The clangd recipe changed during resource publication; bundle left uncommitted"
+          }
+          atomicMove(temporaries[2], resourceManifest.asFile.toPath())
+        } finally {
+          temporaries.forEach(Files::deleteIfExists)
+        }
+      }
+    }
   }
-  preserve {
-    include("**")
-    exclude(
-      "clangd.js",
-      "clangd.wasm",
-      "clangd.wasm.gz",
-      "clangd-manifest.json",
-      "wasm/clangd.js",
-      "wasm/clangd.wasm",
-      "wasm/clangd.wasm.gz",
-      "wasm/clangd-manifest.json"
+}
+
+val verifyClangdResources = tasks.register("verifyClangdResources") {
+  group = "verification"
+  description = "Verifies that the staged browser clangd bundle matches the current recipe"
+  dependsOn(refreshClangdResources)
+
+  val module = clangdResourceDir.file("clangd.js")
+  val wasm = clangdResourceDir.file("clangd.wasm.gz")
+  val manifestFile = clangdResourceDir.file("clangd-manifest.json")
+  inputs.files(module, wasm, manifestFile)
+  inputs.property("clangdArtifactVersion", clangdArtifactVersion)
+
+  doLast {
+    @Suppress("UNCHECKED_CAST")
+    val manifest = JsonSlurper().parse(manifestFile.asFile) as Map<String, Any?>
+    check(manifest["artifactVersion"] == clangdArtifactVersion) {
+      "Staged browser clangd has artifact version ${manifest["artifactVersion"]}; " +
+              "expected $clangdArtifactVersion"
+    }
+    val artifacts = manifest["artifacts"] as? Map<*, *>
+      ?: error("Staged browser clangd manifest has no artifacts")
+    val javascript = artifacts["clangd.js"] as? Map<*, *>
+      ?: error("Staged browser clangd manifest has no clangd.js entry")
+    val webAssembly = artifacts["clangd.wasm"] as? Map<*, *>
+      ?: error("Staged browser clangd manifest has no clangd.wasm entry")
+
+    fun sha256(file: File): String {
+      val digest = MessageDigest.getInstance("SHA-256")
+      file.inputStream().buffered().use { input ->
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+          val read = input.read(buffer)
+          if (read < 0) break
+          digest.update(buffer, 0, read)
+        }
+      }
+      return HexFormat.of().formatHex(digest.digest())
+    }
+
+    fun verify(file: File, bytes: Any?, digest: Any?, label: String) {
+      check((bytes as? Number)?.toLong() == file.length()) {
+        "$label size does not match the staged browser clangd manifest"
+      }
+      check(digest == sha256(file)) {
+        "$label digest does not match the staged browser clangd manifest"
+      }
+    }
+
+    verify(module.asFile, javascript["bytes"], javascript["sha256"], "clangd.js")
+    verify(
+      wasm.asFile,
+      webAssembly["compressedBytes"],
+      webAssembly["compressedSha256"],
+      "clangd.wasm.gz"
     )
   }
 }
@@ -210,7 +427,7 @@ kotlin {
           // The compiler-backed sweep is intentionally isolated from the fast grammar/service
           // regressions. Benchmark mode should measure the full discovered completion corpus, not rerun the
           // surrounding unit suite before starting its one-minute clock.
-          filter.includeTestsMatching("cppcompletion.CppCompletionBenchmarkRunTest.*")
+          filter.includeTestsMatching("cppcompletion.CppCompletionBenchmarkTest.benchmarkCppCompletions")
         }
       }
     }
@@ -219,6 +436,7 @@ kotlin {
   sourceSets {
     getByName("jsMain") {
       kotlin.srcDir(generatedClangdVersionDir)
+      kotlin.srcDir(generatedCppSemanticProfileDir)
       kotlin.srcDir(generatedCppStatementGrammarDir)
       dependencies {
         implementation(project(":tidyparse-core"))
@@ -250,7 +468,7 @@ kotlin {
 }
 
 tasks.withType<BaseKotlinCompile>().configureEach {
-  dependsOn(generateCppStatementGrammar)
+  dependsOn(generateCppStatementGrammar, generateCppSemanticProfile)
 }
 
 tasks.named("compileKotlinJs") {
@@ -261,8 +479,33 @@ tasks.named("jsProcessResources") {
   mustRunAfter(refreshClangdResources)
 }
 
+if (System.getenv("CPP_COMPLETION_BENCHMARK") == "1") {
+  // The benchmark and cpp.html both consume the same recipe-keyed worker bundle. Make the
+  // benchmark command self-contained: regenerate stale artifacts, publish them before resource
+  // processing, compile the worker served by the benchmark middleware, and verify their manifest
+  // rather than relying on an earlier manual refresh or development build.
+  tasks.named("jsBrowserTest") {
+    dependsOn(verifyClangdResources, "jsDevelopmentExecutableCompileSync")
+    doFirst {
+      val worker = rootProject.layout.buildDirectory.file(
+        "js/packages/${rootProject.name}-${project.name}/kotlin/" +
+                "${rootProject.name}-${project.name}.js"
+      ).get().asFile
+      check(worker.isFile && worker.readText().contains(clangdArtifactVersion)) {
+        "Browser clangd worker and semantic manifest use different artifact versions"
+      }
+    }
+  }
+}
+
 tasks.withType<KotlinWebpack>().configureEach {
   dependsOn(prepareMonacoWebpackConfig)
+  if (!name.contains("test", ignoreCase = true)) {
+    // Development/production browser bundles back cpp.html and must never pair a newly compiled
+    // recipe-keyed worker with stale ignored clangd payloads. Test webpack stays fast; the
+    // compiler-backed benchmark opts into the same verification explicitly above.
+    dependsOn(verifyClangdResources)
+  }
 }
 
 fun saveStats(stat: String, name: String) =
@@ -768,7 +1011,7 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
         gzip(coreBundle.readBytes()).size.toLong() + gzip(indexResources.readBytes()).size.toLong()
       check(indexInitialJavaScriptGzipBytes <= maxHostedInitialJavaScriptGzipBytes) {
         "Hosted index JavaScript exceeds the ${maxHostedInitialJavaScriptGzipBytes}-byte gzip budget: " +
-          "$indexInitialJavaScriptGzipBytes bytes"
+                "$indexInitialJavaScriptGzipBytes bytes"
       }
 
       println("✓ Staged tidyparse-web deployment at ${webDeployStagingDir.get().asFile.absolutePath}")
@@ -1111,9 +1354,7 @@ abstract class ClangdRecipeSha256Source :
     val root = parameters.directory.get().asFile
     val files = root.walkTopDown()
       .filter { it.isFile && it.name != ".DS_Store" }
-      .map { file ->
-        file.relativeTo(root).invariantSeparatorsPath to file
-      }
+      .map { file -> file.relativeTo(root).invariantSeparatorsPath to file }
       .sortedBy { it.first }
       .toList()
     val recipeDigest = MessageDigest.getInstance("SHA-256")
@@ -1138,6 +1379,33 @@ abstract class ClangdRecipeSha256Source :
   }
 }
 
+private fun clangdRecipeDigest(root: File): String {
+  val files = root.walkTopDown()
+    .filter { it.isFile && it.name != ".DS_Store" }
+    .map { file -> file.relativeTo(root).invariantSeparatorsPath to file }
+    .sortedBy { it.first }
+    .toList()
+  val recipeDigest = MessageDigest.getInstance("SHA-256")
+  recipeDigest.update("tidyparse-clangd-recipe-v1\u0000".toByteArray())
+
+  files.forEach { (relativePath, file) ->
+    val fileDigest = MessageDigest.getInstance("SHA-256")
+    file.inputStream().buffered().use { input ->
+      val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+      while (true) {
+        val read = input.read(buffer)
+        if (read < 0) break
+        fileDigest.update(buffer, 0, read)
+      }
+    }
+    recipeDigest.update(relativePath.toByteArray())
+    recipeDigest.update(0.toByte())
+    recipeDigest.update(fileDigest.digest())
+  }
+
+  return HexFormat.of().formatHex(recipeDigest.digest())
+}
+
 @CacheableTask
 abstract class GenerateClangdArtifactVersion : DefaultTask() {
   @get:Input
@@ -1154,7 +1422,9 @@ abstract class GenerateClangdArtifactVersion : DefaultTask() {
     }
     val source = """
       // Generated from the complete tidyparse-web/clangd recipe.
-      internal const val CPP_CLANGD_ARTIFACT_VERSION = "$version"
+      // Keep this non-const: Kotlin/JS incremental compilation does not reliably
+      // invalidate every consumer when a generated const value changes.
+      internal val CPP_CLANGD_ARTIFACT_VERSION = "$version"
     """.trimIndent() + "\n"
     outputFile.get().asFile.apply {
       parentFile.mkdirs()

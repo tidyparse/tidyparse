@@ -78,7 +78,18 @@ private suspend fun startClangd(
   options.stdout = { byte: Int -> output.accept(byte) }
   options.stderr = { byte: Int -> stderr.accept(byte) }
   options.onAbort = { reason: dynamic ->
-    postClangdError("clangd aborted: $reason", fatal = true)
+    val diagnostics = stderr.snapshot()
+    postClangdError(
+      buildString {
+        append("clangd aborted: ")
+        append(reason.toString())
+        if (diagnostics.isNotBlank()) {
+          append('\n')
+          append(diagnostics)
+        }
+      },
+      fatal = true
+    )
     connection.close()
   }
   options.onExit = { code: dynamic ->
@@ -157,7 +168,7 @@ private fun installClangdWorkspace(clangd: dynamic) {
   fs.writeFile(CPP_CLANGD_C_PATH, "")
   fs.writeFile(
     "$CPP_CLANGD_WORKSPACE_PATH/compile_commands.json",
-    CPP_CLANGD_COMPILE_COMMANDS
+    cppClangdCompileCommands()
   )
   fs.writeFile(
     "$CPP_CLANGD_WORKSPACE_PATH/.clangd",
@@ -418,6 +429,7 @@ private class ClangdLspOutput(
 private class ClangdStderrOutput {
   private val decoder: dynamic = js("new TextDecoder('utf-8')")
   private var bytes: dynamic = js("[]")
+  private val recentLines = ArrayDeque<String>()
 
   fun accept(rawByte: Int) {
     val byte = rawByte and 0xff
@@ -430,10 +442,17 @@ private class ClangdStderrOutput {
     bytes.push(byte)
   }
 
+  fun snapshot(): String {
+    flush()
+    return recentLines.joinToString("\n")
+  }
+
   private fun flush() {
     if ((bytes.length as Int) == 0) return
     val line = decoder.decode(js("(values) => new Uint8Array(values)")(bytes)) as String
     bytes = js("[]")
+    recentLines.addLast(line)
+    while (recentLines.size > 32) recentLines.removeFirst()
     cppClangdWorkerScope.console.error(line)
   }
 }
@@ -473,41 +492,30 @@ private fun clangdEnvelope(type: String): dynamic {
   return message
 }
 
-private val CPP_CLANGD_COMPILE_COMMANDS = """
-[
-  {
-    "directory": "$CPP_CLANGD_WORKSPACE_PATH",
-    "file": "$CPP_CLANGD_CPP_PATH",
-    "arguments": [
-      "/usr/bin/clang++",
-      "-xc++",
-      "-std=c++23",
-      "-pedantic-errors",
-      "-Wall",
-      "-Wextra",
-      "--target=wasm32-wasi",
-      "-isystem/usr/include/c++/v1",
-      "-isystem/usr/include/wasm32-wasi/c++/v1",
-      "-isystem/usr/include",
-      "-isystem/usr/include/wasm32-wasi",
-      "$CPP_CLANGD_CPP_PATH"
-    ]
-  },
-  {
-    "directory": "$CPP_CLANGD_WORKSPACE_PATH",
-    "file": "$CPP_CLANGD_C_PATH",
-    "arguments": [
-      "/usr/bin/clang",
-      "-xc",
-      "-std=c23",
-      "-pedantic-errors",
-      "-Wall",
-      "-Wextra",
-      "--target=wasm32-wasi",
-      "-isystem/usr/include",
-      "-isystem/usr/include/wasm32-wasi",
-      "$CPP_CLANGD_C_PATH"
-    ]
-  }
-]
-""".trimIndent()
+private fun cppClangdCompileCommands(): String {
+  val cpp = js("({})")
+  cpp.directory = CPP_CLANGD_WORKSPACE_PATH
+  cpp.file = CPP_CLANGD_CPP_PATH
+  cpp.arguments = arrayOf(
+    "/usr/bin/clang++",
+    *CPP_CLANGD_CPP_SEMANTIC_FLAGS,
+    CPP_CLANGD_CPP_PATH
+  )
+
+  val c = js("({})")
+  c.directory = CPP_CLANGD_WORKSPACE_PATH
+  c.file = CPP_CLANGD_C_PATH
+  c.arguments = arrayOf(
+    "/usr/bin/clang",
+    "-xc",
+    "-std=c23",
+    "-pedantic-errors",
+    "-Wall",
+    "-Wextra",
+    "--target=wasm32-wasi",
+    "-isystem/usr/include",
+    "-isystem/usr/include/wasm32-wasi",
+    CPP_CLANGD_C_PATH
+  )
+  return JSON.stringify(arrayOf(cpp, c))
+}

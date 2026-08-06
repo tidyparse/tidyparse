@@ -336,7 +336,8 @@ class CppClangdAstContextTest {
     )
 
     val snapshot = assertNotNull(cppEditorStatementSnapshot(source, cursorLine, cursorCharacter))
-    val expectedTokens = cppLines("(Describe{}, payload);").single().tokens.map { it.text }
+    // The already typed `(` is committed prefix syntax, so a suffix begins at `Describe`.
+    val expectedTokens = cppLines("Describe{}, payload);").single().tokens.map { it.text }
     val grammar = CppCompletionGrammar()
     val astOnlyCompletions = grammar
       .completeCppStatement(context, snapshot.completionQuery(context.identifiers)).suggestions
@@ -383,6 +384,8 @@ class CppClangdAstContextTest {
     assertTrue(completions.any { completion ->
       completion.tokens == expectedTokens &&
         completion.candidateText.endsWith("std::visit(Describe{},payload);")
+    }, completions.joinToString(prefix = "Sema visit completions:\n", separator = "\n") {
+      "`${it.candidateText}` ${it.tokens}"
     })
   }
 

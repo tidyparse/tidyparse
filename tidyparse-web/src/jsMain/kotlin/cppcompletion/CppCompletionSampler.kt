@@ -160,20 +160,10 @@ fun CppSuffixGrammar.shortestCompletions(
     limit = sampleLimit,
     random = random
   )
-  if (primary.size >= sampleLimit) return primary
-  val fallback = completionFallback(tokenPrefix) ?: return primary
-  val syntactic = fallback.shortestCompletionsFromThisGrammar(
-    prefixText = prefixText,
-    identifiersInFile = identifiersInFile,
-    tokenPrefix = tokenPrefix,
-    limit = sampleLimit,
-    random = random
-  )
-  return (primary + syntactic).withIndex()
-    .distinctBy { it.value.tokens }
-    .sortedWith(compareBy<IndexedValue<CppShortestCompletion>> { it.value.length }.thenBy { it.index })
-    .take(sampleLimit)
-    .map(IndexedValue<CppShortestCompletion>::value)
+  // The generated statement syntax is a totality/recognition floor, not semantic evidence.
+  // Publishing its untyped derivations can reinterpret committed tokens or place a value where
+  // C++ requires a type. Only the Sema-specialized grammar is safe to expose in the editor.
+  return primary
 }
 
 private fun CppSuffixGrammar.shortestCompletionsFromThisGrammar(

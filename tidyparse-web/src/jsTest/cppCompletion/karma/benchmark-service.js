@@ -80,10 +80,41 @@ function timeoutWithin(deadline, maximum, operation) {
   return Math.max(1, Math.min(REQUEST_TIMEOUT_MS, maximum, remaining));
 }
 
-function executableVersion(executable, args = ["--version"]) {
+const NATIVE_COMPILER_RUNTIME_ENVIRONMENT_ALLOWLIST = new Set([
+  // Temporary-file roots are the only POSIX shell settings Clang may need for syntax/PCH work.
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  // Retain the minimum process-launch environment on Windows even though the pinned build is
+  // currently produced on macOS/Linux. Matching case-insensitively also handles Node's Windows env.
+  "SYSTEMROOT",
+  "WINDIR",
+  "COMSPEC",
+  "PATHEXT"
+]);
+
+/** Retain only process-launch essentials; compiler include/config variables are deliberately absent. */
+function nativeCompilerEnvironment(environment = process.env) {
+  const sanitized = {};
+  for (const [name, value] of Object.entries(environment)) {
+    if (value == null || !NATIVE_COMPILER_RUNTIME_ENVIRONMENT_ALLOWLIST.has(name.toUpperCase())) {
+      continue;
+    }
+    sanitized[name] = String(value);
+  }
+  sanitized.LANG = "C";
+  sanitized.LC_ALL = "C";
+  sanitized.LC_CTYPE = "C";
+  // Clang otherwise searches user, system, and executable-adjacent *.cfg files automatically.
+  sanitized.CLANG_NO_DEFAULT_CONFIG = "1";
+  return sanitized;
+}
+
+function executableVersion(executable, args = ["--version"], environment = process.env) {
   try {
     const result = childProcess.spawnSync(executable, args, {
       encoding: "utf8",
+      env: environment,
       timeout: 5_000
     });
     if (result.error || result.status !== 0) return null;
@@ -91,6 +122,66 @@ function executableVersion(executable, args = ["--version"]) {
   } catch (_) {
     return null;
   }
+}
+
+function fileSha256(file) {
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+function canonicalJson(value) {
+  if (value == null || typeof value === "boolean" || typeof value === "number") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "string") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object") {
+    return `{${Object.keys(value).sort().map(key =>
+      `${JSON.stringify(key)}:${canonicalJson(value[key])}`
+    ).join(",")}}`;
+  }
+  throw new Error(`Unsupported semantic profile value: ${typeof value}`);
+}
+
+function semanticProfileSha256(profile) {
+  return crypto.createHash("sha256").update(canonicalJson(profile)).digest("hex");
+}
+
+/** Must remain byte-for-byte equivalent to clangd/build.sh's logical include-tree digest. */
+function directoryTreeSha256(root) {
+  const digest = crypto.createHash("sha256");
+  const entries = [];
+  const collect = (directory, prefix = "") => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const relative = prefix.length === 0 ? entry.name : `${prefix}/${entry.name}`;
+      const absolute = path.join(directory, entry.name);
+      const stat = fs.lstatSync(absolute);
+      if (stat.isDirectory()) {
+        collect(absolute, relative);
+        continue;
+      }
+      if (stat.isSymbolicLink()) {
+        entries.push({ relative, kind: "L", payload: Buffer.from(fs.readlinkSync(absolute)) });
+      } else if (stat.isFile()) {
+        entries.push({
+          relative,
+          kind: "F",
+          payload: crypto.createHash("sha256").update(fs.readFileSync(absolute)).digest()
+        });
+      }
+    }
+  };
+  collect(path.resolve(root));
+  entries.sort((left, right) =>
+    left.relative < right.relative ? -1 : left.relative > right.relative ? 1 : 0
+  );
+  for (const { relative, kind, payload } of entries) {
+    digest.update(relative);
+    digest.update(Buffer.from([0]));
+    digest.update(kind);
+    digest.update(Buffer.from([0]));
+    digest.update(payload);
+  }
+  return digest.digest("hex");
 }
 
 function jsonResponse(response, status, payload) {
@@ -101,6 +192,244 @@ function jsonResponse(response, status, payload) {
     "Content-Length": Buffer.byteLength(body)
   });
   response.end(body);
+}
+
+function browserClangdAssets() {
+  const repository = path.resolve(__dirname, "../../../../..");
+  const worker = path.join(
+    repository,
+    "build/js/packages/Tidyparse-tidyparse-web/kotlin/Tidyparse-tidyparse-web.js"
+  );
+  const resourceDirectories = [
+    path.join(repository, "build/js/packages/Tidyparse-tidyparse-web-test/kotlin"),
+    path.join(repository, "tidyparse-web/src/jsMain/resources")
+  ];
+  const resources = resourceDirectories.find(directory =>
+    fs.existsSync(path.join(directory, "clangd.js")) &&
+    fs.existsSync(path.join(directory, "clangd.wasm.gz"))
+  );
+  return fs.existsSync(worker) && resources != null
+      ? {
+        repository,
+        worker,
+        module: path.join(resources, "clangd.js"),
+        wasm: path.join(resources, "clangd.wasm.gz"),
+        manifest: path.join(resources, "clangd-manifest.json")
+      }
+    : null;
+}
+
+function validateBrowserClangdAssets(assets) {
+  if (assets == null) return { error: "Bundled browser clangd assets are unavailable" };
+  if (!fs.existsSync(assets.manifest)) {
+    return { error: "Bundled browser clangd has no semantic manifest" };
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(assets.manifest, "utf8"));
+  } catch (error) {
+    return { error: `Unable to read browser clangd manifest: ${error.message}` };
+  }
+  const profile = manifest.semanticProfile;
+  const profileId = manifest.semanticProfileSha256;
+  if (profile == null || typeof profile !== "object" || typeof profileId !== "string") {
+    return { error: "Browser clangd manifest has no semantic profile" };
+  }
+  let actualProfileId;
+  try {
+    actualProfileId = semanticProfileSha256(profile);
+  } catch (error) {
+    return { error: `Browser clangd semantic profile is invalid: ${error.message}` };
+  }
+  if (actualProfileId !== profileId) {
+    return { error: "Browser clangd semantic profile digest does not match its manifest" };
+  }
+  const javascript = manifest.artifacts?.["clangd.js"];
+  const wasm = manifest.artifacts?.["clangd.wasm"];
+  const checks = [
+    [assets.module, javascript?.bytes, javascript?.sha256, "clangd.js"],
+    [assets.wasm, wasm?.compressedBytes, wasm?.compressedSha256, "clangd.wasm.gz"]
+  ];
+  for (const [file, expectedBytes, expectedSha256, label] of checks) {
+    if (!Number.isInteger(expectedBytes) || typeof expectedSha256 !== "string") {
+      return { error: `Browser clangd manifest does not identify ${label}` };
+    }
+    if (fs.statSync(file).size !== expectedBytes || fileSha256(file) !== expectedSha256) {
+      return { error: `Served ${label} does not match the browser clangd manifest` };
+    }
+  }
+  // The worker contains the recipe-keyed generated artifact constant. This catches a freshly copied
+  // wasm paired with a stale Kotlin/JS worker, which an artifact-only digest cannot detect.
+  if (typeof manifest.artifactVersion !== "string" ||
+      !fs.readFileSync(assets.worker, "utf8").includes(manifest.artifactVersion)) {
+    return { error: "Browser clangd worker and semantic manifest use different artifact versions" };
+  }
+  return { manifest, profile, profileId, error: null };
+}
+
+function nativeSemanticFlags(profile, includeRoot) {
+  if (!Array.isArray(profile?.flags) || profile.flags[0] !== "-xc++") {
+    throw new Error("Semantic profile does not contain a C++ compiler flag vector");
+  }
+  const logicalRoot = profile.headers?.logicalRoot;
+  if (typeof logicalRoot !== "string" || !logicalRoot.startsWith("/")) {
+    throw new Error("Semantic profile has no logical include root");
+  }
+  const physicalRoot = path.resolve(includeRoot);
+  return profile.flags.filter(flag => flag !== "-xc++").map(flag => {
+    const prefix = `-isystem${logicalRoot}`;
+    if (flag === prefix) return `-isystem${physicalRoot}`;
+    if (flag.startsWith(`${prefix}/`)) {
+      return `-isystem${path.join(physicalRoot, flag.slice(prefix.length + 1))}`;
+    }
+    return flag;
+  });
+}
+
+function containedPath(root, relative, label) {
+  if (typeof relative !== "string" || relative.length === 0 || path.isAbsolute(relative)) {
+    throw new Error(`${label} is not a relative path`);
+  }
+  const canonicalRoot = path.resolve(root);
+  const resolved = path.resolve(canonicalRoot, relative);
+  if (resolved !== canonicalRoot && !resolved.startsWith(`${canonicalRoot}${path.sep}`)) {
+    throw new Error(`${label} leaves the pinned clangd work directory`);
+  }
+  return resolved;
+}
+
+function validatePinnedNativeValidator(browser, sidecarPath, explicitCompiler = null) {
+  if (browser?.error != null) return { error: browser.error };
+  const expected = browser.manifest.nativeValidator;
+  if (expected == null || typeof expected !== "object") {
+    return { error: "Browser clangd manifest has no pinned native validator" };
+  }
+  if (!fs.existsSync(sidecarPath)) return { error: `Missing native validator profile: ${sidecarPath}` };
+  if (typeof expected.profileSha256 !== "string" ||
+      fileSha256(sidecarPath) !== expected.profileSha256) {
+    return { error: "Native validator sidecar does not match the browser clangd manifest" };
+  }
+  let sidecar;
+  try {
+    sidecar = JSON.parse(fs.readFileSync(sidecarPath, "utf8"));
+  } catch (error) {
+    return { error: `Unable to read native validator profile: ${error.message}` };
+  }
+  if (sidecar.schemaVersion !== 1 || sidecar.semanticProfile == null ||
+      typeof sidecar.semanticProfileSha256 !== "string") {
+    return { error: "Native validator sidecar has no semantic profile" };
+  }
+  if (sidecar.compiler?.workRelativePath !== expected.compilerWorkRelativePath ||
+      sidecar.includeRoot?.workRelativePath !== expected.includeRootWorkRelativePath) {
+    return { error: "Native validator paths do not match the browser clangd manifest" };
+  }
+  const sidecarProfileId = semanticProfileSha256(sidecar.semanticProfile);
+  if (sidecarProfileId !== sidecar.semanticProfileSha256 || sidecarProfileId !== browser.profileId) {
+    return { error: "Native validator and browser clangd semantic profiles differ" };
+  }
+  const workRoot = path.dirname(path.resolve(sidecarPath));
+  let compiler;
+  let includeRoot;
+  try {
+    compiler = explicitCompiler == null
+      ? containedPath(workRoot, sidecar.compiler?.workRelativePath, "Native compiler path")
+      : path.resolve(explicitCompiler);
+    includeRoot = containedPath(
+      workRoot,
+      sidecar.includeRoot?.workRelativePath,
+      "Native include-root path"
+    );
+  } catch (error) {
+    return { error: error.message };
+  }
+  if (!fs.existsSync(compiler) || !fs.statSync(compiler).isFile()) {
+    return { error: `Pinned native compiler is unavailable: ${compiler}` };
+  }
+  const compilerSha256 = fileSha256(compiler);
+  if (compilerSha256 !== sidecar.compiler?.sha256 ||
+      compilerSha256 !== expected.compilerSha256) {
+    return { error: "Pinned native compiler does not match the browser clangd build" };
+  }
+  if (!fs.existsSync(includeRoot) || !fs.statSync(includeRoot).isDirectory()) {
+    return { error: `Pinned semantic include tree is unavailable: ${includeRoot}` };
+  }
+  const includeTreeSha256 = directoryTreeSha256(includeRoot);
+  if (includeTreeSha256 !== sidecar.includeRoot?.treeSha256 ||
+      includeTreeSha256 !== browser.profile.headers?.treeSha256) {
+    return { error: "Native validator headers differ from browser clangd's embedded headers" };
+  }
+  let semanticFlags;
+  try {
+    semanticFlags = nativeSemanticFlags(browser.profile, includeRoot);
+  } catch (error) {
+    return { error: error.message };
+  }
+  return {
+    compatible: true,
+    compiler,
+    includeRoot,
+    profileId: browser.profileId,
+    semanticFlags,
+    error: null
+  };
+}
+
+function resolvePinnedNativeValidator(repository, browser, environment = process.env) {
+  if (browser?.error != null) return { error: browser.error };
+  const explicitSidecar = environment.CPP_COMPLETION_COMPILER_PROFILE;
+  const explicitCompiler = environment.CXX;
+  if (explicitCompiler != null && explicitCompiler !== "" &&
+      (explicitSidecar == null || explicitSidecar === "")) {
+    return {
+      error: "CXX cannot be used for the benchmark without CPP_COMPLETION_COMPILER_PROFILE"
+    };
+  }
+  let sidecars;
+  if (explicitSidecar != null && explicitSidecar !== "") {
+    sidecars = [path.resolve(explicitSidecar)];
+  } else {
+    const gradleHome = environment.GRADLE_USER_HOME || path.join(os.homedir(), ".gradle");
+    sidecars = [
+      path.join(gradleHome, "tidyparse-clangd"),
+      path.join(repository, ".gradle", "clangd") // Legacy cache location.
+    ].flatMap(stateRoot => fs.existsSync(stateRoot)
+      ? fs.readdirSync(stateRoot, { withFileTypes: true })
+        .filter(entry => entry.isDirectory() &&
+          entry.name.startsWith(`${browser.manifest.artifactVersion}-`))
+        .map(entry => path.join(stateRoot, entry.name, "work", "native-validator-profile.json"))
+      : []);
+  }
+  if (sidecars.length === 0) {
+    return {
+      error: `No pinned native validator exists for ${browser.manifest.artifactVersion}; ` +
+        "run :tidyparse-web:refreshClangdResources"
+    };
+  }
+  const failures = [];
+  for (const sidecar of sidecars) {
+    const result = validatePinnedNativeValidator(
+      browser,
+      sidecar,
+      explicitCompiler == null || explicitCompiler === "" ? null : explicitCompiler
+    );
+    if (result.error == null) return result;
+    failures.push(result.error);
+  }
+  return { error: failures.join("; ") };
+}
+
+function browserAssetResponse(response, file, contentType, contentEncoding) {
+  const headers = {
+    "Content-Type": contentType,
+    "Content-Length": fs.statSync(file).size,
+    "Cache-Control": "no-store",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Embedder-Policy": "require-corp",
+    "Cross-Origin-Resource-Policy": "same-origin"
+  };
+  if (contentEncoding != null) headers["Content-Encoding"] = contentEncoding;
+  response.writeHead(200, headers);
+  fs.createReadStream(file).pipe(response);
 }
 
 function readJson(request, timeout = REQUEST_TIMEOUT_MS) {
@@ -402,7 +731,7 @@ function unresolvedDiagnosticIdentifiers(source, diagnostics) {
   ).map(([identifier]) => identifier);
 }
 
-const REQUIRED_TYPE_LIMIT = 96;
+const REQUIRED_TYPE_LIMIT = 128;
 
 /**
  * Canonical type spellings accepted by the declaration oracle. This deliberately excludes
@@ -527,6 +856,7 @@ function requiredTypeCandidates(source, context) {
   if (sourceNames.has("make_unique")) sourceNames.add("unique_ptr");
   if (sourceNames.has("make_shared")) sourceNames.add("shared_ptr");
   const userTypes = new Set();
+  const sourceDeclaredTypes = new Set();
   for (const reference of context.types || []) {
     if (reference.source !== "completion" &&
         new Set(["class", "struct", "enum", "typeAlias"]).has(reference.kind)) {
@@ -538,7 +868,10 @@ function requiredTypeCandidates(source, context) {
   }
   for (const type of declaredTypeNames(source)) {
     const canonical = unqualifiedRequiredType(type);
-    if (canonical) userTypes.add(canonical);
+    if (canonical) {
+      userTypes.add(canonical);
+      sourceDeclaredTypes.add(canonical);
+    }
   }
   for (const conversion of context.conversions || []) {
     for (const rawType of [conversion.from, conversion.to]) {
@@ -548,16 +881,22 @@ function requiredTypeCandidates(source, context) {
     }
   }
 
-  // Existing scoped values are the most reliable source of canonical standard-library and alias
-  // spellings, so keep them first in the candidate order.
-  for (const value of context.values || []) addObserved(value.type);
+  // Reserve the first lanes for facts local to the damaged translation unit. A transitive SDK
+  // graph can contain hundreds of aliases; it must not consume the finite probe universe before
+  // the source's own records, their ordinary pointer forms, or language fundamentals are tried.
   for (const type of context.expectedTypes || []) addObserved(type);
   addObserved(context.enclosingReturnType);
   addObserved(context.thisType);
-  for (const type of userTypes) add(type);
+  for (const type of sourceDeclaredTypes) {
+    add(type);
+    add(`${type} *`);
+    add(`const ${type} *`);
+  }
 
   const fundamentalTypes = [
-    ["bool", "bool"], ["char", "char"], ["short", "short"], ["int", "int"],
+    ["bool", "bool"], ["char", "char"], ["wchar_t", "wchar_t"],
+    ["char8_t", "char8_t"], ["char16_t", "char16_t"], ["char32_t", "char32_t"],
+    ["short", "short"], ["int", "int"],
     ["signed", "signed"], ["unsigned", "unsigned"], ["long", "long"],
     ["float", "float"], ["double", "double"],
     ["size_t", "std::size_t"]
@@ -566,6 +905,16 @@ function requiredTypeCandidates(source, context) {
   // are cheap candidates and the whole-file compiler probe remains the authority on which ones
   // satisfy every downstream use.
   for (const [, type] of fundamentalTypes) add(type);
+  // One-token aliases compete with the source's own pointer/object declarations at the shortest
+  // sampling length. Probe that finite lane before verbose template graph types so an unexamined
+  // SDK typedef cannot dominate compiler-validated source-local profiles.
+  [...userTypes].filter(type => /^[A-Za-z_][A-Za-z_0-9]*$/.test(type))
+    .sort((left, right) => left.length - right.length || left.localeCompare(right))
+    .forEach(add);
+  // Existing scoped values are the strongest source of standard-library specializations and
+  // aliases after the bounded source/language lanes above.
+  for (const value of context.values || []) addObserved(value.type);
+  for (const type of userTypes) add(type);
   if (sourceNames.has("string")) add("std::string");
   if (sourceNames.has("string_view")) add("std::string_view");
   if (sourceNames.has("ostringstream")) add("std::ostringstream");
@@ -609,17 +958,19 @@ function requiredTypeCandidates(source, context) {
   return { candidates: [...candidates], userTypes };
 }
 
-function safeRequiredDeclaration(type, identifier, userTypes) {
+/** Exact declaration-only form used by the downstream-binding compiler probe. */
+function requiredDeclarationProbe(type, identifier) {
   const canonical = canonicalRequiredType(type);
   if (!canonical || !/^[A-Za-z_][A-Za-z_0-9]*$/.test(identifier)) return undefined;
-  const withoutReference = canonical.replace(/\s*(?:&&|&)\s*$/, "").trim();
-  const base = withoutReference.replace(/^\s*(?:const|volatile)\s+/, "")
-    .replace(/\s+(?:const|volatile)\s*$/, "").trim();
-  const isReference = withoutReference !== canonical;
-  if (isReference || userTypes.has(base)) {
-    return `${withoutReference} & ${identifier} = *static_cast<${withoutReference} *>(nullptr);`;
-  }
-  return `${canonical} ${identifier}{};`;
+  const declarationKind = /&&\s*$/.test(canonical)
+    ? "rvalueReference"
+    : /&\s*$/.test(canonical) ? "lvalueReference" : "object";
+  return {
+    // Extern exposes exactly T to every later expression without requiring T to be constructible
+    // and without manufacturing a value through a null-dereference expression.
+    declaration: `extern ${canonical} ${identifier};`,
+    profile: { type: canonical, declarationKind }
+  };
 }
 
 function replaceCursorLine(source, line, replacement) {
@@ -640,16 +991,19 @@ function replaceCursorLine(source, line, replacement) {
  */
 async function requiredDeclarationFacts(source, line, character, context, compiler) {
   if (compiler == null || typeof context?.requiredIdentifier !== "string") {
-    return { requiredTypes: [], probedRequiredTypes: [], defaultConstructibleTypes: [] };
+    return {
+      requiredTypes: [], probedRequiredTypes: [], defaultConstructibleTypes: [],
+      acceptedBindingProfiles: [], probedBindingProfiles: [], bindingProfilesComplete: false
+    };
   }
   const { candidates, userTypes } = requiredTypeCandidates(source, context);
   const probes = [];
   const descriptors = [];
   for (const type of candidates) {
-    const declaration = safeRequiredDeclaration(type, context.requiredIdentifier, userTypes);
-    const probe = declaration && replaceCursorLine(source, line, declaration);
+    const declaration = requiredDeclarationProbe(type, context.requiredIdentifier);
+    const probe = declaration && replaceCursorLine(source, line, declaration.declaration);
     if (!probe) continue;
-    descriptors.push({ type, kind: "required" });
+    descriptors.push({ type, kind: "required", profile: declaration.profile });
     probes.push(probe);
 
     const canonical = canonicalRequiredType(type);
@@ -667,45 +1021,141 @@ async function requiredDeclarationFacts(source, line, character, context, compil
     }
   }
   if (probes.length === 0) {
-    return { requiredTypes: [], probedRequiredTypes: [], defaultConstructibleTypes: [] };
+    return {
+      requiredTypes: [], probedRequiredTypes: [], defaultConstructibleTypes: [],
+      acceptedBindingProfiles: [], probedBindingProfiles: [], bindingProfilesComplete: false
+    };
   }
-  // Every probe differs only at the deleted declaration. Packing related variants together lets
-  // combinedTranslationUnit hoist their identical includes once instead of making each compiler
-  // worker parse the same SDK preamble. Retain compileAll as a fallback for test/legacy bridges.
+  // Every probe differs only at the deleted declaration. Packing related variants into one driver
+  // request lets their independent TUs reuse one exact PCH without conflating their compiler state.
+  // Retain compileAll as a fallback for test/legacy bridges.
   const outcomes = await compiler.compileAll(probes, true);
-  const definitiveOutcome = outcome => outcome?.ok === true ||
-    outcome?.timedOut === false && /(?:^|\n)(?:.*[\\/])?cpp_completion_\d+\.cpp:\d+.*\berror:/i
-      .test(outcome.diagnostics || "");
+  const downstreamFailure = outcome => {
+    if (outcome?.ok === true || outcome?.timedOut !== false) return false;
+    const errorLines = attributableMainErrorLines(outcome);
+    return errorLines != null && errorLines.every(errorLine => errorLine > line + 1);
+  };
+  const definitiveProfileOutcome = outcome => outcome?.ok === true || downstreamFailure(outcome);
   const defaultDeclarationCompiled = outcome => {
     if (outcome?.ok === true) return true;
-    if (!definitiveOutcome(outcome)) return false;
-    const diagnostics = String(outcome.diagnostics || "");
-    const errors = diagnostics.split(/\r?\n/).filter(diagnostic =>
-      /:\s*(?:fatal\s+)?error:/i.test(diagnostic)
-    );
-    const errorLines = errors.map(diagnostic =>
-      /(?:^|[\\/])cpp_completion_\d+\.cpp:(\d+)(?::\d+)?:\s*(?:fatal\s+)?error:/i
-        .exec(diagnostic)?.[1]
-    );
     // The probe is an actual `T identifier;` declaration on the damaged source line. An error on
     // that line (or in an earlier constructor definition instantiated by it) rejects T. Errors
     // strictly later belong to uses of the required identifier and do not invalidate the observed
     // default construction itself.
-    return errorLines.length > 0 && errorLines.every(errorLine =>
-      errorLine != null && Number(errorLine) > line + 1
-    );
+    return downstreamFailure(outcome);
   };
+  const distinctProfiles = profiles => [...new Map(profiles.map(profile =>
+    [`${profile.declarationKind}\0${profile.type}`, profile]
+  )).values()];
   return {
     requiredTypes: descriptors.filter((descriptor, index) =>
       descriptor.kind === "required" && outcomes[index]?.ok === true).map(descriptor => descriptor.type),
     // This is deliberately per-type coverage, not a claim that the capped source-derived universe
     // is exhaustive. Kotlin may reject a probed-and-failed type while retaining every unprobed type.
     probedRequiredTypes: descriptors.filter((descriptor, index) =>
-      descriptor.kind === "required" && definitiveOutcome(outcomes[index])
+      descriptor.kind === "required" && definitiveProfileOutcome(outcomes[index])
     ).map(descriptor => descriptor.type),
     defaultConstructibleTypes: descriptors.filter((descriptor, index) =>
       descriptor.kind === "default" && defaultDeclarationCompiled(outcomes[index])
-    ).map(descriptor => descriptor.type)
+    ).map(descriptor => descriptor.type),
+    // A profile describes the exact extern declaration form compiled above. Construction remains
+    // independent evidence from the separate real `T identifier;` probe.
+    acceptedBindingProfiles: distinctProfiles(descriptors.filter((descriptor, index) =>
+      descriptor.kind === "required" && outcomes[index]?.ok === true
+    ).map(descriptor => descriptor.profile)),
+    probedBindingProfiles: distinctProfiles(descriptors.filter((descriptor, index) =>
+      descriptor.kind === "required" && definitiveProfileOutcome(outcomes[index])
+    ).map(descriptor => descriptor.profile)),
+    // The source-derived candidate universe is deliberately capped and is not an exhaustive set
+    // of C++ declaration profiles. Absence from `probed` is therefore never negative evidence.
+    bindingProfilesComplete: false
+  };
+}
+
+const COMPILER_MAIN_DIAGNOSTIC =
+  /^(?:.*[\\/])?cpp_completion_\d+(?:_(?:candidate_\d+|baseline))?\.cpp:(\d+)(?::\d+)?:\s*(fatal error|error|warning|note):\s*(.*)$/i;
+const COMPILER_ANY_ERROR =
+  /^(?:(?:.*?:\d+(?::\d+)?:|clang(?:\+\+)?(?:-\d+)?:|<[^>\r\n]+>:))?\s*(?:fatal )?error:/i;
+const COMPILER_UNDECLARED_IDENTIFIER =
+  /^use of undeclared identifier ['‘]([A-Za-z_][A-Za-z_0-9]*)['’](?:$|[;,.])/;
+
+/** Main-TU error lines, or null when a failed outcome is not wholly attributable to that TU. */
+function attributableMainErrorLines(outcome) {
+  if (outcome == null || outcome.timedOut !== false) return null;
+  const errorLines = [];
+  for (const diagnostic of String(outcome.diagnostics || "").split(/\r?\n/)) {
+    const main = COMPILER_MAIN_DIAGNOSTIC.exec(diagnostic);
+    if (main == null) {
+      if (COMPILER_ANY_ERROR.test(diagnostic)) return null;
+      continue;
+    }
+    if (!/^(?:fatal error|error)$/i.test(main[2])) continue;
+    const physicalLine = Number(main[1]);
+    if (!Number.isInteger(physicalLine)) return null;
+    errorLines.push(physicalLine);
+  }
+  return errorLines.length > 0 ? errorLines : null;
+}
+
+/**
+ * Extracts necessary downstream value binders from one independently compiled damaged source.
+ *
+ * `known: true, binders: []` is reserved for a source which compiled. A failed compile is known
+ * only when every attributable error is an undeclared identifier strictly after the replaced
+ * physical line. Any other failure is outside this narrow obligation model and remains unknown.
+ */
+function compilerRequiredBinderEvidence(outcome, line) {
+  if (outcome?.ok === true) return { known: true, binders: [] };
+  if (outcome == null || outcome.timedOut !== false || !Number.isInteger(line) || line < 0) {
+    return { known: false, binders: [] };
+  }
+  const binders = new Set();
+  let errors = 0;
+  for (const diagnostic of String(outcome.diagnostics || "").split(/\r?\n/)) {
+    const main = COMPILER_MAIN_DIAGNOSTIC.exec(diagnostic);
+    if (main == null) {
+      if (COMPILER_ANY_ERROR.test(diagnostic)) return { known: false, binders: [] };
+      continue;
+    }
+    if (!/^(?:fatal error|error)$/i.test(main[2])) continue;
+    errors++;
+    const physicalLine = Number(main[1]);
+    const undeclared = COMPILER_UNDECLARED_IDENTIFIER.exec(main[3]);
+    if (!Number.isInteger(physicalLine) || physicalLine <= line + 1 || undeclared == null ||
+        CPP_KEYWORDS.has(undeclared[1])) {
+      return { known: false, binders: [] };
+    }
+    binders.add(undeclared[1]);
+  }
+  if (errors === 0 || binders.size === 0) return { known: false, binders: [] };
+  return { known: true, binders: [...binders] };
+}
+
+/**
+ * Compiler-authoritative downstream binder evidence for the independently damaged translation
+ * unit. Unary declaration profiles remain nested under their exact binder; multiple binders never
+ * inherit or form a Cartesian product from a unary type probe.
+ */
+async function requiredBinderObligation(source, line, character, context, compiler) {
+  if (compiler == null || typeof source !== "string" || !Number.isInteger(line) || line < 0) {
+    return { known: false, binders: [] };
+  }
+  const outcomes = await compiler.compileAll([source], true);
+  const evidence = compilerRequiredBinderEvidence(outcomes[0], line);
+  if (!evidence.known || evidence.binders.length !== 1) return evidence;
+
+  const binder = evidence.binders[0];
+  const facts = await requiredDeclarationFacts(
+    source, line, character, { ...(context || {}), requiredIdentifier: binder }, compiler
+  );
+  return {
+    ...evidence,
+    singletonGate: {
+      binder,
+      accepted: facts.acceptedBindingProfiles,
+      probed: facts.probedBindingProfiles,
+      complete: facts.bindingProfilesComplete
+    }
   };
 }
 
@@ -1788,8 +2238,10 @@ class ClangdLspSession {
     }, () => sessionMayNeedRecovery);
   }
 
-  async context(source, line, character, documentKey = "main.cpp", includeOracle = false) {
+  async context(source, line, character, documentKey = "main.cpp", includeOracle = false,
+    semanticCharacter = character) {
     const baseOffset = offsetAt(source, line, character);
+    offsetAt(source, line, semanticCharacter);
     const beforeCursor = source.slice(0, baseOffset);
     let sessionMayNeedRecovery = false;
     return this.enqueue(async () => {
@@ -1803,6 +2255,8 @@ class ClangdLspSession {
       let signatureHelp = { signatures: [] };
       const activeExpressionPrefix = hasActiveExpressionPrefix(beforeCursor);
       const baseReceiver = receiverProbeInfo(beforeCursor, line, character, "");
+      const partialIdentifier = /[A-Za-z_][A-Za-z_0-9]*$/.test(beforeCursor);
+      const allSemanticScopes = partialIdentifier || semanticCharacter !== character;
       const callablePosition = activeExpressionPrefix && baseReceiver == null
         ? callableHoverPosition(beforeCursor, line)
         : null;
@@ -1829,9 +2283,11 @@ class ClangdLspSession {
       if (!includeOracle) {
         const semantic = await optionalRequest("tidyparse/semanticCompletion", {
           textDocument: { uri: this.uri },
-          position: { line, character },
-          scopePosition: { line, character: scopeCharacter },
-          allScopes: /[A-Za-z_][A-Za-z_0-9]*$/.test(beforeCursor),
+          position: { line, character: semanticCharacter },
+          ...(baseReceiver == null
+            ? { scopePosition: { line, character: scopeCharacter } }
+            : {}),
+          allScopes: allSemanticScopes,
           limit: 128,
           context: { triggerKind: 1 }
         }, "clangd semantic completion");
@@ -1857,7 +2313,7 @@ class ClangdLspSession {
       );
       const baseCompletion = this.request("textDocument/completion", {
         textDocument: { uri: this.uri },
-        position: { line, character },
+        position: { line, character: semanticCharacter },
         context: baseReceiver == null
           ? { triggerKind: 1 }
           : { triggerKind: 2, triggerCharacter: baseReceiver.operator.slice(-1) }
@@ -2208,84 +2664,153 @@ function sourceDigest(source) {
   return crypto.createHash("sha256").update(source).digest("hex");
 }
 
-function separateIncludes(source) {
-  const lines = source.replace(/\r\n?/g, "\n").split("\n");
-  const includes = [];
-  for (let index = 0; index < lines.length; index++) {
-    if (!/^\s*#\s*include(?:_next)?\b/.test(lines[index])) continue;
-    const directive = [lines[index]];
-    lines[index] = "";
-    while (/\\\s*$/.test(directive[directive.length - 1]) && index + 1 < lines.length) {
-      index += 1;
-      directive.push(lines[index]);
-      lines[index] = "";
-    }
-    includes.push(directive.join("\n").trim());
+function physicalSourceLines(source) {
+  const lines = [];
+  let start = 0;
+  while (start < source.length) {
+    let end = start;
+    while (end < source.length && source[end] !== "\n" && source[end] !== "\r") end++;
+    if (source[end] === "\r" && source[end + 1] === "\n") end += 2;
+    else if (end < source.length) end += 1;
+    lines.push({ start, end, text: source.slice(start, end).replace(/(?:\r\n|\n|\r)$/, "") });
+    start = end;
   }
-  const macros = [];
-  const seenMacros = new Set();
-  for (const line of lines) {
-    const macro = /^\s*#\s*(?:define|undef)\s+([A-Za-z_][A-Za-z_0-9]*)\b/.exec(line)?.[1];
-    if (macro != null && !seenMacros.has(macro)) {
-      seenMacros.add(macro);
-      macros.push(macro);
-    }
-  }
-  return { includes, macros, body: lines.join("\n") };
+  return lines;
 }
 
-/** The exact, ordered include sequence which the combined TU would place before every body. */
-function exactIncludePreamble(sources) {
-  const includes = [];
-  const seenIncludes = new Set();
-  for (const source of sources) {
-    for (const directive of separateIncludes(source).includes) {
-      if (seenIncludes.has(directive)) continue;
-      seenIncludes.add(directive);
-      includes.push(directive);
+/**
+ * True only for a physical line made entirely from whitespace and comments. This deliberately
+ * recognizes less than the C++ preprocessor: uncertainty disables sharing instead of moving text.
+ */
+function preprocessorTriviaLine(line, insideBlockComment) {
+  let index = 0;
+  while (index < line.length) {
+    if (insideBlockComment) {
+      const close = line.indexOf("*/", index);
+      if (close < 0) return { trivia: true, insideBlockComment: true };
+      insideBlockComment = false;
+      index = close + 2;
+      continue;
     }
+    while (index < line.length && (line[index] === " " || line[index] === "\t")) index++;
+    if (index === line.length || line.startsWith("//", index)) {
+      return { trivia: true, insideBlockComment: false };
+    }
+    if (!line.startsWith("/*", index)) {
+      return { trivia: false, insideBlockComment: false };
+    }
+    insideBlockComment = true;
+    index += 2;
   }
+  return { trivia: true, insideBlockComment };
+}
+
+function literalIncludeDirective(line) {
+  // Line-spliced, include_next, and macro-expanded operands are intentionally excluded. A trailing
+  // one-line comment is harmless because the exact directive bytes are retained in the PCH key.
+  const match = /^[ \t]*#[ \t]*include[ \t]+(<[^>\r\n]+>|"[^"\r\n]+")[ \t]*(?:(?:\/\/.*)|(?:\/\*.*\*\/[ \t]*))?$/.exec(line);
+  return match == null ? null : { directive: line, header: match[1] };
+}
+
+/**
+ * Remove only a leading sequence of literal, unconditional, non-repeated include directives.
+ * Everything else stays byte-for-byte in `body`. In particular, encountering a directive or C++
+ * token before an include makes that include non-leading, and a duplicate invalidates the entire
+ * candidate preamble rather than silently changing its include count.
+ */
+function separateIncludes(source) {
+  const lines = physicalSourceLines(source);
+  const includes = [];
+  const headers = new Set();
+  let prefixEnd = 0;
+  let insideBlockComment = false;
+  let repeated = false;
+  for (const line of lines) {
+    const trivia = preprocessorTriviaLine(line.text, insideBlockComment);
+    if (trivia.trivia) {
+      insideBlockComment = trivia.insideBlockComment;
+      continue;
+    }
+    if (insideBlockComment) break;
+    const include = literalIncludeDirective(line.text);
+    if (include == null) break;
+    if (headers.has(include.header)) {
+      repeated = true;
+      break;
+    }
+    headers.add(include.header);
+    includes.push(include.directive);
+    prefixEnd = line.end;
+  }
+
+  // A repeated literal may occur after a macro transition or ordinary declaration, beyond the
+  // leading scan above. If so, leave the whole sequence in the source so neither occurrence is
+  // collapsed into the one-time PCH state.
+  const sourceHeaderCounts = new Map();
+  for (const line of lines) {
+    const include = literalIncludeDirective(line.text);
+    if (include == null) continue;
+    const count = (sourceHeaderCounts.get(include.header) ?? 0) + 1;
+    sourceHeaderCounts.set(include.header, count);
+    if (count > 1) repeated = true;
+  }
+
+  // Repeated includes can be semantically meaningful even when their spelling is identical. Keep
+  // every occurrence in the original TU instead of sharing the first occurrence through a PCH.
+  if (repeated) {
+    includes.length = 0;
+    prefixEnd = 0;
+  }
+  const preambleSource = prefixEnd === 0 ? "" : source.slice(0, prefixEnd);
+  const body = prefixEnd === 0 ? source : source.slice(prefixEnd);
   return {
-    directives: includes,
-    source: includes.length === 0 ? "" : `${includes.join("\n")}\n`,
-    // Inclusion order can affect declarations and macros, so it is deliberately part of the key.
-    key: sourceDigest(JSON.stringify(includes))
+    includes,
+    body,
+    preambleSource
   };
 }
 
-function combinedTranslationUnit(sources, omitIncludes = false) {
-  const includes = [];
-  const seenIncludes = new Set();
-  const bodies = sources.map((source, index) => {
-    const separated = separateIncludes(source);
-    for (const directive of separated.includes) {
-      if (seenIncludes.has(directive)) continue;
-      seenIncludes.add(directive);
-      includes.push(directive);
-    }
-    return {
-      source: separated.body.replaceAll(
-        CPP_COMPLETION_BUNDLE_MARKER,
-        `cpp_completion_${index}`
-      ),
-      macros: separated.macros
-    };
-  });
-  const sections = omitIncludes ? [""] : [...includes, ""];
-  for (let index = 0; index < bodies.length; index++) {
-    const macros = [...new Set(["main", ...bodies[index].macros])];
-    sections.push(
-      `namespace tidyparse_cpp_completion_sample_${index} {`,
-      ...macros.map(macro => `#pragma push_macro("${macro}")`),
-      `#define main tidyparse_cpp_completion_main_${index}`,
-      `#line 1 "cpp_completion_${index}.cpp"`,
-      bodies[index].source,
-      ...macros.reverse().map(macro => `#pragma pop_macro("${macro}")`),
-      `} // namespace tidyparse_cpp_completion_sample_${index}`,
-      ""
-    );
+function emptyIncludePreamble() {
+  return { directives: [], source: "", key: sourceDigest("") };
+}
+
+/** A PCH is shared only when every candidate starts with the exact same safe source bytes. */
+function exactIncludePreamble(sources) {
+  if (!Array.isArray(sources) || sources.length === 0) return emptyIncludePreamble();
+  const separated = sources.map(separateIncludes);
+  const source = separated[0].preambleSource;
+  if (source.length === 0 || separated.some(candidate => candidate.preambleSource !== source)) {
+    return emptyIncludePreamble();
   }
-  return sections.join("\n");
+  return {
+    directives: [...separated[0].includes],
+    source,
+    // Whitespace, comments, line endings, macro state, and inclusion order are all significant.
+    key: sourceDigest(source)
+  };
+}
+
+function sourceBundleKey(source) {
+  return separateIncludes(source).preambleSource;
+}
+
+function independentTranslationUnit(source, sourceIndex, omitIncludes) {
+  const separated = separateIncludes(source);
+  const body = omitIncludes && separated.preambleSource.length > 0 ? separated.body : source;
+  const logicalLine = omitIncludes && separated.preambleSource.length > 0
+    ? physicalSourceLines(separated.preambleSource).length + 1
+    : 1;
+  return [
+    `#line ${logicalLine} "cpp_completion_${sourceIndex}.cpp"`,
+    body.replaceAll(CPP_COMPLETION_BUNDLE_MARKER, `cpp_completion_${sourceIndex}`)
+  ].join("\n");
+}
+
+function combinedTranslationUnit(sources, omitIncludes = false) {
+  if (!Array.isArray(sources) || sources.length !== 1) {
+    throw new Error("Compiler-oracle translation units must remain independent");
+  }
+  return independentTranslationUnit(sources[0], 0, omitIncludes);
 }
 
 function batchDiagnosticClassification(diagnostics, sourceCount, exitCode, signal, extraError) {
@@ -2328,15 +2853,36 @@ function batchDiagnosticClassification(diagnostics, sourceCount, exitCode, signa
   return { failed, globalErrors, perSource };
 }
 
+function nativeCompilerSemanticArguments(languageFlag, semanticFlags, suppressWarnings) {
+  return [
+    languageFlag,
+    ...semanticFlags,
+    ...(suppressWarnings ? ["-w"] : [])
+  ];
+}
+
 class NativeCompiler {
   constructor(executable, parallelism = 1, options = {}) {
     this.executable = executable;
     this.parallelism = Math.max(1, parallelism);
+    this.semanticFlags = Array.isArray(options.semanticFlags)
+      ? [...options.semanticFlags]
+      : ["-std=c++23", "-pedantic-errors"];
+    this.semanticProfileId = typeof options.semanticProfileId === "string"
+      ? options.semanticProfileId
+      : null;
+    this.suppressWarnings = options.suppressWarnings !== false;
     this.pchDirectory = typeof options.pchDirectory === "string"
       ? path.resolve(options.pchDirectory)
       : null;
+    this.environment = options.environment == null
+      ? process.env
+      : { ...options.environment };
+    this.workingDirectory = typeof options.workingDirectory === "string"
+      ? path.resolve(options.workingDirectory)
+      : undefined;
     this.pchCache = new Map();
-    // Precision bundles can be large enough to occupy every clang++ process for several seconds.
+    // Precision candidate batches can occupy every clang++ process for several seconds.
     // Keep one process slot available for the small declaration-oracle probes on `/context` so a
     // prefetched context cannot be rejected solely because scoring happened to start first.
     this.normalCompilerLimit = this.parallelism > 1 ? this.parallelism - 1 : 1;
@@ -2350,6 +2896,7 @@ class NativeCompiler {
     this.activePriorityCompilers = 0;
     this.compilerWaiters = [];
     this.priorityCompilerWaiters = [];
+    this.inputDirectories = new Set();
   }
 
   async compileAll(sources, priority = false) {
@@ -2361,7 +2908,9 @@ class NativeCompiler {
     for (let index = 0; index < sources.length; index++) {
       const source = sources[index];
       if (typeof source !== "string") throw new Error(`sources[${index}] is not a string`);
-      const digest = sourceDigest(source);
+      const digest = sourceDigest(
+        this.semanticProfileId == null ? source : `${this.semanticProfileId}\0${source}`
+      );
       const cached = this.cache.get(digest);
       if (cached != null) {
         // Native Map iteration order is insertion order. Reinsert hits so eviction below is
@@ -2418,13 +2967,39 @@ class NativeCompiler {
   }
 
   /**
-   * Per-source diagnostics are already attributed by the synthetic `#line` boundaries, and CFG
-   * samples are lexically balanced, so a fully classified mixed-success batch is definitive. Only
-   * global errors, timeouts, or otherwise uncacheable outcomes need isolation. `compileBatch`
-   * releases its permit before recursion, so checking both halves concurrently still respects the
-   * process-wide compiler semaphore while allowing otherwise-idle workers to help isolate them.
+   * Every driver input is an independent TU with a stable synthetic diagnostic filename, so a fully
+   * classified mixed-success driver batch is definitive. Only global errors, timeouts, or otherwise
+   * uncacheable outcomes need isolation. `compileBatch` releases its permit before recursion, so
+   * checking both halves concurrently still respects the process-wide compiler semaphore while
+   * allowing otherwise-idle workers to help isolate them.
    */
   async compileIsolated(sources, priority = false) {
+    if (sources.length > 1) {
+      const groupsByPreamble = new Map();
+      for (let index = 0; index < sources.length; index++) {
+        const sharedKey = sourceBundleKey(sources[index]);
+        // Group only to select one exact PCH for a driver invocation. Every source is still written
+        // as an independent compiler input, so even an empty/unsafe prefix can retain batching.
+        const group = groupsByPreamble.get(sharedKey);
+        if (group == null) groupsByPreamble.set(sharedKey, {
+          indexes: [index], sources: [sources[index]]
+        });
+        else {
+          group.indexes.push(index);
+          group.sources.push(sources[index]);
+        }
+      }
+      if (groupsByPreamble.size > 1) {
+        const outcomes = new Array(sources.length);
+        await Promise.all([...groupsByPreamble.values()].map(async group => {
+          const compiled = await this.compileIsolated(group.sources, priority);
+          for (let index = 0; index < group.indexes.length; index++) {
+            outcomes[group.indexes[index]] = compiled[index];
+          }
+        }));
+        return outcomes;
+      }
+    }
     const outcomes = await this.compileBatch(sources, priority);
     const entirelyClassified = outcomes.every(outcome => outcome.cacheable);
     if (sources.length === 1 || entirelyClassified) return outcomes;
@@ -2458,7 +3033,11 @@ class NativeCompiler {
 
   async prepareExactPreamble(sources, priority = false) {
     if (this.pchDirectory == null) return null;
-    const preamble = exactIncludePreamble(sources);
+    const exact = exactIncludePreamble(sources);
+    const preamble = this.semanticProfileId == null ? exact : {
+      ...exact,
+      key: sourceDigest(`${this.semanticProfileId}\0${exact.key}`)
+    };
     if (preamble.directives.length === 0) return null;
     const cached = this.pchCache.get(preamble.key);
     if (cached != null) return await cached;
@@ -2483,11 +3062,17 @@ class NativeCompiler {
         compiler = childProcess.spawn(
           this.executable,
           [
-            "-xc++-header", "-std=c++23", "-pedantic-errors", "-w",
+            ...nativeCompilerSemanticArguments(
+              "-xc++-header", this.semanticFlags, this.suppressWarnings
+            ),
             "-fno-color-diagnostics", "-fno-caret-diagnostics", "-fno-spell-checking",
             "-fno-show-column", "-fno-diagnostics-fixit-info", "-o", pchPath, "-"
           ],
-          { stdio: ["pipe", "ignore", "ignore"] }
+          {
+            stdio: ["pipe", "ignore", "ignore"],
+            env: this.environment,
+            cwd: this.workingDirectory
+          }
         );
       } catch (_) {
         resolve(null);
@@ -2590,22 +3175,70 @@ class NativeCompiler {
   }
 
   compileBatchUnbounded(sources, preamble = null) {
-    const translationUnit = combinedTranslationUnit(sources, preamble != null);
+    let inputDirectory;
+    let inputFiles;
+    try {
+      const inputRoot = this.workingDirectory ?? os.tmpdir();
+      inputDirectory = fs.mkdtempSync(path.join(inputRoot, "tidyparse-compiler-inputs-"));
+      this.inputDirectories.add(inputDirectory);
+      inputFiles = sources.map((source, index) => {
+        // The physical basename must not accidentally satisfy a candidate's quoted include. The
+        // stable diagnostic name is supplied independently by #line below.
+        const input = path.join(inputDirectory, `${crypto.randomBytes(16).toString("hex")}.cpp`);
+        fs.writeFileSync(
+          input,
+          independentTranslationUnit(source, index, preamble != null),
+          "utf8"
+        );
+        return input;
+      });
+    } catch (error) {
+      if (inputDirectory != null) {
+        this.inputDirectories.delete(inputDirectory);
+        try {
+          fs.rmSync(inputDirectory, { recursive: true, force: true });
+        } catch (_) {
+        }
+      }
+      return Promise.resolve(sources.map(() => ({
+        result: { ok: false, timedOut: false, diagnostics: error.message },
+        cacheable: false
+      })));
+    }
     return new Promise(resolve => {
+      let inputsRemoved = false;
+      const removeInputs = () => {
+        if (inputsRemoved) return;
+        inputsRemoved = true;
+        this.inputDirectories.delete(inputDirectory);
+        try {
+          fs.rmSync(inputDirectory, { recursive: true, force: true });
+        } catch (_) {
+        }
+      };
       let compiler;
       try {
         compiler = childProcess.spawn(
           this.executable,
           [
-            "-xc++", "-std=c++23", "-pedantic-errors", "-w", "-fsyntax-only",
+            ...nativeCompilerSemanticArguments("-xc++", this.semanticFlags, this.suppressWarnings),
+            "-fsyntax-only",
             "-ferror-limit=0", "-fno-color-diagnostics", "-fno-caret-diagnostics",
             "-fno-spell-checking", "-fno-show-column", "-fno-diagnostics-fixit-info",
+            // These sources historically arrived on stdin, for which quoted includes begin at the
+            // compiler working directory. Physical isolation must not change that lookup root.
+            `-iquote${this.workingDirectory ?? process.cwd()}`,
             ...(preamble == null ? [] : ["-include-pch", preamble.path]),
-            "-"
+            ...inputFiles
           ],
-          { stdio: ["pipe", "ignore", "pipe"] }
+          {
+            stdio: ["ignore", "ignore", "pipe"],
+            env: this.environment,
+            cwd: this.workingDirectory
+          }
         );
       } catch (error) {
+        removeInputs();
         resolve(sources.map(() => ({
           result: { ok: false, timedOut: false, diagnostics: error.message },
           cacheable: false
@@ -2617,7 +3250,6 @@ class NativeCompiler {
       const stderr = [];
       let diagnosticBytes = 0;
       let diagnosticsTruncated = false;
-      let stdinError = null;
       let exitFallback = null;
       let forceKill = null;
       let settled = false;
@@ -2639,7 +3271,7 @@ class NativeCompiler {
         const diagnostics = Buffer.concat(stderr).toString("utf8");
         const extraError = diagnosticsTruncated
           ? `clang++ diagnostics exceeded ${MAX_DIAGNOSTIC_BYTES} bytes`
-          : stdinError?.message;
+          : null;
         const classified = batchDiagnosticClassification(
           diagnostics, sources.length, code, signal, extraError
         );
@@ -2690,38 +3322,30 @@ class NativeCompiler {
         diagnosticBytes += retained.length;
         stderr.push(retained);
       });
-      compiler.stdin.on("error", error => {
-        stdinError = error;
-      });
       compiler.on("error", error => {
         this.children.delete(compiler);
+        removeInputs();
         finish(failEverySource(error.message, false));
       });
       compiler.on("exit", (code, signal) => {
         if (timedOut || settled) {
           this.children.delete(compiler);
           if (forceKill != null) clearTimeout(forceKill);
+          removeInputs();
           return;
         }
         exitFallback = setTimeout(() => {
           this.children.delete(compiler);
+          removeInputs();
           finishFromExit(code, signal);
         }, 100);
       });
       compiler.on("close", (code, signal) => {
         this.children.delete(compiler);
         if (forceKill != null) clearTimeout(forceKill);
+        removeInputs();
         finishFromExit(code, signal);
       });
-      try {
-        compiler.stdin.end(translationUnit);
-      } catch (error) {
-        stdinError = error;
-        try {
-          compiler.kill("SIGKILL");
-        } catch (_) {
-        }
-      }
     });
   }
 
@@ -2768,6 +3392,13 @@ class NativeCompiler {
       } catch (_) {
       }
     }
+    for (const inputDirectory of this.inputDirectories) {
+      try {
+        fs.rmSync(inputDirectory, { recursive: true, force: true });
+      } catch (_) {
+      }
+    }
+    this.inputDirectories.clear();
   }
 }
 
@@ -2785,11 +3416,34 @@ function loadFixtures(fixturesDirectory) {
 function configureCppCompletionBenchmark(config) {
   function createMiddleware(logger, emitter) {
     const log = logger.create("cpp-completion-benchmark");
+    const benchmarkEnabled = process.env.CPP_COMPLETION_BENCHMARK === "1";
     const clangd = process.env.CLANGD || "clangd";
-    const clangxx = process.env.CXX || "clang++";
-    const clangdVersion = executableVersion(clangd);
-    const compilerVersion = executableVersion(clangxx);
+    const configuredClangxx = process.env.CXX || "clang++";
+    // Benchmark mode must not even probe arbitrary host tools. Its compiler is resolved and hashed
+    // below; the native clangd/compiler probes remain solely for ordinary legacy bridge tests.
+    const clangdVersion = benchmarkEnabled ? null : executableVersion(clangd);
+    const configuredCompilerVersion = benchmarkEnabled ? null : executableVersion(configuredClangxx);
     const fixturesDirectory = path.resolve(__dirname, "../resources/cpp-completion");
+    const browserClangd = browserClangdAssets();
+    const browserSemantic = validateBrowserClangdAssets(browserClangd);
+    const pinnedValidator = benchmarkEnabled
+      ? resolvePinnedNativeValidator(
+        browserClangd?.repository ?? path.resolve(__dirname, "../../../../.."),
+        browserSemantic
+      )
+      : null;
+    const compilerExecutable = benchmarkEnabled
+      ? pinnedValidator?.compiler ?? null
+      : configuredCompilerVersion == null ? null : configuredClangxx;
+    const compilerEnvironment = benchmarkEnabled ? nativeCompilerEnvironment() : process.env;
+    let compilerVersion = compilerExecutable == null
+      ? null
+      : executableVersion(compilerExecutable, ["--version"], compilerEnvironment);
+    let semanticProfileError = benchmarkEnabled ? pinnedValidator?.error ?? null : null;
+    if (benchmarkEnabled && pinnedValidator?.error == null && compilerVersion == null) {
+      semanticProfileError = "Pinned native validator could not be executed";
+    }
+    const semanticProfileCompatible = !benchmarkEnabled || semanticProfileError == null;
     // Resources are immutable for a Karma run. Read them once instead of traversing and reading
     // the directory independently for the status and fixtures requests at browser startup.
     const fixtures = loadFixtures(fixturesDirectory);
@@ -2807,30 +3461,33 @@ function configureCppCompletionBenchmark(config) {
       Math.min(12, Math.max(1, os.availableParallelism() - 2))
     );
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "tidyparse-cpp-completion-"));
-    const compiler = compilerVersion == null ? null : new NativeCompiler(
-      clangxx,
+    const compiler = compilerVersion == null || !semanticProfileCompatible ? null : new NativeCompiler(
+      compilerExecutable,
       compilerJobs,
       {
         // `-include-pch` is a Clang interface. Other C++ drivers retain the original stdin path.
         pchDirectory: /\bclang version\b/i.test(compilerVersion)
           ? path.join(workspace, "compiler-pch")
-          : null
+          : null,
+        semanticFlags: benchmarkEnabled ? pinnedValidator.semanticFlags : undefined,
+        semanticProfileId: benchmarkEnabled ? pinnedValidator.profileId : undefined,
+        environment: compilerEnvironment,
+        workingDirectory: benchmarkEnabled ? workspace : undefined,
+        // Exact benchmark validation retains the browser's warning policy. Ordinary diagnostic
+        // bridge tests keep their historical quiet host-compiler behavior.
+        suppressWarnings: !benchmarkEnabled
       }
     );
-    const lsp = clangdVersion == null ? null : new ClangdLspSession({
-      clangd,
-      clangxx,
-      log,
-      workspace
-    });
-    // The exhaustive run always begins in the first fixture. Start its preamble immediately so
-    // clangd's cold SDK parse overlaps Karma/Chrome startup. Focused slices may begin in another
-    // fixture, so do not make them parse an unrelated source first.
-    if (process.env.CPP_COMPLETION_BENCHMARK === "1" && startInstance === 0 && fixtures.length > 0) {
-      lsp?.prime(fixtures[0].source, fixtures[0].name).catch(error => {
-        log.debug(`clangd preamble warmup failed: ${error.message}`);
-      });
-    }
+    // The scored benchmark talks to the bundled patched browser clangd. Construct native clangd
+    // only if a focused legacy test explicitly calls the historical /context route.
+    let lsp = null;
+    const nativeLsp = () => {
+      if (clangdVersion == null) return null;
+      if (lsp == null) {
+        lsp = new ClangdLspSession({ clangd, clangxx: configuredClangxx, log, workspace });
+      }
+      return lsp;
+    };
 
     const cleanup = async () => {
       await Promise.allSettled([lsp?.close(), compiler?.close()]);
@@ -2854,11 +3511,31 @@ function configureCppCompletionBenchmark(config) {
         return;
       }
       try {
+        if (request.method === "GET" && browserClangd != null &&
+            url.pathname === `${ROUTE_PREFIX}/browser-clangd/worker.js`) {
+          browserAssetResponse(response, browserClangd.worker, "text/javascript; charset=utf-8");
+          return;
+        }
+        if (request.method === "GET" && browserClangd != null &&
+            url.pathname === `${ROUTE_PREFIX}/browser-clangd/clangd.js`) {
+          browserAssetResponse(response, browserClangd.module, "text/javascript; charset=utf-8");
+          return;
+        }
+        if (request.method === "GET" && browserClangd != null &&
+            url.pathname === `${ROUTE_PREFIX}/browser-clangd/clangd.wasm`) {
+          browserAssetResponse(response, browserClangd.wasm, "application/wasm", "gzip");
+          return;
+        }
         if (request.method === "GET" && url.pathname === `${ROUTE_PREFIX}/status`) {
           jsonResponse(response, 200, {
-            enabled: process.env.CPP_COMPLETION_BENCHMARK === "1",
+            enabled: benchmarkEnabled,
             clangd: clangdVersion,
+            browserClangd: browserClangd != null &&
+              (!benchmarkEnabled || browserSemantic.error == null),
             compiler: compilerVersion,
+            semanticProfile: browserSemantic.profileId ?? null,
+            semanticProfileCompatible,
+            semanticProfileError,
             fixtures: fixtures.map(fixture => fixture.name),
             samplesPerInstance,
             startInstance,
@@ -2872,16 +3549,18 @@ function configureCppCompletionBenchmark(config) {
           return;
         }
         if (request.method === "POST" && url.pathname === `${ROUTE_PREFIX}/context`) {
-          if (lsp == null) throw new Error("clangd is unavailable");
+          const session = nativeLsp();
+          if (session == null) throw new Error("clangd is unavailable");
           const payload = await readJson(request);
           if (typeof payload.source !== "string") throw new Error("source must be a string");
           const includeOracle = payload.mode === "oracle";
-          const result = await lsp.context(
+          const result = await session.context(
             payload.source,
             payload.line,
             payload.character,
             typeof payload.fixture === "string" ? payload.fixture : "main.cpp",
-            includeOracle
+            includeOracle,
+            Number.isInteger(payload.semanticCharacter) ? payload.semanticCharacter : payload.character
           );
           if (includeOracle) {
             const declarationFacts = await requiredDeclarationFacts(
@@ -2897,10 +3576,30 @@ function configureCppCompletionBenchmark(config) {
           return;
         }
         if (request.method === "POST" && url.pathname === `${ROUTE_PREFIX}/compile`) {
-          if (compiler == null) throw new Error("clang++ is unavailable");
+          if (compiler == null) {
+            throw new Error(semanticProfileError ?? "clang++ is unavailable");
+          }
           const payload = await readJson(request);
           const results = await compiler.compileAll(payload.sources);
           jsonResponse(response, 200, { results });
+          return;
+        }
+        if (request.method === "POST" &&
+            url.pathname === `${ROUTE_PREFIX}/declaration-obligations`) {
+          if (compiler == null) {
+            throw new Error(semanticProfileError ?? "clang++ is unavailable");
+          }
+          const payload = await readJson(request);
+          if (typeof payload.source !== "string") throw new Error("source must be a string");
+          if (!Number.isInteger(payload.line) || payload.line < 0) {
+            throw new Error("line must be a nonnegative integer");
+          }
+          const context = payload.context != null && typeof payload.context === "object" &&
+            !Array.isArray(payload.context) ? payload.context : {};
+          const obligation = await requiredBinderObligation(
+            payload.source, payload.line, payload.character, context, compiler
+          );
+          jsonResponse(response, 200, obligation);
           return;
         }
         jsonResponse(response, 404, { error: "Unknown C++ completion benchmark route" });
@@ -2922,6 +3621,9 @@ function configureCppCompletionBenchmark(config) {
 module.exports = configureCppCompletionBenchmark;
 module.exports.ClangdLspSession = ClangdLspSession;
 module.exports.NativeCompiler = NativeCompiler;
+module.exports.compilerRequiredBinderEvidence = compilerRequiredBinderEvidence;
+module.exports.requiredBinderObligation = requiredBinderObligation;
+module.exports.requiredDeclarationFacts = requiredDeclarationFacts;
 module.exports.requiredDeclarationTypes = requiredDeclarationTypes;
 module.exports.requiredTypeCandidates = requiredTypeCandidates;
 module.exports.canonicalRequiredType = canonicalRequiredType;
@@ -2929,3 +3631,12 @@ module.exports.exactIncludePreamble = exactIncludePreamble;
 module.exports.combinedTranslationUnit = combinedTranslationUnit;
 module.exports.batchDiagnosticClassification = batchDiagnosticClassification;
 module.exports.hasActiveExpressionPrefix = hasActiveExpressionPrefix;
+module.exports.canonicalJson = canonicalJson;
+module.exports.directoryTreeSha256 = directoryTreeSha256;
+module.exports.nativeCompilerSemanticArguments = nativeCompilerSemanticArguments;
+module.exports.nativeCompilerEnvironment = nativeCompilerEnvironment;
+module.exports.nativeSemanticFlags = nativeSemanticFlags;
+module.exports.resolvePinnedNativeValidator = resolvePinnedNativeValidator;
+module.exports.semanticProfileSha256 = semanticProfileSha256;
+module.exports.validateBrowserClangdAssets = validateBrowserClangdAssets;
+module.exports.validatePinnedNativeValidator = validatePinnedNativeValidator;

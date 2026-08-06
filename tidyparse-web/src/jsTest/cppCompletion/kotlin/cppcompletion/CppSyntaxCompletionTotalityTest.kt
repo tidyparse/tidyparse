@@ -1,6 +1,5 @@
 package cppcompletion
 
-import completionQuery
 import cppEditorStatementSnapshot
 import kotlin.random.Random
 import kotlin.test.Test
@@ -32,8 +31,6 @@ class CppSyntaxCompletionTotalityTest {
     )
     val identifiers = line.tokens.filter { it.kind == CppTokenKind.IDENTIFIER }
       .mapTo(linkedSetOf(), CppToken::text)
-    val context = CppCompletionContext(identifiers)
-    val grammar = CppCompletionGrammar()
     val syntaxResidual = cppSingleStatementSyntaxCompletion(
       snapshot.stableTokens, snapshot.activeFragment, identifiers
     )
@@ -44,12 +41,15 @@ class CppSyntaxCompletionTotalityTest {
       syntaxResidual.recognizes(listOf(requireNotNull(snapshot.activeFragment)) + truncation.suffix),
       "The full-statement syntax check rejected `${truncation.suffixText()}` after `$reportedPrefix`"
     )
-    val execution = grammar.completeCppStatement(
-      context,
-      snapshot.completionQuery(truncation.prefixIdentifiers(), limit = 1, seed = 0x51A7)
+    val completions = syntaxResidual.shortestCompletions(
+      prefixText = reportedPrefix,
+      identifiersInFile = truncation.prefixIdentifiers(),
+      limit = 1,
+      random = Random(0x51A7),
+      tokenPrefix = snapshot.activeFragment
     )
-    assertTrue(execution.suggestions.isNotEmpty(), "The reported prefix produced no sampled completion")
-    assertTrue(execution.suggestions.single().tokens.isNotEmpty())
+    assertTrue(completions.isNotEmpty(), "The explicit syntax oracle produced no sampled completion")
+    assertTrue(completions.single().tokens.isNotEmpty())
   }
 
   @Test

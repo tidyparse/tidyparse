@@ -55,7 +55,7 @@ class CppCompletionEngineTest {
   }
 
   @Test
-  fun productionPathCompletesAStatementPrefixBeyondTheSemanticTokenHorizon() {
+  fun syntaxOracleCompletesBeyondTheSemanticTokenHorizonWithoutWideningProduction() {
     val prefixText = (0..49).joinToString(", ") { index -> "value$index" }
     val snapshot = assertNotNull(cppEditorStatementSnapshot(prefixText, 0, prefixText.length))
     assertTrue(
@@ -70,10 +70,26 @@ class CppCompletionEngineTest {
       )
     )
 
-    assertEquals(2, execution.minimumTokenLength)
     assertTrue(
-      execution.suggestions.any { it.tokens == listOf("value49", ";") },
-      "The syntax lane must close a valid long expression when the semantic lane is out of range"
+      execution.suggestions.isEmpty(),
+      "Production completion must not publish syntax-only identifiers as semantic facts"
+    )
+    val syntaxResidual = assertNotNull(cppSingleStatementSyntaxCompletion(
+      snapshot.stableTokens,
+      snapshot.activeFragment,
+      snapshot.tokens.mapTo(linkedSetOf(), CppToken::text)
+    ))
+    val syntaxCompletions = syntaxResidual.shortestCompletions(
+      prefixText = snapshot.stablePrefixText,
+      identifiersInFile = snapshot.tokens.mapTo(linkedSetOf(), CppToken::text),
+      limit = 1,
+      random = kotlin.random.Random(20260804),
+      tokenPrefix = snapshot.activeFragment
+    )
+    assertEquals(2, syntaxCompletions.firstOrNull()?.length)
+    assertTrue(
+      syntaxCompletions.any { it.tokens == listOf("value49", ";") },
+      "The explicit syntax oracle must close a valid long expression"
     )
   }
 
@@ -138,7 +154,7 @@ class CppCompletionEngineTest {
   }
 
   @Test
-  fun generatedSyntaxCompletesPartialFixedTokensWithoutSemanticFacts() {
+  fun explicitSyntaxOracleCompletesPartialFixedTokensWithoutSemanticFacts() {
     mapOf(
       "ret" to "return",
       "co_r" to "co_return",
@@ -146,15 +162,21 @@ class CppCompletionEngineTest {
       "nullp" to "nullptr"
     ).forEach { (typed, completed) ->
       val snapshot = assertNotNull(cppEditorStatementSnapshot(typed, 0, typed.length))
-      val suggestions = CppCompletionGrammar().completeCppStatement(
-        CppCompletionContext(emptySet()),
-        snapshot.completionQuery(emptySet(), seed = typed.hashCode())
-      ).suggestions
+      val residual = assertNotNull(cppSingleStatementSyntaxCompletion(
+        snapshot.stableTokens, snapshot.activeFragment
+      ))
+      val suggestions = residual.shortestCompletions(
+        prefixText = snapshot.stablePrefixText,
+        identifiersInFile = emptySet(),
+        limit = 1,
+        random = kotlin.random.Random(typed.hashCode()),
+        tokenPrefix = snapshot.activeFragment
+      )
 
       assertTrue(
-        suggestions.any { it.candidateText.startsWith(completed) },
-        "Generated statement syntax did not extend `$typed` to `$completed`: " +
-          suggestions.joinToString { it.candidateText }
+        suggestions.any { (snapshot.stablePrefixText + it.insertionText).startsWith(completed) },
+        "The explicit statement syntax did not extend `$typed` to `$completed`: " +
+          suggestions.joinToString { snapshot.stablePrefixText + it.insertionText }
       )
     }
   }

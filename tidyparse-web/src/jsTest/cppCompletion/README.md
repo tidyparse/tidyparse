@@ -11,7 +11,8 @@ the already-complete line.
 ## Run
 
 ```text
-CPP_COMPLETION_BENCHMARK=1 ./gradlew :tidyparse-web:jsBrowserTest
+CPP_COMPLETION_BENCHMARK=1 ./gradlew :tidyparse-web:jsBrowserTest \
+  --tests 'cppcompletion.CppCompletionBenchmarkTest.benchmarkCppCompletions'
 ```
 
 The default run is uncapped: it scores all 2,141 current instances from all 133 statements in all 12
@@ -29,7 +30,30 @@ The current controls are:
 - `CPP_COMPLETION_TIME_LIMIT_MS` changes the internal deadline (default `60000`);
 - `CPP_COMPLETION_COMPILER_JOBS` changes clang++ parallelism (by default, available processors minus
   two, clamped to `1..12`);
-- `CLANGD` and `CXX` select the clangd and clang++ executables.
+- `CLANGD` and `CXX` select the legacy native bridge executables in ordinary test mode. Benchmark
+  mode accepts `CXX` only with a matching `CPP_COMPLETION_COMPILER_PROFILE` sidecar.
+
+### Pinned semantic authority
+
+The scored benchmark fails closed unless browser Sema and candidate validation have the same
+content-derived semantic profile: upstream Clang revision, C++ mode, wasm32-wasi target, ordered
+flags, libc++/WASI identity, and logical include-tree digest. It never filters target-specific names
+or silently falls back to the host SDK.
+
+`refreshClangdResources` builds the browser module and a native syntax validator from the same
+patched LLVM checkout. The native build registers only the WebAssembly target and is retained under
+`.gradle/clangd/<artifact>-<host>/work/build-native/bin/clang++`; its profile sidecar is
+`work/native-validator-profile.json`, and its byte-identical browser include tree is
+`work/browser-sysroot/include`. These native files are benchmark/build-cache inputs and are not added
+to the deployed browser payload.
+
+```text
+./gradlew :tidyparse-web:refreshClangdResources
+```
+
+An old browser artifact without this sidecar, a stale manifest, or an arbitrary system `clang++`
+causes benchmark startup to report the profile mismatch before any completion is scored. Ordinary
+non-benchmark bridge tests retain their existing host-compiler behavior.
 
 The full uncapped run must score exactly every discovered instance. It gates 100% recall, at least
 99% aggregate precision, and at least 95% precision for every instance. Missing scores, empty CFGs,
@@ -77,7 +101,8 @@ complete source lines, choosing one representative from each shortest nonempty l
 filling from those slices. These are not separate showcase draws: they come from the same seeded
 samples sent to clang++ for precision scoring. Empty or failed instances and the first rejected
 sample diagnostic are reported explicitly. The summary also distinguishes logical compiler
-candidates from alpha/token-deduplicated physical candidates and reports bundle and compiler time.
+candidates from alpha/token-deduplicated physical candidates and reports candidate-preparation and
+compiler time.
 
 Benchmark mode suppresses raw browser-console protocol records on stdout, including Kotlin's
 `--END_KOTLIN_TEST--` messages. Intentional test output still appears through Gradle's test reporter,
@@ -145,9 +170,10 @@ code. Semantic CFG construction and decoding
 run in a dedicated worker; document-version and cursor checks discard stale replies, while active
 LSP cancellation prevents obsolete semantic requests from queueing in WebAssembly clangd. The
 browser path consumes the structured declaration DTO directly and does not call the benchmark's
-native compiler oracle. The semantic lane uses the 48-token finite horizon; an exact min-plus
-quotient of the generated full-statement syntax grammar handles longer prefixes without inventing
-identifier spellings.
+native compiler oracle. The semantic lane uses the 48-token finite horizon. The generated
+full-statement syntax grammar remains a separate recognition/totality oracle; its untyped
+derivations are never published as editor suggestions. Dependent class-template declarations are
+instead instantiated from Sema-reported parameter roles, defaults, and accessible type spellings.
 
 `cpp_statements.tidy` documents the broader single-line coverage target: qualified/template names
 with `<`, `>`, and `::`; pointers and references using `*`, `&`, and `&&`; calls and arbitrary
@@ -165,9 +191,10 @@ precision is the mean of those per-instance percentages. Within each length, amb
 are counted separately, so the distribution is uniform over derivations and reproducible for a
 seeded Kotlin `Random`. The default full run scores at most 100 samples for each instance: 10 from
 each of the first ten nonempty exact-length slices. A CFG with fewer slices contributes fewer draws;
-for example, the endpoint epsilon CFG contributes 10 length-zero draws. Duplicate source lines
-remain separate draws in the precision denominator even though their compiler result is reused
-within the statement bundle.
+for example, the endpoint epsilon CFG contributes 10 length-zero draws. Every unique candidate is
+compiled as an independent full-source replacement so its downstream uses and declaration order
+remain observable. Duplicate source lines remain separate draws in the precision denominator even
+when the exact full-source compiler result is reused from the content-addressed cache.
 
 Literals are projected by type:
 

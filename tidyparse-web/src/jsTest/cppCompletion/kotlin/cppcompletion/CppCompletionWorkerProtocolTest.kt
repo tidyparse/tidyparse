@@ -48,9 +48,9 @@ class CppCompletionWorkerProtocolTest {
     assertEquals(2, request.prefixTokens[0].start)
     assertEquals("=", request.prefixTokens[1].text)
     assertTrue(js("Array.isArray(request.prefixTokens)") as Boolean)
-    assertFalse(
+    assertTrue(
       request.semantic === semantic,
-      "Semantic facts must be converted to an owned plain DTO"
+      "The LSP result is already plain; postMessage performs the single required clone"
     )
     assertEquals(1, request.semantic.schemaVersion)
     assertEquals("value", request.semantic.items[0].name)
@@ -83,7 +83,7 @@ class CppCompletionWorkerProtocolTest {
 
     // JSON cloning mirrors the browser Worker structured-clone boundary while ensuring that the
     // parser receives ordinary JavaScript objects with no Kotlin prototype or helper methods.
-    val cloned = cppCompletionJsonClone(request)
+    val cloned = jsonClone(request)
     val tokens = cppCompletionPrefixTokens(cloned.prefixTokens, cloned.statementPrefixText)
 
     assertEquals(3, tokens.size)
@@ -93,6 +93,22 @@ class CppCompletionWorkerProtocolTest {
     assertEquals("str", snapshot.activeFragment?.text)
     assertEquals(listOf("std", "::"), snapshot.stableTokens.map(CppToken::text))
     assertEquals("std::", snapshot.stablePrefixText)
+  }
+
+  @Test
+  fun semanticTemplateAnchorDoesNotChangeTheWorkerEditCursor() {
+    val source = "  std::vector<"
+    val snapshot = requireNotNull(cppEditorStatementSnapshot(source, 0, source.length))
+    val request = cppCompletionWorkerRequest(
+      cacheKey = "main.cpp@4:14",
+      snapshot = snapshot,
+      semantic = js("({ schemaVersion: 1, items: [] })")
+    )
+
+    assertEquals(source.indexOf('<'), cppSemanticCompletionCharacter(snapshot))
+    assertEquals(source.length, request.character)
+    assertEquals(source.length, request.statementPrefixText.length)
+    assertEquals("<", request.prefixTokens[request.prefixTokens.length - 1].text)
   }
 
   @Test
@@ -123,4 +139,8 @@ class CppCompletionWorkerProtocolTest {
     assertEquals(false, options.quickSuggestions)
     assertEquals(false, options.suggestOnTriggerCharacters)
   }
+
 }
+
+private fun jsonClone(value: dynamic): dynamic =
+  js("(value) => JSON.parse(JSON.stringify(value))")(value)

@@ -39,6 +39,14 @@ if (isCi) {
 
 config.set({
     logLevel: config.LOG_INFO,
+    // clangd.wasm uses pthreads/SharedArrayBuffer. Tests serve the exact production worker from
+    // Karma, so isolate the harness directly instead of installing the page service worker and
+    // reloading the test runner.
+    customHeaders: [
+        { match: '.*', name: 'Cross-Origin-Opener-Policy', value: 'same-origin' },
+        { match: '.*', name: 'Cross-Origin-Embedder-Policy', value: 'require-corp' },
+        { match: '.*', name: 'Cross-Origin-Resource-Policy', value: 'same-origin' }
+    ],
     browserDisconnectTimeout: browserDisconnectTimeoutMs,
     browserDisconnectTolerance: 0,
     browserNoActivityTimeout: karmaTimeoutMs,

@@ -17,9 +17,9 @@ class CppCompletionBrowserAdapterTest {
     assertEquals(prefix, snapshot.prefixText)
     assertEquals(listOf("value", "="), snapshot.tokens.map { it.text })
     assertEquals(listOf(CppTokenKind.IDENTIFIER, CppTokenKind.OTHER), snapshot.tokens.map { it.kind })
-    assertEquals("=", snapshot.activeFragment?.text)
-    assertEquals(listOf("value"), snapshot.stableTokens.map { it.text })
-    assertEquals("  value ", snapshot.stablePrefixText)
+    assertNull(snapshot.activeFragment)
+    assertEquals(listOf("value", "="), snapshot.stableTokens.map { it.text })
+    assertEquals(prefix, snapshot.stablePrefixText)
     assertEquals(prefix, snapshot.semanticPrefixText)
     val physicalLine = source.lines()[1]
     assertEquals(physicalLine.indexOf("/*") - 1, snapshot.replacementEndCharacter)
@@ -80,6 +80,7 @@ class CppCompletionBrowserAdapterTest {
     )
 
     listOf(
+      Case("std", "std".length, "std", "", ""),
       Case("std::string", "std::str".length, "str", "std::", "std::"),
       Case("records.try_emplace", "records.try_emp".length,
         "try_emp", "records.", "records."),
@@ -88,10 +89,7 @@ class CppCompletionBrowserAdapterTest {
       Case("!=", 1, "!", "", "!="),
       Case("ptr ->field", "ptr -".length, "-", "ptr ", "ptr ->"),
       Case("std::string", "std:".length, ":", "std", "std::"),
-      Case("value >>= rhs", "value >>".length, ">>", "value ", "value >>="),
-      Case("u8\"text\"", "u8\"text\"".length, "u8\"text\"", "", "u8\"text\""),
-      Case("std::", "std::".length, "::", "std", "std::"),
-      Case("visit(", "visit(".length, "(", "visit", "visit(")
+      Case("value >>= rhs", "value >>".length, ">>", "value ", "value >>=")
     ).forEach { case ->
       val snapshot = assertNotNull(
         cppEditorStatementSnapshot(case.source, 0, case.character),
@@ -101,6 +99,37 @@ class CppCompletionBrowserAdapterTest {
       assertEquals(case.stablePrefix, snapshot.stablePrefixText, case.source)
       assertEquals(case.semanticPrefix, snapshot.semanticPrefixText, case.source)
       assertEquals(case.fragment, snapshot.prefixText.substring(snapshot.activeFragment!!.start))
+    }
+
+    listOf("u8\"text\"", "std::", "visit(", "std::vector<", "value =", "values<%").forEach { source ->
+      val snapshot = assertNotNull(cppEditorStatementSnapshot(source, 0, source.length))
+      assertNull(snapshot.activeFragment, source)
+      assertEquals(source, snapshot.stablePrefixText, source)
+      assertEquals(source.length, snapshot.stableTokens.last().end, source)
+    }
+  }
+
+  @Test
+  fun semanticCompletionAnchorsBeforeAnExactSimpleTemplateIdOpener() {
+    listOf(
+      "std::vector<",
+      "vector <",
+      "std::vector<std::string<"
+    ).forEach { source ->
+      val snapshot = assertNotNull(cppEditorStatementSnapshot(source, 0, source.length))
+      assertEquals(source.lastIndexOf('<'), cppSemanticCompletionCharacter(snapshot), source)
+      assertEquals(source.length, snapshot.character, source)
+    }
+
+    listOf(
+      "operator<",
+      "1<",
+      "std::<",
+      "std::vector< ",
+      "std::vector<<"
+    ).forEach { source ->
+      val snapshot = assertNotNull(cppEditorStatementSnapshot(source, 0, source.length))
+      assertEquals(source.length, cppSemanticCompletionCharacter(snapshot), source)
     }
   }
 

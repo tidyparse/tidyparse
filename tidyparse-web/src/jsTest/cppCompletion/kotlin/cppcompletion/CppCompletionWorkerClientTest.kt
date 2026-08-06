@@ -2,10 +2,13 @@ import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.promise
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import kotlin.js.Promise
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CppCompletionWorkerClientTest {
@@ -49,6 +52,46 @@ class CppCompletionWorkerClientTest {
     assertTrue(workers.first().terminated as Boolean)
     publishReady(workers.last())
     retry.await()
+    client.dispose()
+  }
+
+  @Test
+  fun exactStdRequestSettlesWhenAWorkerNeverReplies(): Promise<Unit> = MainScope().promise {
+    val workers = mutableListOf<dynamic>()
+    val client = CppCompletionWorkerClient {
+      val created = fakeWorker()
+      workers.add(created)
+      created
+    }
+    val source = """
+      #include <cstdint>
+      #include <iostream>
+      #include <memory>
+      #include <typeinfo>
+
+
+      int main() {
+          std::
+      }
+    """.trimIndent()
+    val lines = source.lines()
+    val line = lines.indexOfFirst { "std::" in it }
+    val snapshot = requireNotNull(cppEditorStatementSnapshot(source, line, lines[line].length))
+    val request = cppCompletionWorkerRequest(
+      cacheKey = "main.cpp@std",
+      snapshot = snapshot,
+      semantic = js("({ schemaVersion: 1, context: { kind: 'Expression' }, items: [] })")
+    )
+
+    publishReady(workers.single())
+    workers.single().postMessage = { _: dynamic -> Unit }
+    assertNull(withTimeoutOrNull(100) { client.complete(request) })
+
+    assertEquals("std::", snapshot.semanticPrefixText.trim())
+    assertEquals(2, workers.size)
+    assertTrue(workers.first().terminated as Boolean)
+    publishReady(workers.last())
+    assertTrue(withTimeout(100) { client.complete(request) }.ok as Boolean)
     client.dispose()
   }
 

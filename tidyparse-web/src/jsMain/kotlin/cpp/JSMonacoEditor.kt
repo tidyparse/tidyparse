@@ -46,7 +46,7 @@ data class ClangdDiagnostic(
   val code: String?
 )
 
-private class CachedCppGrammarCompletion(
+private class CachedCppCompletion(
   val key: String,
   val reply: dynamic
 )
@@ -128,7 +128,8 @@ class JSMonacoEditor(
   private var completionWorker: CppCompletionWorkerClient? = null
   private var explicitCompletionUntil = 0.0
   private var latestRawDiagnostics: dynamic = null
-  private var cachedGrammarCompletion: CachedCppGrammarCompletion? = null
+  private var cachedSemanticCompletion: CachedCppCompletion? = null
+  private var cachedGrammarCompletion: CachedCppCompletion? = null
   private var cppCompletionContextEpoch = 0
   private var nextCppFormatDocumentId = 1
   private var requestedReadOnly = false
@@ -166,6 +167,7 @@ class JSMonacoEditor(
     editorApp = js("new EditorApp(appConfig)")
     editorApp.registerOnTextChangedCallback { changes: dynamic ->
       val text = changes.modified as? String ?: return@registerOnTextChangedCallback
+      cachedSemanticCompletion = null
       cachedGrammarCompletion = null
       cppCompletionContextEpoch++
       // VS Code diagnostics do not carry the model version. Never apply ranges published for the
@@ -271,6 +273,7 @@ class JSMonacoEditor(
   suspend fun setDocument(nextFileName: String, text: String) {
     val app = editorApp ?: return
     fileName = nextFileName
+    cachedSemanticCompletion = null
     cachedGrammarCompletion = null
     cppCompletionContextEpoch++
     latestRawDiagnostics = null
@@ -615,25 +618,30 @@ class JSMonacoEditor(
     val contextEpoch = cppCompletionContextEpoch
     val resultKey = "$modelUri:$version:$contextEpoch:${snapshot.cacheKey}"
     val reply = cachedGrammarCompletion?.takeIf { it.key == resultKey }?.reply ?: try {
-      val lspCancellation = cppLspCancellation(cancellation)
-      val queriedSemantic = try {
-        withTimeoutOrNull(CPP_COMPLETION_CONTEXT_TIMEOUT_MS) {
-          requestCppSemanticCompletion(snapshot, lspCancellation.token)
+      val cachedSemantic = cachedSemanticCompletion
+      val queriedSemantic = if (cachedSemantic?.key == resultKey) cachedSemantic.reply else {
+        val lspCancellation = cppLspCancellation(cancellation)
+        try {
+          withTimeoutOrNull(CPP_COMPLETION_CONTEXT_TIMEOUT_MS) {
+            requestCppSemanticCompletion(snapshot, lspCancellation.token)
+          }
+        } finally {
+          // Cancelling after success is harmless; after a timeout it sends $/cancelRequest for any
+          // unresolved work instead of leaving it queued in the single WASM-clangd process.
+          lspCancellation.cancelAndDispose()
         }
-      } finally {
-        // Cancelling after success is harmless; after a timeout it sends $/cancelRequest for any
-        // unresolved work instead of leaving it queued in the single WASM-clangd process.
-        lspCancellation.cancelAndDispose()
       }
       // The editor has one semantic authority. A timeout is retryable, but must not silently
       // switch this request back to lexical/AST name synthesis.
-      val semantic = queriedSemantic?.takeIf(::defined) ?: return empty
+      val semantic = boundCppSemanticCompletion(queriedSemantic)
+      if (!defined(semantic)) return empty
       if (
         contextEpoch != cppCompletionContextEpoch ||
         !cppCompletionStillCurrent(model, version, snapshot) ||
         completionCancelled(cancellation)
       )
         return empty
+      cachedSemanticCompletion = CachedCppCompletion(resultKey, semantic)
 
       val request = cppCompletionWorkerRequest(
         cacheKey = "$modelUri:$contextEpoch",
@@ -662,7 +670,7 @@ class JSMonacoEditor(
         return empty
       // A semantic or formatting timeout is retryable at the unchanged cursor.
       if (formatted)
-        cachedGrammarCompletion = CachedCppGrammarCompletion(resultKey, completed)
+        cachedGrammarCompletion = CachedCppCompletion(resultKey, completed)
       completed
     } catch (cancelled: CancellationException) {
       return empty
@@ -793,15 +801,25 @@ class JSMonacoEditor(
     if (!defined(client)) return null
 
     val semanticPrefix = snapshot.semanticPrefixText
-    val semanticCharacter = snapshot.character
+    val semanticCharacter = cppSemanticCompletionCharacter(snapshot)
+    val anchoredTemplate = semanticCharacter != snapshot.character
     val receiverOperator = cppReceiverOperator(semanticPrefix)
     val params = cppCompletionParams(snapshot.line, semanticCharacter, receiverOperator)
+    val partialIdentifier = snapshot.activeFragment?.kind == CppTokenKind.IDENTIFIER
+    val allScopes = partialIdentifier || anchoredTemplate
     params.limit = CPP_SEMANTIC_COMPLETION_LIMIT
-    params.allScopes = snapshot.activeFragment?.kind == CppTokenKind.IDENTIFIER
+    params.allScopes = allScopes
     params.scopePosition = js("({})")
     params.scopePosition.line = snapshot.line
     params.scopePosition.character = snapshot.statementStartCharacter +
       snapshot.prefixText.takeWhile { it == ' ' || it == '\t' }.length
+    params.graphLimit = CPP_SEMANTIC_GRAPH_LIMIT
+    params.graphDepth = CPP_SEMANTIC_GRAPH_DEPTH
+    params.operationLimit = CPP_SEMANTIC_OPERATION_LIMIT
+    params.operationDepth = CPP_SEMANTIC_OPERATION_DEPTH
+    params.expressionWitnessLimit = CPP_SEMANTIC_EXPRESSION_WITNESS_LIMIT
+    params.callWitnessLimit = CPP_SEMANTIC_CALL_WITNESS_LIMIT
+    params.callWitnessMaxArity = CPP_SEMANTIC_CALL_WITNESS_MAX_ARITY
     return optionalClangdRequest(
       client,
       "tidyparse/semanticCompletion",
@@ -835,6 +853,46 @@ class JSMonacoEditor(
     return CppLspCancellation(source, upstream)
   }
 
+  /** Enforces the endpoint's declaration limit when talking to an older cached clangd artifact. */
+  private fun boundCppSemanticCompletion(result: dynamic): dynamic {
+    if (!defined(result)) return result
+    arrayOf("items", "scopeItems", "activeCallables").forEach { field ->
+      val items = result[field]
+      if (defined(items) && js("Array.isArray(items)") as Boolean &&
+        number(items.length) > CPP_SEMANTIC_COMPLETION_LIMIT)
+        items.length = CPP_SEMANTIC_COMPLETION_LIMIT
+    }
+    val graphNodes = result.graph?.nodes
+    if (defined(graphNodes) && js("Array.isArray(graphNodes)") as Boolean &&
+      number(graphNodes.length) > CPP_SEMANTIC_GRAPH_LIMIT) {
+      graphNodes.length = CPP_SEMANTIC_GRAPH_LIMIT
+      result.graph.isIncomplete = true
+    }
+    val operationNodes = result.operations?.nodes
+    if (defined(operationNodes) && js("Array.isArray(operationNodes)") as Boolean &&
+      number(operationNodes.length) > CPP_SEMANTIC_OPERATION_LIMIT) {
+      operationNodes.length = CPP_SEMANTIC_OPERATION_LIMIT
+      result.operations.isIncomplete = true
+    }
+    val callWitnesses = result.operations?.callWitnesses
+    if (defined(callWitnesses) && js("Array.isArray(callWitnesses)") as Boolean &&
+      number(callWitnesses.length) > CPP_SEMANTIC_CALL_WITNESS_LIMIT) {
+      callWitnesses.length = CPP_SEMANTIC_CALL_WITNESS_LIMIT
+      result.operations.callWitnessesIncomplete = true
+      result.operations.isIncomplete = true
+    }
+    val expressionWitnesses = result.operations?.expressionWitnesses
+    if (defined(expressionWitnesses) &&
+      js("Array.isArray(expressionWitnesses)") as Boolean &&
+      number(expressionWitnesses.length) > CPP_SEMANTIC_EXPRESSION_WITNESS_LIMIT
+    ) {
+      expressionWitnesses.length = CPP_SEMANTIC_EXPRESSION_WITNESS_LIMIT
+      result.operations.expressionWitnessesIncomplete = true
+      result.operations.isIncomplete = true
+    }
+    return result
+  }
+
   private fun cppCompletionParams(line: Int, character: Int, receiverOperator: String?): dynamic {
     val params = cppTextDocumentPositionParams(line, character)
     params.context = js("({})")
@@ -856,16 +914,6 @@ class JSMonacoEditor(
     params.position.character = character
     return params
   }
-
-  private fun cppReceiverOperator(prefixText: String): String? =
-    prefixText.trimEnd().let { prefix ->
-      when {
-        prefix.endsWith("->") -> "->"
-        prefix.endsWith("::") -> "::"
-        prefix.endsWith('.') -> "."
-        else -> null
-      }
-    }
 
   private fun cppCompletionStillCurrent(
     model: dynamic,
@@ -954,8 +1002,8 @@ class JSMonacoEditor(
     val vscode = modules?.vscode ?: return
     val uri = vscode.Uri.parse(documentUri())
     val diagnostics = vscode.languages.getDiagnostics(uri)
-    cachedGrammarCompletion = null
-    cppCompletionContextEpoch++
+    // Completion is keyed by the model version and queries Sema directly; diagnostics are only UI
+    // state and must not invalidate an in-flight completion for that same version.
     latestRawDiagnostics = diagnostics
     val mapped = (0 until number(diagnostics.length)).map { index ->
       val diagnostic = diagnostics[index]
@@ -1132,6 +1180,16 @@ class JSMonacoEditor(
     }
   }
 }
+
+private fun cppReceiverOperator(prefixText: String): String? =
+  prefixText.trimEnd().let { prefix ->
+    when {
+      prefix.endsWith("->") -> "->"
+      prefix.endsWith("::") -> "::"
+      prefix.endsWith('.') -> "."
+      else -> null
+    }
+  }
 
 internal fun cppMonacoEditorOptions(): dynamic {
   val options = js("{}")

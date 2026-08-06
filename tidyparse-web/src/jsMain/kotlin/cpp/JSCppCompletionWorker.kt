@@ -222,8 +222,9 @@ fun cppCompletionWorkerRequest(
   request.seed = snapshot.seed
   request.semantic = semantic
   request.limit = limit
-  // Raw LSP values and Kotlin arrays become one owned graph of plain structured-clone fields.
-  return cppCompletionJsonClone(request)
+  // Every field is already a plain JS structured-clone value. Worker.postMessage owns the one
+  // necessary deep copy; serializing this semantic graph here would block the editor thread.
+  return request
 }
 
 /**
@@ -285,12 +286,12 @@ class CppCompletionWorkerClient internal constructor(
 
     val deferred = CompletableDeferred<dynamic>()
     pending[requestId] = deferred
-    val payload = cppCompletionJsonClone(request)
-    payload.type = "complete"
-    payload.id = requestId
+    request.type = "complete"
+    request.id = requestId
 
     try {
-      worker.postMessage(payload)
+      // postMessage performs the one structured clone required by the worker boundary.
+      worker.postMessage(request)
     } catch (failure: Throwable) {
       pending.remove(requestId)
       deferred.completeExceptionally(failure)
@@ -425,8 +426,5 @@ private fun createCppCompletionWorker(): dynamic {
   )(window.location.href) as String
   return js("(url, name) => new Worker(url, { name })")(url, CPP_COMPLETION_WORKER_NAME)
 }
-
-internal fun cppCompletionJsonClone(value: dynamic): dynamic =
-  js("(value) => JSON.parse(JSON.stringify(value))")(value)
 
 internal fun cppCompletionInt(value: dynamic, fallback: Int = 0): Int = (value as? Number)?.toInt() ?: fallback

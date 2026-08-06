@@ -219,7 +219,7 @@ class CppInteractiveCompletionTest {
       left.tokenLength <= right.tokenLength
     })
     assertEquals("std::cout;", completions.first().candidateText)
-    assertEquals(listOf("::", "cout", ";"), completions.first().tokens)
+    assertEquals(listOf("cout", ";"), completions.first().tokens)
   }
 
   @Test
