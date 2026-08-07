@@ -7,6 +7,11 @@
         <compositeConfiguration>
           <compositeBuild compositeDefinitionSource="SCRIPT">
             <builds>
+              <build path="$PROJECT_DIR$/buildSrc" name="buildSrc">
+                <projects>
+                  <project path="$PROJECT_DIR$/buildSrc" />
+                </projects>
+              </build>
               <build path="$PROJECT_DIR$/galoisenne" name="galoisenne">
                 <projects>
                   <project path="$PROJECT_DIR$/galoisenne" />
@@ -20,6 +25,7 @@
         <option name="modules">
           <set>
             <option value="$PROJECT_DIR$" />
+            <option value="$PROJECT_DIR$/buildSrc" />
             <option value="$PROJECT_DIR$/galoisenne" />
             <option value="$PROJECT_DIR$/tidyparse-core" />
             <option value="$PROJECT_DIR$/tidyparse-intellij" />

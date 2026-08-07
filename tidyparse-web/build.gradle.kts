@@ -27,6 +27,7 @@ buildscript {
 
 plugins {
   kotlin("multiplatform")
+  id("org.ajoberstar.git-publish") version "6.0.0"
 }
 
 group = "ai.hypergraph"
@@ -99,11 +100,8 @@ fun jsString(s: String): String =
     append('"')
   }
 
-fun gzip(bytes: ByteArray): ByteArray {
-  val out = ByteArrayOutputStream()
-  GZIPOutputStream(out).use { it.write(bytes) }
-  return out.toByteArray()
-}
+fun gzip(bytes: ByteArray): ByteArray =
+  ByteArrayOutputStream().apply { GZIPOutputStream(this).use { it.write(bytes) } }.toByteArray()
 
 fun gzipBase64(bytes: ByteArray): String = Base64.encode(gzip(bytes))
 fun gzipBase64(text: String): String = gzipBase64(text.toByteArray())
@@ -161,9 +159,7 @@ fun exampleResourceMap(): Map<String, String> =
   exampleFiles.files
     .sortedBy { rootProject.projectDir.toPath().relativize(it.toPath()).toString() }
     .associate {
-      rootProject.projectDir.toPath()
-        .relativize(it.toPath())
-        .toString()
+      rootProject.projectDir.toPath().relativize(it.toPath()).toString()
         .replace(File.separatorChar, '/') to it.readText()
     }
 
@@ -202,9 +198,8 @@ fun embeddedHostedPythonResources(): String =
 
 val generatedHostedWebpackDir = layout.buildDirectory.dir("generated/hosted-webpack")
 val hostedWebpackConfigFile = generatedHostedWebpackDir.map { it.file("webpack.config.js") }
-val generatedWebpackPackageDir = rootProject.layout.buildDirectory.dir(
-  "js/packages/${rootProject.name}-${project.name}"
-)
+val generatedWebpackPackageDir =
+  rootProject.layout.buildDirectory.dir("js/packages/${rootProject.name}-${project.name}")
 val generatedWebpackConfigFile = generatedWebpackPackageDir.map { it.file("webpack.config.js") }
 val webpackExecutable = rootProject.layout.buildDirectory.file("js/node_modules/.bin/webpack")
 
@@ -237,12 +232,7 @@ val prepareHostedWebpackConfig = tasks.register("prepareHostedWebpackConfig") {
   inputs.property("contents", configContents)
   outputs.file(hostedWebpackConfigFile)
 
-  doLast {
-    hostedWebpackConfigFile.get().asFile.apply {
-      parentFile.mkdirs()
-      writeText(configContents)
-    }
-  }
+  doLast { hostedWebpackConfigFile.get().asFile.apply { parentFile.mkdirs(); writeText(configContents) } }
 }
 
 val jsBrowserHostedCoreWebpack = tasks.register<Exec>("jsBrowserHostedCoreWebpack") {
@@ -265,8 +255,7 @@ val jsBrowserHostedCoreWebpack = tasks.register<Exec>("jsBrowserHostedCoreWebpac
 }
 
 fun File.withInlineSourceMap(mapFile: File): String {
-  val jsCode = readText()
-    .withoutEmbeddedWebResources()
+  val jsCode = readText().withoutEmbeddedWebResources()
     .replace(Regex("""(?m)^//# sourceMappingURL=.*$"""), "")
   val mapJson = mapFile.takeIf { it.exists() }?.readText() ?: return jsCode
   val mapB64 = Base64.encode(mapJson.toByteArray())
@@ -294,41 +283,61 @@ fun ByteArray.replaceAllBytes(target: ByteArray, replacement: ByteArray): Pair<B
   return out.toByteArray() to replacements
 }
 
-fun anonymizeArtifact(root: File, original: String = "breandan"): Int {
-  val replacement = UUID.randomUUID().toString()
-    .replace("-", "")
-    .take(original.length)
-  val targetBytes = original.toByteArray()
-  val replacementBytes = replacement.toByteArray()
-  var replacements = 0
+val deployWebMessage = providers.gradleProperty("deployWebMessage").map { it.trim() }
 
-  root.walkTopDown()
-    .filter { it.isFile }
-    .forEach { file ->
-      val (anonymized, count) = file.readBytes().replaceAllBytes(targetBytes, replacementBytes)
-      if (count > 0) {
-        file.writeBytes(anonymized)
-        replacements += count
-      }
-    }
+val deployWebRepoUri =
+  providers.gradleProperty("deployWebPushUrl")
+    .orElse(providers.gradleProperty("deployWebRepoUrl"))
+    .orElse("git@github.com:tidyparse/tidyparse.github.io.git")
 
-  root.walkBottomUp()
-    .filter { it != root && original in it.name }
-    .forEach { file ->
-      val dest = file.resolveSibling(file.name.replace(original, replacement))
-      check(file.renameTo(dest)) { "Failed to rename ${file.absolutePath} to ${dest.absolutePath}" }
-      replacements++
-    }
+val deployWebBranch = providers.gradleProperty("deployWebBranch").orElse("main")
 
-  println("Anonymized $replacements artifact occurrence(s) of '$original'.")
-  return replacements
+val deployWebRepoDirFile =
+  providers.gradleProperty("deployWebRepoDir").map { file(it) }
+    .orElse(layout.buildDirectory.dir("deploy/tidyparse.github.io").map { it.asFile })
+
+gitPublish {
+  repoUri.set(deployWebRepoUri)
+  branch.set(deployWebBranch)
+  repoDir.set(layout.dir(deployWebRepoDirFile))
+  commitMessage.set(deployWebMessage.orElse(""))
+
+  contents { from(webDeployStagingDir) }
+
+  preserve {
+    include(
+      ".github/**",
+      ".gitignore",
+      "CNAME",
+      ".nojekyll",
+      "README",
+      "README.md",
+      "LICENSE"
+    )
+  }
 }
 
 tasks {
-  val browserConsoleTailService = gradle.sharedServices.registerIfAbsent(
-    "browserConsoleTailService",
-    BrowserConsoleTailService::class
-  ) {}
+  named("gitPublishCopy") { dependsOn("prepareWebDeploy") }
+
+  named("gitPublishReset") {
+    doFirst {
+      if (deployWebMessage.orNull.isNullOrBlank())
+        throw GradleException("""Pass a deployment message with -PdeployWebMessage="add visual status indicators".""")
+    }
+  }
+
+  register("deployWeb") {
+    group = "deployment"
+    description = "Builds, commits, and pushes tidyparse-web to tidyparse.github.io."
+    dependsOn("gitPublishPush")
+  }
+
+  val browserConsoleTailService =
+    gradle.sharedServices.registerIfAbsent(
+      "browserConsoleTailService",
+      BrowserConsoleTailService::class
+    ) {}
 
   withType<KotlinJsTest>().configureEach {
     val testTaskPath = path
@@ -350,15 +359,12 @@ tasks {
       browserConsoleLog.writeText("")
 
       val tailProcess = ProcessBuilder("tail", "-n", "+1", "-f", browserConsoleLog.absolutePath)
-        .redirectErrorStream(true)
-        .start()
+        .redirectErrorStream(true).start()
 
       browserConsoleTailService.get().stop(browserConsoleTailProcess.getAndSet(tailProcess))
       browserConsoleTailService.get().register(tailProcess)
       Thread {
-        tailProcess.inputStream.bufferedReader().useLines { lines ->
-          lines.forEach { println(it) }
-        }
+        tailProcess.inputStream.bufferedReader().useLines { lines -> lines.forEach { println(it) } }
       }.apply {
         name = "browser-console-tail-$testTaskPath"
         isDaemon = true
@@ -366,9 +372,8 @@ tasks {
       }
     }
 
-    fun stopBrowserConsoleTail() {
+    fun stopBrowserConsoleTail() =
       browserConsoleTailService.get().stop(browserConsoleTailProcess.getAndSet(null))
-    }
 
     doLast { stopBrowserConsoleTail() }
   }
@@ -460,9 +465,7 @@ tasks {
 window.REPAIR_MODE = "jcef";
 $embeddedResources
 
-function __tidyparseJcefSend(payload) {
-  __JCEF_EVENT_CALLBACK__;
-}
+function __tidyparseJcefSend(payload) { __JCEF_EVENT_CALLBACK__; }
 
 window.__tidyparseJcefSend = __tidyparseJcefSend;
 </script>
@@ -480,7 +483,7 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
     }
   }
 
-  val prepareWebDeploy = register<Sync>("prepareWebDeploy") {
+  register<Sync>("prepareWebDeploy") {
     group = "deployment"
     description = "Stages tidyparse-web files for deployment to tidyparse.github.io"
 
@@ -558,105 +561,10 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
       println("  Compressed/base64 resource payloads larger than $maxHostedInlinePayloadBytes bytes stay as individual files")
     }
   }
-
-  register<DeployWebTask>("deployWeb") {
-    group = "deployment"
-    description = "Builds, commits, and pushes tidyparse-web to tidyparse.github.io. Requires --msg \"commit message\"."
-
-    dependsOn(prepareWebDeploy)
-
-    sourceDirectory.set(webDeployStagingDir)
-    commitMessage.convention(providers.gradleProperty("deployWebMessage"))
-    repositoryUrl.convention(providers.gradleProperty("deployWebRepoUrl").orElse("https://github.com/tidyparse/tidyparse.github.io.git"))
-    pushUrl.convention(providers.gradleProperty("deployWebPushUrl").orElse("git@github.com:tidyparse/tidyparse.github.io.git"))
-    branch.convention(providers.gradleProperty("deployWebBranch").orElse("main"))
-    checkoutPath.convention(
-      providers.gradleProperty("deployWebRepoDir")
-        .orElse(layout.buildDirectory.dir("deploy/tidyparse.github.io").map { it.asFile.absolutePath })
-    )
-    preservedRootEntries.convention(listOf(".git", ".github", ".gitignore", "CNAME", ".nojekyll", "README", "README.md", "LICENSE"))
-  }
-
-  val prepareZipArtifact = register<Sync>("prepareZipArtifact") {
-    group = "distribution"
-    description = "Stages tidyparse-web as a Chrome-openable local browser artifact"
-
-    dependsOn("jsBrowserProductionWebpack", "jsProcessResources")
-
-    val stagingDir = layout.buildDirectory.dir("browser-artifact")
-    val resourcesDir = layout.buildDirectory.dir("processedResources/js/main")
-
-    into(stagingDir)
-    from(resourcesDir) {
-      exclude(".DS_Store")
-      exclude("**/.DS_Store")
-      exclude("examples/.idea/**")
-    }
-    from(productionBundleDir) {
-      include("tidyparse-web.js")
-      include("tidyparse-web.js.map")
-    }
-
-    inputs.files(ngramFile, wdfaFile, rerankerWeightsFile, exampleFiles)
-    outputs.file(stagingDir.map { it.file("tidyparse-local-resources.js") })
-    outputs.file(stagingDir.map { it.file("README.txt") })
-    outputs.upToDateWhen { false }
-
-    doLast {
-      val outDir = stagingDir.get().asFile
-
-      outDir.resolve("tidyparse-local-resources.js").writeText(embeddedRuntimeResources())
-
-      outDir.walkTopDown()
-        .filter { it.isFile && it.extension.equals("html", ignoreCase = true) }
-        .forEach { htmlFile ->
-          val html = htmlFile.readText()
-            .replace("""href="/pluginIcon.svg"""", """href="pluginIcon.svg"""")
-            .replace("""src="/pluginIcon.svg"""", """src="pluginIcon.svg"""")
-            .let {
-              val resourceScript = """<script src="tidyparse-local-resources.js"></script>"""
-              if ("tidyparse-web.js" !in it || resourceScript in it) it
-              else it.replace(
-                Regex("""(?m)(\s*<script\s+src=["']tidyparse-web\.js["']\s*></script>)"""),
-                "\n$resourceScript$1"
-              )
-            }
-          htmlFile.writeText(html)
-        }
-
-      outDir.resolve("README.txt").writeText(
-        """
-        Tidyparse browser artifact
-
-        Open index.html or python.html in Chrome after unzipping this archive.
-        """.trimIndent() + "\n"
-      )
-
-      anonymizeArtifact(outDir)
-    }
-  }
-
-  register<Zip>("browserArtifact") {
-    group = "distribution"
-    description = "Creates browser-artifact.zip with the tidyparse-web local browser app"
-
-    dependsOn(prepareZipArtifact)
-    archiveFileName = "browser-artifact.zip"
-    destinationDirectory = layout.buildDirectory.dir("distributions")
-    from(prepareZipArtifact.map { it.destinationDir })
-  }
 }
 
 // To deploy the browser application, run:
-// ./gradlew deployWeb --msg "add visual status indicators"
-// By default this clones/fetches:
-//  https://github.com/tidyparse/tidyparse.github.io.git
-// and pushes via SSH:
-//  git@github.com:tidyparse/tidyparse.github.io.git
-// into:
-//  tidyparse-web/build/deploy/tidyparse.github.io
-// Override the checkout with:
-// ./gradlew deployWeb --msg "..." --repo-dir /path/to/tidyparse.github.io
+// ./gradlew deployWeb -PdeployWebMessage="commit message"
 // Wait a few minutes for CI to finish, then check the website:
 //  https://tidyparse.github.io
 
@@ -668,213 +576,7 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
 
 abstract class BrowserConsoleTailService : BuildService<BuildServiceParameters.None>, AutoCloseable {
   private val processes = CopyOnWriteArrayList<Process>()
-
   fun register(process: Process) = processes.add(process)
-
-  fun stop(process: Process?) {
-    if (process == null) return
-    process.destroy()
-    processes.remove(process)
-  }
-
-  override fun close() {
-    processes.forEach { it.destroy() }
-    processes.clear()
-  }
-}
-
-abstract class DeployWebTask : DefaultTask() {
-  @get:InputDirectory
-  @get:PathSensitive(PathSensitivity.RELATIVE)
-  abstract val sourceDirectory: DirectoryProperty
-
-  @get:Input
-  @get:Optional
-  abstract val commitMessage: Property<String>
-
-  @get:Input
-  abstract val repositoryUrl: Property<String>
-
-  @get:Input
-  abstract val pushUrl: Property<String>
-
-  @get:Input
-  abstract val branch: Property<String>
-
-  @get:Input
-  abstract val checkoutPath: Property<String>
-
-  @get:Input
-  abstract val preservedRootEntries: ListProperty<String>
-
-  @Option(option = "msg", description = "Commit message for the GitHub Pages deployment.")
-  fun setCommitMessageOption(message: String) = commitMessage.set(message)
-
-  @Option(option = "message", description = "Commit message for the GitHub Pages deployment.")
-  fun setCommitMessageLongOption(message: String) = commitMessage.set(message)
-
-  @Option(option = "repo-dir", description = "Local tidyparse.github.io checkout directory.")
-  fun setCheckoutPathOption(path: String) = checkoutPath.set(path)
-
-  @Option(option = "repo-url", description = "GitHub Pages repository URL.")
-  fun setRepositoryUrlOption(url: String) = repositoryUrl.set(url)
-
-  @Option(option = "push-url", description = "GitHub Pages repository push URL.")
-  fun setPushUrlOption(url: String) = pushUrl.set(url)
-
-  @Option(option = "branch", description = "GitHub Pages branch to deploy.")
-  fun setBranchOption(branchName: String) = branch.set(branchName)
-
-  @TaskAction
-  fun deploy() {
-    val message = commitMessage.orNull?.trim()
-      ?: throw GradleException("Pass a deployment commit message, e.g. ./gradlew deployWeb --msg \"add visual status indicators\"")
-
-    if (message.isEmpty()) throw GradleException("Deployment commit message cannot be empty.")
-
-    val sourceDir = sourceDirectory.get().asFile
-    require(sourceDir.isDirectory) { "Deploy source directory does not exist: ${sourceDir.absolutePath}" }
-
-    val repoDir = File(checkoutPath.get()).absoluteFile
-    val repoUrl = repositoryUrl.get()
-    val repoPushUrl = pushUrl.get()
-    val deployBranch = branch.get()
-
-    ensureCheckout(repoDir, repoUrl, repoPushUrl, deployBranch)
-    syncToCheckout(sourceDir, repoDir)
-
-    val status = git(repoDir, "status", "--porcelain")
-    if (status.isBlank()) {
-      pushIfAhead(repoDir, deployBranch)
-      return
-    }
-
-    git(repoDir, "add", "--all")
-    val staged = git(repoDir, "diff", "--cached", "--name-status")
-    if (staged.isBlank()) {
-      pushIfAhead(repoDir, deployBranch)
-      return
-    }
-
-    println("Deployment changes:")
-    staged.lineSequence().take(40).forEach { println("  $it") }
-    if (staged.lineSequence().count() > 40) println("  ...")
-
-    git(repoDir, "commit", "-m", message)
-    pushBranch(repoDir, deployBranch)
-
-    println("✓ Deployed tidyparse-web to $repoUrl ($deployBranch)")
-  }
-
-  private fun ensureCheckout(repoDir: File, repoUrl: String, repoPushUrl: String, deployBranch: String) {
-    if (repoPushUrl.normalizedGitHubRepo() != repoUrl.normalizedGitHubRepo()) {
-      throw GradleException("Refusing to deploy: push URL '$repoPushUrl' does not match repository URL '$repoUrl'.")
-    }
-
-    if (!repoDir.exists()) {
-      repoDir.parentFile.mkdirs()
-      runCommand(listOf("git", "clone", "--branch", deployBranch, "--single-branch", repoUrl, repoDir.absolutePath))
-      configurePushUrl(repoDir, repoPushUrl)
-      return
-    }
-
-    if (!repoDir.isDirectory) throw GradleException("Deploy checkout path exists but is not a directory: ${repoDir.absolutePath}")
-
-    if (!repoDir.resolve(".git").exists()) throw GradleException("Deploy checkout path is not a Git repository: ${repoDir.absolutePath}")
-
-    val remote = git(repoDir, "remote", "get-url", "origin").trim()
-    if (remote.normalizedGitHubRepo() != repoUrl.normalizedGitHubRepo())
-      throw GradleException("Refusing to deploy from ${repoDir.absolutePath}: origin is '$remote', expected '$repoUrl'.")
-
-    configurePushUrl(repoDir, repoPushUrl)
-    failIfDirty(repoDir, "before updating")
-    git(repoDir, "fetch", "origin", deployBranch)
-
-    val currentBranch = git(repoDir, "rev-parse", "--abbrev-ref", "HEAD").trim()
-    if (currentBranch != deployBranch) {
-      val localBranch = git(repoDir, "branch", "--list", deployBranch).trim()
-      if (localBranch.isBlank()) {
-        git(repoDir, "checkout", "-b", deployBranch, "origin/$deployBranch")
-      } else {
-        git(repoDir, "checkout", deployBranch)
-      }
-    }
-
-    git(repoDir, "pull", "--ff-only", "origin", deployBranch)
-    failIfDirty(repoDir, "after updating")
-  }
-
-  private fun configurePushUrl(repoDir: File, repoPushUrl: String) {
-    val currentPushUrl = git(repoDir, "remote", "get-url", "--push", "origin").trim()
-    if (currentPushUrl != repoPushUrl) git(repoDir, "remote", "set-url", "--push", "origin", repoPushUrl)
-  }
-
-  private fun pushIfAhead(repoDir: File, deployBranch: String) {
-    val commitsAhead = git(repoDir, "rev-list", "--count", "origin/$deployBranch..HEAD").trim().toInt()
-    if (commitsAhead == 0) {
-      println("No deployment changes detected in ${repoDir.absolutePath}; nothing to commit or push.")
-      return
-    }
-
-    println("No working tree changes detected, but $commitsAhead unpushed deployment commit(s) exist; pushing.")
-    pushBranch(repoDir, deployBranch)
-    println("✓ Pushed pending tidyparse-web deployment commit(s) to $deployBranch")
-  }
-
-  private fun pushBranch(repoDir: File, deployBranch: String) = git(repoDir, "push", "origin", "HEAD:$deployBranch")
-
-  private fun syncToCheckout(sourceDir: File, repoDir: File) {
-    val preservedNames = preservedRootEntries.get().toSet()
-    repoDir.listFiles()
-      ?.filter { it.name !in preservedNames }
-      ?.forEach { entry ->
-        if (!entry.deleteRecursively() && entry.exists()) {
-          throw GradleException("Failed to remove stale deployment entry: ${entry.absolutePath}")
-        }
-      }
-
-    sourceDir.copyRecursively(repoDir, overwrite = true)
-  }
-
-  private fun failIfDirty(repoDir: File, phase: String) {
-    val status = git(repoDir, "status", "--porcelain")
-    if (status.isNotBlank()) {
-      throw GradleException(
-        "Refusing to deploy because ${repoDir.absolutePath} has uncommitted changes $phase:\n$status"
-      )
-    }
-  }
-
-  private fun git(workingDir: File, vararg args: String): String = runCommand(listOf("git") + args, workingDir)
-
-  private fun runCommand(command: List<String>, workingDir: File? = null): String {
-    val process = ProcessBuilder(command)
-      .apply { if (workingDir != null) directory(workingDir) }
-      .redirectErrorStream(true)
-      .start()
-
-    val output = process.inputStream.bufferedReader().readText()
-    val exitCode = process.waitFor()
-    if (exitCode != 0) {
-      throw GradleException(
-        "Command failed (${command.displayCommand()}) with exit code $exitCode:\n${output.trim()}"
-      )
-    }
-    return output.trimEnd()
-  }
-
-  private fun String.normalizedGitHubRepo(): String {
-    val withoutGitSuffix = trim().removeSuffix("/").removeSuffix(".git")
-    return when {
-      withoutGitSuffix.startsWith("git@github.com:") -> withoutGitSuffix.removePrefix("git@github.com:")
-      withoutGitSuffix.startsWith("ssh://git@github.com/") -> withoutGitSuffix.removePrefix("ssh://git@github.com/")
-      withoutGitSuffix.startsWith("https://github.com/") -> withoutGitSuffix.removePrefix("https://github.com/")
-      withoutGitSuffix.startsWith("http://github.com/") -> withoutGitSuffix.removePrefix("http://github.com/")
-      else -> withoutGitSuffix
-    }.lowercase()
-  }
-
-  private fun List<String>.displayCommand(): String = joinToString(" ") { arg ->
-    if (arg.any { it.isWhitespace() }) "\"${arg.replace("\"", "\\\"")}\"" else arg
-  }
+  fun stop(process: Process?) = process?.let { processes.remove (it.apply { destroy() }) }
+  override fun close() = processes.onEach { it.destroy() }.clear()
 }
