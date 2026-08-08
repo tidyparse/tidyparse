@@ -37,7 +37,7 @@ changelog {
 
 val swiftGenerator = configurations.create("swiftGenerator")
 dependencies {
-  implementation("net.java.dev.jna:jna:5.19.0")
+  implementation("net.java.dev.jna:jna:5.19.1")
   implementation(project(":tidyparse-core")) {
     exclude(group = "org.jetbrains.kotlin")
     exclude(group = "org.jetbrains.kotlinx")

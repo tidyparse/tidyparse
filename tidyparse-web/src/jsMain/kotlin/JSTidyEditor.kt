@@ -772,12 +772,12 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
             context.indexOfLast { !it.isWhitespace() } + 1
       }
 
-    val activeTerminalResolution = terminalPrefixResolution
-      ?.takeIf { it.matchesCurrentContext(cfg) }
+    val activeTerminalResolution =
+      terminalPrefixResolution?.takeIf { it.matchesCurrentContext(cfg) }
       .also { if (it == null && terminalPrefixResolution != null) clearTerminalCompletionState() }
 
-    val activeSoftInsertion = softTerminalInsertion
-      ?.takeIf { it.matchesCurrentContext(cfg) }
+    val activeSoftInsertion =
+      softTerminalInsertion ?.takeIf { it.matchesCurrentContext(cfg) }
       .also { if (it == null && softTerminalInsertion != null) clearTerminalCompletionState() }
 
     val terminalResolutionEligible =
