@@ -2,7 +2,7 @@ package ai.hypergraph.tidyparse
 
 import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.parsing.*
-import com.intellij.openapi.application..runReadAction
+import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.wm.ToolWindowManager
