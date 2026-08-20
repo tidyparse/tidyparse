@@ -1,0 +1,56 @@
+START -> STATEMENT
+
+STATEMENT -> DECLARATION ; | S ; | JUMP_STATEMENT
+DECLARATION -> TYPE ID | TYPE ID = S | TYPE ID ( ) | TYPE ID ( ARGS )
+DECLARATION -> TYPE ID { } | TYPE ID { ARGS }
+DECLARATION -> STORAGE TYPE ID | STORAGE TYPE ID = S
+JUMP_STATEMENT -> return ; | return S ; | co_return ; | co_return S ;
+JUMP_STATEMENT -> throw ; | throw S ; | break ; | continue ;
+
+S -> ID | ID ( ) | ID ( ARGS ) | S . S
+S -> LITERAL | this | ( S ) | S [ S ] | S :: S | S `->` S
+S -> ID < TEMPLATE_ARGS > | ID < TEMPLATE_ARGS > ( ) | ID < TEMPLATE_ARGS > ( ARGS )
+S -> PREFIX_OPERATOR S | S POSTFIX_OPERATOR | S BINARY_OPERATOR S | S ? S : S
+ARGS -> S | S , S | S , S , S
+
+TYPE -> TYPE_ATOM | TYPE_QUALIFIER TYPE_ATOM | TYPE_ATOM TYPE_QUALIFIER
+TYPE -> TYPE_ATOM PTR_OPERATOR | TYPE_QUALIFIER TYPE_ATOM PTR_OPERATOR
+TYPE -> TYPE_ATOM TYPE_QUALIFIER PTR_OPERATOR
+TYPE_ATOM -> GROUND_TYPE | TYPE_NAME | decltype ( S ) | decltype ( auto )
+TYPE_NAME -> ID | TYPE_NAME :: ID
+TYPE_NAME -> ID < TEMPLATE_ARGS > | TYPE_NAME :: ID < TEMPLATE_ARGS >
+TEMPLATE_ARGS -> TEMPLATE_ARG | TEMPLATE_ARG , TEMPLATE_ARG
+TEMPLATE_ARGS -> TEMPLATE_ARG , TEMPLATE_ARG , TEMPLATE_ARG
+TEMPLATE_ARG -> TYPE | LITERAL
+TYPE_QUALIFIER -> const | volatile | const volatile | volatile const
+PTR_OPERATOR -> * | & | &&
+
+GROUND_TYPE -> void | bool | char | wchar_t | char8_t | char16_t | char32_t
+GROUND_TYPE -> short | short int | unsigned short | unsigned short int
+GROUND_TYPE -> int | signed | signed int | unsigned | unsigned int
+GROUND_TYPE -> long | long int | unsigned long | unsigned long int
+GROUND_TYPE -> long long | long long int | unsigned long long | unsigned long long int
+GROUND_TYPE -> float | double | long double | auto
+STORAGE -> static | extern | constexpr | consteval | constinit | thread_local | mutable
+
+LITERAL -> OCTALINT | DECIMALINT | HEXADECIMALINT | FLOATONE | FLOATTWO
+LITERAL -> CharLiteral | WCharLiteral | StringLiteral | WStringLiteral
+LITERAL -> true | false | nullptr
+
+PREFIX_OPERATOR -> + | - | ! | ~ | ++ | -- | * | & | co_await
+POSTFIX_OPERATOR -> ++ | --
+BINARY_OPERATOR -> ASSIGNMENT_OPERATOR | ARITHMETIC_OPERATOR | COMPARISON_OPERATOR
+BINARY_OPERATOR -> LOGICAL_OPERATOR | BITWISE_OPERATOR
+ASSIGNMENT_OPERATOR -> = | += | -= | *= | /= | %= | <<= | >>= | &= | ^= | `|=`
+ARITHMETIC_OPERATOR -> + | - | * | / | %
+COMPARISON_OPERATOR -> == | != | < | > | <= | >= | <=>
+LOGICAL_OPERATOR -> && | `||`
+BITWISE_OPERATOR -> & | `|` | ^ | << | >>
+
+---
+
+ID :: ID < ID :: ID < ID > > ID ;
+ID . ID ( ID :: ID < ID > ( StringLiteral , DECIMALINT ) ) ;
+ID . ID ( ID :: ID < ID > ( StringLiteral ) ) ;
+ID :: ID << ID . ID ( ) << StringLiteral ;
+ID . ID ( )

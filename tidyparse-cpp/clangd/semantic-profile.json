@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "language": "c++",
+  "standard": "c++23",
+  "target": "wasm32-wasi",
+  "flags": [
+    "-xc++",
+    "-std=c++23",
+    "-pedantic-errors",
+    "-Wall",
+    "-Wextra",
+    "--target=wasm32-wasi",
+    "-nostdinc",
+    "-nostdinc++",
+    "-isystem/usr/include/c++/v1",
+    "-isystem/usr/include/wasm32-wasi/c++/v1",
+    "-isystem/usr/include",
+    "-isystem/usr/include/wasm32-wasi"
+  ]
+}

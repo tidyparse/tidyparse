@@ -1,0 +1,2828 @@
+package cppcompletion
+
+import CppClangdCompletionGroup
+import cppClangdAstContextDto
+import cppCompletionContextDto
+import cppCompletionContextFromDto
+import cppEditorStatementSnapshot
+import cppSemanticCompletionCharacter
+import cppSemanticCompletionContextDto
+import completionQuery
+import ai.hypergraph.kaliningraph.parsing.boundedAcyclic
+import ai.hypergraph.kaliningraph.parsing.freeze
+import com.ionspin.kotlin.bignum.integer.BigInteger
+import kotlinx.browser.window
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.await
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.promise
+import kotlinx.coroutines.withTimeout
+import org.w3c.fetch.RequestInit
+import kotlin.js.Promise
+import kotlin.math.roundToInt
+import kotlin.random.Random
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.TimeSource
+
+private const val CPP_ROUTE = "/__cpp_completion"
+private const val CPP_PRECISION_SAMPLES = 100
+private const val CPP_SAMPLES_PER_LENGTH = 10
+private const val CPP_DISPLAY_SAMPLES = 3
+private const val CPP_SERVICE_TIMEOUT_MILLIS = 8_000
+// Context extraction is deliberately prefetched. Its browser deadline must therefore cover the
+// bounded queue wait as well as clangd and the compiler-backed declaration oracle; ordinary bridge
+// requests retain the tighter timeout above.
+private const val CPP_CONTEXT_REQUEST_TIMEOUT_MILLIS = 20_000
+private const val CPP_COMPILE_TIMEOUT_MILLIS = 30_000
+private const val CPP_MAX_COMPILE_REQUEST = 1920
+// Bound result-reassembly groups independently of the compiler bridge's own source batching. Every
+// candidate in a group is still sent as a separate translation unit through the `sources[]` API.
+private const val CPP_MAX_CANDIDATE_SOURCES_PER_RESULT_GROUP = 3_000
+// Leave a small final compiler wave while the larger first wave overlaps the remaining CFG work.
+private const val CPP_COMPILE_WAVE_CURSOR_TARGET = 560
+private const val CPP_CASE_DEADLINE_RESERVE_MILLIS = 2_000L
+// Keep clangd's serialized document queue busy while the browser derives the current statement's
+// cursor quotients. Four statements cover that overlap without allowing compiler-backed
+// declaration oracles to build an unproductive backlog behind the serialized clangd document.
+private const val CPP_CONTEXT_LOOKAHEAD_STATEMENTS = 4
+private const val CPP_MIN_AGGREGATE_PRECISION = 99.0
+private const val CPP_MIN_CASE_PRECISION = 95.0
+
+data class CppFixture(val name: String, val source: String)
+data class CompileResult(val compiled: Boolean, val timedOut: Boolean, val diagnostics: String)
+data class CppCandidateBundle(val sources: List<String>) {
+  init { require(sources.isNotEmpty()) }
+  val candidates: Int get() = sources.size
+}
+
+data class BenchmarkStatus(
+  val enabled: Boolean,
+  val clangd: String?,
+  val browserClangd: Boolean,
+  val compiler: String?,
+  val semanticProfile: String?,
+  val semanticProfileCompatible: Boolean,
+  val semanticProfileError: String?,
+  val fixtures: List<String>,
+  val samplesPerInstance: Int,
+  val startInstance: Int,
+  val maxInstances: Int?,
+  val timeLimitMillis: Long
+)
+
+/** Browser benchmark facade: bundled clangd/Sema for facts, native clang++ for validation. */
+class CppBenchmarkService(private val browserSemantic: Boolean = false) {
+  private val browserClangd by lazy(::CppBrowserClangdClient)
+
+  suspend fun status(): BenchmarkStatus {
+    val json = request("$CPP_ROUTE/status")
+    return BenchmarkStatus(
+      enabled = json.enabled as? Boolean ?: false,
+      clangd = json.clangd as? String,
+      browserClangd = json.browserClangd as? Boolean ?: false,
+      compiler = json.compiler as? String,
+      semanticProfile = json.semanticProfile as? String,
+      semanticProfileCompatible = json.semanticProfileCompatible as? Boolean ?: false,
+      semanticProfileError = json.semanticProfileError as? String,
+      fixtures = jsonArray(json.fixtures).mapNotNull { it as? String },
+      samplesPerInstance = (json.samplesPerInstance as? Number)?.toInt() ?: CPP_PRECISION_SAMPLES,
+      startInstance = (json.startInstance as? Number)?.toInt() ?: 0,
+      maxInstances = (json.maxInstances as? Number)?.toInt(),
+      timeLimitMillis = (json.timeLimitMillis as? Number)?.toLong() ?: 180_000L
+    )
+  }
+
+  suspend fun fixtures(): List<CppFixture> = jsonArray(request("$CPP_ROUTE/fixtures").fixtures).map {
+    CppFixture(it.name as String, it.source as String)
+  }
+
+  suspend fun context(
+    source: String,
+    line: Int,
+    character: Int,
+    fixture: String? = null
+  ): CppCompletionContext {
+    if (browserSemantic) return browserClangd.context(source, line, character)
+    val snapshot = requireNotNull(cppEditorStatementSnapshot(source, line, character)) {
+      "The benchmark cursor is not a completable C++ statement location"
+    }
+    val payload = js("({})")
+    payload.source = source
+    payload.line = line
+    payload.character = character
+    payload.semanticCharacter = cppSemanticCompletionCharacter(snapshot)
+    if (fixture != null) payload.fixture = fixture
+    val json = request("$CPP_ROUTE/context", payload, CPP_CONTEXT_REQUEST_TIMEOUT_MILLIS)
+    val semantic = json.semantic
+    if (semantic != null && semantic != js("undefined")) {
+      return cppCompletionContextFromDto(cppSemanticCompletionContextDto(semantic, snapshot))
+    }
+    val completionGroups = jsonArray(json.completionGroups).map { group ->
+      CppClangdCompletionGroup(
+        result = group,
+        receiverMember = group.receiverMember as? Boolean ?: false,
+        receiverOperator = group.receiverOperator as? String
+      )
+    }
+    val ast = cppClangdAstContextDto(json.ast, source, line, character)
+    return cppCompletionContextFromDto(cppCompletionContextDto(
+      source = source,
+      completionGroups = completionGroups,
+      signatures = json.signatures,
+      hover = json.hover,
+      diagnostics = json.diagnostics,
+      ast = ast,
+      snapshot = snapshot
+    ))
+  }
+
+  suspend fun compile(sources: List<String>): List<CompileResult> {
+    require(sources.isNotEmpty())
+    return sources.chunked(CPP_MAX_COMPILE_REQUEST).flatMap { batch ->
+      val payload = js("({})")
+      payload.sources = batch.toTypedArray()
+      jsonArray(request("$CPP_ROUTE/compile", payload, CPP_COMPILE_TIMEOUT_MILLIS).results).map {
+        CompileResult(
+          compiled = it.ok as? Boolean ?: false,
+          timedOut = it.timedOut as? Boolean ?: false,
+          diagnostics = it.diagnostics as? String ?: ""
+        )
+      }.also { check(it.size == batch.size) }
+    }
+  }
+
+  /**
+   * Compiles the once-per-statement damaged TU to learn which downstream value names this line
+   * must bind. Unknown evidence stays null; a compiled TU is represented by a present empty
+   * obligation. The compact semantic inventory is used only to choose compiler probe candidates.
+   */
+  suspend fun requiredBinderObligation(
+    source: String,
+    line: Int,
+    character: Int,
+    context: CppCompletionContext
+  ): CppRequiredBinderObligation? {
+    val payload = js("({})")
+    payload.source = source
+    payload.line = line
+    payload.character = character
+    payload.context = compilerProbeContext(context)
+    val json = request(
+      "$CPP_ROUTE/declaration-obligations", payload, CPP_COMPILE_TIMEOUT_MILLIS
+    )
+    if (json.known as? Boolean != true) return null
+    val binders = jsonArray(json.binders).mapNotNull { it as? String }
+      .filter { CPP_BENCHMARK_IDENTIFIER.matches(it) }.toSet()
+    val gateJson = json.singletonGate
+    val gate = if (gateJson == null || gateJson == js("undefined")) null else {
+      val binder = gateJson.binder as? String ?: return null
+      if (binder !in binders || binders.size != 1) return null
+      CppSingletonBindingGate(
+        binder = binder,
+        accepted = jsonArray(gateJson.accepted).mapNotNull(::bindingProfile).toSet(),
+        probed = jsonArray(gateJson.probed).mapNotNull(::bindingProfile).toSet(),
+        complete = gateJson.complete as? Boolean ?: false
+      )
+    }
+    return CppRequiredBinderObligation(binders, gate)
+  }
+
+  private fun compilerProbeContext(context: CppCompletionContext): dynamic {
+    fun reference(reference: CppReference): dynamic {
+      val dto = js("({})")
+      dto.name = reference.name
+      dto.type = reference.canonicalType ?: reference.type
+      dto.detail = reference.detail
+      dto.source = reference.provenance ?: reference.source
+      dto.kind = reference.kind
+      return dto
+    }
+    val dto = js("({})")
+    dto.types = context.types.map(::reference).toTypedArray()
+    dto.values = context.values.map(::reference).toTypedArray()
+    dto.conversions = context.conversions.map { conversion ->
+      val item = js("({})")
+      item.from = conversion.canonicalFromType ?: conversion.from
+      item.to = conversion.canonicalToType ?: conversion.to
+      item
+    }.toTypedArray()
+    dto.expectedTypes = context.expectedTypes.toTypedArray()
+    dto.enclosingReturnType = context.canonicalEnclosingReturnType ?: context.enclosingReturnType
+    dto.thisType = context.canonicalThisType ?: context.thisType
+    return dto
+  }
+
+  private fun bindingProfile(value: dynamic): CppBindingProfile? {
+    val type = value?.type as? String ?: return null
+    val kind = value.declarationKind as? String ?: return null
+    if (kind !in setOf("object", "lvalueReference", "rvalueReference")) return null
+    return CppBindingProfile(type = type, declarationKind = kind)
+  }
+
+  /** Compiles every candidate as an independent TU, then restores the caller's result grouping. */
+  suspend fun compileCandidateBundles(bundles: List<CppCandidateBundle>): List<List<CompileResult>> {
+    require(bundles.isNotEmpty())
+    val results = compile(bundles.flatMap(CppCandidateBundle::sources))
+    return regroupCandidateResults(bundles, results)
+  }
+
+  @Suppress("UNCHECKED_CAST_TO_EXTERNAL_INTERFACE")
+  private suspend fun request(
+    path: String,
+    payload: dynamic = null,
+    timeoutMillis: Int = CPP_SERVICE_TIMEOUT_MILLIS
+  ): dynamic {
+    val controller = js("new AbortController()")
+    val options = js("({})")
+    options.signal = controller.signal
+    if (payload != null) {
+      options.method = "POST"
+      options.headers = js("({ 'Content-Type': 'application/json' })")
+      options.body = JSON.stringify(payload)
+    }
+    val timeout = window.setTimeout({ controller.abort() }, timeoutMillis)
+    try {
+      val response = window.fetch(path, options.unsafeCast<RequestInit>()).await()
+      val text = response.text().await()
+      if (!response.ok) error("$path failed: ${serviceMessage(text)}")
+      return JSON.parse(text)
+    } finally {
+      window.clearTimeout(timeout)
+    }
+  }
+
+  private fun serviceMessage(body: String): String = try {
+    JSON.parse<dynamic>(body).error as? String ?: body.take(500)
+  } catch (_: Throwable) {
+    body.take(500)
+  }
+}
+
+private fun regroupCandidateResults(
+  bundles: List<CppCandidateBundle>,
+  results: List<CompileResult>
+): List<List<CompileResult>> {
+  require(results.size == bundles.sumOf(CppCandidateBundle::candidates))
+  var offset = 0
+  return bundles.map { bundle ->
+    val next = offset + bundle.candidates
+    results.subList(offset, next).toList().also { offset = next }
+  }.also { check(offset == results.size) }
+}
+
+data class CompletionScore(
+  val fixture: String,
+  val line: Int,
+  val prefixTokens: Int,
+  val precision: Double,
+  val recall: Boolean,
+  val contextMillis: Long,
+  val grammarMillis: Long,
+  val inspectedDerivations: String,
+  val cfgStats: String = "",
+  val compiledSamples: Int = 0,
+  val sampledCompletions: Int = 0,
+  val contextFacts: String = "",
+  val originalCode: String = "",
+  val statementTokens: Int = 0,
+  val groundTruth: String = "",
+  val displayedSamples: List<String> = emptyList(),
+  val rejectedSample: String? = null,
+  val failure: String? = null
+)
+
+data class CompletionReport(
+  val totalStatements: Int,
+  val totalInstances: Int,
+  val selectedInstances: Int,
+  val samplesPerInstance: Int,
+  val scores: List<CompletionScore>,
+  val elapsedMillis: Long,
+  val stoppedAtDeadline: Boolean,
+  val compilerLogicalCandidates: Int = 0,
+  val compilerUniqueCandidates: Int = 0,
+  val compilerBundles: Int = 0,
+  val compilerMillis: Long = 0
+) {
+  val precision: Double get() = if (scores.isEmpty()) 0.0 else scores.sumOf { it.precision } / scores.size
+  val recall: Double get() = if (scores.isEmpty()) 0.0 else 100.0 * scores.count { it.recall } / scores.size
+
+  fun render(): String = buildString {
+    val failures = scores.count { it.failure != null }
+    val compiled = scores.sumOf { it.compiledSamples }
+    val drawn = scores.sumOf { it.sampledCompletions }
+    val sampleCap = scores.size * samplesPerInstance
+    appendLine("C++ completion benchmark")
+    val statementGroups = scores.groupBy { it.fixture to it.line }
+    val completeStatements = statementGroups.values.count { statementScores ->
+      val tokenCount = statementScores.first().statementTokens
+      statementScores.mapTo(linkedSetOf()) { it.prefixTokens } == (0..tokenCount).toSet()
+    }
+    val partialStatements = statementGroups.size - completeStatements
+    val absentStatements = totalStatements - statementGroups.size
+    appendLine(
+      "statements=$completeStatements/$totalStatements " +
+        "(partial=$partialStatements, absent=$absentStatements), " +
+        "coverage=${scores.size}/$totalInstances (selected=$selectedInstances), " +
+        "precision=${precision.percent()}, recall=${recall.percent()}, elapsed=${elapsedMillis}ms, " +
+        "compiledSamples=$compiled/$drawn (cap=$sampleCap), failures=$failures, " +
+        "deadlineStop=$stoppedAtDeadline, compilerCandidates=$compilerUniqueCandidates/" +
+        "$compilerLogicalCandidates, compilerBundles=$compilerBundles, compiler=${compilerMillis}ms"
+    )
+    scores.groupBy { it.fixture }.forEach { (fixture, fixtureScores) ->
+      val fixtureStatements = fixtureScores.map { it.line }.distinct().size
+      appendLine(
+        "$fixture: $fixtureStatements statements, ${fixtureScores.size} instances, " +
+          "precision=${fixtureScores.map { it.precision }.average().percent()}, " +
+        "recall=${(100.0 * fixtureScores.count { it.recall } / fixtureScores.size).percent()}"
+      )
+    }
+    scores.groupBy { it.fixture to it.line }.values.forEach { statementScores ->
+      val first = statementScores.first()
+      appendLine()
+      appendLine("Orig code: ${first.originalCode} [${first.fixture}:${first.line + 1}]")
+      appendLine("CFG stats:")
+      statementScores.sortedBy { it.prefixTokens }.forEach { score ->
+        appendLine(
+          "  index ${score.prefixTokens}: ${score.cfgStats.ifEmpty { "unavailable" }}, " +
+            "precision=${score.precision.percent()}, recall=${if (score.recall) "100%" else "0%"}"
+        )
+        score.rejectedSample?.let { appendLine("    rejected: $it") }
+      }
+      statementScores.sortedBy { it.prefixTokens }.forEach { score ->
+        appendLine(
+          "${score.displayedSamples.size} Samples at index ${score.prefixTokens}: " +
+            "shortest lengths first"
+        )
+        score.displayedSamples.forEach { appendLine("  $it") }
+      }
+    }
+    scores.filter { !it.recall || it.failure != null }.forEach { score ->
+      appendLine(
+        "miss ${score.fixture}:${score.line + 1} prefix=${score.prefixTokens}: " +
+          (score.failure ?: "groundTruth=${score.groundTruth}")
+      )
+    }
+  }.trimEnd()
+}
+
+private data class BenchmarkCase(val fixture: CppFixture, val truncation: CppTruncation)
+
+/** Compiler-equivalence key: C++ token whitespace and genuinely fresh spellings are immaterial. */
+private fun compilerCandidateKey(prefix: List<CppToken>, sample: CppCompletionSample): String {
+  val freshSlots = linkedMapOf<String, Int>()
+  return buildString {
+    (prefix.map { it.text } + sample.tokens).forEach { token ->
+      val freshSlot = token.takeIf(sample.freshNames::contains)?.let { name ->
+        freshSlots.getOrPut(name) { freshSlots.size }
+      }
+      if (freshSlot == null) append("T${token.length}:$token") else append("F$freshSlot")
+      append('\u0000')
+    }
+  }
+}
+
+private class PreparedStatementGrammar(
+  val context: CppCompletionContext,
+  val grammar: PreparedCppCompletionGrammar,
+  val contextMillis: Long,
+  val preparationMillis: Long
+) {
+  val declaratorTypePrefixes by lazy { cppDeclaratorTypePrefixes(context) }
+}
+
+private data class PreparedPrefixGrammar(val grammar: PreparedCppCompletionGrammar, val preparationMillis: Long)
+
+private data class PendingCompletion(
+  val scoreIndex: Int,
+  val case: BenchmarkCase,
+  val exactRecall: Boolean,
+  val contextMillis: Long,
+  val grammarMillis: Long,
+  val inspectedDerivations: String,
+  val cfgStats: String,
+  val contextFacts: String,
+  val samples: List<CppCompletionSample>,
+  val displayedSamples: List<String>,
+  val candidateLines: List<String>,
+  val candidateKeys: List<String> = candidateLines,
+  val sampleCandidates: Int
+) {
+  init { require(candidateKeys.size == candidateLines.size) }
+
+  val candidateCount: Int get() = candidateLines.size
+}
+
+private data class StatementCompilePlan(
+  val id: Int,
+  val completions: List<PendingCompletion>,
+  val uniqueLines: List<String>,
+  val resultIndexes: List<List<Int>>
+) {
+  val case: BenchmarkCase get() = completions.first().case
+  val candidateCount: Int get() = uniqueLines.size
+}
+
+private data class StatementCompileSlice(
+  val plan: StatementCompilePlan,
+  val candidateStart: Int,
+  val candidateEnd: Int
+) {
+  val candidateCount: Int get() = candidateEnd - candidateStart
+  val candidateLines: List<String>
+    get() = plan.uniqueLines.subList(candidateStart, candidateEnd)
+}
+
+private fun packFixtureCompilePlans(
+  plans: List<StatementCompilePlan>,
+  maxCandidateSources: Int = CPP_MAX_CANDIDATE_SOURCES_PER_RESULT_GROUP
+): List<List<StatementCompileSlice>> {
+  require(maxCandidateSources > 0)
+  return plans.groupBy { it.case.fixture }.values.flatMap { fixturePlans ->
+    buildList {
+      var packed = mutableListOf<StatementCompileSlice>()
+      var weight = 0
+      fixturePlans.forEach { plan ->
+        require(plan.candidateCount > 0)
+        var candidateStart = 0
+        while (candidateStart < plan.candidateCount) {
+          if (weight == maxCandidateSources) {
+            add(packed)
+            packed = mutableListOf()
+            weight = 0
+          }
+          val candidateEnd = minOf(
+            plan.candidateCount,
+            candidateStart + maxCandidateSources - weight
+          )
+          packed += StatementCompileSlice(plan, candidateStart, candidateEnd)
+          weight += candidateEnd - candidateStart
+          candidateStart = candidateEnd
+        }
+      }
+      if (packed.isNotEmpty()) add(packed)
+    }
+  }
+}
+
+private class CppCompletionBenchmark(
+  private val service: CppBenchmarkService,
+  private val grammar: CppCompletionGrammar,
+  private val startInstance: Int,
+  private val maxInstances: Int?,
+  private val samplesPerInstance: Int,
+  private val timeLimitMillis: Long
+) {
+  suspend fun run(fixtures: List<CppFixture>): CompletionReport = coroutineScope {
+    val clock = TimeSource.Monotonic.markNow()
+    val all = benchmarkCases(fixtures)
+    assertTrue(
+      all.all { it.truncation.line.tokens.size <= CPP_MAX_STATEMENT_TOKENS },
+      "Every selected statement must fit the finite $CPP_MAX_STATEMENT_TOKENS-token language"
+    )
+    require(startInstance in 0..all.size)
+    val remaining = all.drop(startInstance)
+    val selected = maxInstances?.let(remaining::take) ?: remaining
+    val scores = arrayOfNulls<CompletionScore>(selected.size)
+    val pending = mutableListOf<PendingCompletion>()
+    val preparedStatements =
+      mutableMapOf<Pair<String, Int>, Deferred<Result<PreparedStatementGrammar>>>()
+    val statementsWithQueuedLookahead = mutableSetOf<Pair<String, Int>>()
+    val preparedPrefixes = mutableMapOf<Triple<String, Int, List<String>>, PreparedPrefixGrammar>()
+    val exactRecallByGrammar = mutableMapOf<PreparedCppCompletionGrammar, Boolean>()
+    var compilerLogicalCandidates = 0
+    var compilerUniqueCandidates = 0
+    var compilerBundles = 0
+    var compilerMillis = 0L
+
+    fun queueStatement(case: BenchmarkCase): Deferred<Result<PreparedStatementGrammar>> {
+      val key = case.fixture.name to case.truncation.line.number
+      return preparedStatements.getOrPut(key) {
+        async {
+          runCatching {
+            val deletion = cppTruncations(case.truncation.line).first()
+            val source = truncateCppSource(case.fixture.source, deletion)
+            val contextClock = TimeSource.Monotonic.markNow()
+            val rawContext = service.context(
+              source,
+              deletion.line.number,
+              deletion.prefixText.length,
+              case.fixture.name
+            )
+            val context = rawContext.copy(
+              requiredBinderObligation = service.requiredBinderObligation(
+                source, deletion.line.number, deletion.prefixText.length, rawContext
+              )
+            )
+            val contextMillis = contextClock.elapsedNow().inWholeMilliseconds
+            val preparationClock = TimeSource.Monotonic.markNow()
+            val prepared = grammar.prepare(context)
+            PreparedStatementGrammar(
+              context,
+              prepared,
+              contextMillis,
+              preparationClock.elapsedNow().inWholeMilliseconds
+            )
+          }
+        }
+      }
+    }
+
+    suspend fun prepareStatement(case: BenchmarkCase): PreparedStatementGrammar =
+      queueStatement(case).await().getOrThrow()
+
+    val selectedStatements = selected
+      .filter { it.truncation.suffix.isNotEmpty() }
+      .distinctBy { it.fixture.name to it.truncation.line.number }
+    val statementOrdinals = selectedStatements.withIndex().associate { (index, case) ->
+      (case.fixture.name to case.truncation.line.number) to index
+    }
+
+    fun queueContextWindow(firstOrdinal: Int) {
+      val end = minOf(
+        selectedStatements.size,
+        firstOrdinal + CPP_CONTEXT_LOOKAHEAD_STATEMENTS
+      )
+      for (ordinal in firstOrdinal until end) queueStatement(selectedStatements[ordinal])
+    }
+
+    fun prefixBinders(
+      prefix: List<CppToken>,
+      typePrefixes: Collection<CppDeclaratorTypePrefix>
+    ): List<String> = buildList {
+      cppDeclaratorPrefixBinder(prefix, typePrefixes)?.let(::add)
+      val structuredOpen = prefix.indexOfFirst { it.text == "[" }.takeIf { open ->
+        open >= 0 && prefix.take(open).any { it.text == "auto" }
+      }
+      prefix.forEachIndexed { index, token ->
+        if (token.kind != CppTokenKind.IDENTIFIER) return@forEachIndexed
+        val previous = prefix.getOrNull(index - 1)?.text
+        if (structuredOpen != null && index > structuredOpen && previous in setOf("[", ","))
+          add(token.text)
+      }
+    }.distinct()
+
+    fun preparePrefix(
+      case: BenchmarkCase,
+      context: CppCompletionContext,
+      prefix: List<CppToken>,
+      binders: List<String>
+    ): PreparedPrefixGrammar {
+      val key = Triple(case.fixture.name, case.truncation.line.number, binders)
+      preparedPrefixes[key]?.let { return it }
+      val clock = TimeSource.Monotonic.markNow()
+      val result = PreparedPrefixGrammar(
+        grammar.prepare(context, prefix),
+        clock.elapsedNow().inWholeMilliseconds
+      )
+      preparedPrefixes[key] = result
+      return result
+    }
+
+    suspend fun scorePending(preparedBatch: List<PendingCompletion>) {
+      // Cursor locations on one statement first share unique completed lines. Every unique line is
+      // then substituted into its own fresh copy of the fixture, while result groups remain bounded
+      // for deterministic reassembly. Draw multiplicity is restored from the index maps after
+      // compilation; batching and exact-PCH sharing happen only across independent `sources[]`
+      // translation units in the compiler bridge.
+      val statementPlans = preparedBatch
+        .groupBy { it.case.fixture.name to it.case.truncation.line.number }
+        .values
+        .mapIndexed { planId, statementCompletions ->
+          val uniqueIndexes = linkedMapOf<String, Int>()
+          val uniqueLines = mutableListOf<String>()
+          val resultIndexes = statementCompletions.map { prepared ->
+            prepared.candidateLines.zip(prepared.candidateKeys).map { (line, key) ->
+              uniqueIndexes.getOrPut(key) {
+                uniqueLines += line
+                uniqueLines.lastIndex
+              }
+            }
+          }
+          StatementCompilePlan(planId, statementCompletions, uniqueLines, resultIndexes)
+        }
+      val bundlePlans = packFixtureCompilePlans(statementPlans)
+      compilerLogicalCandidates += preparedBatch.sumOf { it.candidateCount }
+      compilerUniqueCandidates += statementPlans.sumOf { it.candidateCount }
+      compilerBundles += bundlePlans.size
+      val compilerClock = TimeSource.Monotonic.markNow()
+      val uniqueResults = service.compileCandidateBundles(bundlePlans.map { slices ->
+        bundleCppCandidates(
+          slices.first().plan.case.fixture,
+          slices.map { CppStatementCandidates(it.plan.case, it.candidateLines) }
+        )
+      })
+      compilerMillis += compilerClock.elapsedNow().inWholeMilliseconds
+      val resultsByPlan = Array(statementPlans.size) { planId ->
+        arrayOfNulls<CompileResult>(statementPlans[planId].candidateCount)
+      }
+      val compilation = mutableMapOf<Int, List<CompileResult>>()
+      bundlePlans.zip(uniqueResults).forEach { (slices, results) ->
+        check(results.size == slices.sumOf { it.candidateCount })
+        var resultOffset = 0
+        slices.forEach { slice ->
+          repeat(slice.candidateCount) { localIndex ->
+            resultsByPlan[slice.plan.id][slice.candidateStart + localIndex] =
+              results[resultOffset + localIndex]
+          }
+          resultOffset += slice.candidateCount
+        }
+      }
+      statementPlans.forEach { plan ->
+        val statementResults = resultsByPlan[plan.id].map { checkNotNull(it) }
+        plan.completions.zip(plan.resultIndexes).forEach { (prepared, indexes) ->
+          compilation[prepared.scoreIndex] = indexes.map(statementResults::get)
+        }
+      }
+      preparedBatch.forEach { prepared ->
+        val candidates = compilation.getValue(prepared.scoreIndex)
+        check(candidates.size == prepared.candidateCount)
+        val sampleCompilation = candidates.take(prepared.sampleCandidates)
+        val freshCompilation = candidates.drop(prepared.sampleCandidates)
+        val compiledSamples = sampleCompilation.count { it.compiled }
+        val rejectedIndex = sampleCompilation.indexOfFirst { !it.compiled }
+        val truncation = prepared.case.truncation
+        scores[prepared.scoreIndex] = CompletionScore(
+          fixture = prepared.case.fixture.name,
+          line = truncation.line.number,
+          prefixTokens = truncation.prefix.size,
+          precision = if (sampleCompilation.isEmpty()) 0.0
+            else 100.0 * compiledSamples / sampleCompilation.size,
+          recall = prepared.exactRecall || freshCompilation.any { it.compiled },
+          contextMillis = prepared.contextMillis,
+          grammarMillis = prepared.grammarMillis,
+          inspectedDerivations = prepared.inspectedDerivations,
+          cfgStats = prepared.cfgStats,
+          compiledSamples = compiledSamples,
+          sampledCompletions = prepared.samples.size,
+          contextFacts = prepared.contextFacts,
+          originalCode = truncation.line.text.trim(),
+          statementTokens = truncation.line.tokens.size,
+          groundTruth = truncation.suffix.joinToString(" ") { it.text },
+          displayedSamples = prepared.displayedSamples,
+          rejectedSample = rejectedIndex.takeIf { it >= 0 }?.let { indexInSamples ->
+            val completion = prepared.samples[indexInSamples].tokens.joinToString(" ")
+            val diagnostic = sampleCompilation[indexInSamples].diagnostics.compactDiagnostic()
+            if (diagnostic.isEmpty()) completion else "$completion [$diagnostic]"
+          }
+        )
+      }
+    }
+
+    var compilationJob: Deferred<Unit>? = null
+    suspend fun dispatchPending() {
+      if (pending.isEmpty()) return
+      val preparedBatch = pending.toList()
+      pending.clear()
+      // Only one scoring request is in flight. It can use the compiler's configured worker pool
+      // while this coroutine prepares the next wave with clangd; awaiting here bounds retained
+      // source text and prevents HTTP requests from multiplying compiler concurrency.
+      compilationJob?.await()
+      compilationJob = async { scorePending(preparedBatch) }
+    }
+
+    // Start the first semantic request before baseline validation. clangd and clang++ are separate
+    // native processes, and the compiler bridge keeps a process-wide permit pool, so this hides
+    // the remaining cold-context/base-CFG setup without increasing either system's concurrency.
+    queueContextWindow(0)
+    fixtures.chunked(160).forEach { batch ->
+      service.compile(batch.map { it.source }).zip(batch).forEach { (result, fixture) ->
+        check(result.compiled) { "${fixture.name} is not a valid baseline:\n${result.diagnostics}" }
+      }
+    }
+    var deadlineStop = false
+    for ((scoreIndex, case) in selected.withIndex()) {
+      if (clock.elapsedNow().inWholeMilliseconds + CPP_CASE_DEADLINE_RESERVE_MILLIS >= timeLimitMillis) {
+        deadlineStop = true
+        break
+      }
+      val truncation = case.truncation
+      val statementPrepared = if (truncation.suffix.isEmpty()) null else try {
+        prepareStatement(case)
+      } catch (error: Throwable) {
+        scores[scoreIndex] = failed(case, 0, 0, error.message ?: "clangd context failed")
+        continue
+      }
+      // Keep a small ordered context window in flight while this statement's CPU-heavy quotient
+      // counting and sampling proceed. clangd still serializes document versions, but once one LSP
+      // query completes its declaration probes can overlap the next LSP query and browser CFG work.
+      // The deferred map prevents duplicate requests for every remaining boundary of a statement.
+      val statementKey = case.fixture.name to truncation.line.number
+      if (statementsWithQueuedLookahead.add(statementKey)) {
+        statementOrdinals[statementKey]?.let { ordinal ->
+          queueContextWindow(ordinal + 1)
+        }
+      }
+      val context = if (statementPrepared == null) {
+        // The endpoint quotient is exactly epsilon and needs no semantic facts. Its short-first
+        // length-zero draws still reach the compiler-backed scorer (and hit the fixture cache).
+        CppCompletionContext(emptySet())
+      } else statementPrepared.context
+      val contextMillis = statementPrepared?.contextMillis ?: 0
+      val binders = statementPrepared?.let {
+        prefixBinders(truncation.prefix, it.declaratorTypePrefixes)
+      }.orEmpty()
+      val activeGrammar = when {
+        statementPrepared == null -> null
+        binders.isEmpty() -> PreparedPrefixGrammar(
+          statementPrepared.grammar,
+          statementPrepared.preparationMillis
+        )
+        else -> preparePrefix(case, context, truncation.prefix, binders)
+      }
+      if (activeGrammar != null && activeGrammar.preparationMillis > CPP_CFG_BUDGET_MILLIS) {
+        scores[scoreIndex] = failed(
+          case,
+          contextMillis,
+          activeGrammar.preparationMillis,
+          "Base CFG ${activeGrammar.preparationMillis}ms > ${CPP_CFG_BUDGET_MILLIS}ms",
+          context.summary()
+        )
+        continue
+      }
+      val grammarClock = TimeSource.Monotonic.markNow()
+      val language = when {
+        activeGrammar == null -> grammar.generate(context, truncation.prefix)
+        else -> activeGrammar.grammar.generate(truncation.prefix)
+      }
+      val grammarMillis = grammarClock.elapsedNow().inWholeMilliseconds
+      if (grammarMillis > CPP_CFG_BUDGET_MILLIS) {
+        scores[scoreIndex] = failed(
+          case,
+          contextMillis,
+          grammarMillis,
+          "CFG ${grammarMillis}ms > ${CPP_CFG_BUDGET_MILLIS}ms",
+          context.summary()
+        )
+        continue
+      }
+
+      // Every cursor language is an exact left quotient of its prepared grammar, hence
+      // suffix in prefix^-1(G) iff the unchanged full statement is in G. Cache that invariant
+      // once per ordinary/binder-sensitive grammar variant; guarded fresh matching remains
+      // cursor-specific below when exact membership is false.
+      val exactRecall = activeGrammar?.grammar?.let { preparedGrammar ->
+        exactRecallByGrammar.getOrPut(preparedGrammar) {
+          preparedGrammar.recognizes(truncation.line.tokens)
+        }
+      } ?: true
+      val freshMatches = if (exactRecall) emptyList() else language.freshMatches(truncation.suffix)
+      val samplePreparationClock = TimeSource.Monotonic.markNow()
+      val sampler = CppCompletionSampler(
+        language,
+        context.identifiers + truncation.line.tokens.map { it.text },
+        Random(case.fixture.name.hashCode() * 31 + truncation.line.number * 17 + truncation.prefix.size)
+      )
+      sampler.prepare(samplesPerInstance)
+      val preparedSamplesMillis = samplePreparationClock.elapsedNow().inWholeMilliseconds
+      val samples = sampler.sample(samplesPerInstance)
+      check(samples.size <= samplesPerInstance) {
+        "Short-first sampler exceeded its cap: ${samples.size}/$samplesPerInstance"
+      }
+      check(samples.zipWithNext().all { (left, right) -> left.length <= right.length }) {
+        "Short-first samples are not ordered by exact terminal length"
+      }
+      val lengthHistogram = samples.groupingBy { it.length }.eachCount()
+      check(lengthHistogram.values.all { it <= CPP_SAMPLES_PER_LENGTH }) {
+        "A terminal-length slice exceeded $CPP_SAMPLES_PER_LENGTH samples: $lengthHistogram"
+      }
+      val displayedSamples = shortestDisplayedSamples(case, samples)
+      check(displayedSamples.size == minOf(CPP_DISPLAY_SAMPLES, samples.size))
+      val sampleLines = samples.map { sample -> completedLine(case, sample.tokens) }
+      val freshNames = FreshCppNames(
+        context.identifiers + truncation.line.tokens.map { it.text },
+        Random(case.fixture.name.hashCode() xor truncation.prefix.size)
+      )
+      val freshLines = freshMatches.map { match ->
+        val replacements = match.groups.associateWith { freshNames.next() }
+        completedLine(
+          case,
+          truncation.suffix.mapIndexed { indexInSuffix, token ->
+            replacements.entries.firstOrNull { indexInSuffix in it.key }?.value ?: token.text
+          }
+        )
+      }
+      val candidateLines = sampleLines + freshLines
+      val candidateKeys = samples.map { sample -> compilerCandidateKey(truncation.prefix, sample) } + freshLines
+      val prepared = PendingCompletion(
+        scoreIndex = scoreIndex,
+        case = case,
+        exactRecall = exactRecall,
+        contextMillis = contextMillis,
+        grammarMillis = grammarMillis,
+        inspectedDerivations = sampler.inspectedDerivationCount.toString(),
+        cfgStats = "${language.bounded.structuralStats()}, rules=${language.syntax.size}, " +
+          "maxTokens=${language.templateTokens}, " +
+          "${if (sampler.coversFullBound) "total" else "inspected"}Derivations" +
+          "[${sampler.inspectedLengths}]=${sampler.inspectedDerivationCount}, " +
+          "generated=${grammarMillis}ms, base=${activeGrammar?.preparationMillis ?: 0}ms, " +
+          "phases=d${language.conditioningMetrics.derivativeMillis}/" +
+          "r${language.conditioningMetrics.reachableMillis}/" +
+          "b${language.conditioningMetrics.boundedMillis}ms, " +
+          "contextualized=${contextMillis}ms, preparedSamples=${preparedSamplesMillis}ms, " +
+          "sampleLengths=${lengthHistogram.entries.joinToString(prefix = "[", postfix = "]") { "${it.key}:${it.value}" }}, " +
+          "context=${context.summary()}",
+        contextFacts = context.summary(),
+        samples = samples,
+        displayedSamples = displayedSamples,
+        candidateLines = candidateLines,
+        candidateKeys = candidateKeys,
+        sampleCandidates = sampleLines.size
+      )
+      if (prepared.candidateCount == 0) {
+        scores[scoreIndex] = failed(case, contextMillis, grammarMillis, "CFG has no sampled derivations")
+      } else {
+        pending += prepared
+      }
+      if (truncation.suffix.isEmpty()) {
+        // Do not split a physical statement between compiler waves: statement-level planning is
+        // what deduplicates identical completed lines and keeps their result maps contiguous.
+        if (pending.size >= CPP_COMPILE_WAVE_CURSOR_TARGET) dispatchPending()
+        // Cursor cases are contiguous by statement. Release its large conditioner workspace after
+        // the endpoint so the exhaustive corpus sweep retains only the one-line lookahead.
+        preparedStatements.remove(statementKey)
+        preparedPrefixes.keys.removeAll { (fixture, line, _) ->
+          fixture == statementKey.first && line == statementKey.second
+        }
+        exactRecallByGrammar.clear()
+      }
+    }
+    dispatchPending()
+    compilationJob?.await()
+
+    val completedScores = scores.filterNotNull()
+
+    CompletionReport(
+      totalStatements = all.map { it.fixture.name to it.truncation.line.number }.distinct().size,
+      totalInstances = all.size,
+      selectedInstances = selected.size,
+      samplesPerInstance = samplesPerInstance,
+      scores = completedScores,
+      elapsedMillis = clock.elapsedNow().inWholeMilliseconds,
+      stoppedAtDeadline = deadlineStop,
+      compilerLogicalCandidates = compilerLogicalCandidates,
+      compilerUniqueCandidates = compilerUniqueCandidates,
+      compilerBundles = compilerBundles,
+      compilerMillis = compilerMillis
+    )
+  }
+
+  private fun failed(
+    case: BenchmarkCase,
+    context: Long,
+    grammar: Long,
+    reason: String,
+    contextFacts: String = ""
+  ) =
+    CompletionScore(
+      fixture = case.fixture.name,
+      line = case.truncation.line.number,
+      prefixTokens = case.truncation.prefix.size,
+      precision = 0.0,
+      recall = false,
+      contextMillis = context,
+      grammarMillis = grammar,
+      inspectedDerivations = "0",
+      contextFacts = contextFacts,
+      originalCode = case.truncation.line.text.trim(),
+      statementTokens = case.truncation.line.tokens.size,
+      groundTruth = case.truncation.suffix.joinToString(" ") { it.text },
+      failure = reason
+    )
+
+  private fun completedLine(case: BenchmarkCase, suffix: List<String>): String {
+    val prefix = case.truncation.prefixText
+    return prefix + renderCppCompletionSuffix(prefix, suffix)
+  }
+
+  /** Shows one representative from each shortest slice, then fills from those slices if needed. */
+  private fun shortestDisplayedSamples(
+    case: BenchmarkCase,
+    samples: List<CppCompletionSample>
+  ): List<String> {
+    val representatives = linkedSetOf<Int>()
+    var previousLength: Int? = null
+    samples.forEachIndexed { index, sample ->
+      if (sample.length != previousLength && representatives.size < CPP_DISPLAY_SAMPLES) {
+        representatives += index
+        previousLength = sample.length
+      }
+    }
+    samples.indices.forEach { index ->
+      if (representatives.size < minOf(CPP_DISPLAY_SAMPLES, samples.size)) representatives += index
+    }
+    return representatives.sortedBy { samples[it].length }.map { index ->
+      val sample = samples[index]
+      "length ${sample.length}: ${completedLine(case, sample.tokens).trim()}"
+    }
+  }
+
+}
+
+private data class CppStatementCandidates(val case: BenchmarkCase, val candidates: List<String>)
+
+/**
+ * Produces one complete translation unit per unique candidate. Each source differs from the
+ * fixture only in the selected statement content: leading indentation, line endings, and every
+ * other source byte are retained. This is essential because later declarations and uses can make a
+ * locally well-formed replacement ill-formed, and template instantiation state must never flow
+ * from one candidate into another.
+ */
+private fun bundleCppCandidates(
+  fixture: CppFixture,
+  statements: List<CppStatementCandidates>
+): CppCandidateBundle {
+  require(statements.isNotEmpty())
+  require(statements.all { it.case.fixture == fixture && it.candidates.isNotEmpty() })
+  require(statements.map { it.case.truncation.line.number }.distinct().size == statements.size)
+
+  return CppCandidateBundle(statements.flatMap { statement ->
+    val line = statement.case.truncation.line
+    val indentation = line.text.takeWhile { it == ' ' || it == '\t' }
+    val statementStart = line.start + indentation.length
+    statement.candidates.map { candidate ->
+      require('\n' !in candidate && '\r' !in candidate)
+      val candidateStatement = candidate.removePrefix(indentation)
+      fixture.source.replaceRange(statementStart, line.contentEnd, candidateStatement)
+    }
+  })
+}
+
+class CppCompletionBenchmarkTest {
+  @Test
+  fun reportGroupsCfgStatsAndSamplesByOriginalStatement() {
+    fun score(index: Int, line: Int = 4) = CompletionScore(
+      fixture = "sample.cpp",
+      line = line,
+      prefixTokens = index,
+      precision = 100.0,
+      recall = true,
+      contextMillis = 1,
+      grammarMillis = 2,
+      inspectedDerivations = "7",
+      cfgStats = "CFG(|Σ|=3, |V|=4, |P|=5), rules=8, maxTokens=32, " +
+        "inspectedDerivations[0..2]=7, generated=2ms, preparedSamples=1ms",
+      originalCode = "items.push_back(value);",
+      displayedSamples = listOf("items.push_back(value);", "items.clear();", "return;")
+    )
+    val rendered = CompletionReport(
+      3, 4, 4, 100,
+      listOf(
+        score(0).copy(statementTokens = 2),
+        score(1).copy(statementTokens = 2),
+        score(2).copy(statementTokens = 2),
+        score(0, line = 5).copy(statementTokens = 2)
+      ),
+      3, false
+    ).render()
+
+    assertTrue("statements=1/3 (partial=1, absent=1)" in rendered)
+    assertEquals(2, rendered.split("Orig code:").size - 1)
+    assertTrue("CFG stats:\n  index 0:" in rendered)
+    assertTrue("3 Samples at index 0:" in rendered)
+    assertTrue("3 Samples at index 2:" in rendered)
+  }
+
+  @Test
+  fun candidateResultGroupingPreservesOrderAndDiagnostics() {
+    val bundles = listOf(
+      CppCandidateBundle(listOf("first-a", "first-b")),
+      CppCandidateBundle(listOf("second-a"))
+    )
+    val results = listOf(
+      CompileResult(true, false, ""),
+      CompileResult(false, false, "cpp_completion_1.cpp:7: error: first-b failed"),
+      CompileResult(false, true, "compiler timed out while compiling second-a")
+    )
+    val grouped = regroupCandidateResults(bundles, results)
+
+    assertEquals(listOf(listOf(results[0], results[1]), listOf(results[2])), grouped)
+    assertEquals("cpp_completion_1.cpp:7: error: first-b failed", grouped[0][1].diagnostics)
+    assertTrue(grouped[1][0].timedOut)
+    assertFailsWith<IllegalArgumentException> {
+      regroupCandidateResults(bundles, results.dropLast(1))
+    }
+  }
+
+  @Test
+  fun compilerCandidateKeysAlphaNormalizeOnlyFreshIdentifiers() {
+    val first = CppCompletionSample(
+      listOf("int", "freshId_aaaaaaaaaaaa", "=", "freshId_aaaaaaaaaaaa", ";"),
+      setOf("freshId_aaaaaaaaaaaa")
+    )
+    val renamed = CppCompletionSample(
+      listOf("int", "freshId_bbbbbbbbbbbb", "=", "freshId_bbbbbbbbbbbb", ";"),
+      setOf("freshId_bbbbbbbbbbbb")
+    )
+    val distinctBinders = CppCompletionSample(
+      listOf("int", "freshId_cccccccccccc", "=", "freshId_dddddddddddd", ";"),
+      setOf("freshId_cccccccccccc", "freshId_dddddddddddd")
+    )
+
+    assertEquals(compilerCandidateKey(emptyList(), first), compilerCandidateKey(emptyList(), renamed))
+    assertTrue(compilerCandidateKey(emptyList(), first) != compilerCandidateKey(emptyList(), distinctBinders))
+    assertTrue(
+      compilerCandidateKey(emptyList(), first) !=
+        compilerCandidateKey(emptyList(), first.copy(tokens = first.tokens.toMutableList().also { it[0] = "long" }))
+    )
+  }
+
+  @Test
+  fun everyCandidateGetsAFreshFixtureWithOnlyItsStatementReplaced() {
+    val source = listOf(
+      "struct Access { void allow() {} };",
+      "",
+      "int main() {",
+      "\tAccess granted;",
+      "\tgranted.allow();",
+      "\treturn 0;",
+      "}"
+    ).joinToString("\n")
+    val fixture = CppFixture("downstream.cpp", source)
+    val line = cppLines(source).single { it.text.trim() == "Access granted;" }
+    val case = BenchmarkCase(fixture, cppTruncations(line).first())
+
+    val bundle = bundleCppCandidates(
+      fixture,
+      listOf(
+        CppStatementCandidates(
+          case,
+          listOf("int granted = 0;", "\tAccess granted;")
+        )
+      )
+    )
+
+    val statementStart = line.start + line.text.indexOfFirst { it != ' ' && it != '\t' }
+    assertEquals(
+      listOf(
+        source.replaceRange(statementStart, line.contentEnd, "int granted = 0;"),
+        source
+      ),
+      bundle.sources
+    )
+    assertTrue("\tint granted = 0;\n\tgranted.allow();" in bundle.sources[0])
+    assertFalse("Access granted;" in bundle.sources[0])
+    assertTrue("granted.allow();" in bundle.sources[0])
+    assertEquals(source.substring(0, statementStart), bundle.sources[0].substring(0, statementStart))
+    assertEquals(
+      source.substring(line.contentEnd),
+      bundle.sources[0].substring(statementStart + "int granted = 0;".length)
+    )
+  }
+
+  @Test
+  fun templateCandidateSourcesAreIndependentOfCandidateOrdering() {
+    val source = """
+      template<class T> struct Gate { static constexpr int value = 1; };
+
+      int main() {
+        int observed = 0;
+        return observed;
+      }
+
+      template<> struct Gate<int> { static constexpr int value = 2; };
+    """.trimIndent()
+    val fixture = CppFixture("template_order.cpp", source)
+    val line = cppLines(source).single { it.text.trim() == "int observed = 0;" }
+    val case = BenchmarkCase(fixture, cppTruncations(line).first())
+    val candidates = listOf(
+      "int observed = Gate<int>::value;",
+      "int observed = Gate<long>::value;"
+    )
+
+    val forward = bundleCppCandidates(
+      fixture,
+      listOf(CppStatementCandidates(case, candidates))
+    )
+    val reverse = bundleCppCandidates(
+      fixture,
+      listOf(CppStatementCandidates(case, candidates.reversed()))
+    )
+
+    assertEquals(2, forward.sources.size)
+    assertEquals(forward.sources.reversed(), reverse.sources)
+    forward.sources.forEachIndexed { index, candidateSource ->
+      assertTrue(candidates[index] in candidateSource)
+      assertFalse(candidates[1 - index] in candidateSource)
+      assertEquals(source.lines().size, candidateSource.lines().size)
+    }
+  }
+
+  @Test
+  fun independentCandidateOracleHonorsDownstreamUsesAndTemplateOrdering(): Promise<Unit> =
+    MainScope().promise {
+      val service = CppBenchmarkService()
+      if (service.status().compiler == null) return@promise
+
+      fun bundle(
+        name: String,
+        source: String,
+        original: String,
+        candidates: List<String>
+      ): Pair<CppCandidateBundle, CppLine> {
+        val fixture = CppFixture(name, source)
+        val line = cppLines(source).single { it.text.trim() == original }
+        val case = BenchmarkCase(fixture, cppTruncations(line).first())
+        return bundleCppCandidates(
+          fixture,
+          listOf(CppStatementCandidates(case, candidates))
+        ) to line
+      }
+
+      val accessSource = """
+        struct Access { void allow() {} };
+
+        int main() {
+          Access granted;
+          granted.allow();
+          return 0;
+        }
+      """.trimIndent()
+      val (access, _) = bundle(
+        "downstream_compile.cpp",
+        accessSource,
+        "Access granted;",
+        listOf("int granted = 0;", "Access granted;")
+      )
+      val accessUseLine = cppLines(accessSource).single { it.text.trim() == "granted.allow();" }
+
+      val templateSource = """
+        template<class T> struct Gate { static constexpr int value = 1; };
+
+        int main() {
+          int observed = 0;
+          return observed;
+        }
+
+        template<> struct Gate<int> { static constexpr int value = 2; };
+      """.trimIndent()
+      val templateCandidates = listOf(
+        "int observed = Gate<int>::value;",
+        "int observed = Gate<long>::value;"
+      )
+      val (templateForward, _) = bundle(
+        "template_forward.cpp",
+        templateSource,
+        "int observed = 0;",
+        templateCandidates
+      )
+      val (templateReverse, _) = bundle(
+        "template_reverse.cpp",
+        templateSource,
+        "int observed = 0;",
+        templateCandidates.reversed()
+      )
+      val specializationLine = cppLines(templateSource).single {
+        it.text.trim().startsWith("template<> struct Gate<int>")
+      }
+
+      val results = service.compileCandidateBundles(
+        listOf(access, templateForward, templateReverse)
+      )
+
+      assertEquals(listOf(false, true), results[0].map(CompileResult::compiled))
+      assertTrue(
+        Regex("cpp_completion_[0-9]+\\.cpp:${accessUseLine.number + 1}(?::[0-9]+)?:")
+          .containsMatchIn(results[0][0].diagnostics),
+        "The downstream-use rejection must retain its original line: ${results[0][0].diagnostics}"
+      )
+      assertEquals(listOf(false, true), results[1].map(CompileResult::compiled))
+      assertEquals(listOf(true, false), results[2].map(CompileResult::compiled))
+      listOf(results[1][0], results[2][1]).forEach { rejected ->
+        assertTrue(
+          Regex("cpp_completion_[0-9]+\\.cpp:${specializationLine.number + 1}(?::[0-9]+)?:")
+            .containsMatchIn(rejected.diagnostics),
+          "The specialization-order rejection must retain its original line: ${rejected.diagnostics}"
+        )
+      }
+    }
+
+  @Test
+  fun fixtureBundlePackingIsCandidateBoundedAndReassemblesStatementSlices() {
+    val source = """
+      int main() {
+        int first = 1;
+        int second = 2;
+      }
+    """.trimIndent()
+    val fixture = CppFixture("packing.cpp", source)
+    fun plan(id: Int, code: String, candidates: Int): StatementCompilePlan {
+      val line = cppLines(source).single { it.text.trim() == code }
+      val case = BenchmarkCase(fixture, cppTruncations(line).first())
+      val completion = PendingCompletion(
+        scoreIndex = id,
+        case = case,
+        exactRecall = true,
+        contextMillis = 0,
+        grammarMillis = 0,
+        inspectedDerivations = "1",
+        cfgStats = "",
+        contextFacts = "",
+        samples = emptyList(),
+        displayedSamples = emptyList(),
+        candidateLines = emptyList(),
+        sampleCandidates = 0
+      )
+      return StatementCompilePlan(
+        id,
+        listOf(completion),
+        List(candidates) { "$code // candidate $it" },
+        emptyList()
+      )
+    }
+
+    val packed = packFixtureCompilePlans(
+      listOf(plan(0, "int first = 1;", 5), plan(1, "int second = 2;", 2)),
+      maxCandidateSources = 3
+    )
+
+    assertEquals(listOf(3, 3, 1), packed.map { bundle -> bundle.sumOf { it.candidateCount } })
+    assertEquals(
+      listOf((0 until 5).toList(), (0 until 2).toList()),
+      (0..1).map { planId ->
+        packed.flatten().filter { it.plan.id == planId }
+          .flatMap { it.candidateStart until it.candidateEnd }
+      }
+    )
+  }
+
+  @Test
+  fun mapsUnresolvedAndEnclosingCallableContextFacts() {
+    val json = js("({})")
+    json.identifiers = arrayOf("visible")
+    json.unresolvedIdentifiers = arrayOf("later_name", "other_name", "later_name")
+    json.requiredBinderObligation = js("""({
+      binders: ['later_name'],
+      singletonGate: {
+        binder: 'later_name',
+        accepted: [{type: 'Widget *', declarationKind: 'object'}],
+        probed: [
+          {type: 'Widget *', declarationKind: 'object'},
+          {type: 'Widget &', declarationKind: 'lvalueReference'}
+        ],
+        complete: false
+      }
+    })""")
+    json.requiredIdentifier = "later_name"
+    json.requiredTypes = arrayOf("Widget", "const Widget &", "Widget")
+    json.probedRequiredTypes = arrayOf("Widget", "const Widget &", "double")
+    json.enclosingReturnType = "const Widget &"
+    json.enclosingClassType = "Factory"
+    json.thisType = "const Factory *"
+    json.mutableFields = arrayOf("cache")
+    json.types = arrayOf(js("({ name: 'AbstractBase', type: 'AbstractBase', kind: 'class', abstract: true })"))
+
+    val context = cppCompletionContextFromDto(json)
+
+    assertEquals(setOf("later_name", "other_name"), context.unresolvedIdentifiers)
+    assertEquals(setOf("later_name"), context.requiredBinderObligation?.binders)
+    assertEquals(
+      setOf(CppBindingProfile("Widget *", declarationKind = "object")),
+      context.requiredBinderObligation?.singletonGate?.accepted
+    )
+    assertEquals(2, context.requiredBinderObligation?.singletonGate?.probed?.size)
+    assertEquals("later_name", context.requiredIdentifier)
+    assertEquals(setOf("Widget", "const Widget &"), context.requiredTypes)
+    assertEquals(setOf("Widget", "const Widget &", "double"), context.probedRequiredTypes)
+    assertEquals("const Widget &", context.enclosingReturnType)
+    assertEquals("Factory", context.enclosingClassType)
+    assertEquals("const Factory *", context.thisType)
+    assertEquals(setOf("cache"), context.mutableFields)
+    assertTrue(context.types.single().abstract)
+  }
+
+  private fun semaParameter(type: String, name: String = "") = CppParameter(
+    name = name,
+    type = type,
+    canonicalType = type
+  )
+
+  private fun semaType(type: String, abstract: Boolean = false) = CppReference(
+    name = type,
+    type = type,
+    kind = "class",
+    source = "sema",
+    abstract = abstract,
+    id = "type:$type",
+    qualifiedName = type,
+    canonicalType = type,
+    isType = true,
+    isValue = false,
+    isCallable = false,
+    isMember = false,
+    isStatic = false
+  )
+
+  private fun semaValue(
+    name: String,
+    type: String,
+    owner: String? = null,
+    mutableField: Boolean? = null
+  ) = CppReference(
+    name = name,
+    type = type,
+    kind = if (owner == null) "variable" else "field",
+    ownerType = owner,
+    source = "sema",
+    id = "value:${owner?.let { "$it::" }.orEmpty()}$name",
+    qualifiedName = owner?.let { "$it::$name" } ?: name,
+    canonicalType = type,
+    canonicalOwnerType = owner,
+    isType = false,
+    isValue = true,
+    isCallable = false,
+    isMember = owner != null,
+    isStatic = false,
+    isMutableField = mutableField
+  )
+
+  private fun semaFunction(
+    name: String,
+    returnType: String,
+    parameters: List<CppParameter> = emptyList()
+  ) = CppReference(
+    name = name,
+    returnType = returnType,
+    parameters = parameters,
+    kind = if (name.substringAfterLast("::").startsWith("operator")) "operator" else "function",
+    source = "sema",
+    id = "function:$name(${parameters.joinToString { it.canonicalType ?: it.type }})",
+    qualifiedName = name,
+    canonicalReturnType = returnType,
+    isType = false,
+    isValue = false,
+    isCallable = true,
+    isMember = false,
+    isStatic = false
+  )
+
+  private fun semaMethod(
+    owner: String,
+    name: String,
+    returnType: String,
+    parameters: List<CppParameter> = emptyList(),
+    constMethod: Boolean = false
+  ) = CppReference(
+    name = name,
+    returnType = returnType,
+    parameters = parameters,
+    kind = "method",
+    ownerType = owner,
+    source = "sema",
+    id = "$owner::$name(${parameters.joinToString { it.canonicalType ?: it.type }})",
+    qualifiedName = "$owner::$name",
+    canonicalReturnType = returnType,
+    canonicalOwnerType = owner,
+    isType = false,
+    isValue = false,
+    isCallable = true,
+    isMember = true,
+    isStatic = false,
+    isConstMethod = constMethod
+  )
+
+  private fun semaConstructor(
+    type: String,
+    parameters: List<CppParameter> = emptyList()
+  ) = CppReference(
+    name = type.substringAfterLast("::"),
+    returnType = type,
+    parameters = parameters,
+    kind = "constructor",
+    ownerType = type,
+    source = "sema",
+    id = "$type::${type.substringAfterLast("::")}(${parameters.joinToString { it.canonicalType ?: it.type }})",
+    qualifiedName = "$type::${type.substringAfterLast("::")}",
+    canonicalReturnType = type,
+    canonicalOwnerType = type,
+    isType = false,
+    isValue = false,
+    isCallable = true,
+    isMember = true,
+    isStatic = false
+  )
+
+  private fun semaAlias(name: String, target: String) = CppReference(
+    name = name,
+    type = target,
+    kind = "typeAlias",
+    source = "sema",
+    id = "alias:$name",
+    qualifiedName = name,
+    canonicalType = target,
+    isType = true,
+    isValue = false,
+    isCallable = false,
+    isMember = false,
+    isStatic = false
+  )
+
+  @Test
+  fun nestedTemplateDeclarationIsRecognizedAtEveryTypeBoundary() {
+    val nestedType = "atlas::Sequence<cosmos::Handle<zoo::Animal>>"
+    val line = cppLines("$nestedType animals;").single()
+    val context = CppCompletionContext(
+      identifiers = setOf("atlas", "Sequence", "cosmos", "Handle", "zoo", "Animal", "animals"),
+      sourceIdentifiers = setOf(
+        "atlas", "Sequence", "cosmos", "Handle", "zoo", "Animal", "animals"
+      ),
+      types = listOf(semaType(nestedType)),
+      functions = listOf(semaConstructor(nestedType)),
+      unresolvedIdentifiers = setOf("animals"),
+      requiredIdentifier = "animals"
+    )
+    cppTruncations(line).forEach { truncation ->
+      val language = CppCompletionGrammar().generate(context, truncation.prefix)
+      assertTrue(
+        language.recognizes(truncation.suffix),
+        "Nested-template declaration rejected at token index ${truncation.prefix.size}: " +
+          projectCppTokens(line.tokens)
+      )
+    }
+  }
+
+  @Test
+  fun declaratorPrefixParserRetainsOnlySemaTypedBinders() {
+    val template = CppReference(
+      name = "std::vector",
+      kind = "ClassTemplate",
+      isType = true,
+      templateParameters = listOf(CppParameter(name = "T", type = "type"))
+    )
+    val context = CppCompletionContext(
+      identifiers = setOf("std", "vector", "Shape", "values", "source", "make"),
+      typeNames = setOf("Shape"),
+      types = listOf(template, semaType("Shape"))
+    )
+    val typePrefixes = cppDeclaratorTypePrefixes(context)
+
+    fun assertRetained(statement: String, binder: String) {
+      val line = cppLines(statement).single()
+      cppTruncations(line).forEach { truncation ->
+        val expected = truncation.prefix.any { it.text == binder }
+        assertEquals(
+          binder.takeIf { expected },
+          cppDeclaratorPrefixBinder(truncation.prefix, typePrefixes),
+          "binder at token index ${truncation.prefix.size}: $statement"
+        )
+      }
+    }
+
+    assertRetained("std::vector<std::vector<int>> values = source;", "values")
+    assertRetained("Shape * const values = source;", "values")
+    assertRetained("Shape & values = source;", "values")
+    assertRetained("Shape && values = make();", "values")
+    assertRetained("const Shape & values = source;", "values")
+    assertRetained("auto values = make();", "values")
+    assertRetained("using values = Shape;", "values")
+
+    listOf(
+      "left > right;", "left * right;", "left & right;", "left && right;",
+      "Shape > right;"
+    ).forEach { expression ->
+      assertEquals(
+        null,
+        cppDeclaratorPrefixBinder(cppLines(expression).single().tokens, typePrefixes),
+        "expression operators must not manufacture a binder: $expression"
+      )
+    }
+  }
+
+  @Test
+  fun requiredDeclaratorConsumesReferenceOperatorsAndSurvivesInitializerPrefixes() {
+    val context = CppCompletionContext(
+      identifiers = setOf("Shape", "source", "alias"),
+      sourceIdentifiers = setOf("Shape", "source"),
+      types = listOf(semaType("Shape")),
+      values = listOf(semaValue("source", "Shape"))
+    )
+    val line = cppLines("Shape & alias = source;").single()
+    val binder = line.tokens.indexOfFirst { it.text == "alias" }
+
+    cppTruncations(line).filter { it.prefix.size > binder }.forEach { truncation ->
+      assertTrue(
+        CppCompletionGrammar().generate(context, truncation.prefix)
+          .recognizes(truncation.suffix),
+        "reference declarator rejected after token index ${truncation.prefix.size}"
+      )
+    }
+  }
+
+  @Test
+  fun declarationFactsAreNotFilteredByThePreferredTypeHint() {
+    val prism = "optics::Prism"
+    val echo = "acoustics::Echo"
+    val context = CppCompletionContext(
+      identifiers = setOf("optics", "Prism", "acoustics", "Echo", "value"),
+      sourceIdentifiers = setOf("optics", "Prism", "acoustics", "Echo", "value"),
+      types = listOf(semaType(prism), semaType(echo)),
+      functions = listOf(semaConstructor(prism), semaConstructor(echo)),
+      requiredIdentifier = "value",
+      preferredType = "int",
+      canonicalPreferredType = "int"
+    )
+    val language = CppCompletionGrammar().generate(context, emptyList())
+    fun statement(source: String) = cppLines(source).single().tokens
+
+    assertTrue(language.recognizes(statement("$prism value;")))
+    assertTrue(language.recognizes(statement("$echo value;")))
+  }
+
+  @Test
+  fun hexadecimalDigitsAndUserSuffixesRetainTheirLiteralCategories() {
+    val tokens = cppLines(
+      "0xdead 0xFFu 123_people 0b1010 0755 .5 1.0e3;"
+    ).single().tokens.dropLast(1)
+
+    assertEquals(
+      listOf(
+        CppTokenKind.INTEGER,
+        CppTokenKind.INTEGER,
+        CppTokenKind.USER_DEFINED_INTEGER,
+        CppTokenKind.INTEGER,
+        CppTokenKind.INTEGER,
+        CppTokenKind.FLOATING,
+        CppTokenKind.FLOATING
+      ),
+      tokens.map(CppToken::kind)
+    )
+  }
+
+  @Test
+  fun explicitOperatorResultTypesControlChainingAndInitialization() {
+    val emitter = "telemetry::Emitter"
+    val channel = "telemetry::Channel"
+    val glyph = "telemetry::Glyph"
+    val identifiers = setOf("telemetry", "Emitter", "Channel", "Glyph", "out", "mark")
+    val base = CppCompletionContext(
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(semaValue("out", emitter), semaValue("mark", glyph)),
+      types = listOf(semaType(emitter), semaType(channel), semaType(glyph)),
+      functions = listOf(
+        semaFunction(
+          "operator<<", "$channel &",
+          listOf(semaParameter("$emitter &", "sink"), semaParameter("const $glyph &", "value"))
+        ),
+        semaFunction(
+          "operator<<", "$channel &",
+          listOf(semaParameter("$channel &", "sink"), semaParameter("const $glyph &", "value"))
+        )
+      )
+    )
+    val chainedInsertion = cppLines("out << mark << mark;").single().tokens
+    assertTrue(
+      CppCompletionGrammar().generate(base, emptyList()).recognizes(chainedInsertion),
+      "The second operator must receive the first operator's declared result type"
+    )
+
+    val aliasContext = base.copy(
+      identifiers = identifiers + "alias",
+      sourceIdentifiers = identifiers + "alias",
+      unresolvedIdentifiers = setOf("alias"),
+      requiredIdentifier = "alias"
+    )
+    val generator = CppCompletionGrammar()
+    assertTrue(
+      generator.generate(aliasContext, emptyList()).recognizes(
+        cppLines("const $channel& alias = out << mark;").single().tokens
+      ),
+      "The operator's lvalue-reference result must bind to a const reference"
+    )
+    val copyContext = base.copy(
+      identifiers = identifiers + "copy",
+      sourceIdentifiers = identifiers + "copy",
+      unresolvedIdentifiers = setOf("copy"),
+      requiredIdentifier = "copy"
+    )
+    assertFalse(
+      generator.generate(copyContext, emptyList()).recognizes(
+        cppLines("$emitter copy = out << mark;").single().tokens
+      ),
+      "An operator result must not be retyped as its left operand"
+    )
+  }
+
+  @Test
+  fun operatorFactsDoNotInventUnrelatedAssignmentConversions() {
+    val console = "terminal::Console"
+    val packet = "terminal::Packet"
+    val identifiers = setOf("terminal", "Console", "Packet", "console", "packet")
+    val context = CppCompletionContext(
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(
+        semaValue("console", console),
+        semaValue("packet", packet)
+      ),
+      types = listOf(semaType(console), semaType(packet)),
+      functions = listOf(
+        semaFunction(
+          "operator<<", "$console &",
+          listOf(semaParameter("$console &", "sink"), semaParameter("const $packet &", "value"))
+        )
+      )
+    )
+    val language = CppCompletionGrammar().generate(context, emptyList())
+    fun statement(source: String): List<CppToken> = cppLines(source).single().tokens
+
+    assertTrue(language.recognizes(statement("console << packet;")))
+    assertFalse(
+      language.recognizes(statement("console = packet;")),
+      "Declaring an operator must not create an unrelated Packet-to-Console conversion"
+    )
+    val declarationLanguage = CppCompletionGrammar().generate(
+      context.copy(
+        identifiers = identifiers + "alias",
+        sourceIdentifiers = identifiers + "alias",
+        unresolvedIdentifiers = setOf("alias"),
+        requiredIdentifier = "alias"
+      ),
+      emptyList()
+    )
+    assertTrue(declarationLanguage.recognizes(statement("const $console& alias = console;")))
+  }
+
+  @Test
+  fun identifiersAndHeadersCannotManufactureTypeFacts() {
+    val artifact = "workshop::Artifact"
+    val identifiers = setOf("workshop", "Artifact", "item")
+    val base = CppCompletionContext(
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      headers = setOf("artifact_api"),
+      unresolvedIdentifiers = setOf("item"),
+      requiredIdentifier = "item"
+    )
+    val statement = cppLines("$artifact item;").single().tokens
+
+    assertFalse(
+      CppCompletionGrammar().generate(base, emptyList()).recognizes(statement),
+      "Lexical identifiers and include names are not declarations"
+    )
+    assertTrue(
+      CppCompletionGrammar().generate(
+        base.copy(
+          types = listOf(semaType(artifact)),
+          functions = listOf(semaConstructor(artifact))
+        ),
+        emptyList()
+      ).recognizes(statement)
+    )
+  }
+
+  @Test
+  fun constObjectFactsExcludeNonconstMembers() {
+    val document = "archive::Document"
+    val size = semaMethod(
+      owner = document,
+      name = "size",
+      returnType = "int",
+      constMethod = true
+    )
+    val titled = semaMethod(
+      owner = document,
+      name = "titled",
+      returnType = "$document &",
+      parameters = listOf(semaParameter("const char *", "title"))
+    )
+    val identifiers = setOf("archive", "Document", "document", "size", "titled")
+    val context = CppCompletionContext(
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(semaValue("document", "const $document &")),
+      types = listOf(semaType(document)),
+      membersByType = listOf(CppTypeMembers(document, listOf(size, titled)))
+    )
+    val language = CppCompletionGrammar().generate(context, emptyList())
+
+    assertTrue(language.recognizes(cppLines("document.size();").single().tokens))
+    assertFalse(language.recognizes(cppLines("document.titled(\"\").size();").single().tokens))
+  }
+
+  @Test
+  fun canonicalMemberTypesDoNotManufactureUnreportedAliases() {
+    val vehicle = "fleet::Vehicle"
+    val sequence = "garden::Sequence<$vehicle>"
+    val cursor = "$sequence::Cursor"
+    val begin = CppReference(
+      name = "begin",
+      returnType = cursor,
+      kind = "method",
+      ownerType = sequence,
+      source = "sema",
+      id = "$sequence::begin()",
+      qualifiedName = "$sequence::begin",
+      canonicalReturnType = cursor,
+      canonicalOwnerType = sequence,
+      isType = false,
+      isValue = false,
+      isCallable = true,
+      isMember = true,
+      isStatic = false
+    )
+    val context = CppCompletionContext(
+      identifiers = setOf("garden", "Sequence", "fleet", "Vehicle", "Cursor", "items"),
+      sourceIdentifiers = setOf("garden", "Sequence", "fleet", "Vehicle", "Cursor", "items"),
+      types = listOf(semaType(vehicle), semaType(sequence)),
+      functions = listOf(semaConstructor(sequence)),
+      membersByType = listOf(CppTypeMembers(sequence, listOf(begin))),
+      unresolvedIdentifiers = setOf("items"),
+      requiredIdentifier = "items"
+    )
+    val language = CppCompletionGrammar().generate(context, emptyList())
+
+    assertTrue(language.recognizes(cppLines("$sequence items;").single().tokens))
+    assertFalse(
+      language.recognizes(cppLines("Cursor items;").single().tokens),
+      "A canonical member result does not declare an unqualified alias"
+    )
+  }
+
+  @Test
+  fun nonconstMemberFactsAcceptMutableLvaluesAndPrvalues() {
+    val buffer = "storage::Buffer"
+    val identifiers = setOf("storage", "Buffer", "append", "text", "makeText", "readText")
+    val append = semaMethod(
+      buffer,
+      "append",
+      "$buffer &",
+      listOf(semaParameter("const char *", "suffix"))
+    )
+    val context = CppCompletionContext(
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(semaValue("text", buffer)),
+      types = listOf(semaType(buffer)),
+      functions = listOf(
+        semaFunction("makeText", buffer),
+        semaFunction("readText", "const $buffer &")
+      ),
+      membersByType = listOf(CppTypeMembers(buffer, listOf(append)))
+    )
+    val language = CppCompletionGrammar().generate(context, emptyList())
+    fun statement(source: String): List<CppToken> = cppLines(source).single().tokens
+
+    assertTrue(
+      language.recognizes(statement("text.append(\" mutable\");")),
+      "A mutable lvalue can receive an explicitly reported nonconst member"
+    )
+    assertTrue(
+      language.recognizes(statement("makeText().append(\" prvalue\");")),
+      "A class prvalue can receive an explicitly reported nonconst member"
+    )
+    assertFalse(
+      language.recognizes(statement("readText().append(\" forbidden\");")),
+      "A const lvalue-reference result must not become a mutable receiver"
+    )
+    assertTrue(language.recognizes(statement("(&text)->append(\" pointer\");")))
+    assertFalse(
+      language.recognizes(statement("&text->append(\" precedence bug\");")),
+      "Address-of has lower precedence than arrow member access"
+    )
+    assertTrue(
+      language.recognizes(statement("text.append(nullptr);")),
+      "nullptr converts to the member's declared const-char-pointer parameter"
+    )
+  }
+
+  @Test
+  fun contextualFieldTypesDetermineWhetherTheyAreModifiableLvalues() {
+    val route = "navigation::Route"
+    val buffer = "storage::Buffer"
+    val identifiers = setOf("navigation", "Route", "storage", "Buffer", "append", "name_")
+    val append = semaMethod(
+      buffer,
+      "append",
+      "$buffer &",
+      listOf(semaParameter("const char *", "suffix"))
+    )
+    fun context(mutableField: Boolean) = CppCompletionContext(
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(semaValue("name_", buffer, route, mutableField)),
+      types = listOf(semaType(route), semaType(buffer)),
+      membersByType = listOf(CppTypeMembers(buffer, listOf(append))),
+      thisType = "const $route *"
+    )
+    val statement = cppLines("name_.append(\"suffix\");").single().tokens
+
+    assertFalse(
+      CppCompletionGrammar().generate(context(false), emptyList()).recognizes(statement),
+      "An ordinary field is not a modifiable receiver through a const implicit object"
+    )
+    assertTrue(
+      CppCompletionGrammar().generate(context(true), emptyList()).recognizes(statement),
+      "A structured mutable-field fact preserves modifiability through a const implicit object"
+    )
+  }
+
+  @Test
+  fun abstractTypeFactsBlockByValueDeclarationsButAllowPointers() {
+    val animal = "zoo::Animal"
+    val dog = "zoo::Dog"
+    val context = CppCompletionContext(
+      identifiers = setOf("zoo", "Animal", "Dog", "dog", "base", "copy"),
+      sourceIdentifiers = setOf("zoo", "Animal", "Dog", "dog", "base", "copy"),
+      values = listOf(
+        semaValue("dog", dog),
+        semaValue("base", "$animal *")
+      ),
+      types = listOf(semaType(animal, abstract = true), semaType(dog)),
+      conversions = listOf(CppConversion(dog, animal)),
+      requiredIdentifier = "copy"
+    )
+    val language = CppCompletionGrammar().generate(context, emptyList())
+    fun statement(source: String) = cppLines(source).single().tokens
+
+    assertTrue(language.recognizes(statement("$animal* copy = base;")))
+    assertTrue(language.recognizes(statement("const $animal& copy = dog;")))
+    assertFalse(
+      language.recognizes(statement("$animal copy = dog;")),
+      "An abstract record cannot be instantiated by value"
+    )
+    assertFalse(
+      language.recognizes(statement("auto copy = *base;")),
+      "auto must not silently deduce an abstract by-value record"
+    )
+    val expressionLanguage = CppCompletionGrammar().generate(
+      context.copy(requiredIdentifier = null),
+      emptyList()
+    )
+    assertTrue(expressionLanguage.recognizes(statement("true ? *base : *base;")))
+  }
+
+  @Test
+  fun rvalueReferenceParametersRejectLvalues() {
+    val parcel = "cargo::Parcel"
+    val identifiers = setOf("cargo", "Parcel", "parcel", "makeParcel", "dispatch")
+    val context = CppCompletionContext(
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(semaValue("parcel", parcel)),
+      types = listOf(semaType(parcel)),
+      functions = listOf(
+        semaFunction("makeParcel", parcel),
+        semaFunction("dispatch", "bool", listOf(semaParameter("$parcel &&", "parcel")))
+      )
+    )
+    val language = CppCompletionGrammar().generate(context, emptyList())
+    fun statement(source: String) = cppLines(source).single().tokens
+
+    assertTrue(language.recognizes(statement("dispatch(makeParcel());")))
+    assertFalse(
+      language.recognizes(statement("dispatch(parcel);")),
+      "An lvalue cannot bind to an explicitly reported rvalue-reference parameter"
+    )
+  }
+
+  @Test
+  fun onlyContextuallyAccessibleCallablesBecomeCalls() {
+    val identifiers = setOf("index", "transform")
+    val context = CppCompletionContext(
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(semaValue("index", "int")),
+      functions = listOf(
+        semaFunction("transform", "int", listOf(semaParameter("int", "input")))
+      )
+    )
+    val language = CppCompletionGrammar().generate(context, emptyList())
+
+    assertFalse(
+      language.recognizes(cppLines("index(0);").single().tokens),
+      "A scoped value must not become callable without an accessible callable fact"
+    )
+    assertTrue(language.recognizes(cppLines("transform(0);").single().tokens))
+  }
+
+  @Test
+  fun dereferencedPointersAreParenthesizedBeforeDotMemberAccess() {
+    val vehicle = "fleet::Vehicle"
+    val identifiers = setOf("fleet", "Vehicle", "raw_vehicle", "range")
+    val member = semaMethod(vehicle, "range", "int", constMethod = true)
+    val context = CppCompletionContext(
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(semaValue("raw_vehicle", "$vehicle *")),
+      types = listOf(semaType(vehicle)),
+      membersByType = listOf(CppTypeMembers(vehicle, listOf(member)))
+    )
+    val language = CppCompletionGrammar().generate(context, emptyList())
+    fun statement(source: String) = cppLines(source).single().tokens
+
+    assertTrue(language.recognizes(statement("raw_vehicle->range();")))
+    assertTrue(language.recognizes(statement("(*raw_vehicle).range();")))
+    assertFalse(
+      language.recognizes(statement("*raw_vehicle.range();")),
+      "Unary dereference has lower precedence than postfix member access"
+    )
+  }
+
+  @Test
+  fun reportedTemplateCallableRetainsItsExplicitArgument() {
+    val node = "graph::Node"
+    val handle = "graph::Handle<$node>"
+    val factory = "forge::create<$node>"
+    val identifiers = setOf("graph", "Node", "Handle", "forge", "create")
+    val language = CppCompletionGrammar().generate(
+      CppCompletionContext(
+        identifiers = identifiers,
+        sourceIdentifiers = identifiers,
+        types = listOf(semaType(node), semaType(handle)),
+        functions = listOf(semaFunction(factory, handle))
+      ),
+      emptyList()
+    )
+    fun statement(source: String) = cppLines(source).single().tokens
+
+    assertTrue(language.recognizes(statement("$factory();")))
+    assertFalse(
+      language.recognizes(statement("forge::create();")),
+      "The grammar must not erase template arguments from Sema's insertion spelling"
+    )
+  }
+
+  @Test
+  fun canonicalParameterTypesAcceptValuesConstructedThroughAnAliasAtEveryBoundary() {
+    val record = "ledger::Entry<int,text::Name,double>"
+    val records = "ledger::Table<int,$record>"
+    val identifiers = setOf(
+      "ledger", "Entry", "Table", "text", "Name", "Record", "records", "emplace"
+    )
+    val constructor = semaConstructor(
+      "Record",
+      listOf(
+        semaParameter("int", "id"),
+        semaParameter("const char *", "name"),
+        semaParameter("double", "score")
+      )
+    )
+    val emplace = semaMethod(
+      records,
+      "emplace",
+      "bool",
+      listOf(semaParameter("int", "key"), semaParameter(record, "value"))
+    )
+    val context = CppCompletionContext(
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(semaValue("records", records)),
+      types = listOf(semaAlias("Record", record), semaType(records)),
+      functions = listOf(constructor),
+      membersByType = listOf(CppTypeMembers(records, listOf(emplace)))
+    )
+    val line = cppLines("records.emplace(7, Record{7, \"Noor\", 88.5});").single()
+    val prepared = CppCompletionGrammar().prepare(context)
+
+    cppTruncations(line).forEach { truncation ->
+      assertTrue(
+        prepared.generate(truncation.prefix).recognizes(truncation.suffix),
+        "The alias and canonical parameter type diverged at index ${truncation.prefix.size}"
+      )
+    }
+  }
+
+  @Test
+  fun factoredCallArgumentsPreserveCartesianChoicesAndOptionalArities() {
+    val box = "model::Box"
+    val first = semaParameter("int", "first")
+    val second = semaParameter("int", "second").copy(hasDefault = true)
+    val context = CppCompletionContext(
+      identifiers = setOf("model", "Box", "combine", "left", "right"),
+      sourceIdentifiers = setOf("model", "Box", "combine", "left", "right"),
+      values = listOf(semaValue("left", "int"), semaValue("right", "int")),
+      types = listOf(semaType(box)),
+      functions = listOf(
+        semaFunction("combine", "int", listOf(first, second)),
+        semaConstructor(box, listOf(first, second))
+      )
+    )
+    val language = CppCompletionGrammar().generate(context, emptyList())
+    fun recognizes(source: String) = language.recognizes(cppLines(source).single().tokens)
+
+    listOf("left", "right").forEach { one ->
+      assertTrue(recognizes("combine($one);"), "required arity: $one")
+      assertTrue(recognizes("$box($one);"), "constructor required arity: $one")
+      listOf("left", "right").forEach { two ->
+        assertTrue(recognizes("combine($one, $two);"), "Cartesian choice: $one, $two")
+        assertTrue(recognizes("$box{$one, $two};"), "constructor optional arity: $one, $two")
+      }
+    }
+    assertFalse(recognizes("combine();"), "required argument must not disappear")
+    assertFalse(recognizes("combine(left, right, left);"), "undeclared arity must not appear")
+  }
+
+  @Test
+  fun implicitThisFieldsRemainScopedMutableReceiversAtEveryBoundary() {
+    val pipeline = "workflow::Pipeline"
+    val step = "workflow::Step"
+    val steps = "workflow::Steps"
+    val identifiers = setOf(
+      "workflow", "Pipeline", "Step", "Steps", "steps_", "makeStep", "push"
+    )
+    val field = semaValue("steps_", steps, pipeline, mutableField = false)
+    val push = semaMethod(
+      steps,
+      "push",
+      "void",
+      listOf(semaParameter("$step &&", "step"))
+    )
+    val context = CppCompletionContext(
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(field),
+      types = listOf(semaType(pipeline), semaType(step), semaType(steps)),
+      functions = listOf(semaFunction("makeStep", step)),
+      membersByType = listOf(CppTypeMembers(steps, listOf(push))),
+      thisType = "$pipeline *"
+    )
+    val line = cppLines("steps_.push(makeStep());").single()
+    val prepared = CppCompletionGrammar().prepare(context)
+
+    cppTruncations(line).forEach { truncation ->
+      assertTrue(
+        prepared.generate(truncation.prefix).recognizes(truncation.suffix),
+        "The implicit-this field must remain a receiver at index ${truncation.prefix.size}"
+      )
+    }
+    assertFalse(
+      CppCompletionGrammar().generate(context.copy(thisType = "const $pipeline *"), emptyList())
+        .recognizes(line.tokens),
+      "An ordinary field of a const implicit object is not a mutable receiver"
+    )
+  }
+
+  @Test
+  fun reportedTemplateSpecializationsRetainTheirCorrelatedArguments() {
+    val textType = "text::Text"
+    val variant = "choice::Variant<choice::Empty,int,$textType>"
+    val holds = "choice::holds<$textType>"
+    val get = "choice::get<$textType>"
+    val identifiers = setOf(
+      "choice", "Variant", "Empty", "text", "Text", "holds", "get", "payload"
+    )
+    val base = CppCompletionContext(
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(semaValue("payload", variant)),
+      types = listOf(semaType(textType), semaType(variant)),
+      functions = listOf(
+        semaFunction(holds, "bool", listOf(semaParameter("const $variant &", "value"))),
+        semaFunction(get, "const $textType *", listOf(semaParameter("const $variant *", "value")))
+      )
+    )
+    fun statement(source: String) = cppLines(source).single().tokens
+
+    val holdsLanguage = CppCompletionGrammar().generate(
+      base.copy(requiredIdentifier = "textual"),
+      emptyList()
+    )
+    assertTrue(holdsLanguage.recognizes(
+      statement("bool textual = $holds(payload);")
+    ))
+
+    val getLanguage = CppCompletionGrammar().generate(
+      base.copy(requiredIdentifier = "text"),
+      emptyList()
+    )
+    assertTrue(getLanguage.recognizes(
+      statement("const $textType* text = $get(&payload);")
+    ))
+  }
+
+  @Test
+  fun reportedCallableAndConstructorFactsAdmitTemporaryArguments() {
+    val visitor = "render::Visitor"
+    val payload = "render::Payload"
+    val report = "render::Report"
+    val visit = "render::visit"
+    val identifiers = setOf("render", "Visitor", "Payload", "Report", "visit", "payload")
+    val constructor = semaConstructor(visitor)
+    val callable = semaFunction(
+      visit,
+      report,
+      listOf(semaParameter(visitor, "visitor"), semaParameter("$payload &", "payload"))
+    )
+    val base = CppCompletionContext(
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(semaValue("payload", payload)),
+      types = listOf(semaType(visitor), semaType(payload), semaType(report)),
+      functions = listOf(constructor, callable)
+    )
+    val statement = cppLines("$visit($visitor{}, payload);").single().tokens
+
+    assertTrue(CppCompletionGrammar().generate(base, emptyList()).recognizes(statement))
+    assertFalse(
+      CppCompletionGrammar().generate(base.copy(functions = listOf(callable)), emptyList())
+        .recognizes(statement),
+      "A type fact alone must not manufacture a constructor"
+    )
+    assertFalse(
+      CppCompletionGrammar().generate(base.copy(functions = listOf(constructor)), emptyList())
+        .recognizes(statement),
+      "A constructor fact must not manufacture an unreported free callable"
+    )
+  }
+
+  @Test
+  fun browserFactsCompleteVisitAtTheActualIncompleteCursor(): Promise<Unit> = MainScope().promise {
+    val service = CppBenchmarkService()
+    if (service.status().clangd == null) return@promise
+    val source = """
+      #include <iostream>
+      #include <optional>
+      #include <string>
+      #include <variant>
+
+      struct Describe {
+          std::string operator()(std::monostate) const { return "empty"; }
+          std::string operator()(int value) const { return std::to_string(value); }
+          std::string operator()(const std::string& value) const { return value; }
+      };
+
+      int main() {
+          std::optional<std::string> nickname = std::nullopt;
+          nickname.emplace("Ada");
+          std::string display = nickname.value_or("anonymous");
+          std::variant<std::monostate, int, std::string> payload = std::monostate{};
+          payload = std::string{"ready"};
+          bool textual = std::holds_alternative<std::string>(payload);
+          const std::string* text = std::get_if<std::string>(&payload);
+          std::string rendered = std::visit(
+      }
+    """.trimIndent()
+    val lines = source.lines()
+    val line = lines.indexOfFirst { "std::string rendered" in it }
+    val character = lines[line].length
+    val snapshot = requireNotNull(cppEditorStatementSnapshot(source, line, character))
+    val context = service.context(source, line, character, "visit_browser_parity.cpp")
+    if (context.completionKind == null) return@promise // Stock clangd has no structured endpoint.
+    val completions = CppCompletionGrammar()
+      .completeCppStatement(context, snapshot.completionQuery(context.identifiers)).suggestions
+
+    assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.size)
+    assertTrue(
+      completions.any {
+        it.tokens == listOf("(", "Describe", "{", "}", ",", "payload", ")", ";")
+      },
+      "Browser-fact completions omitted `Describe{}, payload);`: " +
+        completions.joinToString { it.tokens.joinToString(" ") }
+    )
+  }
+
+  @Test
+  fun browserFactsCompleteTryEmplaceAtTheActualIncompleteCursor(): Promise<Unit> = MainScope().promise {
+    val service = CppBenchmarkService()
+    if (service.status().clangd == null) return@promise
+    val source = """
+      #include <iostream>
+      #include <map>
+      #include <set>
+      #include <string>
+      #include <tuple>
+
+      int main() {
+          using Record = std::tuple<int, std::string, double>;
+          std::map<int, Record> records;
+          records.emplace(7, Record{ '\0' , "" , 0.0 } ) ;
+          records.try_emp
+      }
+    """.trimIndent()
+    val lines = source.lines()
+    val line = lines.indexOfFirst { "records.try_emp" in it }
+    val character = lines[line].length
+    val snapshot = requireNotNull(cppEditorStatementSnapshot(source, line, character))
+    val context = service.context(source, line, character, "try_emplace_browser_parity.cpp")
+    if (context.completionKind == null) return@promise // Stock clangd has no structured endpoint.
+    val completions = CppCompletionGrammar()
+      .completeCppStatement(context, snapshot.completionQuery(context.identifiers)).suggestions
+    assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.size)
+    assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.map { it.candidateText }.distinct().size)
+    assertTrue(completions.all { it.tokenLength == 11 })
+    assertTrue(completions.all { completion ->
+      completion.tokens[0] == "try_emplace" &&
+        completion.tokens.slice(listOf(1, 3, 5, 7, 9, 10)) == listOf("(", ",", ",", ",", ")", ";") &&
+        completion.tokens[6] == "\"\""
+    }, "The browser path must retain the tuple-valued std::map overload")
+  }
+
+  @Test
+  fun browserFactsCompleteASecondMapSpecializationAtTheActualTypeBoundary(): Promise<Unit> =
+    MainScope().promise {
+      val service = CppBenchmarkService()
+      if (service.status().clangd == null) return@promise
+      val source = """
+        #include <iostream>
+        #include <map>
+        #include <set>
+        #include <string>
+        #include <tuple>
+
+        int main() {
+            using Record = std::tuple<int, std::string, double>;
+            std::map<int, Record> records;
+            records.emplace(7, Record{ '\0' , "" , 0.0 } ) ;
+            records . lower_bound ( '\0' ) ;
+            std::map<int, std::string
+        }
+      """.trimIndent()
+      val lines = source.lines()
+      val line = lines.indexOfFirst { "std::map<int, std::string" in it }
+      val character = lines[line].length
+      val snapshot = requireNotNull(cppEditorStatementSnapshot(source, line, character))
+      val context = service.context(source, line, character, "partial_second_map_specialization.cpp")
+      if (context.completionKind == null) return@promise // Stock clangd has no structured endpoint.
+      val completions = CppCompletionGrammar()
+        .completeCppStatement(context, snapshot.completionQuery(context.identifiers)).suggestions
+
+      assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.size)
+      assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.map { it.candidateText }.distinct().size)
+      assertTrue(completions.all { completion ->
+        completion.tokens.firstOrNull() == "string" && completion.tokens.lastOrNull() == ";"
+      })
+    }
+
+  @Test
+  fun browserSuggestionsCompileAtAnExactTemplateArgumentBoundary(): Promise<Unit> =
+    MainScope().promise {
+      val service = CppBenchmarkService()
+      val status = service.status()
+      if (status.compiler == null) return@promise
+      val source = """
+        #include <vector>
+
+        struct Visible {};
+
+        int main() {
+            std::vector<
+        }
+      """.trimIndent()
+      val lines = source.lines()
+      val line = lines.indexOfFirst { "std::vector<" in it }
+      val character = lines[line].length
+      val snapshot = requireNotNull(cppEditorStatementSnapshot(source, line, character))
+      // Model the declaration DTO emitted by the private clang/Sema endpoint. The native test
+      // bridge may run against an unpatched system clangd, so this compiler regression isolates
+      // the production adapter/CFG/output path from endpoint availability on the host.
+      val semantic = js(
+        """({schemaVersion: 1, context: {kind: 'Symbol'}, items: [{
+          name: 'vector', requiredQualifier: 'std::', insertText: 'std::vector', kind: 7,
+          symbols: [{
+            id: 'std-vector-template', qualifiedName: 'std::vector', kind: 'ClassTemplate',
+            provenance: {sema: true, index: true}, isType: true,
+            type: 'vector<_Tp, _Allocator>', canonicalType: 'vector<_Tp, _Allocator>',
+            typeInfo: {canonicalId: 'template:std-vector', isDependent: true,
+              isInstantiationDependent: true, isSourceSpellable: false},
+            templateParameters: [
+              {name: '_Tp', kind: 'type', hasDefault: false, isPack: false},
+              {name: '_Allocator', kind: 'type', hasDefault: true, isPack: false}
+            ]
+          }]
+        }], scopeItems: [{
+          name: 'Visible', insertText: 'Visible', kind: 7,
+          symbols: [{
+            id: 'visible-type', qualifiedName: 'Visible', kind: 'CXXRecord',
+            provenance: {sema: true, index: false}, isType: true,
+            type: 'Visible', canonicalType: 'Visible',
+            typeInfo: {canonicalId: 'type:visible', valueCanonicalId: 'type:visible',
+              kind: 'record', isSourceSpellable: true}
+          }]
+        }]})"""
+      )
+      val context = cppCompletionContextFromDto(
+        cppSemanticCompletionContextDto(semantic, snapshot)
+      )
+      val completions = CppCompletionGrammar()
+        .completeCppStatement(context, snapshot.completionQuery(context.identifiers)).suggestions
+
+      assertTrue(completions.isNotEmpty(), "Exact `std::vector<` produced no suggestions")
+      assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.size)
+      assertEquals(CPP_MAX_INTERACTIVE_COMPLETIONS, completions.map { it.candidateText }.distinct().size)
+      assertTrue(completions.none { "<%" in it.candidateText || "<:" in it.candidateText })
+      val sourceLine = cppLines(source).single { it.number == line }
+      val indentation = sourceLine.text.take(snapshot.statementStartCharacter)
+      val completedSources = completions.map { completion ->
+        replaceCppLine(source, sourceLine, indentation + completion.candidateText)
+      }
+      val witness = replaceCppLine(source, sourceLine, indentation + "std::vector<int> values;")
+      val compilation = service.compile(listOf(witness) + completedSources)
+      assertTrue(
+        compilation.first().compiled,
+        "The exact-boundary witness must compile: ${compilation.first().diagnostics}"
+      )
+      val results = compilation.drop(1)
+      val failures = completions.zip(results).filterNot { (_, result) -> result.compiled }
+      assertTrue(
+        failures.isEmpty(),
+        failures.joinToString(
+          prefix = "Published non-compiling completions after exact `std::vector<`:\n",
+          separator = "\n"
+        ) { (completion, result) ->
+          "`${completion.candidateText}`: ${result.diagnostics.compactDiagnostic()}"
+        }
+      )
+    }
+
+  @Test
+  fun structuralSuffixInterningPreservesCanonicalCnf() {
+    val input = linkedSetOf(
+      "START" to listOf("A", "+", "B", "*", "C"),
+      "START" to listOf("D", "+", "B", "*", "C"),
+      "A" to listOf("a"),
+      "B" to listOf("b"),
+      "C" to listOf("c"),
+      "D" to listOf("d")
+    )
+
+    assertEquals(
+      linkedSetOf(
+        "FINITE_SUFFIX_2" to listOf("FINITE_TERMINAL_1", "C"),
+        "FINITE_SUFFIX_1" to listOf("B", "FINITE_SUFFIX_2"),
+        "FINITE_SUFFIX_0" to listOf("FINITE_TERMINAL_0", "FINITE_SUFFIX_1"),
+        "START" to listOf("A", "FINITE_SUFFIX_0"),
+        "START" to listOf("D", "FINITE_SUFFIX_0"),
+        "A" to listOf("a"),
+        "B" to listOf("b"),
+        "C" to listOf("c"),
+        "D" to listOf("d"),
+        "FINITE_TERMINAL_0" to listOf("+"),
+        "FINITE_TERMINAL_1" to listOf("*")
+      ),
+      finiteAcyclicCnf(input)
+    )
+  }
+
+  @Test
+  fun lazilyHashedResidualsPreserveFrozenCfgCountsAndRecognition() {
+    val context = CppCompletionContext(
+      identifiers = setOf("value"),
+      sourceIdentifiers = setOf("value"),
+      values = listOf(semaValue("value", "int"))
+    )
+    val line = cppLines("value = value + 1;").single()
+    val prepared = CppCompletionGrammar().prepare(context)
+    assertTrue(prepared.recognizes(line.tokens))
+    assertFalse(prepared.recognizes(cppLines("value = missing + 1;").single().tokens))
+    cppTruncations(line).forEach { truncation ->
+      val residual = prepared.generate(truncation.prefix)
+      assertFalse(
+        residual.syntax is MutableSet<*>,
+        "A residual CFG must not publish its owned mutable construction set"
+      )
+      val frozen = residual.syntax.freeze().boundedAcyclic(
+        maxLength = residual.templateTokens,
+        startSymbol = residual.bounded.startSymbol
+      )
+      assertEquals(residual.syntax.toSet(), residual.syntax)
+      val projectedSuffix = projectCppTokens(truncation.line.tokens)
+        .drop(residual.projectedPrefix.size)
+      if (projectedSuffix.isNotEmpty()) {
+        assertFalse(
+          "|Σ|=0" in residual.bounded.structuralStats(),
+          "A productive nonempty residual must report its terminal alphabet"
+        )
+      }
+
+      assertEquals(
+        frozen.derivationCount,
+        residual.derivationCount,
+        "Freezing must not change the quotient's derivation multiplicity at index ${truncation.prefix.size}"
+      )
+      assertEquals(
+        frozen.recognizes(projectedSuffix),
+        residual.recognizes(truncation.suffix),
+        "Freezing must not change quotient recognition at index ${truncation.prefix.size}"
+      )
+      val residualRandom = Random(40_000 + truncation.prefix.size)
+      val frozenRandom = Random(40_000 + truncation.prefix.size)
+      assertEquals(
+        frozen.samplesByIncreasingLength(frozenRandom, sampleLimit = 12, samplesPerLength = 3)
+          .toList(),
+        residual.bounded.samplesByIncreasingLength(
+          residualRandom,
+          sampleLimit = 12,
+          samplesPerLength = 3
+        ).toList(),
+        "Chunked residual publication must preserve seeded samples at index ${truncation.prefix.size}"
+      )
+    }
+  }
+
+  @Test
+  fun completionSamplerMaterializesOneIdempotentScopedBatch() {
+    val bounded = setOf("START" to listOf(CPP_FRESH)).boundedAcyclic(maxLength = 1)
+    val language = CppSuffixGrammar(
+      bounded = bounded,
+      rawPrefix = emptyList(),
+      projectedPrefix = emptyList(),
+      templateTokens = 1
+    )
+    val sampler = CppCompletionSampler(language, setOf("alreadyUsed"), Random(90210))
+
+    val first = sampler.sample(3)
+    val repeated = sampler.sample(3)
+    assertTrue(first === repeated, "Repeated access must return the one materialized batch")
+    assertEquals(first, repeated)
+    assertTrue(first.all { sample ->
+      sample.freshNames.size == 1 && sample.tokens.single() in sample.freshNames
+    })
+    assertEquals(BigInteger.ONE, sampler.inspectedDerivationCount)
+    assertEquals(0..1, sampler.inspectedLengths)
+    assertTrue(sampler.coversFullBound)
+    assertFailsWith<IllegalArgumentException> { sampler.sample(2) }
+
+    val emptySampler = CppCompletionSampler(language, emptySet(), Random(90210))
+    assertTrue(emptySampler.sample(0).isEmpty())
+    assertEquals(BigInteger.ZERO, emptySampler.inspectedDerivationCount)
+    assertEquals(IntRange.EMPTY, emptySampler.inspectedLengths)
+    assertFalse(emptySampler.coversFullBound)
+  }
+
+  @Test
+  fun structuredEndpointReportsScopedReceiverMembersFromANonemptyPartialStatement(): Promise<Unit> =
+    MainScope().promise {
+      val service = CppBenchmarkService()
+      if (service.status().clangd == null) return@promise
+      val source = """
+        #include <vector>
+        int main() {
+          std::vector<long long> independent;
+          independent.push_back(
+          return 0;
+        }
+      """.trimIndent()
+      val lines = source.lines()
+      val line = lines.indexOfFirst { "independent.push_back(" in it }
+      val context = service.context(source, line, lines[line].length)
+      if (context.completionKind == null) return@promise
+      val vectorMembers = context.membersByType
+        .filter { "vector" in it.type && "long long" in it.type }
+        .flatMap { it.members }
+
+      assertTrue(context.values.any { it.name == "independent" })
+      assertTrue(
+        vectorMembers.any { it.name == "push_back" },
+        "A direct mid-statement request must report receiver members without an earlier dot cursor"
+      )
+    }
+
+  @Test
+  fun everyStatementAndBoundaryIsEnumeratedWithoutWeakeningLockedCases(): Promise<Unit> = MainScope().promise {
+    val noFacts = CppCompletionGrammar().generate(CppCompletionContext(emptySet()), emptyList())
+    assertFalse(noFacts.isEmpty, "Builtin literal statements keep a zero-fact cursor grammar productive")
+    assertTrue(isAcyclic(noFacts.syntax), "Even a zero-fact cursor grammar must be finite")
+    val fixtures = CppBenchmarkService().fixtures()
+    assertTrue(fixtures.size >= 12, "The completion corpus must retain at least twelve C++ fixtures")
+    val corpusSource = fixtures.joinToString("\n") { it.source }
+    val syntaxMisses = fixtures.flatMap { fixture ->
+      cppStatementLines(fixture.source).mapNotNull { line ->
+        if (cppSingleStatementSyntaxRecognizes(line.tokens)) null
+        else "${fixture.name}:${line.number + 1}: ${line.text.trim()}"
+      }
+    }
+    assertTrue(
+      syntaxMisses.isEmpty(),
+      "Pinned statement grammar rejected compiler-validated corpus lines:\n${syntaxMisses.joinToString("\n")}"
+    )
+    listOf(
+      "using Record", "std::map<", "std::function<", "std::transform(", "std::ranges::transform(",
+      "enum class", "std::optional<", "std::variant<", "std::weak_ptr<", "dynamic_cast<",
+      "const_cast<", "reinterpret_cast<", "typeid(", "for (const auto& [", "[](int value)",
+      "counters[1]", "operator|", "std::string_view"
+    ).forEach { syntax ->
+      assertTrue(syntax in corpusSource, "Expanded corpus lost the '$syntax' syntax family")
+    }
+    val all = benchmarkCases(fixtures)
+    assertTrue(
+      all.all { it.truncation.line.tokens.size <= CPP_MAX_STATEMENT_TOKENS },
+      "Every expanded statement must fit the finite $CPP_MAX_STATEMENT_TOKENS-token horizon"
+    )
+    assertEquals(
+      mapOf(
+        "associative_records.cpp" to listOf(8, 9, 10, 11, 12, 13, 14, 15, 16),
+        "callable_pipeline.cpp" to listOf(16, 17, 21, 22, 27, 28, 29, 30, 31),
+        "container_algorithms.cpp" to listOf(10, 11, 12, 13, 14, 15, 16, 17, 18),
+        "default_animals.cpp" to listOf(30, 32, 36, 37, 39, 40, 42, 43, 44, 47),
+        "enum_bitmask.cpp" to listOf(12, 16, 20, 21, 22, 23, 24, 25, 26),
+        "fluent_routes.cpp" to listOf(
+          33, 34, 35, 45, 46, 50, 51, 55, 56, 64, 68, 69,
+          70, 72, 73, 74, 75, 77, 78, 79, 80, 82, 84, 85
+        ),
+        "optional_variants.cpp" to listOf(13, 14, 15, 16, 17, 18, 19, 20, 21),
+        "pointer_casts.cpp" to listOf(19, 20, 21, 22, 23, 24, 25, 26),
+        "polymorphic_casts.cpp" to listOf(23, 24, 25, 26, 27, 28, 29, 30, 31),
+        "raii_ownership.cpp" to listOf(15, 16, 17, 18, 19, 20, 21, 22, 23),
+        "shared_documents.cpp" to listOf(
+          34, 35, 39, 40, 49, 50, 51, 55, 56, 57, 59, 60,
+          61, 62, 64, 65, 66, 67, 68
+        ),
+        "string_transformations.cpp" to listOf(9, 10, 11, 12, 13, 14, 15, 16, 17)
+      ),
+      all.groupBy { it.fixture.name }.mapValues { (_, cases) ->
+        cases.map { it.truncation.line.number + 1 }.distinct()
+      },
+      "The complete physical statement-line inventory must remain selected"
+    )
+    assertEquals(2_141, all.size, "Every expanded statement token boundary must be scored")
+    assertEquals(
+      fixtures.sumOf { cppStatementLines(it.source).size },
+      all.count { it.truncation.prefix.size == it.truncation.line.tokens.size }
+    )
+    all.groupBy { it.fixture.name to it.truncation.line.number }.values.forEach { cases ->
+      assertEquals(
+        (0..cases.first().truncation.line.tokens.size).toList(),
+        cases.map { it.truncation.prefix.size }
+      )
+    }
+    val selected = lockedCases(fixtures).map { case ->
+      "${case.fixture.name}:${case.truncation.line.number + 1}:${case.truncation.prefix.size}"
+    }
+    val exhaustiveKeys = all.mapTo(hashSetOf()) { case ->
+      "${case.fixture.name}:${case.truncation.line.number + 1}:${case.truncation.prefix.size}"
+    }
+    assertTrue(selected.all { it in exhaustiveKeys }, "Every locked case must be in the exhaustive corpus")
+    assertEquals(
+      listOf(
+        "default_animals.cpp:32:0", "fluent_routes.cpp:69:0", "shared_documents.cpp:59:0",
+        "default_animals.cpp:32:2", "fluent_routes.cpp:69:2", "shared_documents.cpp:59:2",
+        "default_animals.cpp:43:2", "fluent_routes.cpp:64:2", "shared_documents.cpp:68:2",
+        "default_animals.cpp:43:8", "fluent_routes.cpp:64:10", "shared_documents.cpp:68:13"
+      ),
+      selected,
+      "Do not weaken or replace the scored C++ completion cases"
+    )
+  }
+
+  @Test
+  fun statementDiscoveryHandlesMultilineFunctionDeclarators() {
+    val source = """
+      struct Counter
+      {
+        int field;
+
+        int increment(int value)
+        {
+          value += 1;
+          return value;
+        }
+      };
+
+      int main()
+      {
+        Counter counter;
+        return counter.increment(1);
+      }
+    """.trimIndent()
+
+    assertEquals(
+      listOf("value += 1;", "return value;", "Counter counter;", "return counter.increment(1);"),
+      cppStatementLines(source).map { it.text.trim() }
+    )
+  }
+
+  @Test
+  fun structuredGrammarRecognizesAndSamplesAComplexStatement() {
+    val console = "output::Console"
+    val creature = "zoo::Creature"
+    val message = "text::Message"
+    val identifiers = setOf(
+      "output", "Console", "console", "zoo", "Creature", "animal", "speak", "text", "Message"
+    )
+    val context = CppCompletionContext(
+      identifiers = identifiers,
+      sourceIdentifiers = identifiers,
+      values = listOf(semaValue("console", console), semaValue("animal", creature)),
+      types = listOf(semaType(console), semaType(creature), semaType(message)),
+      functions = listOf(
+        semaFunction(
+          "operator<<",
+          "$console &",
+          listOf(semaParameter("$console &", "sink"), semaParameter("const $message &", "value"))
+        )
+      ),
+      membersByType = listOf(
+        CppTypeMembers(creature, listOf(semaMethod(creature, "speak", message, constMethod = true)))
+      )
+    )
+    val target = cppLines("console << animal.speak();").single()
+    val generator = CppCompletionGrammar()
+    val generated = listOf(0, 2, 3, 4, target.tokens.size).map { prefixTokens ->
+      val truncation = cppTruncations(target).first { it.prefix.size == prefixTokens }
+      val language = generator.generate(context, truncation.prefix)
+      assertTrue(
+        language.recognizes(truncation.suffix),
+        "p$prefixTokens grammar rejected: ${target.tokens.joinToString(" ") { it.text }}"
+      )
+      assertTrue(isAcyclic(language.syntax), "A generated cursor CFG must be finite and non-recursive")
+      assertFalse(language.isEmpty, "Conditioned finite parse forest is empty")
+      language
+    }
+    val samples = CppCompletionSampler(generated.first(), identifiers, Random(7)).sample(100)
+    assertTrue(samples.isNotEmpty())
+    assertTrue(samples.all { it.tokens.isNotEmpty() }, "The deletion CFG sampled an empty suffix")
+    assertTrue(samples.zipWithNext().all { (left, right) -> left.length <= right.length })
+    assertTrue(samples.groupingBy { it.length }.eachCount().values.all { it <= CPP_SAMPLES_PER_LENGTH })
+    val endpointSamples = CppCompletionSampler(
+      generated.last(),
+      identifiers,
+      Random(7)
+    ).sample(100)
+    assertEquals(CPP_SAMPLES_PER_LENGTH, endpointSamples.size)
+    assertEquals(List(CPP_SAMPLES_PER_LENGTH) { emptyList() }, endpointSamples.map { it.tokens })
+    assertEquals(List(CPP_SAMPLES_PER_LENGTH) { 0 }, endpointSamples.map { it.length })
+  }
+
+  @Test
+  fun everyFixtureIsAValidTranslationUnitAndCompilerErrorsStaySeparated(): Promise<Unit> = MainScope().promise {
+    val service = CppBenchmarkService()
+    val status = service.status()
+    if (status.compiler == null) return@promise
+    val fixtures = service.fixtures()
+    assertTrue(fixtures.size >= 12, "The completion corpus must retain at least twelve C++ fixtures")
+    val first = fixtures.first()
+    val invalid = first.source.replace("return 0;", "return missing_symbol;")
+      .let { if (it == first.source) it + "\nmissing_symbol;\n" else it }
+    val results = service.compile(fixtures.map { it.source } + invalid)
+    fixtures.zip(results).forEach { (fixture, result) ->
+      assertTrue(result.compiled, "${fixture.name} must compile before it can be benchmarked:\n${result.diagnostics}")
+    }
+    assertFalse(results.last().compiled)
+  }
+
+  /** The only test selected by CPP_COMPLETION_BENCHMARK=1. */
+  @Test
+  fun benchmarkCppCompletions(): Promise<Unit> = MainScope().promise {
+    val service = CppBenchmarkService(browserSemantic = true)
+    val status = service.status()
+    assertTrue(status.fixtures.isNotEmpty())
+    if (!status.enabled) {
+      println(
+        "C++ completion benchmark ready. Run the focused command from cppCompletion/README.md " +
+          "with CPP_COMPLETION_BENCHMARK=1."
+      )
+      return@promise
+    }
+    check(status.semanticProfileCompatible) {
+      status.semanticProfileError ?: "Browser Sema and candidate compiler profiles differ"
+    }
+    check(status.browserClangd) {
+      "CPP_COMPLETION_BENCHMARK requires the bundled patched browser clangd artifacts"
+    }
+    check(status.compiler != null) { "CPP_COMPLETION_BENCHMARK requires clang++" }
+    assertTrue(
+      status.samplesPerInstance >= CPP_DISPLAY_SAMPLES,
+      "At least $CPP_DISPLAY_SAMPLES precision draws are required to display three samples per cursor"
+    )
+    val fixtures = service.fixtures()
+    val wallClock = TimeSource.Monotonic.markNow()
+    val report = withTimeout((status.timeLimitMillis + 30_000L).milliseconds) {
+      CppCompletionBenchmark(
+        service = service,
+        grammar = CppCompletionGrammar(),
+        startInstance = status.startInstance,
+        maxInstances = status.maxInstances,
+        samplesPerInstance = status.samplesPerInstance,
+        timeLimitMillis = status.timeLimitMillis
+      ).run(fixtures)
+    }
+    val renderedReport = report.render()
+    // A complete corpus report is intentionally detailed and can exceed one megabyte. Sending it
+    // as one browser-console payload can overflow Karma's socket even though the benchmark itself
+    // has finished successfully, so retain identical stdout while bounding each transport frame.
+    renderedReport.lineSequence().chunked(64).forEach { lines -> println(lines.joinToString("\n")) }
+    assertTrue(report.scores.isNotEmpty())
+    assertEquals(report.selectedInstances, report.scores.size, "Benchmark did not score every selected case")
+    if (status.startInstance == 0 && status.maxInstances == null) {
+      assertEquals(
+        report.totalInstances,
+        report.selectedInstances,
+        "An uncapped benchmark must score every statement boundary"
+      )
+    }
+    assertFalse(report.stoppedAtDeadline, "Benchmark reached its internal deadline")
+    assertTrue(
+      report.scores.none { it.failure != null },
+      "Benchmark contained failed instances:\n$renderedReport"
+    )
+    assertEquals(100.0, report.recall, "Every ground-truth continuation must be recognized")
+    assertTrue(
+      report.precision >= CPP_MIN_AGGREGATE_PRECISION,
+      "Aggregate precision fell below $CPP_MIN_AGGREGATE_PRECISION%:\n$renderedReport"
+    )
+    assertTrue(
+      report.scores.all { it.precision >= CPP_MIN_CASE_PRECISION },
+      "A completion case fell below $CPP_MIN_CASE_PRECISION% precision:\n$renderedReport"
+    )
+    assertTrue(wallClock.elapsedNow().inWholeMilliseconds < status.timeLimitMillis + 30_000L)
+  }
+}
+
+private fun benchmarkCases(fixtures: List<CppFixture>): List<BenchmarkCase> = fixtures.flatMap { fixture ->
+  cppStatementLines(fixture.source).flatMap { line ->
+    cppTruncations(line).map { BenchmarkCase(fixture, it) }
+  }
+}
+
+private fun lockedCases(fixtures: List<CppFixture>): List<BenchmarkCase> =
+  LOCKED_BENCHMARK_CASES.map { specification ->
+    val fixture = fixtures.singleOrNull { it.name == specification.fixture }
+      ?: error("Missing locked C++ fixture ${specification.fixture}")
+    val line = cppSemicolonLines(fixture.source).singleOrNull { specification.lineNeedle in it.text }
+      ?: error("Locked statement is missing or ambiguous: ${specification.fixture}:${specification.lineNeedle}")
+    require(specification.prefixTokens in 0..line.tokens.size) {
+      "Locked prefix ${specification.prefixTokens} is outside ${specification.fixture}:${line.number + 1}"
+    }
+    BenchmarkCase(
+      fixture,
+      cppTruncations(line).single { it.prefix.size == specification.prefixTokens }
+    )
+  }
+
+private data class LockedBenchmarkCase(
+  val fixture: String,
+  val lineNeedle: String,
+  val prefixTokens: Int
+)
+
+/** Stable difficult cases retained as an explicit subset of the exhaustive corpus. */
+private val LOCKED_BENCHMARK_CASES = listOf(
+  LockedBenchmarkCase("default_animals.cpp", "std::cout << animal.speak()", 0),
+  LockedBenchmarkCase("fluent_routes.cpp", "builder.named(\"Harbor Loop\")", 0),
+  LockedBenchmarkCase("shared_documents.cpp", "document.titled(\"Memory Notes\")", 0),
+  LockedBenchmarkCase("default_animals.cpp", "std::cout << animal.speak()", 2),
+  LockedBenchmarkCase("fluent_routes.cpp", "builder.named(\"Harbor Loop\")", 2),
+  LockedBenchmarkCase("shared_documents.cpp", "document.titled(\"Memory Notes\")", 2),
+  LockedBenchmarkCase("default_animals.cpp", "animals.push_back(std::make_unique<Dog>", 2),
+  LockedBenchmarkCase("fluent_routes.cpp", "std::cout << vehicle.label()", 2),
+  LockedBenchmarkCase("shared_documents.cpp", "std::cout << preview.append", 2),
+  LockedBenchmarkCase("default_animals.cpp", "animals.push_back(std::make_unique<Dog>", 8),
+  LockedBenchmarkCase("fluent_routes.cpp", "std::cout << vehicle.label()", 10),
+  LockedBenchmarkCase("shared_documents.cpp", "std::cout << preview.append", 13)
+)
+
+private fun Double.percent(): String {
+  val thousandths = (this * 1_000).roundToInt()
+  val whole = thousandths / 1_000
+  val fraction = (thousandths % 1_000).toString().padStart(3, '0').trimEnd('0')
+  return if (fraction.isEmpty()) "$whole%" else "$whole.$fraction%"
+}
+
+private fun CppCompletionContext.summary(): String =
+  "v${values.size}/t${types.size}/f${functions.size}/c${completions.size}/" +
+    "m${membersByType.sumOf { it.members.size }}/x${conversions.size}/" +
+    "g$semanticGraphNodeCount${if (semanticGraphIsIncomplete) "!" else ""}/" +
+    "o$semanticOperationNodeCount:$semanticOperationTemplateCount" +
+    "${if (semanticOperationsAreIncomplete) "!" else ""}/" +
+    "w${callWitnesses.size}${if (semanticCallWitnessesAreIncomplete) "!" else ""}/" +
+    "u${unresolvedIdentifiers.size}/r${requiredTypes.size}:${probedRequiredTypes.size}/" +
+    "b${requiredBinderObligation?.binders?.size ?: "?"}" +
+    requiredBinderObligation?.singletonGate?.let { gate ->
+      ":${gate.accepted.size}:${gate.probed.size}"
+    }.orEmpty()
+
+private val CPP_BENCHMARK_IDENTIFIER = Regex("[A-Za-z_][A-Za-z_0-9]*")
+
+private fun String.compactDiagnostic(): String = lineSequence()
+  .map(String::trim)
+  .filter { it.isNotEmpty() }
+  .toList()
+  .let { lines ->
+    lines.firstOrNull { line -> Regex("(?:fatal )?error:", RegexOption.IGNORE_CASE).containsMatchIn(line) }
+      ?: lines.firstOrNull()
+  }
+  ?.replace(Regex("\\s+"), " ")
+  ?.take(120)
+  .orEmpty()
+
+private fun isAcyclic(grammar: Set<Pair<String, List<String>>>): Boolean {
+  val nonterminals = grammar.mapTo(linkedSetOf()) { it.first }
+  val edges = grammar.groupBy({ it.first }) { production ->
+    production.second.filter { it in nonterminals }
+  }.mapValues { (_, successors) -> successors.flatten().toSet() }
+  val visiting = mutableSetOf<String>()
+  val visited = mutableSetOf<String>()
+  fun visit(symbol: String): Boolean {
+    if (symbol in visited) return true
+    if (!visiting.add(symbol)) return false
+    if (edges[symbol].orEmpty().any { !visit(it) }) return false
+    visiting.remove(symbol)
+    visited.add(symbol)
+    return true
+  }
+  return nonterminals.all(::visit)
+}
+
+private fun jsonArray(value: dynamic): List<dynamic> {
+  val array = js("(value) => Array.isArray(value)")(value) as Boolean
+  if (!array) return emptyList()
+  return (0 until ((value.length as Number).toInt())).map { value[it] }
+}

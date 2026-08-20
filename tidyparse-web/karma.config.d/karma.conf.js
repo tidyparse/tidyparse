@@ -7,8 +7,6 @@ const chromeHeapMb = process.env.CHROME_V8_HEAP_MB || '8192';
 const localKarmaTimeoutMs = 540000;
 const ciKarmaTimeoutMs = 30 * 60 * 1000;
 const karmaTimeoutMs = isCi ? ciKarmaTimeoutMs : localKarmaTimeoutMs;
-const pingTimeoutMs = karmaTimeoutMs;
-const browserDisconnectTimeoutMs = karmaTimeoutMs;
 const ciLogsDir = path.resolve(__dirname, '../../../ci-logs');
 const browserConsoleLog = path.join(ciLogsDir, 'browser-console.log');
 const blackArchiveName = 'pyodide-black-25.1.0-site.zip';
@@ -36,11 +34,11 @@ if (isCi) {
 
 config.set({
     logLevel: config.LOG_INFO,
-    browserDisconnectTimeout: browserDisconnectTimeoutMs,
+    browserDisconnectTimeout: karmaTimeoutMs,
     browserDisconnectTolerance: 0,
     browserNoActivityTimeout: karmaTimeoutMs,
     captureTimeout: karmaTimeoutMs,
-    pingTimeout: pingTimeoutMs,
+    pingTimeout: karmaTimeoutMs,
     retryLimit: 0,
     processKillTimeout: isCi ? 30000 : 2000,
     client: { captureConsole: true, mocha: { timeout: karmaTimeoutMs } },

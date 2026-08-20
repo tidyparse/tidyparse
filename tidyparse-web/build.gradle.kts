@@ -1,21 +1,23 @@
 @file:OptIn(ExperimentalEncodingApi::class)
 
+import buildlogic.ManagedSiteDeployTask
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
+import org.jetbrains.kotlin.gradle.targets.js.nodejs.NodeJsEnvSpec
 import org.jetbrains.kotlin.gradle.targets.js.testing.KotlinJsTest
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.DEVELOPMENT
-import org.jetbrains.letsPlot.*
 import org.jetbrains.letsPlot.export.ggsave
 import org.jetbrains.letsPlot.geom.geomLine
+import org.jetbrains.letsPlot.gggrid
 import org.jetbrains.letsPlot.intern.Plot
 import org.jetbrains.letsPlot.label.ggtitle
+import org.jetbrains.letsPlot.letsPlot
 import java.awt.Desktop
 import java.io.ByteArrayOutputStream
-import java.util.*
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicReference
 import java.util.zip.GZIPOutputStream
-import kotlin.io.encoding.*
 import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 
 buildscript {
   repositories { mavenCentral() }
@@ -27,7 +29,6 @@ buildscript {
 
 plugins {
   kotlin("multiplatform")
-  id("org.ajoberstar.git-publish") version "6.0.0"
 }
 
 group = "ai.hypergraph"
@@ -55,6 +56,7 @@ kotlin {
     getByName("jsMain") {
       dependencies {
         implementation(project(":tidyparse-core"))
+        implementation("com.ionspin.kotlin:bignum:0.3.10")
         implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2026.8.0")
       }
     }
@@ -63,6 +65,7 @@ kotlin {
       dependencies {
         implementation(kotlin("test-js"))
         implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
+        implementation("com.ionspin.kotlin:bignum:0.3.10")
       }
     }
   }
@@ -119,10 +122,10 @@ fun embeddedWebResourcesScript(
   rawExamplesGzipB64: String
 ): String = """
 $EMBEDDED_WEB_RESOURCES_START
-window.raw_ngrams_gzip_b64 = ${jsString(rawNgramsGzipB64)};
-window.raw_wdfa_gzip_b64 = ${jsString(rawWdfaGzipB64)};
-window.raw_reranker_weights_gzip_b64 = ${jsString(rawRerankerWeightsGzipB64)};
-window.raw_examples_gzip_b64 = ${jsString(rawExamplesGzipB64)};
+globalThis.raw_ngrams_gzip_b64 = ${jsString(rawNgramsGzipB64)};
+globalThis.raw_wdfa_gzip_b64 = ${jsString(rawWdfaGzipB64)};
+globalThis.raw_reranker_weights_gzip_b64 = ${jsString(rawRerankerWeightsGzipB64)};
+globalThis.raw_examples_gzip_b64 = ${jsString(rawExamplesGzipB64)};
 $EMBEDDED_WEB_RESOURCES_END
 """.trimIndent() + "\n"
 
@@ -138,6 +141,9 @@ fun String.withoutEmbeddedWebResources(): String =
 val productionBundleDir = layout.buildDirectory.dir("kotlin-webpack/js/productionExecutable")
 val productionJsFile = productionBundleDir.map { it.file("tidyparse-web.js").asFile }
 val productionJsMapFile = productionBundleDir.map { it.file("tidyparse-web.js.map").asFile }
+val productionExecutableJsFile = layout.buildDirectory.file(
+  "compileSync/js/main/productionExecutable/kotlin/${rootProject.name}-${project.name}.js"
+)
 val hostedCoreBundleDir = layout.buildDirectory.dir("kotlin-webpack/js/hostedCore")
 val hostedCoreJsFile = hostedCoreBundleDir.map { it.file("tidyparse-core.js").asFile }
 val hostedCoreJsMapFile = hostedCoreBundleDir.map { it.file("tidyparse-core.js.map").asFile }
@@ -159,7 +165,9 @@ fun exampleResourceMap(): Map<String, String> =
   exampleFiles.files
     .sortedBy { rootProject.projectDir.toPath().relativize(it.toPath()).toString() }
     .associate {
-      rootProject.projectDir.toPath().relativize(it.toPath()).toString()
+      rootProject.projectDir.toPath()
+        .relativize(it.toPath())
+        .toString()
         .replace(File.separatorChar, '/') to it.readText()
     }
 
@@ -198,30 +206,22 @@ fun embeddedHostedPythonResources(): String =
 
 val generatedHostedWebpackDir = layout.buildDirectory.dir("generated/hosted-webpack")
 val hostedWebpackConfigFile = generatedHostedWebpackDir.map { it.file("webpack.config.js") }
-val generatedWebpackPackageDir =
-  rootProject.layout.buildDirectory.dir("js/packages/${rootProject.name}-${project.name}")
+val generatedWebpackPackageDir = rootProject.layout.buildDirectory.dir(
+  "js/packages/${rootProject.name}-${project.name}"
+)
 val generatedWebpackConfigFile = generatedWebpackPackageDir.map { it.file("webpack.config.js") }
-val webpackExecutable = rootProject.layout.buildDirectory.file("js/node_modules/.bin/webpack")
+val webpackCli = rootProject.layout.buildDirectory.file("js/node_modules/webpack/bin/webpack.js")
+val nodeJsExecutable = extensions.getByType<NodeJsEnvSpec>().executable
 
 val prepareHostedWebpackConfig = tasks.register("prepareHostedWebpackConfig") {
   val configContents = """
     const config = require(${jsString(generatedWebpackConfigFile.get().asFile.absolutePath)});
-    const cppOnlyRequest =
-      /^(?:@codingame\/monaco-vscode|monaco-languageclient(?:\/|${'$'})|monaco-editor(?:\/|${'$'})|vscode${'$'})/;
-    const existingExternals =
-      config.externals == null
-        ? []
-        : Array.isArray(config.externals)
-          ? config.externals
-          : [config.externals];
-
-    config.externals = [
-      ...existingExternals,
-      ({ request }, callback) =>
-        cppOnlyRequest.test(request || "")
-          ? callback(null, "commonjs " + request)
-          : callback()
-    ];
+    // Development and production webpack tasks share this generated package directory. A
+    // concurrently running development server can therefore replace its entry with the larger
+    // development compiler output. Pin the hosted build to the stable production compiler output.
+    config.entry = {
+      main: [${jsString(productionExecutableJsFile.get().asFile.absolutePath)}]
+    };
     config.output.path = ${jsString(hostedCoreBundleDir.get().asFile.absolutePath)};
     config.output.filename = "tidyparse-core.js";
     config.output.clean = true;
@@ -237,17 +237,23 @@ val prepareHostedWebpackConfig = tasks.register("prepareHostedWebpackConfig") {
 
 val jsBrowserHostedCoreWebpack = tasks.register<Exec>("jsBrowserHostedCoreWebpack") {
   group = "build"
-  description = "Builds the hosted non-C++ bundle without Monaco/VS Code dependencies"
+  description = "Builds the hosted browser bundle"
 
   dependsOn("jsBrowserProductionWebpack", prepareHostedWebpackConfig)
 
-  inputs.files(productionJsFile, generatedWebpackConfigFile, hostedWebpackConfigFile)
+  inputs.files(
+    productionJsFile,
+    productionExecutableJsFile,
+    generatedWebpackConfigFile,
+    hostedWebpackConfigFile
+  )
   outputs.files(hostedCoreJsFile, hostedCoreJsMapFile)
 
   doFirst {
     workingDir(generatedWebpackPackageDir.get().asFile)
     commandLine(
-      webpackExecutable.get().asFile.absolutePath,
+      nodeJsExecutable.get(),
+      webpackCli.get().asFile.absolutePath,
       "--config",
       hostedWebpackConfigFile.get().asFile.absolutePath
     )
@@ -283,61 +289,11 @@ fun ByteArray.replaceAllBytes(target: ByteArray, replacement: ByteArray): Pair<B
   return out.toByteArray() to replacements
 }
 
-val deployWebMessage = providers.gradleProperty("deployWebMessage").map { it.trim() }
-
-val deployWebRepoUri =
-  providers.gradleProperty("deployWebPushUrl")
-    .orElse(providers.gradleProperty("deployWebRepoUrl"))
-    .orElse("git@github.com:tidyparse/tidyparse.github.io.git")
-
-val deployWebBranch = providers.gradleProperty("deployWebBranch").orElse("main")
-
-val deployWebRepoDirFile =
-  providers.gradleProperty("deployWebRepoDir").map { file(it) }
-    .orElse(layout.buildDirectory.dir("deploy/tidyparse.github.io").map { it.asFile })
-
-gitPublish {
-  repoUri.set(deployWebRepoUri)
-  branch.set(deployWebBranch)
-  repoDir.set(layout.dir(deployWebRepoDirFile))
-  commitMessage.set(deployWebMessage.orElse(""))
-
-  contents { from(webDeployStagingDir) }
-
-  preserve {
-    include(
-      ".github/**",
-      ".gitignore",
-      "CNAME",
-      ".nojekyll",
-      "README",
-      "README.md",
-      "LICENSE"
-    )
-  }
-}
-
 tasks {
-  named("gitPublishCopy") { dependsOn("prepareWebDeploy") }
-
-  named("gitPublishReset") {
-    doFirst {
-      if (deployWebMessage.orNull.isNullOrBlank())
-        throw GradleException("""Pass a deployment message with -PdeployWebMessage="add visual status indicators".""")
-    }
-  }
-
-  register("deployWeb") {
-    group = "deployment"
-    description = "Builds, commits, and pushes tidyparse-web to tidyparse.github.io."
-    dependsOn("gitPublishPush")
-  }
-
-  val browserConsoleTailService =
-    gradle.sharedServices.registerIfAbsent(
-      "browserConsoleTailService",
-      BrowserConsoleTailService::class
-    ) {}
+  val browserConsoleTailService = gradle.sharedServices.registerIfAbsent(
+    "browserConsoleTailService",
+    BrowserConsoleTailService::class
+  ) {}
 
   withType<KotlinJsTest>().configureEach {
     val testTaskPath = path
@@ -359,7 +315,8 @@ tasks {
       browserConsoleLog.writeText("")
 
       val tailProcess = ProcessBuilder("tail", "-n", "+1", "-f", browserConsoleLog.absolutePath)
-        .redirectErrorStream(true).start()
+        .redirectErrorStream(true)
+        .start()
 
       browserConsoleTailService.get().stop(browserConsoleTailProcess.getAndSet(tailProcess))
       browserConsoleTailService.get().register(tailProcess)
@@ -465,7 +422,9 @@ tasks {
 window.REPAIR_MODE = "jcef";
 $embeddedResources
 
-function __tidyparseJcefSend(payload) { __JCEF_EVENT_CALLBACK__; }
+function __tidyparseJcefSend(payload) {
+  __JCEF_EVENT_CALLBACK__;
+}
 
 window.__tidyparseJcefSend = __tidyparseJcefSend;
 </script>
@@ -483,7 +442,7 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
     }
   }
 
-  register<Sync>("prepareWebDeploy") {
+  val prepareWebDeploy = register<Sync>("prepareWebDeploy") {
     group = "deployment"
     description = "Stages tidyparse-web files for deployment to tidyparse.github.io"
 
@@ -549,22 +508,48 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
         gzip(coreBundle.readBytes()).size.toLong() + gzip(indexResources.readBytes()).size.toLong()
       check(indexInitialJavaScriptGzipBytes <= maxHostedInitialJavaScriptGzipBytes) {
         "Hosted index JavaScript exceeds the ${maxHostedInitialJavaScriptGzipBytes}-byte gzip budget: " +
-          "$indexInitialJavaScriptGzipBytes bytes"
+                "$indexInitialJavaScriptGzipBytes bytes"
       }
 
       println("✓ Staged tidyparse-web deployment at ${webDeployStagingDir.get().asFile.absolutePath}")
       println("  Hosted core: ${coreBundle.length()} bytes")
-      println("  C++/worker bundle: ${fullBundle.length()} bytes")
+      println("  Browser bundle: ${fullBundle.length()} bytes")
       println("  Index resources: ${indexResources.length()} bytes (${exampleFiles.files.size} examples)")
       println("  Python resources: ${pythonResources.length()} bytes (small resources only)")
       println("  Index initial JavaScript: $indexInitialJavaScriptGzipBytes gzip bytes")
       println("  Compressed/base64 resource payloads larger than $maxHostedInlinePayloadBytes bytes stay as individual files")
     }
   }
+
+  register<ManagedSiteDeployTask>("deployWeb") {
+    group = "deployment"
+    description = "Builds, commits, and pushes tidyparse-web to tidyparse.github.io. Requires --msg \"commit message\"."
+
+    dependsOn(prepareWebDeploy)
+
+    sourceDirectory.set(webDeployStagingDir)
+    deploymentId.set("web")
+    commitMessage.convention(providers.gradleProperty("deployWebMessage"))
+    repositoryUrl.convention(providers.gradleProperty("deployWebRepoUrl").orElse("https://github.com/tidyparse/tidyparse.github.io.git"))
+    pushUrl.convention(providers.gradleProperty("deployWebPushUrl").orElse("git@github.com:tidyparse/tidyparse.github.io.git"))
+    branch.convention(providers.gradleProperty("deployWebBranch").orElse("main"))
+    checkoutPath.convention(
+      providers.gradleProperty("deployWebRepoDir")
+        .orElse(layout.buildDirectory.dir("deploy/tidyparse.github.io").map { it.asFile.absolutePath })
+    )
+  }
 }
 
 // To deploy the browser application, run:
-// ./gradlew deployWeb -PdeployWebMessage="commit message"
+// ./gradlew deployWeb --msg "add visual status indicators"
+// By default this clones/fetches:
+//  https://github.com/tidyparse/tidyparse.github.io.git
+// and pushes via SSH:
+//  git@github.com:tidyparse/tidyparse.github.io.git
+// into:
+//  tidyparse-web/build/deploy/tidyparse.github.io
+// Override the checkout with:
+// ./gradlew deployWeb --msg "..." --repo-dir /path/to/tidyparse.github.io
 // Wait a few minutes for CI to finish, then check the website:
 //  https://tidyparse.github.io
 
