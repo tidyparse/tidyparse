@@ -34,6 +34,6 @@ jobs:
         with:
           name: test-reports
           path: |
-            tidyparse-core/build/reports/tests/jsTest/
-            tidyparse-web/build/reports/tests/jsTest/
+            tidyparse-core/build/reports/tests/jsBrowserTest/
+            tidyparse-web/build/reports/tests/jsBrowserTest/
             tidyparse-cpp/build/reports/tests/jsBrowserTest/
