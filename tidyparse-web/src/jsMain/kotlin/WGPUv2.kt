@@ -12,6 +12,7 @@ import kotlinx.coroutines.await
 import kotlin.js.Promise
 import kotlin.time.TimeSource
 import web.gpu.GPUBuffer
+import web.gpu.GPUMapMode
 
 const val MAX_WDFA_FRONTIER_V2 = 32_768
 const val WDFA_META_STRIDE_V2 = 7
@@ -65,7 +66,7 @@ private suspend fun readExclusivePlusCountV2(exclusive: GPUBuffer, counts: GPUBu
   )
 
   gpu.queue.submit(arrayOf(encoder.finish()))
-  staging.mapAsync(GPUBufferUsage.MAP_READ).unsafeCast<Promise<*>>().await()
+  staging.mapAsync(GPUMapMode.READ).unsafeCast<Promise<*>>().await()
 
   val ints = Int32Array(staging.getMappedRange())
   val total = ints[0].toUInt().toLong() + ints[1].toUInt().toLong()
@@ -88,7 +89,7 @@ private suspend fun readU32V2(buf: GPUBuffer, wordIndex: Int = 0): Long {
   )
 
   gpu.queue.submit(arrayOf(encoder.finish()))
-  staging.mapAsync(GPUBufferUsage.MAP_READ).unsafeCast<Promise<*>>().await()
+  staging.mapAsync(GPUMapMode.READ).unsafeCast<Promise<*>>().await()
 
   val value = Int32Array(staging.getMappedRange())[0].toUInt().toLong()
 

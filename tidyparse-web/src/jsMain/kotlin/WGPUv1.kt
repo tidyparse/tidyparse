@@ -332,7 +332,7 @@ suspend fun GPUBuffer.readJSIntArray(): JSIntArray {
   cmd.copyBufferToBuffer(this, 0.0, readDst, 0.0, size)
   gpu.queue.submit(arrayOf(cmd.finish()))
 
-  readDst.mapAsync(GPUBufferUsage.MAP_READ).unsafeCast<Promise<*>>().await()
+  readDst.mapAsync(GPUMapMode.READ).unsafeCast<Promise<*>>().await()
 
   val mapped = readDst.getMappedRange()
   val copied = mapped.slice(0, mapped.byteLength)
@@ -1909,7 +1909,7 @@ class Shader constructor(val src: String) {
         )
       }
       gpu.queue.submit(arrayOf(encoder.finish()))
-      stagingBuffer.mapAsync(1).unsafeCast<Promise<*>>().await()
+      stagingBuffer.mapAsync(web.gpu.GPUMapMode.READ).unsafeCast<Promise<*>>().await()
       val t = Int32Array(stagingBuffer.getMappedRange())
         .asList().toIntArray().toList().also { stagingBuffer.destroy() }
       log("Read ${indices.size}/${size.toInt()} bytes in ${t0.elapsedNow()}")
@@ -1942,7 +1942,12 @@ class Shader constructor(val src: String) {
 
     // TODO: figure out map/unmap lifetime?
     fun GPUBuffer(byteSize: Number, us: Int, data: AllowSharedBufferSource? = null): GPUBuffer =
-      gpu.createBuffer(descriptor = GPUBufferDescriptor(size = byteSize.toDouble(), usage = us))
+      gpu.createBuffer(
+        descriptor = GPUBufferDescriptor(
+          size = byteSize.toDouble(),
+          usage = us.unsafeCast<web.gpu.GPUBufferUsage>()
+        )
+      )
         .also { if (data != null) { gpu.queue.writeBuffer(it, 0.0, data) } }
 
     private const val WORKGROUP_SIZE = 256

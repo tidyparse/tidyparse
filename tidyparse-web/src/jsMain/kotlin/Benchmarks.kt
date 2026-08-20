@@ -20,7 +20,7 @@ suspend fun GPUBuffer.readInts(): IntArray {
   val cmd = gpu.createCommandEncoder()
   cmd.copyBufferToBuffer(source = this, sourceOffset = 0.0, destination = readDst, destinationOffset = 0.0, size = size)
   gpu.queue.submit(arrayOf(cmd.finish()))
-  readDst.mapAsync(1).unsafeCast<Promise<*>>().await()
+  readDst.mapAsync(GPUMapMode.READ).unsafeCast<Promise<*>>().await()
   val t = Int32Array(readDst.getMappedRange()).asList().toIntArray()
   readDst.destroy()
 //      log("Read ${size.toInt()} bytes in ${t0.elapsedNow()}")
