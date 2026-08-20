@@ -6,7 +6,7 @@ on:
       - '**.kt'
       - '**.kts'
       - '**.js'
-      - 'tidyparse-web/src/jsTest/cppCompletion/**'
+      - 'tidyparse-cpp/**'
       - '**.tidy'
       - '**.zip'
       - '.github/workflows/build.yml'
@@ -36,3 +36,4 @@ jobs:
           path: |
             tidyparse-core/build/reports/tests/jsTest/
             tidyparse-web/build/reports/tests/jsTest/
+            tidyparse-cpp/build/reports/tests/jsBrowserTest/

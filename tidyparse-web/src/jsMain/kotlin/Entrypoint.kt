@@ -48,34 +48,12 @@ val parser = Parser(
 
 // ./gradlew :tidyparse-web:jsBrowserDevelopmentRun --continuous
 fun main() {
-  if (isCppCoiServiceWorkerRuntime()) {
-    setupCppCoiServiceWorker()
-    return
-  }
-  if (isCppCompletionWorkerRuntime()) {
-    setupCppCompletionWorker()
-    return
-  }
-  if (isCppClangdWorkerRuntime()) {
-    setupCppClangdWorker()
-    return
-  }
-  if (isCppMonacoEditorWorkerRuntime()) {
-    setupCppMonacoEditorWorker()
-    return
-  }
-  if (isCppTextMateWorkerRuntime()) {
-    setupCppTextMateWorker()
-    return
-  }
-
   MainScope().launch {
     try {
       if (window["REPAIR_MODE"] == "headless") headlessSetup()
       else if (window["REPAIR_MODE"] == "jcef") jcefSetup()
       else if (window["PROGRAMMING_LANG"] == "cnf") cnfSetup()
       else if (window["PROGRAMMING_LANG"] == "python") pythonSetup()
-      else if (window["PROGRAMMING_LANG"] == "cpp" || document.body?.getAttribute("data-programming-lang") == "cpp") cppSetup()
       else defaultSetup()
     } catch (t: Throwable) {
       if (window["REPAIR_MODE"] == "jcef") jcefSend("__TIDYPARSE_ERROR__${t.message ?: t.toString()}")
