@@ -31,6 +31,32 @@ h1, p { padding: 0 10px; }
 
 .noselect { user-select: none; }
 
+#tidyparse-output .result-index {
+    color: gray;
+    user-select: none;
+}
+
+#tidyparse-output ins,
+#tidyparse-output sub,
+#tidyparse-output del {
+    text-decoration: none;
+}
+
+#tidyparse-output ins { color: green; }
+
+#tidyparse-output sub {
+    color: orange;
+    font-size: inherit;
+    vertical-align: baseline;
+}
+
+#tidyparse-output del {
+    background-color: gray;
+    user-select: none;
+}
+
+#tidyparse-output del::after { content: "\00a0"; }
+
 u { text-decoration: #f00 wavy underline; }
 
 #content {

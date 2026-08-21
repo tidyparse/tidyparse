@@ -6,6 +6,8 @@ import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.LED_BUFFER
 import ai.hypergraph.kaliningraph.repair.TIMEOUT_MS
 import kotlinx.coroutines.*
+import org.kosat.round
+import kotlin.time.DurationUnit.SECONDS
 import kotlin.time.TimeSource
 
 val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
@@ -110,7 +112,17 @@ abstract class TidyEditor {
         }
         Scenario.REPAIR -> sampleGREUntilTimeout(tokens, cfg)
         else -> sequenceOf<Σᐩ>().also { println("Unhandled scenario: $scenario") }
-      }?.enumerateInteractively(workHash, tokens, reason = scenario.reason)
+      }?.let { candidates ->
+        val metric = levAndLenMetric(tokens)
+        val originalText = tokens.joinToString(" ")
+        candidates.enumerateInteractively(
+          workHash = workHash,
+          textOf = { it },
+          metric = { metric(it.tokenizeByWhitespace()) },
+          customDiff = { levenshteinAlign(originalText, it).paintDiffs() },
+          reason = scenario.reason
+        )
+      }
     }
   }
 
@@ -122,28 +134,50 @@ abstract class TidyEditor {
     operator fun invoke(d: List<Int>): Scenario = apply { data = d }
   }
 
-  protected suspend fun Sequence<String>.enumerateInteractively(
+  protected suspend fun <T> Sequence<T>.enumerateInteractively(
     workHash: Int,
-    origTks: List<String>,
+    textOf: (T) -> String,
+    metric: (T) -> Int,
+    customDiff: (T) -> String,
+    resultsToPost: Int = MAX_DISP_RESULTS,
     timer: TimeSource.Monotonic.ValueTimeMark = TimeSource.Monotonic.markNow(),
-    metric: (List<String>) -> Int = levAndLenMetric(origTks),
     shouldContinue: () -> Boolean = { currentWorkHash == workHash && timer.hasTimeLeft() },
-    customDiff: (String) -> String = { levenshteinAlign(origTks.joinToString(" "), it).paintDiffs() },
-    recognizer: (String) -> Boolean = { it in cfg.language },
     postCompletionSummary: () -> String = { "." },
     reason: String = "Generic completions:\n\n"
-  ) = enumerateCompletionsInteractively(
-    metric = metric,
-    shouldContinue = shouldContinue,
-//    postResults = { writeDisplayText("$invalidPrefix$it") },
-    postResults = { /*Now fast enough where intermediate progress should be unnecessary*/ },
-    finally = {
-      if (currentWorkHash == workHash) writeDisplayText("$reason$it".also { cache[workHash] = it })
-//      println("Enumeration completed in ${timer.elapsedNow().inWholeMilliseconds}ms")
-    },
-    customDiff = customDiff,
-    postCompletionSummary = postCompletionSummary
-  )
+  ) {
+    val results = mutableSetOf<String>()
+    val topResults = mutableListOf<Pair<T, Int>>()
+    val iter = iterator()
+    val startTime = TimeSource.Monotonic.markNow()
+
+    while (true) {
+      pause()
+      if (!shouldContinue() || !iter.hasNext()) break
+      val candidate = iter.next()
+      val text = textOf(candidate)
+      if (text.isEmpty() || !results.add(text)) continue
+
+      val score = metric(candidate)
+      if (topResults.size < resultsToPost || score < topResults.last().second) {
+        val location = topResults.binarySearch { it.second.compareTo(score) }
+        topResults.add(if (location < 0) -location - 1 else location, candidate to score)
+        if (topResults.size > resultsToPost) topResults.removeLast()
+      }
+    }
+
+    if (currentWorkHash != workHash) return
+    val throughput = (results.size / (startTime.elapsedNow().toDouble(SECONDS) + 0.001)).round(3)
+    val moreResults = (results.size - topResults.size)
+      .let { if (it == 0) "\n\n" else "\n\n...$it more, " }
+    val renderedResults = topResults.mapIndexed { index, (candidate, _) ->
+      val result = "<span class=\"result-index\">${index.toString().padStart(2)}.) </span>${customDiff(candidate)}"
+      if (index == 0) "<mark>$result</mark>" else result
+    }
+    val summary = "$moreResults~$throughput res/s${postCompletionSummary()}"
+    renderedResults.joinToString("\n", "", summary).let {
+      writeDisplayText("$reason$it".also { rendered -> cache[workHash] = rendered })
+    }
+  }
 
   fun caretInGrammar(): Boolean =
     readEditorText().indexOf("---").let { it == -1 || getCaretPosition().start < it }

@@ -198,7 +198,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   outCnt[r*n + c] = k;
 }""")
 
-suspend fun completeCode(cfg: CFG, porous: List<String>, ngrams: GPUBuffer? = null): List<String> {
+suspend fun completeCode(cfg: CFG, porous: List<String>, ngrams: GPUBuffer? = null): IntersectionResults {
   timings = linkedMapOf()
   val preprocT = TimeSource.Monotonic.markNow()
 

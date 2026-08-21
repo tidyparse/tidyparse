@@ -105,7 +105,10 @@ suspend fun intersectionPipelineV2(
   codePoints: IntArray,
   rerankerQuery: List<String>? = null,
   chartInitializer: Shader = init_lev_chart
-): List<String> {
+): IntersectionResults {
+  require(cfg.tmLst.size < PACKED_TOKEN_LIMIT) {
+    "Packed repair packets support fewer than $PACKED_TOKEN_LIMIT terminals"
+  }
   val wdfaBuf = wdfa ?: error("intersectionPipelineV2 requires a WDFA buffer")
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   log("V2 WDFA FSA(|Q|=$numStates, |delta|=${fsa.transit.size}), ${cfg.calcStats()}")
@@ -152,7 +155,7 @@ suspend fun intersectionPipelineV2(
 
   if (allStartIds.isEmpty()) {
     listOf(activeBuf, wordBuf, metaBuf, dpBuf).forEach(GPUBuffer::destroy)
-    return emptyList<String>().also { log("V2 WDFA: no valid parse found") }
+    return IntersectionResults.EMPTY.also { log("V2 WDFA: no valid parse found") }
   }
 
   log("V2 WDFA valid parse found: dpComplete has ${allStartIds.size} start indices")
@@ -164,10 +167,14 @@ suspend fun intersectionPipelineV2(
   log("Built backpointers in ${timings["build backpointers"]}ms | expansions=$totalExp")
 
   val filterT = TimeSource.Monotonic.markNow()
-  val statesToDist = allStartIds.map { it to fsa.idsToCoords[(it - startNT) / numNTs]!!.second }
+  val statesToDist = allStartIds.map {
+    val (i, j) = fsa.idsToCoords[(it - startNT) / numNTs]!!
+    it to j + codePoints.size - i
+  }
   val led = statesToDist.minOf { it.second }
+  val maxAcceptedDistance = (led.toLong() + ledBuffer).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
   val rootEntries = statesToDist
-    .filter { it.second in (led..(led + ledBuffer)) }
+    .filter { it.second in led..maxAcceptedDistance }
     .sortedWith(compareBy<Pair<Int, Int>> { it.second }.thenBy { it.first })
     .also { log("V2 start indices: total=${it.size}, roots=${it.size}, LED=$led, window=[${led}, ${led + ledBuffer}]") }
   mark("filter roots", filterT)
@@ -176,7 +183,7 @@ suspend fun intersectionPipelineV2(
   if (MAX_WORD_LEN < maxRepairLen) {
     listOf(activeBuf, wordBuf, metaBuf, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf)
       .forEach(GPUBuffer::destroy)
-    return emptyList<String>().also {
+    return IntersectionResults.EMPTY.also {
       log("V2 WDFA max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)")
     }
   }
@@ -211,7 +218,7 @@ suspend fun intersectionPipelineV2(
   val decodeT = TimeSource.Monotonic.markNow()
   val decoderTopK = if (rerankerQuery != null) RERANKER_TOP_K_SAMP else TOP_K_SAMP
   log("V2 decoding ${rootEntries.size} roots across ${rootsByDist.size} edit-distance bucket(s)")
-  val result = mutableListOf<String>()
+  var result = IntersectionResults.EMPTY
   val seen = linkedSetOf<String>()
   for ((dist, roots) in rootsByDist) {
     if (result.size >= decoderTopK) break
@@ -240,10 +247,10 @@ suspend fun intersectionPipelineV2(
         distanceLabel = dist
       )
 
-      for (word in bucketResult) {
-        if (seen.add(word)) result.add(word)
-        if (result.size >= decoderTopK) break
-      }
+      val selected = bucketResult.indices
+        .filter { i -> seen.add(bucketResult[i]) }
+        .take(decoderTopK - result.size)
+      result += bucketResult.selectResults(selected)
     } finally {
       idxUniBuf.destroy()
     }
@@ -252,9 +259,10 @@ suspend fun intersectionPipelineV2(
 
   val rankedResult =
     if (rerankerQuery != null) {
-      val candidates = result.take(RERANKER_TOP_K_SAMP)
+      val candidates = result.takeResults(RERANKER_TOP_K_SAMP)
       val rerankT = TimeSource.Monotonic.markNow()
-      RepairReranker.rerankOrOriginal(rerankerQuery, candidates)
+      RepairReranker.rerankOrOriginal(rerankerQuery, candidates.plainResults)
+        .let(candidates::reorderedLike)
         .also { mark("rerank", rerankT) }
     } else result
 
@@ -280,11 +288,11 @@ suspend fun wdfaRegexFrontierDecoderV2(
   k: Int = TOP_K_SAMP,
   expectedLanguageSize: Long? = null,
   distanceLabel: Int? = null
-): MutableList<String> {
+): IntersectionResults {
   log("Using V2 WDFA regex frontier decoder...")
   val t0 = TimeSource.Monotonic.markNow()
 
-  if (numRoots == 0) return mutableListOf()
+  if (numRoots == 0) return IntersectionResults.EMPTY
 
   val frontierCap = MAX_WDFA_FRONTIER_V2
   val completionCap = MAX_WDFA_COMPLETIONS_V2
@@ -408,7 +416,7 @@ suspend fun wdfaRegexFrontierDecoderV2(
     }
     if (recordedCompletions == 0) {
       log("V2 WDFA frontier produced no completed packets in ${t0.elapsedNow()} | frontier=${frontierA.count} | frontierExact=$exact")
-      return mutableListOf()
+      return IntersectionResults.EMPTY
     }
 
     val totalGroups = (recordedCompletions + 255) / 256
@@ -432,7 +440,7 @@ suspend fun wdfaRegexFrontierDecoderV2(
 
       val topK = bestBuf.readJSIntArray()
       log("V2 WDFA frontier/select/gather read ${topK.length} = ${k}x${maxRepairLen}x4 bytes in ${t0.elapsedNow()} | frontier=${frontierA.count} | completions=$recordedCompletions/$totalCompletions | frontierExact=$exact")
-      return decodePackets(topK, cfg, maxRepairLen).toMutableList()
+      return decodePackets(topK, cfg, maxRepairLen)
     } finally {
       listOf(prmBuf, idxBuf, scrBuf, hashBuf, bestBuf).forEach(GPUBuffer::destroy)
     }
@@ -543,8 +551,17 @@ fn wdfa_step_mass(stepCost: u32) -> f32 {
 
 //language=wgsl
 const val WDFA_FRONTIER_ENUM_V2 = """
-const WDFA_LIT_ALL : u32 = 0x7ffffffeu;
+const WDFA_LIT_ALL : u32 = 0x47fffffeu;
 const WDFA_NEG_BIT : u32 = $NEG_STR_LIT;
+
+fn wdfa_pack_edit_token(token: u32, val: u32) -> u32 {
+  let editCode = (val & EDIT_DEL_MASK) >> EDIT_DEL_SHIFT;
+  var editTag = 0u;
+  if (editCode == EDIT_INSERT_CODE) { editTag = ${PACKED_INSERTION_TAG}u; }
+  else if (editCode != 0u) { editTag = editCode + ${PACKED_SUBSTITUTION_TAG}u; }
+  else if ((val & EDIT_SUB_BIT) != 0u) { editTag = ${PACKED_SUBSTITUTION_TAG}u; }
+  return (token & ${PACKED_TOKEN_MASK}u) | (editTag << ${PACKED_EDIT_SHIFT}u);
+}
 
 fn wdfa_lex_count(val: u32, nt: u32) -> u32 { return count_tms(val, nt); }
 
@@ -553,15 +570,16 @@ fn wdfa_nth_lex_tok(val: u32, nt: u32, ord: u32) -> u32 {
   if (ntLen == 0u) { return 0u; }
   let ntOff = get_offsets(nt);
 
-  if (val == WDFA_LIT_ALL) {
+  let predicate = val & PREDICATE_MASK;
+  if (predicate == WDFA_LIT_ALL) {
     if (ord >= ntLen) { return 0u; }
     return get_all_tms(ntOff + ord) + 1u;
   }
 
-  if ((val >> 1u) == 0u) { return 0u; }
+  if ((predicate >> 1u) == 0u) { return 0u; }
 
-  let negLit = (val & WDFA_NEG_BIT) != 0u;
-  let litEnc = (val >> 1u) & 0x1fffffffu;
+  let negLit = (predicate & WDFA_NEG_BIT) != 0u;
+  let litEnc = (predicate >> 1u) & 0x03ffffffu;
   if (litEnc == 0u || litEnc > ntLen) { return 0u; }
 
   if (!negLit) {
@@ -770,7 +788,7 @@ fn wdfa_mark_done(dst: u32) {
     var nextCost = sat_add_wdfa(cost, st.y);
     let nextTop = top - 1u;
 
-    frontierOut[wbD + WDFA_PKT_HDR_LEN + wLen] = tok;
+    frontierOut[wbD + WDFA_PKT_HDR_LEN + wLen] = wdfa_pack_edit_token(tok, val);
     if (WDFA_PKT_HDR_LEN + wLen + 1u < prm.stride) {
       frontierOut[wbD + WDFA_PKT_HDR_LEN + wLen + 1u] = 0u;
     }
@@ -905,7 +923,7 @@ fn wdfa_copy_state(src: u32, dst: u32) {
   }
 }
 
-fn wdfa_emit_token(dst: u32, tok: u32, rng: u32) {
+fn wdfa_emit_token(dst: u32, tok: u32, val: u32, rng: u32) {
   let mb = wdfaMetaBase(dst);
   let wb = wdfaWordBase(dst);
 
@@ -926,7 +944,7 @@ fn wdfa_emit_token(dst: u32, tok: u32, rng: u32) {
   let nextCost = sat_add_wdfa(cost, st.y);
   let nextTop = top - 1u;
 
-  frontierOut[wb + WDFA_PKT_HDR_LEN + wLen] = tok;
+  frontierOut[wb + WDFA_PKT_HDR_LEN + wLen] = wdfa_pack_edit_token(tok, val);
   if (WDFA_PKT_HDR_LEN + wLen + 1u < prm.stride) {
     frontierOut[wb + WDFA_PKT_HDR_LEN + wLen + 1u] = 0u;
   }
@@ -1011,7 +1029,7 @@ fn wdfa_emit_token(dst: u32, tok: u32, rng: u32) {
   if (total <= 0.0) {
     if (lc != 0u) {
       let ord = wdfa_xorshift32(&rng) % lc;
-      wdfa_emit_token(dst, wdfa_nth_lex_tok(val, nt, ord), rng);
+      wdfa_emit_token(dst, wdfa_nth_lex_tok(val, nt, ord), val, rng);
       return;
     }
     frontierOut[mbD + 0u] = rng;
@@ -1029,7 +1047,7 @@ fn wdfa_emit_token(dst: u32, tok: u32, rng: u32) {
     let st = wdfa_step(q, tok);
     acc = acc + wdfa_step_mass(st.y);
     if (u <= acc) {
-      wdfa_emit_token(dst, tok, rng);
+      wdfa_emit_token(dst, tok, val, rng);
       return;
     }
   }
@@ -1177,8 +1195,9 @@ fn packet_hash(i: u32) -> u32 {
 
     loop {
         if (UNIQUE_PKT_HDR_LEN + pos >= prm.stride) { break; }
-        let tok = packets[base + pos];
-        if (tok == 0u) { break; }
+        let packedTok = packets[base + pos];
+        if (packedTok == 0u) { break; }
+        let tok = packedTok & ${PACKED_TOKEN_MASK}u;
         if (tok != prm.epsilonTok) {
             h = (h ^ tok) * 16777619u;
         }

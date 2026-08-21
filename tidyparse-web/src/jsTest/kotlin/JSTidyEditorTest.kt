@@ -61,6 +61,24 @@ class JSTidyEditorTest {
       writes++
       (output as HTMLDivElement).innerHTML = s
     }
+
+    suspend fun <T> enumerateForTest(
+      candidates: Sequence<T>,
+      textOf: (T) -> String,
+      metric: (T) -> Int,
+      render: (T) -> String
+    ) {
+      currentWorkHash = 1
+      candidates.enumerateInteractively(
+        workHash = 1,
+        textOf = textOf,
+        metric = metric,
+        customDiff = render,
+        shouldContinue = { true },
+        postCompletionSummary = { "" },
+        reason = ""
+      )
+    }
   }
 
   private fun editorFor(
@@ -84,6 +102,30 @@ class JSTidyEditorTest {
     input.value = "START -> S\nS -> a\n---\n$line"
     input.setSelectionRange(input.value.length, input.value.length)
     return RecordingEditor(input, output, cfg, softPreviewAvailable) to input
+  }
+
+  @Test
+  fun enumerationDefersRenderingAndKeepsTheFirstVisibleRow() = runTest {
+    data class Candidate(val text: String, val score: Int, val rendering: String)
+
+    val (editor, _) = editorFor("")
+    var renderCount = 0
+    editor.enumerateForTest(
+      sequenceOf(
+        Candidate("same", 10, "first-alignment"),
+        Candidate("same", 0, "second-alignment"),
+        Candidate("other", 5, "other-alignment")
+      ),
+      textOf = Candidate::text,
+      metric = Candidate::score,
+      render = { renderCount++; it.rendering }
+    )
+
+    val html = (editor.output as HTMLDivElement).innerHTML
+    assertEquals(2, renderCount)
+    assertContains(html, "first-alignment")
+    assertContains(html, "other-alignment")
+    assertFalse("second-alignment" in html)
   }
 
   @OptIn(ExperimentalUnsignedTypes::class)

@@ -10,6 +10,7 @@ import kotlinx.browser.window
 import kotlinx.coroutines.*
 import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
+import kotlin.math.absoluteValue
 import kotlin.time.TimeSource
 
 internal const val MAX_TERMINAL_COMPLETION_BRANCHES = 3
@@ -127,11 +128,11 @@ private fun PTreeYieldBounds.extrema(): TokenSequenceBounds? {
   byLength.values.forEach { (candidateMinimum, candidateMaximum) ->
     if (
       minimum == null ||
-      compareTokenSequences(candidateMinimum, minimum!!) < 0
+      compareTokenSequences(candidateMinimum, minimum) < 0
     ) minimum = candidateMinimum
     if (
       maximum == null ||
-      compareTokenSequences(candidateMaximum, maximum!!) > 0
+      compareTokenSequences(candidateMaximum, maximum) > 0
     ) maximum = candidateMaximum
   }
 
@@ -688,9 +689,7 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
           end == null || end == js("undefined")
         ) null
         else FreshUserInsertion(text as String, (start as Int)..(end as Int))
-      } else nativeFreshUserInsertion.also {
-        nativeFreshUserInsertion = null
-      }
+      } else nativeFreshUserInsertion.also { nativeFreshUserInsertion = null }
 
     return snapshot?.matchesCurrentEditorState() == true
   }
@@ -750,8 +749,9 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
     log("Applicable context:\n$context")
     val suffixEligible = context.endsWith(" ") && !caretInMiddle() && !caretInGrammar
 
-    var tokens = context.tokenizeByWhitespace()
-    if (tokens.isEmpty()) { restoreInstructions(); return }
+    val displayTokens = context.tokenizeByWhitespace()
+    if (displayTokens.isEmpty()) { restoreInstructions(); return }
+    var tokens = displayTokens
 
     val cfg = if (caretInGrammar) {
       tokens = tokens.map { if (it == "START") "[START]" else it }
@@ -882,9 +882,7 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
         it.originalPrefix,
         it.expandedPrefix,
         it.forcedContinuation,
-        it.branches.map { branch ->
-          branch.terminal to branch.suffixLengths
-        }
+        it.branches.map { branch -> branch.terminal to branch.suffixLengths }
       ).hashCode()
     } ?: 0
     val workHash = abstractUnk.hashCode() + cfg.hashCode() + settingsHash.hashCode() + terminalCompletionHash
@@ -910,9 +908,10 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
         else -> REPAIR
       }
 
-      when (scenario) {
+      var gpuRepairResults: IntersectionResults? = null
+      val candidates: Sequence<String>? = when (scenario) {
         STUB -> cfg.enumNTSmall(tokens[0].stripStub()).take(100)
-        COMPLETION -> if (!gpuAvailable) cfg.enumSeqSmart(tokens) else completeCode(cfg, tokens).stripEpsilon()
+        COMPLETION -> if (!gpuAvailable) cfg.enumSeqSmart(tokens) else completeCode(cfg, tokens).asSequence()
         SUFFIX_COMPLETION ->
           terminalCompletion?.enumerationBranches()
             ?.map(cfg::enumTerminalSuffixes)
@@ -924,29 +923,56 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
         }
         REPAIR ->
           if (!gpuAvailable) { log("Repairing on CPU..."); sampleGREUntilTimeout(tokens, cfg) }
-          else repairCode(cfg, tokens, LED_BUFFER).stripEpsilon()
-      }?.let { if (scenario != REPAIR) it.take(MAX_DISP_RESULTS) else it }
-      ?.let { if (caretInGrammar) it.map { it.replace("[START]", "START") } else it }
-      ?.enumerateInteractively(workHash, tokens,
-        metric = when (scenario) {
-          REPAIR -> levAndLenMetric(tokens)
-          SUFFIX_COMPLETION -> ({ it.size })
-          else -> ({ 0 })
-        },
-        customDiff = { completion ->
-          levenshteinAlign(tokens.joinToString(" "), completion).paintDiffs()
-        },
-        reason = scenario.reason,
-        postCompletionSummary = TimeSource.Monotonic.markNow().let { postProcTimer -> {
-          if (gpuAvailable) {
-            mark("postprocessing", postProcTimer);
-            timings["total"] = t0.elapsedNow().inWholeMilliseconds.toInt()
-            log("Results rendered in ${timings["total"]}ms")
-            timings.logTimesheet()
-          }
-          ", ${t0.elapsedNow()} latency."
-        }}
-      )
+          else repairCode(cfg, tokens, LED_BUFFER)
+            .let { results ->
+              if (!caretInGrammar) results
+              else results.mapPlainResults { it.replace("[START]", "START") }
+            }.also { gpuRepairResults = it }.asSequence()
+      }
+
+      val displayCandidates = candidates
+        ?.let { if (scenario != REPAIR) it.take(MAX_DISP_RESULTS) else it }
+        ?.let { if (caretInGrammar && gpuRepairResults == null) it.map { it.replace("[START]", "START") } else it }
+      val postCompletionSummary = TimeSource.Monotonic.markNow().let { postProcTimer -> {
+        if (gpuAvailable) {
+          mark("postprocessing", postProcTimer)
+          timings["total"] = t0.elapsedNow().inWholeMilliseconds.toInt()
+          log("Results rendered in ${timings["total"]}ms")
+          timings.logTimesheet()
+        }
+        ", ${t0.elapsedNow()} latency."
+      }}
+
+      gpuRepairResults?.let { results ->
+        val originalLength = displayTokens.sumOf(String::length)
+        val metrics = IntArray(results.size) { index ->
+          results.editDistanceAt(index) * 7919 +
+            (originalLength - results[index].count { !it.isWhitespace() }).absoluteValue
+        }
+        results.indices.asSequence().enumerateInteractively(
+          workHash = workHash,
+          textOf = results::get,
+          metric = metrics::get,
+          customDiff = results.annotatedResults::get,
+          reason = scenario.reason,
+          postCompletionSummary = postCompletionSummary
+        )
+      } ?: displayCandidates?.let { candidates ->
+        val metric = when (scenario) {
+          REPAIR -> levAndLenMetric(displayTokens)
+          SUFFIX_COMPLETION -> ({ tokens: List<String> -> tokens.size })
+          else -> ({ _: List<String> -> 0 })
+        }
+        val originalText = displayTokens.joinToString(" ")
+        candidates.enumerateInteractively(
+          workHash = workHash,
+          textOf = { it },
+          metric = { metric(it.tokenizeByWhitespace()) },
+          customDiff = { completion -> levenshteinAlign(originalText, completion).paintDiffs() },
+          reason = scenario.reason,
+          postCompletionSummary = postCompletionSummary
+        )
+      }
     }
   }
 

@@ -79,15 +79,19 @@ class JSTidyCNFEditor(editor: HTMLTextAreaElement, output: Node) : JSTidyEditor(
 
     var i = 0; suspend fun pause(freq: Int = 3) { if (i++ % freq == 0) { delay(50.nanoseconds) }}
     runningJob = MainScope().launch {
+      val candidateMetric = levAndLenMetric(tokens)
+      val originalText = tokens.joinToString(" ")
       when (scenario) {
         Scenario.STUB -> cfg.enumNTSmall(tokens[0].stripStub()).take(100)
         Scenario.COMPLETION ->
           (if (!gpuAvailable) cfg.enumSeqSmartSuspendable(tokens, suspender = { pause() })
-          else completeCode(cfg, tokens).stripEpsilon())
+          else completeCode(cfg, tokens).asSequence())
             .take(MAX_DISP_RESULTS)
             .enumerateInteractively(
               workHash = workHash,
-              origTks = tokens,
+              textOf = { it },
+              metric = { candidateMetric(it.tokenizeByWhitespace()) },
+              customDiff = { levenshteinAlign(originalText, it).paintDiffs() },
               reason = scenario.reason,
               postCompletionSummary = { ", ${t0.elapsedNow()} latency." }
             )
@@ -95,11 +99,11 @@ class JSTidyCNFEditor(editor: HTMLTextAreaElement, output: Node) : JSTidyEditor(
         Scenario.REPAIR ->
           (if (gpuAvailable)
             repairCode(cfg, tokens, LED_BUFFER).asSequence()
-              .map { it.replace("ε", "").tokenizeByWhitespace().joinToString(" ") }
           else sampleGREUntilTimeout(tokens, cfg)).enumerateInteractively(
             workHash = workHash,
-            metric = { _ -> 1 },
-            origTks = tokens,
+            textOf = { it },
+            metric = { 1 },
+            customDiff = { levenshteinAlign(originalText, it).paintDiffs() },
             reason = scenario.reason,
             postCompletionSummary = { ", ${t0.elapsedNow()} latency." }
           )

@@ -40,6 +40,7 @@ typealias JSIntArray = Int32Array<ArrayBuffer>
 
 const val largeMem = "{ requiredLimits: { maxBufferSize: 2000000000, maxStorageBufferBindingSize: 2000000000, maxStorageBuffersPerShaderStage: 10 } }"
 const val smallMem = "{ requiredLimits: { maxBufferSize: 1073741824, maxStorageBufferBindingSize: 1073741824, maxStorageBuffersPerShaderStage: 10 } }"
+const val MAX_LEV_RAD = 5 // Edit metadata has six deletion codes; the seventh code is insertion.
 
 suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
   val tmpDev = try {
@@ -127,7 +128,7 @@ suspend fun repairCode(
   code: List<String>,
   ledBuffer: Int = Int.MAX_VALUE,
   rerankerQuery: List<String>? = null
-): List<String> {
+): IntersectionResults {
   timings = linkedMapOf()
   val preprocT = TimeSource.Monotonic.markNow()
   val fsa: FSA = makeLevFSA(code, MAX_LEV_RAD)
@@ -156,7 +157,10 @@ suspend fun intersectionPipeline(
   codePoints: IntArray,
   rerankerQuery: List<String>? = null,
   chartInitializer: Shader = init_lev_chart
-): List<String> {
+): IntersectionResults {
+  require(cfg.tmLst.size < PACKED_TOKEN_LIMIT) {
+    "Packed repair packets support fewer than $PACKED_TOKEN_LIMIT terminals"
+  }
   val (numStates, numNTs) = fsa.numStates to cfg.nonterminals.size
   log("FSA(|Q|=$numStates, |δ|=${fsa.transit.size}), ${cfg.calcStats()}")
 
@@ -201,7 +205,7 @@ suspend fun intersectionPipeline(
   if (allStartIds.isEmpty()) {
 //    timings.logTimingsToJSConsole()
     destroyAll(activeBuf, wordBuf, metaBuf, dpBuf)
-    return emptyList<String>().also { log("No valid parse found: dpComplete has no entries in final states!") }
+    return IntersectionResults.EMPTY.also { log("No valid parse found: dpComplete has no entries in final states!") }
   }
 
   log("Valid parse found: dpComplete has ${allStartIds.size} start indices")
@@ -213,14 +217,18 @@ suspend fun intersectionPipeline(
   log("Built backpointers in ${timings["build backpointers"]}ms | expansions=$totalExp")
 
   val t2 = TimeSource.Monotonic.markNow()
-  val statesToDist = allStartIds.map { it to fsa.idsToCoords[(it - startNT) / numNTs]!!.second }
+  val statesToDist = allStartIds.map {
+    val (i, j) = fsa.idsToCoords[(it - startNT) / numNTs]!!
+    it to j + codePoints.size - i
+  }
   val led = statesToDist.minOf { it.second }
 
+  val maxAcceptedDistance = (led.toLong() + ledBuffer).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
   val startIdxs = statesToDist
-    .filter { it.second in (led..(led + ledBuffer)) }
+    .filter { it.second in led..maxAcceptedDistance }
     .map { listOf(it.first, it.second) }
     .sortedBy { it[1] }
-    .also { log("Start indices: total=${it.size}, roots=${it.size}, LED=$led, window=[${led}, ${led + ledBuffer}]") }
+    .also { log("Start indices: total=${it.size}, roots=${it.size}, LED=$led, window=[$led, $maxAcceptedDistance]") }
     .flatten()
 
   mark("filter roots", t2)
@@ -229,7 +237,7 @@ suspend fun intersectionPipeline(
   if (MAX_WORD_LEN < maxRepairLen) {
 //    timings.logTimingsToJSConsole()
     destroyAll(activeBuf, wordBuf, metaBuf, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf)
-    return emptyList<String>().also {
+    return IntersectionResults.EMPTY.also {
       log("Max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)")
     }
   }
@@ -309,15 +317,16 @@ suspend fun intersectionPipeline(
     else uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)
   mark("decode", decodeT)
 
-  val rankedResult =
+  val rankedResults =
     if (rerankerQuery != null) {
-      val candidates = result.take(RERANKER_TOP_K_SAMP)
+      val candidates = result.takeResults(RERANKER_TOP_K_SAMP)
       val rerankT = TimeSource.Monotonic.markNow()
-      RepairReranker.rerankOrOriginal(rerankerQuery, candidates)
+      RepairReranker.rerankOrOriginal(rerankerQuery, candidates.plainResults)
+        .let(candidates::reorderedLike)
         .also { mark("rerank", rerankT) }
     } else result
 
-  return rankedResult.also {
+  return rankedResults.also {
     destroyAll(
       outBuf, rootSizes, rootCDF, metaBuf, dpBuf, activeBuf, wordBuf,
       idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf
@@ -343,10 +352,8 @@ suspend fun GPUBuffer.readJSIntArray(): JSIntArray {
   return Int32Array(copied)
 }
 
-suspend fun uniformDecoder(outBuf: GPUBuffer, cfg: CFG, maxRepairLen: Int, samplesToDecode: Int): List<String> {
-  log("Using uniform decoder...")
-  return decodePackets(outBuf.readJSIntArray(), cfg, maxRepairLen, samplesToDecode)
-}
+suspend fun uniformDecoder(outBuf: GPUBuffer, cfg: CFG, maxRepairLen: Int, samplesToDecode: Int): IntersectionResults =
+  decodePackets(outBuf.readJSIntArray(), cfg, maxRepairLen, samplesToDecode.also { log("Using uniform decoder...") })
 
 // TODO: Switch to MRF-based sampler? https://aclanthology.org/H92-1028.pdf
 suspend fun ngramDecoder(
@@ -356,7 +363,7 @@ suspend fun ngramDecoder(
   cfg: CFG,
   samplesToDecode: Int,
   k: Int = TOP_K_SAMP
-): List<String> {
+): IntersectionResults {
   log("Using n-gram decoder...")
   val topK = scoreSelectGather(outBuf, ngrams, markov_score, samplesToDecode, maxRepairLen, k)
   return decodePackets(topK, cfg, maxRepairLen)
@@ -369,48 +376,116 @@ suspend fun wdfaDecoder(
   cfg: CFG,
   samplesToDecode: Int,
   k: Int = TOP_K_SAMP
-): MutableList<String> {
+): IntersectionResults {
   log("Using WDFA decoder...")
   val topK = scoreSelectGather(
     outBuf, wdfa, wdfa_score, samplesToDecode, maxRepairLen, k,
     profileLabel = "WDFA score"
   )
-  return decodePackets(topK, cfg, maxRepairLen).toMutableList()
+  return decodePackets(topK, cfg, maxRepairLen)
 }
 
-// Returns Levenshtein distance and string repair
-fun JSIntArray.decodePacket(idx: Int, tm: List<String>, pktLen: Int): Pair<Int, String>? {
+data class DecodedIntersectionResult(
+  val distance: Int,
+  val plainResult: String,
+  val editScript: List<Int>,
+  val score: Float
+)
+
+private fun editTieBreakPriority(op: Int): Int = when (op) {
+  LEV_EDIT_INSERT -> 0
+  LEV_EDIT_DELETE -> 1
+  else -> 2 // Match/substitution share the diagonal transition.
+}
+
+/** Uses the same backward insertion/deletion/diagonal tie-break as [levenshteinAlign]. */
+private fun DecodedIntersectionResult.isPreferredTo(other: DecodedIntersectionResult): Boolean {
+  if (distance != other.distance) return distance < other.distance
+
+  for (offset in 1..minOf(editScript.size, other.editScript.size)) {
+    val priority = editTieBreakPriority(editScript[editScript.size - offset])
+    val otherPriority = editTieBreakPriority(other.editScript[other.editScript.size - offset])
+    if (priority != otherPriority) return priority < otherPriority
+  }
+
+  return if (editScript.size != other.editScript.size) editScript.size < other.editScript.size
+  else score < other.score
+}
+
+// Returns one decoded intersection result with a packet-layout-independent edit script.
+fun JSIntArray.decodePacket(idx: Int, tm: List<String>, pktLen: Int): DecodedIntersectionResult? {
   val base = idx * pktLen + PKT_HDR_LEN // skip header cells
+  val distance = this[base - PKT_HDR_LEN]
+  val score = this[base - 1].toUInt().toFloat()
 
   var cur: StringBuilder? = null
-  var wroteAny = false
+  var encodedEdits = 0
+  val edits = mutableListOf<Int>()
+
+  fun append(token: String) {
+    val builder = cur ?: StringBuilder().also { cur = it }
+    if (builder.isNotEmpty()) builder.append(' ')
+    builder.append(token)
+  }
 
   for (j in 0 until (pktLen - PKT_HDR_LEN)) {
-    val tok = this[base + j]
-    if (tok == 0) break
+    val packed = this[base + j].toUInt()
+    if (packed == 0u) break
+
+    val tok = (packed and PACKED_TOKEN_MASK.toUInt()).toInt()
     if (tok !in 1..tm.size) return null
-    if (!wroteAny) cur = StringBuilder().also { wroteAny = true } else cur!!.append(' ')
-    cur.append(tm[tok - 1])
+    val terminal = tm[tok - 1]
+    append(terminal)
+
+    when (val editTag = (packed shr PACKED_EDIT_SHIFT).toInt()) {
+      PACKED_INSERTION_TAG -> {
+        encodedEdits++
+        edits += LEV_EDIT_INSERT
+      }
+      PACKED_SUBSTITUTION_TAG -> {
+        encodedEdits++
+        edits += LEV_EDIT_SUBSTITUTE
+      }
+      in PACKED_FIRST_DELETION_TAG..PACKED_LAST_DELETION_TAG -> {
+        val deletions = editTag - PACKED_SUBSTITUTION_TAG
+        encodedEdits += deletions
+        repeat(deletions) { edits += LEV_EDIT_DELETE }
+        edits += LEV_EDIT_MATCH
+      }
+      else -> edits += LEV_EDIT_MATCH
+    }
   }
 
-  return if (wroteAny) { this[base - PKT_HDR_LEN] to cur!!.toString() } else null
+  repeat((distance - encodedEdits).coerceAtLeast(0)) { edits += LEV_EDIT_DELETE }
+
+  return cur?.let { DecodedIntersectionResult(distance, it.toString(), edits, score) }
 }
 
-fun decodePackets(packets: JSIntArray, cfg: CFG, maxRepairLen: Int, packetCount: Int = packets.length / maxRepairLen): List<String> {
+fun decodePackets(
+  packets: JSIntArray,
+  cfg: CFG,
+  maxRepairLen: Int,
+  packetCount: Int = packets.length / maxRepairLen
+): IntersectionResults {
   val t0 = TimeSource.Monotonic.markNow()
-  val res = linkedMapOf<Int, MutableSet<String>>()
+  val rows = linkedMapOf<String, DecodedIntersectionResult>()
 
   for (i in 0 until packetCount) {
-    val t = packets.decodePacket(i, cfg.tmLst, maxRepairLen) ?: continue
-    res.getOrPut(t.first) { linkedSetOf() }.add(t.second)
+    val decoded = packets.decodePacket(i, cfg.tmLst, maxRepairLen) ?: continue
+    val previous = rows[decoded.plainResult]
+    if (previous == null || decoded.isPreferredTo(previous)) rows[decoded.plainResult] = decoded
   }
 
-  res.forEach { (dist, words) -> log("Δ=$dist -> |L|=${words.size}") }
+  rows.values.map { it.distance }.distinct().sorted().forEach { distance ->
+    log("Δ=$distance -> |L|=${rows.values.count { it.distance == distance }}")
+  }
 
-  val out = ArrayList<String>(res.values.sumOf { it.size })
-  for (set in res.values) out.addAll(set)
-  log("Decoded ${out.size} unique words from $packetCount packets in ${t0.elapsedNow()}")
-  return out
+  log("Decoded ${rows.size} unique words from $packetCount packets in ${t0.elapsedNow()}")
+  return IntersectionResults(
+    rows.values.map { it.plainResult },
+    rows.values.map { it.editScript },
+    rows.values.map { it.score }
+  )
 }
 
 suspend fun scoreSelectGather(
@@ -471,8 +546,13 @@ fn getEditDist(i : u32) -> u32 { return idx_uni.startIndices[i * 2 + 1]; }
 
 //language=wgsl
 const val TM_DECODING_HELPERS = """
-const LIT_ALL : u32 = 0x7ffffffeu;
-const NEG_BIT : u32 = $NEG_STR_LIT;
+const LIT_ALL        : u32 = 0x47fffffeu;
+const NEG_BIT        : u32 = $NEG_STR_LIT;
+const PREDICATE_MASK : u32 = 0x47fffffeu;
+const EDIT_SUB_BIT   : u32 = 0x80000000u;
+const EDIT_DEL_SHIFT : u32 = 27u;
+const EDIT_DEL_MASK  : u32 = 0x38000000u;
+const EDIT_INSERT_CODE : u32 = 7u; // reserved maximum value of the three-bit edit field
 
 // Let Σ_A denote the subset of Σ s.t. for all a ∈ Σ_A ⊢ (A -> a) ∈ P
 fn get_nt_tm_lens(nt : u32) -> u32 { return terminals.payload[terminals.nt_tm_lens_offset + nt]; } // |Σ_A|
@@ -484,11 +564,12 @@ fn get_all_tms(i : u32) -> u32     { return terminals.payload[terminals.all_tms_
 fn count_tms(val: u32, unit_nt: u32) -> u32 {
     // Wildcard: allow any terminal in Σ_A
     let ntLen = get_nt_tm_lens(unit_nt);
-    if (val == LIT_ALL) { return ntLen; }
+    let predicate = val & PREDICATE_MASK;
+    if (predicate == LIT_ALL) { return ntLen; }
     if (ntLen == 0u) { return 0u; }
     
-    let hasLiteral = ((val >> 1u) != 0u);             // bit‑packed literal present?
-    let negLit     = (val & $NEG_STR_LIT) != 0u;      // negative‑literal flag
+    let hasLiteral = ((predicate >> 1u) != 0u);             // bit‑packed literal present?
+    let negLit     = (predicate & $NEG_STR_LIT) != 0u;      // negative‑literal flag
     var negCount   : u32 = 0u;
     if (ntLen > 1u) { negCount = ntLen - 1u; }
     let litCount   = select(0u,
@@ -782,6 +863,7 @@ const MAX_J_IDX_CONST : u32 = ${MAX_LEV_RAD}u; // Max index for j (edit distance
     let dj = i32(j2) - i32(j1);
 
     var encoded_predicate_val : u32 = 0u;
+    var encoded_edit_val : u32 = 0u;
     var should_write_to_dp_in : bool = false;
     let num_prods_for_A = get_nt_tm_lens(A_idx);
     
@@ -792,6 +874,7 @@ const MAX_J_IDX_CONST : u32 = ${MAX_LEV_RAD}u; // Max index for j (edit distance
             encoded_predicate_val = encode_neg_literal(A_idx, s_char);
             if (encoded_predicate_val == LIT_ALL) { should_write_to_dp_in = (num_prods_for_A > 0u); }
             else if ((encoded_predicate_val & NEG_BIT) != 0u) { should_write_to_dp_in = (num_prods_for_A > 1u); }
+            encoded_edit_val = EDIT_INSERT_CODE << EDIT_DEL_SHIFT;
         }
     }
     // (2) RIGHT ARC (Match): q1=(i-1,j) -> q2=(i,j). Predicate: word[i1]
@@ -809,6 +892,7 @@ const MAX_J_IDX_CONST : u32 = ${MAX_LEV_RAD}u; // Max index for j (edit distance
             encoded_predicate_val = encode_neg_literal(A_idx, s_char);
             if (encoded_predicate_val == LIT_ALL) { should_write_to_dp_in = (num_prods_for_A > 0u); }
             else if ((encoded_predicate_val & NEG_BIT) != 0u) { should_write_to_dp_in = (num_prods_for_A > 1u); }
+            encoded_edit_val = EDIT_SUB_BIT;
         }
     }
     // (4) "KNIGHT" ARC (Deletion): q1=(i,j) -> q2=(i+d+1,j+d). Predicate: word[i1+d]
@@ -819,12 +903,13 @@ const MAX_J_IDX_CONST : u32 = ${MAX_LEV_RAD}u; // Max index for j (edit distance
                 let s_char = letter_at(i1 + d_val, current_word_len);
                 encoded_predicate_val = encode_pos_literal(A_idx, s_char);
                 if (encoded_predicate_val != 0u) { should_write_to_dp_in = true; }
+                encoded_edit_val = d_val << EDIT_DEL_SHIFT;
             }
         }
     }
 
     if (should_write_to_dp_in) {
-        dp_in[dpIdx] = encoded_predicate_val;
+        dp_in[dpIdx] = encoded_predicate_val | encoded_edit_val;
         setActiveAt(activeBase(q1_rank, q2_rank), A_idx);
     }
 }""")
@@ -1282,13 +1367,19 @@ val prefix_sum_p2 by Shader("""$PFX_SUM_PARAMS $SAT_ARTH
 
 // Longest word WGSL can handle. If ~2^9<MAX_WORD_LEN, pipeline breaks some on architectures
 const val MAX_WORD_LEN = 128
-const val MAX_LEV_RAD = 5
 const val MAX_SAMPLES = 2_000_000 // Maximum number of samples to draw before reranking
 const val TOP_K_SAMP = 10 * MAX_DISP_RESULTS // Maximum results to sample, some of which may be displayed to the user
 const val RERANKER_TOP_K_SAMP = 1_000
 const val DISPATCH_GROUP_SIZE_X = 65_535
 // Length of the packet header in each repair buffer
-const val PKT_HDR_LEN = 2 // [levenshtein distance, Markov probability]
+const val PKT_HDR_LEN = 2 // [intersection priority/edit distance, decoder rank cost]
+const val PACKED_EDIT_SHIFT = 24
+const val PACKED_TOKEN_LIMIT = 1 shl PACKED_EDIT_SHIFT
+const val PACKED_TOKEN_MASK = PACKED_TOKEN_LIMIT - 1
+const val PACKED_INSERTION_TAG = 1
+const val PACKED_SUBSTITUTION_TAG = 2
+const val PACKED_FIRST_DELETION_TAG = 3
+const val PACKED_LAST_DELETION_TAG = PACKED_SUBSTITUTION_TAG + MAX_LEV_RAD
 const val SENTINEL = 0xFFFF_FFFFu
 const val HASH_MUL = 0x1e35a7bdu
 
@@ -1331,6 +1422,8 @@ $CHART_DECODING_HELPERS
 
 const PKT_HDR_LEN : u32 = ${PKT_HDR_LEN}u;
 const NEG_MASK    : u32 = ${NEG_STR_LIT};
+const TOKEN_MASK  : u32 = ${PACKED_TOKEN_MASK}u;
+const EDIT_SHIFT  : u32 = ${PACKED_EDIT_SHIFT}u;
 
 $WGSL_LANG_SIZE
 
@@ -1343,6 +1436,15 @@ fn binarySearchCDF(base: u32, len: u32, needle: u32) -> u32 {
   }
 
   return base + lo;
+}
+
+fn packEditToken(token: u32, val: u32) -> u32 {
+  let editCode = (val & EDIT_DEL_MASK) >> EDIT_DEL_SHIFT;
+  var editTag = 0u;
+  if (editCode == EDIT_INSERT_CODE) { editTag = ${PACKED_INSERTION_TAG}u; }
+  else if (editCode != 0u) { editTag = editCode + ${PACKED_SUBSTITUTION_TAG}u; }
+  else if ((val & EDIT_SUB_BIT) != 0u) { editTag = ${PACKED_SUBSTITUTION_TAG}u; }
+  return (token & TOKEN_MASK) | (editTag << EDIT_SHIFT);
 }
 
 fn decodeLiteral(
@@ -1359,26 +1461,26 @@ fn decodeLiteral(
   let ntLen = get_nt_tm_lens(nt);
   if (ntLen == 0u) { return false; }
   let ntOff = get_offsets(nt);
+  let predicate = val & PREDICATE_MASK;
+  var token: u32;
 
   // wildcard: choose variant mod |Σ_A|
-  if (val == LIT_ALL) {
-    (*word)[*wLen] = get_all_tms(ntOff + (variant % ntLen)) + 1u;
-    *wLen = *wLen + 1u;
-    return true;
+  if (predicate == LIT_ALL) { token = get_all_tms(ntOff + (variant % ntLen)) + 1u; }
+  else {
+    let negLit = (predicate & NEG_MASK) != 0u;
+    let litEnc = (predicate >> 1u) & 0x03ffffffu;
+    if (litEnc == 0u || litEnc > ntLen) { return false; }
+
+    if (negLit) {
+      if (ntLen <= 1u) { return false; }
+      // exclude the (litEnc-1)th terminal from Σ_A
+      let excl = litEnc - 1u;
+      let v    = variant % (ntLen - 1u);
+      let idx  = select(v, v + 1u, v >= excl);
+      token = get_all_tms(ntOff + idx) + 1u;
+    } else { token = get_all_tms(ntOff + (litEnc - 1u)) + 1u; }
   }
-
-  let negLit = (val & NEG_MASK) != 0u;
-  let litEnc = (val >> 1u) & 0x1fffffffu;
-  if (litEnc == 0u || litEnc > ntLen) { return false; }
-
-  if (negLit) {
-    if (ntLen <= 1u) { return false; }
-    // exclude the (litEnc-1)th terminal from Σ_A
-    let excl = litEnc - 1u;
-    let v    = variant % (ntLen - 1u);
-    let idx  = select(v, v + 1u, v >= excl);
-    (*word)[*wLen] = get_all_tms(ntOff + idx) + 1u;
-  } else { (*word)[*wLen] = get_all_tms(ntOff + (litEnc - 1u)) + 1u; }
+  (*word)[*wLen] = packEditToken(token, val);
   *wLen = *wLen + 1u;
   return true;
 }
@@ -1655,6 +1757,7 @@ val markov_score by Shader("""$SAMPLER_PARAMS
 @group(0) @binding(2) var<uniform>                  prm : Params;
 
 const PKT_HDR_LEN  : u32 = ${PKT_HDR_LEN}u;
+const TOKEN_MASK   : u32 = ${PACKED_TOKEN_MASK}u;
 const SENTINEL_KEY : u32 = ${SENTINEL.toHexString(hexFmt)};
 const HASH_MUL     : u32 = ${HASH_MUL.toHexString(hexFmt)};      // same multiplier as CPU side
 const BOS_ID       : u32 = ${BOS_ID}u;
@@ -1691,7 +1794,7 @@ fn lookupScore(key: u32) -> u32 {
 
     // -- pre-fetch the guaranteed first real token -----------
     var pos : u32 = 1u;
-    let w1  : u32 = packets[base + PKT_HDR_LEN];
+    let w1  : u32 = packets[base + PKT_HDR_LEN] & TOKEN_MASK;
     var t2  : u32 = w1 - 1u;
 
     var score       : u32 = 0u;
@@ -1701,7 +1804,7 @@ fn lookupScore(key: u32) -> u32 {
         // ----- next token or synthetic suffix ---------------
         var tok : u32;
         if (pos < stride - PKT_HDR_LEN && packets[base + PKT_HDR_LEN + pos] != 0u) {
-            tok = packets[base + PKT_HDR_LEN + pos];
+            tok = packets[base + PKT_HDR_LEN + pos] & TOKEN_MASK;
             pos += 1u;
         } else {
             // two‑token suffix: NEWLINE , EOS
@@ -1729,6 +1832,7 @@ $WDFA_STRUCT
 @group(0) @binding(2) var<uniform>             prm     : Params;
 
 const PKT_HDR_LEN : u32 = ${PKT_HDR_LEN}u;
+const TOKEN_MASK  : u32 = ${PACKED_TOKEN_MASK}u;
 const EDIT_COST_STRIDE : u32 = 10000000u;
 const WDFA_SCORE_INVALID : u32 = 0xffffffffu;
 
@@ -1746,8 +1850,9 @@ const WDFA_SCORE_INVALID : u32 = 0xffffffffu;
   loop {
     if (pos >= stride - PKT_HDR_LEN) { break; }
 
-    let tok = packets[base + PKT_HDR_LEN + pos];
-    if (tok == 0u) { break; }
+    let packedTok = packets[base + PKT_HDR_LEN + pos];
+    if (packedTok == 0u) { break; }
+    let tok = packedTok & TOKEN_MASK;
 
     let e = find_edge(q, tok);
     if (e == NO_EDGE) {

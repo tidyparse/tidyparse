@@ -8,10 +8,8 @@ import ai.hypergraph.kaliningraph.repair.TIMEOUT_MS
 import ai.hypergraph.kaliningraph.tensor.FreeMatrix
 import ai.hypergraph.kaliningraph.types.*
 import kotlinx.coroutines.delay
-import org.kosat.round
 import kotlin.math.ceil
 import kotlin.time.Duration.Companion.nanoseconds
-import kotlin.time.DurationUnit.SECONDS
 import kotlin.time.TimeSource
 
 val CFG.renderedHTML by cache { renderCFGToHTML() }
@@ -110,63 +108,6 @@ const val MAX_DISP_RESULTS = 29
 
 var i = 0
 suspend fun pause(freq: Int = 300_000) { if (i++ % freq == 0) { delay(50.nanoseconds) } }
-
-suspend fun Sequence<Σᐩ>.enumerateCompletionsInteractively(
-  resultsToPost: Int = MAX_DISP_RESULTS,
-  metric: (List<Σᐩ>) -> Int,
-  shouldContinue: () -> Boolean,
-  postResults: (Σᐩ) -> Unit,
-  finally: (Σᐩ) -> Unit = { postResults(it) },
-  customDiff: (String) -> String,
-  postCompletionSummary: () -> String = { "." }
-) {
-  val results = mutableSetOf<Σᐩ>()
-  val topNResults = mutableListOf<Pair<Σᐩ, Int>>()
-  val iter = iterator()
-  val startTime = TimeSource.Monotonic.markNow()
-  var totalResults = 0
-
-//  val postImmediately = iter.hasNext() && metric(iter.next().tokenizeByWhitespace()) == -1
-//  if (postImmediately) {
-//    val htmlLst = /*take(resultsToPost).*/toList().map { customDiff(it) }
-//    results.addAll(toList())
-//    topNResults.addAll(htmlLst.map { it to -1 })
-//    totalResults = 10
-//  }
-
-  while (true) {
-    pause()
-    var i = 0
-    if (!iter.hasNext() || !shouldContinue()) {
-//      if (!iter.hasNext() || !shouldContinue() || postImmediately) {
-      val throughput = (results.size / (startTime.elapsedNow().toDouble(SECONDS) + 0.001)).round(3)
-      val summary = "~$throughput res/s"
-      val moreResults = (results.size - topNResults.size)
-        .let { if (it == 0) "\n\n" else "\n\n...$it more, " }
-      val statistics = "$moreResults$summary${postCompletionSummary.invoke()}"
-      return finally(topNResults.joinToString("\n", "", statistics) {
-        val result = "<span style=\"color: gray\" class=\"noselect\">${i++.toString().padStart(2)}.) </span>${it.first}"
-        if (i == 1) "<mark>$result</mark>" else result
-      })
-    }
-
-    val next = iter.next()
-    totalResults++
-    if (next.isNotEmpty() && results.add(next)) {
-      val score = metric(next.tokenizeByWhitespace())
-      if (topNResults.size < resultsToPost || score < topNResults.last().second) {
-        val html = customDiff(next)
-        val loc = topNResults.binarySearch { it.second.compareTo(score) }
-        val idx = if (loc < 0) { -loc - 1 } else loc
-        topNResults.add(idx, html to score)
-        if (topNResults.size > resultsToPost) topNResults.removeLast()
-        postResults(topNResults.joinToString("\n") {
-          "<span style=\"color: gray\" class=\"noselect\">${i++.toString().padStart(2)}.) </span>${it.first}"
-        })
-      }
-    }
-  }
-}
 
 suspend fun sampleGREUntilTimeout(tokens: List<String>, cfg: CFG) =
   repairWithSparseGRE(tokens, cfg)?.let {

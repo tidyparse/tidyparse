@@ -361,7 +361,7 @@ class JSTidyPyEditor(editor: HTMLTextAreaElement, output: Node) : JSTidyEditor(e
       top.mapIndexed { i, candidate ->
         async {
           val result =
-            "<span style=\"color: gray\" class=\"noselect\">" +
+            "<span class=\"result-index\">" +
                 "${i.toString().padStart(2)}.) </span>" +
                 render(candidate.raw, candidate.tokens)
 

@@ -1,5 +1,5 @@
 import ai.hypergraph.kaliningraph.repair.*
-import ai.hypergraph.kaliningraph.parsing.parseCFG
+import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.tidyparse.PyCodeSnippet
 import ai.hypergraph.tidyparse.sampleGREUntilTimeout
@@ -53,6 +53,119 @@ class TestTidy {
   }
 
   @Test
+  fun testAnnotatedRepairAlignment() = browserTest {
+    tryBootstrappingGPU()
+    assertTrue(gpuAvailable, "WebGPU is required for the alignment test")
+
+    suspend fun assertRepair(
+      source: List<String>,
+      grammar: String,
+      expected: String,
+      expectedAnnotated: String
+    ) {
+      val repairCfg = grammar.trimIndent().parseCFG()
+      val results = repairCode(repairCfg, source, ledBuffer = 0)
+      val index = results.indexOf(expected)
+      assertTrue(index >= 0, "Missing '$expected' among plain repairs")
+
+      val annotated = results.annotatedResults[index]
+      assertEquals(expectedAnnotated, annotated)
+      assertEquals(
+        levAndLenMetric(source)(expected.tokenizeByWhitespace()),
+        results.editDistanceAt(index) * 7919 +
+            kotlin.math.abs(source.sumOf { it.length } - expected.replace(" ", "").length),
+        annotated
+      )
+    }
+
+    assertRepair(listOf("a"), """
+      START -> A B
+      A -> a
+      B -> b
+    """, "a b", "a <ins>b</ins>")
+    assertRepair(listOf("a"), """
+      START -> B | A A
+      A -> a
+      B -> b
+    """, "b", "<sub>b</sub>")
+    assertRepair(listOf("a", "b", "c", "d"), """
+      START -> A D | B B B B | C C C C
+      A -> a
+      B -> b
+      C -> c
+      D -> d
+    """, "a d", "a <del></del> <del></del> d")
+    assertRepair(listOf("a", "b", "c"), """
+      START -> A | B B | C C
+      A -> a
+      B -> b
+      C -> c
+    """, "a", "a <del></del> <del></del>")
+
+    val defaultWindowCfg = """
+      START -> B | A A
+      A -> a
+      B -> b
+    """.trimIndent().parseCFG()
+    assertTrue(
+      "b" in repairCode(defaultWindowCfg, listOf("a")),
+      "The default edit-distance window must not overflow when LED is positive"
+    )
+  }
+
+  @Test
+  fun testBooleanRepairUsesCanonicalAlignment() = browserTest {
+    tryBootstrappingGPU()
+    assertTrue(gpuAvailable, "WebGPU is required for the alignment test")
+
+    val source = "( ( p & q ) & p ) = p & ( q & p ) )".tokenizeByWhitespace()
+    val expectedTokens = "( ( p & q ) & p ) = ( p & ( q & p ) )".tokenizeByWhitespace()
+    val expected = expectedTokens.joinToString(" ")
+    val repairCfg = """
+      START -> E& = E& | EP = EP | EQ = EQ | EV = EV
+
+      EP -> p
+      EP -> ( EP & EP ) | ( EP & EV ) | ( EV & EP )
+      EP -> ( EP v EP ) | ( EP v E& ) | ( E& v EP )
+      EQ -> q
+      EQ -> ( EQ & EQ ) | ( EQ & EV ) | ( EV & EQ )
+      EQ -> ( EQ v EQ ) | ( EQ v E& ) | ( E& v EQ )
+
+      E& -> ( E& & E& ) | ( E& & EP ) | ( E& & EQ ) | ( E& & EV ) | ( EP & E& )
+      E& -> ( EQ & E& ) | ( EV & E& ) | ( EP & EQ ) | ( EQ & EP ) | ( E& v E& )
+      EV -> ( EV & EV ) | ( EV v EV ) | ( EV v EP ) | ( EV v EQ ) | ( EV v E& )
+      EV -> ( EP v EV ) | ( EQ v EV ) | ( E& v EV ) | ( EP v EQ ) | ( EQ v EP )
+    """.trimIndent().parseCFG()
+
+    val results = repairCode(repairCfg, source, ledBuffer = 2)
+    val indices = results.indices.filter { results[it] == expected }
+    assertEquals(1, indices.size, "Expected one canonical row per visible repair")
+    val index = indices.single()
+
+    val expectedScript = levenshteinAlign(source, expectedTokens).map { (old, new) ->
+      when {
+        old == null -> LEV_EDIT_INSERT
+        new == null -> LEV_EDIT_DELETE
+        old == new -> LEV_EDIT_MATCH
+        else -> LEV_EDIT_SUBSTITUTE
+      }
+    }
+    assertEquals(expectedScript, results.editScript[index])
+    assertEquals(1, results.editDistanceAt(index))
+    assertEquals(
+      "( ( p &amp; q ) &amp; p ) = <ins>(</ins> p &amp; ( q &amp; p ) )",
+      results.annotatedResults[index]
+    )
+
+    val originalLength = source.sumOf(String::length)
+    val first = results.indices.minBy { candidate ->
+      results.editDistanceAt(candidate) * 7919 +
+        kotlin.math.abs(originalLength - results[candidate].count { !it.isWhitespace() })
+    }
+    assertEquals(expected, results[first])
+  }
+
+  @Test
   fun testCachedTerminalBufferSurvivesEmptyIntersection() = browserTest {
     tryBootstrappingGPU()
     if (!gpuAvailable) return@browserTest
@@ -63,10 +176,15 @@ class TestTidy {
     """.trimIndent().parseCFG()
 
     assertTrue(completeCode(smallCfg, listOf("_", "=", "=")).isEmpty())
+    val completions = completeCode(smallCfg, listOf("_", "+", "_", "=", "_"))
+    val completionIndex = completions.indexOf("1 + 1 = 2")
     assertTrue(
-      "1 + 1 = 2" in completeCode(smallCfg, listOf("_", "+", "_", "=", "_")),
+      completionIndex >= 0,
       "An empty intersection should not destroy the CFG's cached terminal buffer"
     )
+    assertEquals("1 + 1 = 2", completions.annotatedResults[completionIndex])
+    assertTrue(completions.editScript[completionIndex].all { it == LEV_EDIT_MATCH })
+    assertEquals(0, completions.editDistanceAt(completionIndex))
   }
 
   @Test
