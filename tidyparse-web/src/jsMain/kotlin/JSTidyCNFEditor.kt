@@ -89,24 +89,31 @@ class JSTidyCNFEditor(editor: HTMLTextAreaElement, output: Node) : JSTidyEditor(
             .take(MAX_DISP_RESULTS)
             .enumerateInteractively(
               workHash = workHash,
-              textOf = { it },
+              keyOf = { it },
               metric = { candidateMetric(it.tokenizeByWhitespace()) },
               customDiff = { levenshteinAlign(originalText, it).paintDiffs() },
               reason = scenario.reason,
               postCompletionSummary = { ", ${t0.elapsedNow()} latency." }
             )
         Scenario.PARSEABLE -> writeDisplayText(parsedPrefix.dropLast(8).also { cache[workHash] = it })
-        Scenario.REPAIR ->
-          (if (gpuAvailable)
-            repairCode(cfg, tokens, LED_BUFFER).asSequence()
-          else sampleGREUntilTimeout(tokens, cfg)).enumerateInteractively(
+        Scenario.REPAIR -> if (gpuAvailable) {
+          val results = repairCode(cfg, tokens, LED_BUFFER)
+          results.indices.asSequence().enumerateInteractively(
             workHash = workHash,
-            textOf = { it },
+            keyOf = { it },
             metric = { 1 },
-            customDiff = { levenshteinAlign(originalText, it).paintDiffs() },
+            customDiff = results::htmlAt,
             reason = scenario.reason,
             postCompletionSummary = { ", ${t0.elapsedNow()} latency." }
           )
+        } else sampleGREUntilTimeout(tokens, cfg).enumerateInteractively(
+          workHash = workHash,
+          keyOf = { it },
+          metric = { 1 },
+          customDiff = { levenshteinAlign(originalText, it).paintDiffs() },
+          reason = scenario.reason,
+          postCompletionSummary = { ", ${t0.elapsedNow()} latency." }
+        )
         else -> Unit.also { log("Skipping $scenario, unimplemented") }
       }
     }

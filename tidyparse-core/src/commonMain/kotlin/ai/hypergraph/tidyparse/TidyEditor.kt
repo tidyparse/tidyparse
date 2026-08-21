@@ -117,7 +117,7 @@ abstract class TidyEditor {
         val originalText = tokens.joinToString(" ")
         candidates.enumerateInteractively(
           workHash = workHash,
-          textOf = { it },
+          keyOf = { it },
           metric = { metric(it.tokenizeByWhitespace()) },
           customDiff = { levenshteinAlign(originalText, it).paintDiffs() },
           reason = scenario.reason
@@ -134,18 +134,18 @@ abstract class TidyEditor {
     operator fun invoke(d: List<Int>): Scenario = apply { data = d }
   }
 
-  protected suspend fun <T> Sequence<T>.enumerateInteractively(
+  protected suspend fun <T, K> Sequence<T>.enumerateInteractively(
     workHash: Int,
-    textOf: (T) -> String,
+    keyOf: (T) -> K,
     metric: (T) -> Int,
-    customDiff: (T) -> String,
+    customDiff: suspend (T) -> String,
     resultsToPost: Int = MAX_DISP_RESULTS,
     timer: TimeSource.Monotonic.ValueTimeMark = TimeSource.Monotonic.markNow(),
     shouldContinue: () -> Boolean = { currentWorkHash == workHash && timer.hasTimeLeft() },
     postCompletionSummary: () -> String = { "." },
     reason: String = "Generic completions:\n\n"
   ) {
-    val results = mutableSetOf<String>()
+    val results = mutableSetOf<K>()
     val topResults = mutableListOf<Pair<T, Int>>()
     val iter = iterator()
     val startTime = TimeSource.Monotonic.markNow()
@@ -154,8 +154,8 @@ abstract class TidyEditor {
       pause()
       if (!shouldContinue() || !iter.hasNext()) break
       val candidate = iter.next()
-      val text = textOf(candidate)
-      if (text.isEmpty() || !results.add(text)) continue
+      val key = keyOf(candidate)
+      if ((key is String && key.isEmpty()) || !results.add(key)) continue
 
       val score = metric(candidate)
       if (topResults.size < resultsToPost || score < topResults.last().second) {
@@ -169,9 +169,13 @@ abstract class TidyEditor {
     val throughput = (results.size / (startTime.elapsedNow().toDouble(SECONDS) + 0.001)).round(3)
     val moreResults = (results.size - topResults.size)
       .let { if (it == 0) "\n\n" else "\n\n...$it more, " }
-    val renderedResults = topResults.mapIndexed { index, (candidate, _) ->
-      val result = "<span class=\"result-index\">${index.toString().padStart(2)}.) </span>${customDiff(candidate)}"
-      if (index == 0) "<mark>$result</mark>" else result
+    val renderedResults = coroutineScope {
+      topResults.mapIndexed { index, (candidate, _) ->
+        async {
+          val result = "<span class=\"result-index\">${index.toString().padStart(2)}.) </span>${customDiff(candidate)}"
+          if (index == 0) "<mark>$result</mark>" else result
+        }
+      }.awaitAll()
     }
     val summary = "$moreResults~$throughput res/s${postCompletionSummary()}"
     renderedResults.joinToString("\n", "", summary).let {

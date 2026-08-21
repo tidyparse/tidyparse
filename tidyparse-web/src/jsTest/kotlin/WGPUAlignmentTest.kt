@@ -18,18 +18,18 @@ class WGPUAlignmentTest {
       0
     )
 
-    val decoded = packet.decodePacket(0, listOf("x", "c"), packet.length)!!
-    assertEquals(4, decoded.distance)
-    assertEquals("x c", decoded.plainResult)
+    val decoded = packet.decodePacket(0, terminalCount = 2, pktLen = packet.length)!!
+    val results = IntersectionResults(listOf(decoded), listOf("x", "c"))
+    assertEquals(4, results.editDistanceAt(0))
+    assertEquals("x c", results[0])
     assertEquals(
       listOf(LEV_EDIT_SUBSTITUTE, LEV_EDIT_DELETE, LEV_EDIT_DELETE, LEV_EDIT_MATCH, LEV_EDIT_DELETE),
-      decoded.editScript
+      results.editScriptAt(0)
     )
-    assertEquals(17f, decoded.score)
+    assertEquals(17u, results.scoreAt(0))
     assertEquals(
       "<sub>x</sub> <del></del> <del></del> c <del></del>",
-      IntersectionResults(listOf(decoded.plainResult), listOf(decoded.editScript), listOf(decoded.score))
-        .annotatedResults.single()
+      results.htmlAt(0)
     )
   }
 
@@ -49,8 +49,8 @@ class WGPUAlignmentTest {
     )
     val lowestDistance = decodePackets(differentDistances, pairCfg, maxRepairLen = 5)
 
-    assertEquals(listOf("x y"), lowestDistance.plainResults)
-    assertEquals(listOf(LEV_EDIT_INSERT, LEV_EDIT_MATCH), lowestDistance.editScript.single())
+    assertEquals(listOf("x y"), lowestDistance)
+    assertEquals(listOf(LEV_EDIT_INSERT, LEV_EDIT_MATCH), lowestDistance.editScriptAt(0))
 
     val repeatedCfg = "START -> aa".parseCFG()
     val aa = repeatedCfg.tmMap.getValue("aa") + 1
@@ -60,36 +60,59 @@ class WGPUAlignmentTest {
     )
     val canonicalTie = decodePackets(tiedDistance, repeatedCfg, maxRepairLen = 4)
 
-    assertEquals(listOf("aa"), canonicalTie.plainResults)
-    assertEquals(listOf(LEV_EDIT_MATCH, LEV_EDIT_DELETE), canonicalTie.editScript.single())
-    assertEquals("aa <del></del>", canonicalTie.annotatedResults.single())
+    assertEquals(listOf("aa"), canonicalTie)
+    assertEquals(listOf(LEV_EDIT_MATCH, LEV_EDIT_DELETE), canonicalTie.editScriptAt(0))
+    assertEquals("aa <del></del>", canonicalTie.htmlAt(0))
+
+    val insertionCfg = "START -> a a".parseCFG()
+    val a = insertionCfg.tmMap.getValue("a") + 1
+    val insertionTie = packet(
+      1, 0, packed(a, PACKED_INSERTION_TAG), packed(a, 0), 0,
+      1, 0, packed(a, 0), packed(a, PACKED_INSERTION_TAG), 0
+    )
+    val canonicalInsertion = decodePackets(insertionTie, insertionCfg, maxRepairLen = 5)
+
+    assertEquals(listOf(LEV_EDIT_MATCH, LEV_EDIT_INSERT), canonicalInsertion.editScriptAt(0))
+  }
+
+  @Test
+  fun tokenHashCollisionsCompareActualTokens() {
+    val first = intArrayOf(0, 0, 1, 32)
+    val equal = intArrayOf(0, 9, 1, 32)
+    val collision = intArrayOf(0, 0, 2, 1)
+
+    assertEquals(first.tokenHash(), collision.tokenHash())
+    assertEquals(true, first.sameTokens(equal))
+    assertEquals(false, first.sameTokens(collision))
   }
 
   @Test
   fun textNormalizationKeepsMatchMetadataAligned() {
     val results = IntersectionResults(
-      plainResults = listOf("[START]"),
-      editScript = listOf(listOf(LEV_EDIT_MATCH)),
-      scores = listOf(0f)
-    ).mapPlainResults { it.replace("[START]", "START") }
+      listOf(intArrayOf(0, 0, 1), intArrayOf(0, 0, 2), intArrayOf(0, 0, 3)),
+      listOf("[START]", "X[START]", "XSTART")
+    ).mapTerminals { if (it == "[START]") "START" else it }
 
-    assertEquals("START", results.annotatedResults.single())
+    assertEquals(listOf("START", "X[START]", "XSTART"), results)
+    assertEquals("START", results.htmlAt(0))
     assertEquals(0, results.editDistanceAt(0))
   }
 
   @Test
   fun annotationEscapesTerminals() {
     val results = IntersectionResults(
-      plainResults = listOf("<new> a&b x>y"),
-      editScript = listOf(listOf(
-        LEV_EDIT_INSERT, LEV_EDIT_MATCH, LEV_EDIT_SUBSTITUTE, LEV_EDIT_DELETE
+      listOf(intArrayOf(
+        3, 0,
+        packed(1, PACKED_INSERTION_TAG),
+        packed(2, 0),
+        packed(3, PACKED_SUBSTITUTION_TAG)
       )),
-      scores = listOf(0f)
+      listOf("<new>", "a&b", "x>y")
     )
 
     assertEquals(
       "<ins>&lt;new&gt;</ins> a&amp;b <sub>x&gt;y</sub> <del></del>",
-      results.annotatedResults.single()
+      results.htmlAt(0)
     )
   }
 }

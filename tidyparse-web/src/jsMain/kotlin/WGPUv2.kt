@@ -219,7 +219,6 @@ suspend fun intersectionPipelineV2(
   val decoderTopK = if (rerankerQuery != null) RERANKER_TOP_K_SAMP else TOP_K_SAMP
   log("V2 decoding ${rootEntries.size} roots across ${rootsByDist.size} edit-distance bucket(s)")
   var result = IntersectionResults.EMPTY
-  val seen = linkedSetOf<String>()
   for ((dist, roots) in rootsByDist) {
     if (result.size >= decoderTopK) break
 
@@ -248,7 +247,9 @@ suspend fun intersectionPipelineV2(
       )
 
       val selected = bucketResult.indices
-        .filter { i -> seen.add(bucketResult[i]) }
+        .filter { candidate ->
+          result.indices.none { result.sameTokens(it, bucketResult, candidate) }
+        }
         .take(decoderTopK - result.size)
       result += bucketResult.selectResults(selected)
     } finally {
@@ -261,8 +262,8 @@ suspend fun intersectionPipelineV2(
     if (rerankerQuery != null) {
       val candidates = result.takeResults(RERANKER_TOP_K_SAMP)
       val rerankT = TimeSource.Monotonic.markNow()
-      RepairReranker.rerankOrOriginal(rerankerQuery, candidates.plainResults)
-        .let(candidates::reorderedLike)
+      RepairReranker.rerankOrOriginal(rerankerQuery, candidates)
+        .let(candidates::selectResults)
         .also { mark("rerank", rerankT) }
     } else result
 

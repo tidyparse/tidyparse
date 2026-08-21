@@ -926,7 +926,7 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
           else repairCode(cfg, tokens, LED_BUFFER)
             .let { results ->
               if (!caretInGrammar) results
-              else results.mapPlainResults { it.replace("[START]", "START") }
+              else results.mapTerminals { if (it == "[START]") "START" else it }
             }.also { gpuRepairResults = it }.asSequence()
       }
 
@@ -945,15 +945,14 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
 
       gpuRepairResults?.let { results ->
         val originalLength = displayTokens.sumOf(String::length)
-        val metrics = IntArray(results.size) { index ->
-          results.editDistanceAt(index) * 7919 +
-            (originalLength - results[index].count { !it.isWhitespace() }).absoluteValue
-        }
         results.indices.asSequence().enumerateInteractively(
           workHash = workHash,
-          textOf = results::get,
-          metric = metrics::get,
-          customDiff = results.annotatedResults::get,
+          keyOf = { it },
+          metric = { index ->
+            results.editDistanceAt(index) * 7919 +
+              (originalLength - results.characterLengthAt(index)).absoluteValue
+          },
+          customDiff = results::htmlAt,
           reason = scenario.reason,
           postCompletionSummary = postCompletionSummary
         )
@@ -966,7 +965,7 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
         val originalText = displayTokens.joinToString(" ")
         candidates.enumerateInteractively(
           workHash = workHash,
-          textOf = { it },
+          keyOf = { it },
           metric = { metric(it.tokenizeByWhitespace()) },
           customDiff = { completion -> levenshteinAlign(originalText, completion).paintDiffs() },
           reason = scenario.reason,

@@ -321,8 +321,8 @@ suspend fun intersectionPipeline(
     if (rerankerQuery != null) {
       val candidates = result.takeResults(RERANKER_TOP_K_SAMP)
       val rerankT = TimeSource.Monotonic.markNow()
-      RepairReranker.rerankOrOriginal(rerankerQuery, candidates.plainResults)
-        .let(candidates::reorderedLike)
+      RepairReranker.rerankOrOriginal(rerankerQuery, candidates)
+        .let(candidates::selectResults)
         .also { mark("rerank", rerankT) }
     } else result
 
@@ -385,13 +385,6 @@ suspend fun wdfaDecoder(
   return decodePackets(topK, cfg, maxRepairLen)
 }
 
-data class DecodedIntersectionResult(
-  val distance: Int,
-  val plainResult: String,
-  val editScript: List<Int>,
-  val score: Float
-)
-
 private fun editTieBreakPriority(op: Int): Int = when (op) {
   LEV_EDIT_INSERT -> 0
   LEV_EDIT_DELETE -> 1
@@ -399,66 +392,47 @@ private fun editTieBreakPriority(op: Int): Int = when (op) {
 }
 
 /** Uses the same backward insertion/deletion/diagonal tie-break as [levenshteinAlign]. */
-private fun DecodedIntersectionResult.isPreferredTo(other: DecodedIntersectionResult): Boolean {
-  if (distance != other.distance) return distance < other.distance
+private fun IntArray.isPreferredTo(other: IntArray): Boolean {
+  if (this[0] != other[0]) return this[0] < other[0]
 
-  for (offset in 1..minOf(editScript.size, other.editScript.size)) {
-    val priority = editTieBreakPriority(editScript[editScript.size - offset])
-    val otherPriority = editTieBreakPriority(other.editScript[other.editScript.size - offset])
+  val edits = unpackEdits()
+  val otherEdits = other.unpackEdits()
+
+  for (offset in 1..minOf(edits.size, otherEdits.size)) {
+    val priority = editTieBreakPriority(edits[edits.size - offset])
+    val otherPriority = editTieBreakPriority(otherEdits[otherEdits.size - offset])
     if (priority != otherPriority) return priority < otherPriority
   }
 
-  return if (editScript.size != other.editScript.size) editScript.size < other.editScript.size
-  else score < other.score
+  return if (edits.size != otherEdits.size) edits.size < otherEdits.size
+  else this[1].toUInt() < other[1].toUInt()
 }
 
-// Returns one decoded intersection result with a packet-layout-independent edit script.
-fun JSIntArray.decodePacket(idx: Int, tm: List<String>, pktLen: Int): DecodedIntersectionResult? {
-  val base = idx * pktLen + PKT_HDR_LEN // skip header cells
-  val distance = this[base - PKT_HDR_LEN]
-  val score = this[base - 1].toUInt().toFloat()
-
-  var cur: StringBuilder? = null
+// Copies one valid packet into a compact integer row, omitting the zero terminator and unused capacity.
+internal fun JSIntArray.decodePacket(idx: Int, terminalCount: Int, pktLen: Int): IntArray? {
+  val base = idx * pktLen
+  val distance = this[base]
+  var rowSize = PKT_HDR_LEN
   var encodedEdits = 0
-  val edits = mutableListOf<Int>()
-
-  fun append(token: String) {
-    val builder = cur ?: StringBuilder().also { cur = it }
-    if (builder.isNotEmpty()) builder.append(' ')
-    builder.append(token)
-  }
 
   for (j in 0 until (pktLen - PKT_HDR_LEN)) {
-    val packed = this[base + j].toUInt()
+    val packed = this[base + PKT_HDR_LEN + j].toUInt()
     if (packed == 0u) break
 
     val tok = (packed and PACKED_TOKEN_MASK.toUInt()).toInt()
-    if (tok !in 1..tm.size) return null
-    val terminal = tm[tok - 1]
-    append(terminal)
+    if (tok !in 1..terminalCount) return null
+    rowSize++
 
     when (val editTag = (packed shr PACKED_EDIT_SHIFT).toInt()) {
-      PACKED_INSERTION_TAG -> {
-        encodedEdits++
-        edits += LEV_EDIT_INSERT
-      }
-      PACKED_SUBSTITUTION_TAG -> {
-        encodedEdits++
-        edits += LEV_EDIT_SUBSTITUTE
-      }
+      PACKED_INSERTION_TAG, PACKED_SUBSTITUTION_TAG -> encodedEdits++
       in PACKED_FIRST_DELETION_TAG..PACKED_LAST_DELETION_TAG -> {
-        val deletions = editTag - PACKED_SUBSTITUTION_TAG
-        encodedEdits += deletions
-        repeat(deletions) { edits += LEV_EDIT_DELETE }
-        edits += LEV_EDIT_MATCH
+        encodedEdits += editTag - PACKED_SUBSTITUTION_TAG
       }
-      else -> edits += LEV_EDIT_MATCH
     }
   }
 
-  repeat((distance - encodedEdits).coerceAtLeast(0)) { edits += LEV_EDIT_DELETE }
-
-  return cur?.let { DecodedIntersectionResult(distance, it.toString(), edits, score) }
+  return if (rowSize == PKT_HDR_LEN || encodedEdits > distance) null
+  else IntArray(rowSize) { this[base + it] }
 }
 
 fun decodePackets(
@@ -468,24 +442,25 @@ fun decodePackets(
   packetCount: Int = packets.length / maxRepairLen
 ): IntersectionResults {
   val t0 = TimeSource.Monotonic.markNow()
-  val rows = linkedMapOf<String, DecodedIntersectionResult>()
+  val rows = mutableListOf<IntArray>()
+  val hashBuckets = mutableMapOf<Int, MutableList<Int>>()
 
   for (i in 0 until packetCount) {
-    val decoded = packets.decodePacket(i, cfg.tmLst, maxRepairLen) ?: continue
-    val previous = rows[decoded.plainResult]
-    if (previous == null || decoded.isPreferredTo(previous)) rows[decoded.plainResult] = decoded
+    val row = packets.decodePacket(i, cfg.tmLst.size, maxRepairLen) ?: continue
+    val bucket = hashBuckets.getOrPut(row.tokenHash()) { mutableListOf() }
+    val previous = bucket.firstOrNull { rows[it].sameTokens(row) }
+    if (previous == null) {
+      bucket += rows.size
+      rows += row
+    } else if (row.isPreferredTo(rows[previous])) rows[previous] = row
   }
 
-  rows.values.map { it.distance }.distinct().sorted().forEach { distance ->
-    log("Δ=$distance -> |L|=${rows.values.count { it.distance == distance }}")
+  rows.map { it[0] }.distinct().sorted().forEach { distance ->
+    log("Δ=$distance -> |L|=${rows.count { it[0] == distance }}")
   }
 
   log("Decoded ${rows.size} unique words from $packetCount packets in ${t0.elapsedNow()}")
-  return IntersectionResults(
-    rows.values.map { it.plainResult },
-    rows.values.map { it.editScript },
-    rows.values.map { it.score }
-  )
+  return IntersectionResults(rows, cfg.tmLst)
 }
 
 suspend fun scoreSelectGather(

@@ -68,7 +68,7 @@ class TestTidy {
       val index = results.indexOf(expected)
       assertTrue(index >= 0, "Missing '$expected' among plain repairs")
 
-      val annotated = results.annotatedResults[index]
+      val annotated = results.htmlAt(index)
       assertEquals(expectedAnnotated, annotated)
       assertEquals(
         levAndLenMetric(source)(expected.tokenizeByWhitespace()),
@@ -150,11 +150,11 @@ class TestTidy {
         else -> LEV_EDIT_SUBSTITUTE
       }
     }
-    assertEquals(expectedScript, results.editScript[index])
+    assertEquals(expectedScript, results.editScriptAt(index))
     assertEquals(1, results.editDistanceAt(index))
     assertEquals(
       "( ( p &amp; q ) &amp; p ) = <ins>(</ins> p &amp; ( q &amp; p ) )",
-      results.annotatedResults[index]
+      results.htmlAt(index)
     )
 
     val originalLength = source.sumOf(String::length)
@@ -182,8 +182,8 @@ class TestTidy {
       completionIndex >= 0,
       "An empty intersection should not destroy the CFG's cached terminal buffer"
     )
-    assertEquals("1 + 1 = 2", completions.annotatedResults[completionIndex])
-    assertTrue(completions.editScript[completionIndex].all { it == LEV_EDIT_MATCH })
+    assertEquals("1 + 1 = 2", completions.htmlAt(completionIndex))
+    assertTrue(completions.editScriptAt(completionIndex).all { it == LEV_EDIT_MATCH })
     assertEquals(0, completions.editDistanceAt(completionIndex))
   }
 

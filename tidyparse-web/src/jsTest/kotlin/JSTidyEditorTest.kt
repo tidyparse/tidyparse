@@ -62,16 +62,16 @@ class JSTidyEditorTest {
       (output as HTMLDivElement).innerHTML = s
     }
 
-    suspend fun <T> enumerateForTest(
+    suspend fun <T, K> enumerateForTest(
       candidates: Sequence<T>,
-      textOf: (T) -> String,
+      keyOf: (T) -> K,
       metric: (T) -> Int,
       render: (T) -> String
     ) {
       currentWorkHash = 1
       candidates.enumerateInteractively(
         workHash = 1,
-        textOf = textOf,
+        keyOf = keyOf,
         metric = metric,
         customDiff = render,
         shouldContinue = { true },
@@ -116,7 +116,7 @@ class JSTidyEditorTest {
         Candidate("same", 0, "second-alignment"),
         Candidate("other", 5, "other-alignment")
       ),
-      textOf = Candidate::text,
+      keyOf = Candidate::text,
       metric = Candidate::score,
       render = { renderCount++; it.rendering }
     )
@@ -126,6 +126,29 @@ class JSTidyEditorTest {
     assertContains(html, "first-alignment")
     assertContains(html, "other-alignment")
     assertFalse("second-alignment" in html)
+  }
+
+  @Test
+  fun gpuEnumerationRendersOnlyDisplayedRows() = runTest {
+    val resultCount = MAX_DISP_RESULTS + 20
+    val results = IntersectionResults(
+      List(resultCount) { index -> intArrayOf(0, 0, index + 1) },
+      List(resultCount) { "token$it" }
+    )
+    val (editor, _) = editorFor("")
+    var renderCount = 0
+
+    editor.enumerateForTest(
+      candidates = results.indices.asSequence(),
+      keyOf = { it },
+      metric = { results.characterLengthAt(it) + it * 100 },
+      render = { renderCount++; results.htmlAt(it) }
+    )
+
+    val html = (editor.output as HTMLDivElement).innerHTML
+    assertEquals(MAX_DISP_RESULTS, renderCount)
+    assertContains(html, "token0")
+    assertFalse("token${resultCount - 1}" in html)
   }
 
   @OptIn(ExperimentalUnsignedTypes::class)

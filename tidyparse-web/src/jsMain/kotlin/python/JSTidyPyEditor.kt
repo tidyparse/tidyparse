@@ -4,13 +4,11 @@ import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.tidyparse.*
 import kotlinx.browser.*
 import kotlinx.coroutines.*
-import org.kosat.round
 import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
 import web.gpu.GPUBuffer
 import kotlin.js.Promise
 import kotlin.math.ln
-import kotlin.time.DurationUnit
 import kotlin.time.TimeSource
 
 @ExperimentalUnsignedTypes
@@ -104,25 +102,17 @@ class JSTidyPyEditor(editor: HTMLTextAreaElement, output: Node) : JSTidyEditor(e
       val tokens = pcs.lexedTokens().tokenizeByWhitespace().map { if (it == "|") "OR" else it }
       val errHst = mutableMapOf<String, Int>()
 
-      return repairCode(cfg, tokens, LED_BUFFER, rerankerQuery = neuralRerankerQuery(tokens)).map {
-        val repair = it.removeSuffix(" NEWLINE").replacePythonKeywords().tokenizeByWhitespace()
-        pcs.restitch(levenshteinAlign(tokens.dropLast(1), repair))
-      }.asSequence().distinct().filterCompilerErrors(errHst).take(maxResults).toList().also {
-        if (errHst.isNotEmpty()) {
-          val pad = (errHst.values.maxOrNull()?.toString()?.length ?: 1) + 1
-          val summary = errHst.toMap().entries.sortedBy { -it.component2() }
-            .joinToString("\n") { "${it.value.toString().padEnd(pad)}| ${it.key}" }
-          log("Rejection histogram:\n$summary")
-        }
-      }
+      return repairCode(cfg, tokens, LED_BUFFER, rerankerQuery = neuralRerankerQuery(tokens))
+          .pythonRepairs().map {
+            pcs.restitch(levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace()))
+          }.distinct().filterCompilerErrors(errHst).take(maxResults).toList().also { errHst.logRejections() }
     }
   }
 
-  override fun writeDisplayText(s: Σᐩ) {
+  override fun writeDisplayText(s: Σᐩ) =
     setCompletionsAndShow(s.split("\n")
       .map { it.substringAfter("</span>") }
       .drop(2).dropLast(2))
-  }
 
   fun score(text: List<String>): Double =
     -(prefix + text + suffix).windowed(order, 1)
@@ -212,42 +202,32 @@ class JSTidyPyEditor(editor: HTMLTextAreaElement, output: Node) : JSTidyEditor(e
     } else /* Repair */ Unit.also {
       runningJob = MainScope().launch {
         var total = 0
-//      var metric: (List<String>) -> Int = { (score(it) * 1_000.0).toInt() } // TODO: Is reordering really necessary if we are decoding GREs by ngram score?
-        var metric: (List<String>) -> Int = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() }
-//        var metric: (List<String>) -> Int = { -1 }
+        val gpuRepairs = if (gpuAvailable) {
+          log("Repairing on GPU...")
+          repairCode(cfg, tokens, LED_BUFFER, rerankerQuery = neuralRerankerQuery(tokens))
+        } else { log("Repairing on CPU..."); null }
 
-        val repairs =
-          (if (gpuAvailable) {
-            log("Repairing on GPU...")
-            val gpuRepairs = repairCode(cfg, tokens, LED_BUFFER, rerankerQuery = neuralRerankerQuery(tokens))
-              .map { it.dropLast(8).replacePythonKeywords() }
-              .distinct()
-            val gpuRank = gpuRepairs.withIndex().associate { it.value to it.index }
-            metric = { gpuRank[it.joinToString(" ")] ?: Int.MAX_VALUE }
-            gpuRepairs.asSequence()
-          } else {
-            log("Repairing on CPU...")
-            metric = { (levenshtein(tokens.dropLast(1), it) * 10_000 + score(it) * 1_000.0).toInt() }
-            sampleGREUntilTimeout(tokens, cfg)
-          }).let { if (gpuAvailable) it else it.map { raw -> raw.dropLast(8).replacePythonKeywords() }.distinct() }
+        val repairs = gpuRepairs?.pythonRepairs()
+          ?: sampleGREUntilTimeout(tokens, cfg).map { it.toPythonRepair() }.distinct()
+        val repairMetric: ((List<String>) -> Int)? = if (gpuRepairs != null) null
+          else { repair -> (levenshtein(tokens.dropLast(1), repair) * 10_000 + score(repair) * 1_000.0).toInt() }
 
         val postProcTimer = TimeSource.Monotonic.markNow()
         val compilerFilteredRepairs = repairs.onEach { total++ }
           .let { if (allowCompilerErrors) it else it.filterCompilerErrors(errHst) }
 
-        compilerFilteredRepairs.enumerateRankedRepairsInteractively(
+        compilerFilteredRepairs.withIndex().enumerateInteractively(
           workHash = workHash,
-          metric = metric,
-          render = { _, repairTks ->
+          keyOf = { it.value },
+          metric = { repair ->
+            repairMetric?.invoke(repair.value.tokenizeByWhitespace()) ?: repair.index
+          },
+          customDiff = { repair ->
+            val repairTks = repair.value.tokenizeByWhitespace()
             pcs.paintDiffAsync(levenshteinAlign(tokens.dropLast(1), repairTks)) { formatCodeAsync(it) }
           },
           postCompletionSummary = {
-            if (errHst.isNotEmpty()) {
-              val pad = (errHst.values.maxOrNull()?.toString()?.length ?: 1) + 1
-              val summary = errHst.toMap().entries.sortedBy { -it.component2() }
-                .joinToString("\n") { "${it.value.toString().padEnd(pad)}| ${it.key}" }
-              log("Rejection histogram:\n$summary")
-            }
+            errHst.logRejections()
 
             if (gpuAvailable) {
               mark("postprocessing", postProcTimer)
@@ -317,67 +297,30 @@ class JSTidyPyEditor(editor: HTMLTextAreaElement, output: Node) : JSTidyEditor(e
       log("Error during Pyodide initialization: ${e.message ?: e.toString()}")
     }
   }
-
-  private data class RankedCompletion(val raw: String, val tokens: List<String>, val score: Int)
-
-  private suspend fun Sequence<String>.enumerateRankedRepairsInteractively(
-    workHash: Int,
-    metric: (List<String>) -> Int,
-    render: suspend (raw: String, tokens: List<String>) -> String,
-    postCompletionSummary: () -> String = { "." },
-    reason: String = "Generic completions:\n\n",
-    resultsToPost: Int = MAX_DISP_RESULTS,
-    timer: TimeSource.Monotonic.ValueTimeMark = TimeSource.Monotonic.markNow(),
-    shouldContinue: () -> Boolean = { currentWorkHash == workHash && timer.hasTimeLeft() },
-  ) {
-    val seen = HashSet<String>()
-    val top = ArrayList<RankedCompletion>(resultsToPost + 1)
-    val iter = iterator()
-    val startTime = TimeSource.Monotonic.markNow()
-
-    while (iter.hasNext() && shouldContinue()) {
-      pause()
-
-      val raw = iter.next()
-      if (raw.isEmpty() || !seen.add(raw)) continue
-
-      val tks = raw.tokenizeByWhitespace()
-      val score = metric(tks)
-
-      if (top.size < resultsToPost || score < top.last().score) {
-        val loc = top.binarySearch { it.score.compareTo(score) }
-        val idx = if (loc < 0) -loc - 1 else loc
-
-        top.add(idx, RankedCompletion(raw, tks, score))
-        if (top.size > resultsToPost) top.removeLast()
-      }
-    }
-
-    val throughput = (seen.size / (startTime.elapsedNow().toDouble(DurationUnit.SECONDS) + 0.001)).round(3)
-
-    val moreResults = (seen.size - top.size).let { if (it == 0) "\n\n" else "\n\n...$it more, " }
-
-    val renderedItems = coroutineScope {
-      top.mapIndexed { i, candidate ->
-        async {
-          val result =
-            "<span class=\"result-index\">" +
-                "${i.toString().padStart(2)}.) </span>" +
-                render(candidate.raw, candidate.tokens)
-
-          if (i == 0) "<mark>$result</mark>" else result
-        }
-      }.awaitAll()
-    }
-
-    val rendered = renderedItems.joinToString("\n")
-    if (currentWorkHash == workHash) writeDisplayText("$reason$rendered".also { cache[workHash] = it })
-    log("$moreResults~$throughput res/s${postCompletionSummary()}")
-  }
 }
 
-private fun String.replacePythonKeywords() =
-  replace("OR", "|").replace("not_in", "not in").replace("is_not", "is not")
+private fun IntersectionResults.pythonRepairs(): Sequence<String> =
+  mapTerminals { it.toPythonTerminal() }.asSequence().map { it.withoutFinalNewline() }.distinct()
+
+private fun String.toPythonRepair() =
+  withoutFinalNewline().tokenizeByWhitespace().joinToString(" ") { it.toPythonTerminal() }
+
+private fun String.withoutFinalNewline() = if (this == "NEWLINE") "" else removeSuffix(" NEWLINE")
+
+private fun String.toPythonTerminal() = when (this) {
+  "OR" -> "|"
+  "not_in" -> "not in"
+  "is_not" -> "is not"
+  else -> this
+}
+
+private fun Map<String, Int>.logRejections() {
+  if (isEmpty()) return
+  val pad = (values.maxOrNull()?.toString()?.length ?: 1) + 1
+  val summary = entries.sortedByDescending { it.value }
+    .joinToString("\n") { "${it.value.toString().padEnd(pad)}| ${it.key}" }
+  log("Rejection histogram:\n$summary")
+}
 
 private fun String.getErrorType(): String =
   if (isEmpty()) "" else lines().dropLast(1).lastOrNull()?.substringBeforeLast(":")?.substringAfterLast(":1: ") ?: this

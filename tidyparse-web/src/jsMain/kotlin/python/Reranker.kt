@@ -1,6 +1,5 @@
 import ai.hypergraph.kaliningraph.parsing.tmMap
 import ai.hypergraph.kaliningraph.repair.s2pg
-import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import js.buffer.ArrayBuffer
 import kotlinx.coroutines.*
 import kotlinx.coroutines.await
@@ -43,23 +42,26 @@ object RepairReranker {
       false
     }
 
-  suspend fun rerankOrOriginal(query: List<String>, candidates: List<String>): List<String> =
-    try { if (candidates.size <= 1) candidates else rerank(query, candidates) }
-    catch (t: Throwable) { log("Reranker unavailable, keeping decoder order: ${t.message ?: t}"); candidates }
+  suspend fun rerankOrOriginal(query: List<String>, candidates: IntersectionResults): List<Int> =
+    try { if (candidates.size <= 1) candidates.indices.toList() else rerank(query, candidates) }
+    catch (t: Throwable) {
+      log("Reranker unavailable, keeping decoder order: ${t.message ?: t}")
+      candidates.indices.toList()
+    }
 
-  private suspend fun rerank(query: List<String>, candidates: List<String>): List<String> {
+  private suspend fun rerank(query: List<String>, candidates: IntersectionResults): List<Int> {
     val t0 = TimeSource.Monotonic.markNow()
     val encodedQuery = encodeTokens(query, RERANKER_MAX_LEN_Q)
-      ?: return candidates.also { log("Reranker skipped: query has tokens outside s2pg") }
+      ?: return candidates.indices.toList().also { log("Reranker skipped: query has tokens outside s2pg") }
 
-    val encodedDocs = candidates.map { repair ->
-      repair.tokenizeByWhitespace().let { encodeTokens(it, RERANKER_MAX_LEN_D) }
+    val encodedDocs = candidates.indices.map { candidate ->
+      encodeTokens(candidates, candidate, RERANKER_MAX_LEN_D)
     }
 
     val missingIdx = encodedDocs.indexOfFirst { it == null }
     if (missingIdx >= 0) {
       log("Reranker skipped: candidate $missingIdx has tokens outside s2pg")
-      return candidates
+      return candidates.indices.toList()
     }
 
     val net = net()
@@ -69,9 +71,7 @@ object RepairReranker {
       if (byScore != 0) byScore else a.compareTo(b)
     }
 
-    return order.map { candidates[it] }.also {
-      log("Reranked ${candidates.size} repairs in ${t0.elapsedNow()}")
-    }
+    return order.also { log("Reranked ${candidates.size} repairs in ${t0.elapsedNow()}") }
   }
 
   private suspend fun net(): dynamic = (netReady ?: scope.async { loadNet() }.also { netReady = it }).await()
@@ -101,6 +101,7 @@ object RepairReranker {
     return materializeF32Safetensors(loaded)
   }
 
+  //language=js
   private fun materializeF32Safetensors(rawSafetensors: ArrayBuffer): dynamic =
     js("""(function(buffer) {
       function fail(message) { throw new Error(message); }
@@ -215,6 +216,21 @@ object RepairReranker {
     val ids = ArrayList<Int>(tokens.size + 2)
     ids.add(RERANKER_BOS)
     for (token in tokens) ids.add(tokenIds[token] ?: return null)
+    ids.add(RERANKER_EOS)
+
+    val end = min(maxLength, ids.size)
+    return buildString(end) {
+      for (i in 0 until end) append((ids[i] + RERANKER_ASCII_OFFSET).toChar())
+    }
+  }
+
+  private fun encodeTokens(results: IntersectionResults, index: Int, maxLength: Int): String? {
+    val terminalCount = results.terminalCountAt(index)
+    val ids = ArrayList<Int>(terminalCount + 2)
+    ids.add(RERANKER_BOS)
+    for (position in 0 until terminalCount) {
+      ids.add(tokenIds[results.terminalTextAt(index, position)] ?: return null)
+    }
     ids.add(RERANKER_EOS)
 
     val end = min(maxLength, ids.size)
