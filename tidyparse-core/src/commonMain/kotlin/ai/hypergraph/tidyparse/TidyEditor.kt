@@ -15,6 +15,7 @@ val synthCache = LRUCache<Pair<String, CFG>, List<String>>()
 abstract class TidyEditor {
   // TODO: eliminate this completely
   open var cfg: CFG = setOf()
+  open val prefixCFG: CFG get() = cfg.prefixClosure
   var grammarFileCache: Int = 0
   var cache = mutableMapOf<Int, String>()
   var currentWorkHash = 0
@@ -126,12 +127,13 @@ abstract class TidyEditor {
     }
   }
 
-  enum class Scenario(val reason: String, var data: List<Int>? = null) {
+  enum class Scenario(val reason: String, var data: Sequence<Int>? = null) {
     STUB(stubGenPrefix), COMPLETION(holeGenPrefix),
     PARSEABLE(parsedPrefix), REPAIR(invalidPrefix),
+    INFIX_COMPLETION(ifxCplPrefix),
     SUFFIX_COMPLETION(fwdCplPrefix);
 
-    operator fun invoke(d: List<Int>): Scenario = apply { data = d }
+    operator fun invoke(d: Sequence<Int>): Scenario = apply { data = d }
   }
 
   protected suspend fun <T, K> Sequence<T>.enumerateInteractively(

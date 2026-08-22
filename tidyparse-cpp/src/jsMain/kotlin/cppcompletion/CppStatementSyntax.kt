@@ -3,6 +3,7 @@ package cppcompletion
 import ai.hypergraph.kaliningraph.KBitSet
 import ai.hypergraph.kaliningraph.automata.GRE
 import ai.hypergraph.kaliningraph.parsing.CFG
+import ai.hypergraph.kaliningraph.parsing.CFGCompletionIndex
 import ai.hypergraph.kaliningraph.parsing.BoundedAcyclicCFG
 import ai.hypergraph.kaliningraph.parsing.START_SYMBOL
 import ai.hypergraph.kaliningraph.parsing.bindex
@@ -17,7 +18,6 @@ import ai.hypergraph.kaliningraph.parsing.tmMap
 import ai.hypergraph.kaliningraph.parsing.tmToVidx
 import ai.hypergraph.kaliningraph.parsing.unitNonterminals
 
-private const val CPP_SYNTAX_INFINITY = Int.MAX_VALUE / 4
 private const val CPP_SYNTAX_COMPLETION_CACHE_SIZE = 16
 
 /**
@@ -57,10 +57,7 @@ private val cppSingleStatementSyntaxIndex: CppStatementSyntaxIndex by lazy {
   CppStatementSyntaxIndex(cppSingleStatementSyntax)
 }
 
-private data class CachedCppSyntaxCompletion(
-  val bounded: BoundedAcyclicCFG?,
-  val templateTokens: Int
-)
+private data class CachedCppSyntaxCompletion(val bounded: BoundedAcyclicCFG?, val templateTokens: Int)
 
 private data class CppSyntaxCompletionKey(
   val prefix: List<String>,
@@ -144,178 +141,21 @@ private fun CFG.withIdentifierInventory(identifiers: List<String>): CFG = flatMa
 
 /** Immutable sparse indexes plus exact min-plus prefix completion for a recursive binary CFG. */
 internal class CppStatementSyntaxIndex(private val grammar: CFG) {
-  private data class BinaryRule(val parent: Int, val left: Int, val right: Int)
-  private data class WeightedParent(val parent: Int, val appendedLength: Int)
-
-  init {
-    require(START_SYMBOL in grammar.nonterminals) {
-      "A C++ statement completion grammar must declare $START_SYMBOL"
-    }
-    grammar.forEach { (lhs, rhs) ->
-      require(
-        rhs.size == 1 && rhs.single() !in grammar.nonterminals ||
-          rhs.size == 2 && rhs.all(grammar.nonterminals::contains)
-      ) {
-        "C++ statement completion requires epsilon-free CNF; found $lhs -> ${rhs.joinToString(" ")}"
-      }
-    }
-  }
-
+  private val completionIndex = CFGCompletionIndex(grammar)
   private val variableCount = grammar.nonterminals.size
   private val start = grammar.bindex[START_SYMBOL]
   private val terminalMap = grammar.tmMap
   private val terminalParents = grammar.tmToVidx
   private val leftAdjacency = grammar.leftAdj
-  private val binaryRules = grammar.mapNotNull { (lhs, rhs) ->
-    if (rhs.size != 2) null
-    else BinaryRule(grammar.bindex[lhs], grammar.bindex[rhs[0]], grammar.bindex[rhs[1]])
-  }
-  private val minimumWordLength: IntArray = minimumWordLengths()
-  private val weightedParents: Array<MutableList<WeightedParent>> =
-    Array(variableCount) { mutableListOf<WeightedParent>() }.also { parents ->
-      binaryRules.forEach { rule ->
-        val appendedLength = minimumWordLength[rule.right]
-        if (appendedLength < CPP_SYNTAX_INFINITY)
-          parents[rule.left] += WeightedParent(rule.parent, appendedLength)
-      }
-  }
 
   /** Concrete grammar terminals whose source spelling can extend [sourcePrefix]. */
-  fun terminalsWithSourcePrefix(
-    sourcePrefix: String,
-    spellings: (String) -> Iterable<String> = { listOf(it) }
-  ): Set<String> = terminalMap.keys.filterTo(linkedSetOf()) { terminal ->
-    spellings(terminal).any { spelling -> spelling.startsWith(sourcePrefix) }
-  }
-
-  private fun minimumWordLengths(): IntArray {
-    val result = IntArray(variableCount) { CPP_SYNTAX_INFINITY }
-    grammar.forEach { (lhs, rhs) ->
-      if (rhs.size == 1 && rhs[0] !in grammar.nonterminals)
-        result[grammar.bindex[lhs]] = 1
-    }
-    var changed: Boolean
-    do {
-      changed = false
-      binaryRules.forEach { rule ->
-        val left = result[rule.left]
-        val right = result[rule.right]
-        if (left >= CPP_SYNTAX_INFINITY || right >= CPP_SYNTAX_INFINITY) return@forEach
-        val candidate = left + right
-        if (candidate < result[rule.parent]) {
-          result[rule.parent] = candidate
-          changed = true
-        }
-      }
-    } while (changed)
-    check(result[start] < CPP_SYNTAX_INFINITY) { "The C++ statement syntax grammar is not productive" }
-    return result
-  }
-
-  /**
-   * Computes min |s| such that prefix·s is in the statement language.
-   *
-   * For A -> B C, a cursor either lies inside B (cost[B] + minWord[C]) or after a complete B
-   * (Full[B,i,k] + cost[C,k]). Same-position edges have positive weights, so Dijkstra handles
-   * left-recursive grammar cycles without a token horizon.
-   */
-  fun minimumSuffixLength(
-    prefix: List<String>,
-    allowedFirstTerminals: Set<String>? = null
-  ): Int? {
-    if (allowedFirstTerminals?.isEmpty() == true) return null
-    val constrainedMinimum = allowedFirstTerminals?.let(::minimumWordLengthsStartingWith)
-    if (prefix.isEmpty())
-      return (constrainedMinimum ?: minimumWordLength)[start]
-        .takeIf { it < CPP_SYNTAX_INFINITY }
-    val size = prefix.size
-    val full = Array(size + 1) { Array(size + 1) { KBitSet(variableCount) } }
-    prefix.forEachIndexed { index, terminal ->
-      val terminalIndex = terminalMap[terminal] ?: return null
-      terminalParents[terminalIndex].forEach { parent -> full[index][index + 1].set(parent) }
-    }
-    for (span in 2..size) for (begin in 0..size - span) {
-      val end = begin + span
-      val target = full[begin][end]
-      for (split in begin + 1 until end) {
-        val left = full[begin][split]
-        val right = full[split][end]
-        if (left.isEmpty() || right.isEmpty()) continue
-        for (leftVariable in left.iterator())
-          (leftAdjacency[leftVariable] ?: continue).forEachIfIn(right) { _, parent ->
-            target.set(parent)
-          }
-      }
+  fun terminalsWithSourcePrefix(sourcePrefix: String, spellings: (String) -> Iterable<String> = { listOf(it) }): Set<String> =
+    terminalMap.keys.filterTo(linkedSetOf()) { terminal ->
+      spellings(terminal).any { spelling -> spelling.startsWith(sourcePrefix) }
     }
 
-    val completion = Array(size + 1) { IntArray(variableCount) { CPP_SYNTAX_INFINITY } }
-    (constrainedMinimum ?: minimumWordLength).copyInto(completion[size])
-    val heap = CppSyntaxMinHeap()
-    for (begin in size - 1 downTo 0) {
-      val distance = completion[begin]
-      if (constrainedMinimum == null) {
-        for (variable in full[begin][size].iterator()) distance[variable] = 0
-      } else {
-        // The left child can end exactly at the cursor without emitting a token. Keep that state
-        // separate from a positive constrained completion: the first output must then come from
-        // the right child.
-        for (leftVariable in full[begin][size].iterator()) {
-          val adjacency = leftAdjacency[leftVariable] ?: continue
-          for (edge in adjacency.other.indices) {
-            val rightCost = constrainedMinimum[adjacency.other[edge]]
-            if (rightCost < distance[adjacency.aIdx[edge]])
-              distance[adjacency.aIdx[edge]] = rightCost
-          }
-        }
-      }
-      for (split in begin + 1 until size) {
-        for (leftVariable in full[begin][split].iterator()) {
-          val adjacency = leftAdjacency[leftVariable] ?: continue
-          for (edge in adjacency.other.indices) {
-            val rightCost = completion[split][adjacency.other[edge]]
-            if (rightCost < distance[adjacency.aIdx[edge]])
-              distance[adjacency.aIdx[edge]] = rightCost
-          }
-        }
-      }
-      closeWeightedParents(distance, heap)
-    }
-    return completion[0][start].takeIf { it < CPP_SYNTAX_INFINITY }
-  }
-
-  /** Minimum word lengths whose first terminal belongs to [allowedTerminals]. */
-  private fun minimumWordLengthsStartingWith(allowedTerminals: Set<String>): IntArray {
-    val result = IntArray(variableCount) { CPP_SYNTAX_INFINITY }
-    val heap = CppSyntaxMinHeap()
-    allowedTerminals.forEach { terminal ->
-      val terminalIndex = terminalMap[terminal] ?: return@forEach
-      terminalParents[terminalIndex].forEach { parent ->
-        if (result[parent] > 1) result[parent] = 1
-      }
-    }
-    closeWeightedParents(result, heap)
-    return result
-  }
-
-  private fun closeWeightedParents(distance: IntArray, heap: CppSyntaxMinHeap) {
-    heap.clear()
-    distance.forEachIndexed { variable, cost ->
-      if (cost < CPP_SYNTAX_INFINITY) heap.push(variable, cost)
-    }
-    while (heap.isNotEmpty()) {
-      val packed = heap.pop()
-      val variable = packed.toInt()
-      val cost = (packed ushr 32).toInt()
-      if (cost != distance[variable]) continue
-      weightedParents[variable].forEach { edge ->
-        val candidate = cost + edge.appendedLength
-        if (candidate < distance[edge.parent]) {
-          distance[edge.parent] = candidate
-          heap.push(edge.parent, candidate)
-        }
-      }
-    }
-  }
+  fun minimumSuffixLength(prefix: List<String>, allowedFirstTerminals: Set<String>? = null): Int? =
+    completionIndex.minimumSuffixLength(prefix, allowedFirstTerminals)
 
   /** Sparse two-pass CYK forest whose fixed-prefix leaves emit epsilon and holes emit terminals. */
   fun completeShortestSuffix(
@@ -422,57 +262,6 @@ internal class CppStatementSyntaxIndex(private val grammar: CFG) {
       }
     }
     return forest[0][tokenCount][start]
-  }
-}
-
-private class CppSyntaxMinHeap {
-  private var variables = IntArray(64)
-  private var costs = IntArray(64)
-  private var size = 0
-
-  fun clear() { size = 0 }
-  fun isNotEmpty(): Boolean = size > 0
-
-  fun push(variable: Int, cost: Int) {
-    if (size == variables.size) {
-      variables = variables.copyOf(size * 2)
-      costs = costs.copyOf(size * 2)
-    }
-    var index = size++
-    while (index > 0) {
-      val parent = (index - 1) / 2
-      if (costs[parent] <= cost) break
-      variables[index] = variables[parent]
-      costs[index] = costs[parent]
-      index = parent
-    }
-    variables[index] = variable
-    costs[index] = cost
-  }
-
-  /** High 32 bits are the cost; low 32 bits are the variable. */
-  fun pop(): Long {
-    val variable = variables[0]
-    val cost = costs[0]
-    val lastIndex = --size
-    if (lastIndex > 0) {
-      val lastVariable = variables[lastIndex]
-      val lastCost = costs[lastIndex]
-      var index = 0
-      while (true) {
-        val left = index * 2 + 1
-        if (left >= size) break
-        val right = left + 1
-        val child = if (right < size && costs[right] < costs[left]) right else left
-        if (costs[child] >= lastCost) break
-        variables[index] = variables[child]
-        costs[index] = costs[child]
-        index = child
-      }
-      variables[index] = lastVariable
-      costs[index] = lastCost
-    }
-    return (cost.toLong() shl 32) or (variable.toLong() and 0xffffffffL)
   }
 }
 

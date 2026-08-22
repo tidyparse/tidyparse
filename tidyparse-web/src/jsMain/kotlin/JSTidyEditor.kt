@@ -120,7 +120,6 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
   // TODO: define coalgebraically using prefix closure //prefix == tokens.dropLast(1) && tokens.last() in nextTerms
   data class SuffixCompletion(val prefix: List<Σᐩ>, val nextTerms: Set<Σᐩ>)
 //  fun sampleForward(tokens: List<Σᐩ>, cfg: CFG): Sequence<Σᐩ> = cfg.enumSuffixes(tokens)
-//  fun isValidContinuation(tokens: List<Σᐩ>, cfg: CFG): Boolean = tokens in cfg.admitsPrefix(tokens)
 //  fun ForwardCompletion?.seed(tokens: List<Σᐩ>) =
 //    if (this == null) ForwardCompletion(tokens, emptySet())
 //    else if (cfg.isEmpty() || nextTerms.isEmpty()) ForwardCompletion(tokens, emptySet())
@@ -176,7 +175,7 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
     val terminalCompletion = activeTerminalPlan
       ?: if (terminalResolutionEligible) tokens.lastOrNull()
         ?.takeIf { it !in cfg.terminals || freshUserInsertion && caretAtLastTokenEnd }
-        ?.let { softCompletionManager.cachedPlan(cfg, tokens) }
+        ?.let { softCompletionManager.cachedPlan(cfg, prefixCFG, tokens) }
       else null
 
     if (
@@ -194,8 +193,11 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
         // Token separation is lexical, so even an invalid prefix such as
         // "... ID }" receives a space without pretending it has a CFG suffix.
         // The prefix before that token must still have been in suffix mode.
-        !cfg.hasTerminalCompletion(tokens) &&
-        cfg.validContinuationSuffixLengths(tokens.dropLast(1)).isNotEmpty()
+        tokens !in cfg.language &&
+        cfg.visibleCompletionCFG.let {
+          START_SYMBOL in it.nonterminals &&
+            it.minimumNonemptySuffixLength(tokens.dropLast(1)) != null
+        }
 
     if (
       !hasActiveSoftInsertion &&
@@ -264,7 +266,7 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
         it.originalPrefix,
         it.expandedPrefix,
         it.forcedContinuation,
-        it.branches.map { branch -> branch.terminal to branch.suffixLengths }
+        it.branches.map { branch -> branch.terminal to branch.suffixLengths.firstOrNull() }
       ).hashCode()
     } ?: 0
     val workHash = abstractUnk.hashCode() + cfg.hashCode() + settingsHash.hashCode() + terminalCompletionHash
@@ -286,7 +288,8 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
 //        !containsUnkTok && forwardCompletion?.isValidContinuation(tokens) == true -> FORWARD_COMPLETION
         // This scenario can be handled much more elegantly using coalegbra and incremental decoding
         tokens in cfg.language && !suffixEligible -> PARSEABLE
-        !containsUnkTok -> handleSuffixCheck(cfg.language, tokens)
+        !containsUnkTok && (caretInGrammar || tokens in prefixCFG.language) ->
+          handleSuffixCheck(cfg.language, tokens)
         else -> REPAIR
       }
 
@@ -296,9 +299,10 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
         COMPLETION -> if (!gpuAvailable) cfg.enumSeqSmart(tokens) else completeCode(cfg, tokens).asSequence()
         SUFFIX_COMPLETION ->
           terminalCompletion?.enumerationBranches()
-            ?.map(cfg::enumTerminalSuffixes)
+            ?.map(cfg.visibleCompletionCFG::enumTerminalSuffixes)
             ?.let(::fairMerge)?.distinct()
-            ?: cfg.enumSuffixes(tokens, scenario.data).distinct()
+            ?: cfg.visibleCompletionCFG.enumSuffixes(tokens, scenario.data).distinct()
+        INFIX_COMPLETION -> TODO("Infix mode not implemented")
         PARSEABLE -> {
           val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
           writeDisplayText("$parsedPrefix$parseTree".also { cache[workHash] = it }); null
@@ -341,9 +345,7 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
       } ?: displayCandidates?.let { candidates ->
         val metric = when (scenario) {
           REPAIR -> levAndLenMetric(displayTokens)
-          SUFFIX_COMPLETION -> ({ tokens: List<String> -> tokens.size })
-          COMPLETION -> ({ tokens: List<String> -> tokens.size })
-          else -> ({ _: List<String> -> 0 })
+          else -> ({ tokens: List<String> -> tokens.size })
         }
         val originalText = displayTokens.joinToString(" ")
         candidates.enumerateInteractively(
@@ -362,16 +364,15 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
     if (caretInMiddle()) { // Skip suffix completion if the caret is within line
       if (gpuAvailable) { if (cfl.cfg.checkSuffix(tokens, 0).let { it.isNotEmpty() && it[0] == 0 }) PARSEABLE else REPAIR }
       else if (tokens in cfl) PARSEABLE else REPAIR
-    } else if (gpuAvailable) {
-      val suffixLens = cfl.cfg.checkSuffix(tokens)
-      println("Read GPU suffix lens: $suffixLens")
-      if (suffixLens.isEmpty()) REPAIR
-      else SUFFIX_COMPLETION(suffixLens)
     } else {
-      val suffixLens = cfl.admitsPrefix(tokens).toList()
-      println("Read CPU suffix lens: $suffixLens")
-      if (suffixLens[0] > 0) SUFFIX_COMPLETION(suffixLens)
-      else REPAIR
+      val completionCFG = cfl.cfg.visibleCompletionCFG
+      val suffixLens =
+        if (START_SYMBOL in completionCFG.nonterminals)
+          completionCFG.nonemptySuffixLengths(tokens)
+        else emptySequence()
+      val minimum = suffixLens.firstOrNull()
+      println("Read minimum suffix length: $minimum")
+      if (minimum == null) REPAIR else SUFFIX_COMPLETION(suffixLens)
     }
 
   var hashIter = 0

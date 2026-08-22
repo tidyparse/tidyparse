@@ -1,7 +1,10 @@
 import ai.hypergraph.kaliningraph.parsing.CFG
 import ai.hypergraph.kaliningraph.parsing.noEpsilon
 import ai.hypergraph.kaliningraph.parsing.noEpsilonOrNonterminalStubs
+import ai.hypergraph.kaliningraph.parsing.noNonterminalStubs
+import ai.hypergraph.kaliningraph.parsing.nonemptySuffixLengths
 import ai.hypergraph.kaliningraph.parsing.parseCFG
+import ai.hypergraph.kaliningraph.parsing.prefixClosure
 import ai.hypergraph.kaliningraph.parsing.terminals
 import ai.hypergraph.tidyparse.MAX_DISP_RESULTS
 import kotlinx.browser.document
@@ -207,6 +210,37 @@ class JSTidyEditorTest {
   }
 
   @Test
+  fun properPrefixIsEligibleForSuffixCompletion() = runTest {
+    val (editor, _) = editorFor("begin")
+    editor.cfg = "START -> begin end".parseCFG().noEpsilon
+
+    editor.handleInput()
+    assertNotNull(editor.runningJob).join()
+
+    assertTrue((editor.output.textContent ?: "").startsWith("-> Forward completion"))
+  }
+
+  @Test
+  fun completePrefixCanRequestFurtherSuffix() = runTest {
+    val (editor, _) = editorFor("a ")
+    editor.cfg = "START -> a | a b".parseCFG().noEpsilon
+
+    editor.handleInput()
+    assertNotNull(editor.runningJob).join()
+
+    assertContains(editor.output.textContent ?: "", "a b")
+  }
+
+  @Test
+  fun terminalCompletionRequiresPrefixMembership() {
+    val cfg = "START -> begin Table end".parseCFG().noEpsilon
+    val unrelatedPrefixCFG = "START -> other end".parseCFG().noEpsilon.prefixClosure
+
+    assertNotNull(cfg.terminalCompletionPlan(listOf("begin", "Tab")))
+    assertNull(cfg.terminalCompletionPlan(listOf("begin", "Tab"), unrelatedPrefixCFG))
+  }
+
+  @Test
   fun uniqueViableTerminalExpandsCompletely() {
     val cfg = """
       START -> begin Table x | begin Table y | other Target q
@@ -219,7 +253,7 @@ class JSTidyEditorTest {
     assertTrue(completion.terminalCommitted)
     assertTrue(completion.forcedContinuation.isEmpty())
     assertEquals(listOf("Table"), completion.branches.map { it.terminal })
-    assertEquals(listOf(1), completion.branches.single().suffixLengths)
+    assertEquals(listOf(1), completion.branches.single().suffixLengths.toList())
   }
 
   @Test
@@ -233,7 +267,7 @@ class JSTidyEditorTest {
     assertEquals("if", completion.expandedPrefix)
     assertEquals(listOf("("), completion.forcedContinuation)
     assertEquals(listOf("if", "("), completion.branches.single().tokens)
-    assertEquals(listOf(2), completion.branches.single().suffixLengths)
+    assertEquals(listOf(2), completion.branches.single().suffixLengths.toList())
   }
 
   @Test
@@ -266,7 +300,7 @@ class JSTidyEditorTest {
       listOf("<BEXP>", "<EXP>", "<LIT>"),
       completion.branches.map { it.terminal }
     )
-    assertTrue(completion.branches.all { it.suffixLengths.isNotEmpty() })
+    assertTrue(completion.branches.all { it.suffixLengths.firstOrNull() != null })
     assertEquals(MAX_TERMINAL_COMPLETION_BRANCHES, completion.branches.size)
   }
 
@@ -288,7 +322,7 @@ class JSTidyEditorTest {
     assertEquals(
       mapOf("<" to listOf(1), "<EXP>" to listOf(0)),
       completion.branches.associate {
-        it.terminal to it.suffixLengths
+        it.terminal to it.suffixLengths.toList()
       }
     )
 
@@ -324,7 +358,7 @@ class JSTidyEditorTest {
     assertEquals(
       mapOf("<" to listOf(0), "<EXP>" to listOf(0)),
       completion.branches.associate {
-        it.terminal to it.suffixLengths
+        it.terminal to it.suffixLengths.toList()
       }
     )
   }
@@ -401,13 +435,13 @@ class JSTidyEditorTest {
       listOf(2),
       completion.branches
         .first { it.terminal == "<" }
-        .suffixLengths
+        .suffixLengths.toList()
     )
     assertEquals(
       listOf(1),
       completion.branches
         .first { it.terminal == "<POSTFIX_OPERATOR>" }
-        .suffixLengths
+        .suffixLengths.toList()
     )
 
     editor.handleFreshUserInsertion()
@@ -509,7 +543,7 @@ class JSTidyEditorTest {
         listOf("if", "(", "true", ")", "{"),
         completion.branches.single().tokens
       )
-      assertEquals((2..9).toList(), completion.branches.single().suffixLengths)
+      assertEquals((2..9).toList(), completion.branches.single().suffixLengths.take(8).toList())
     }
   }
 
@@ -636,6 +670,20 @@ class JSTidyEditorTest {
   }
 
   @Test
+  fun epsilonPaddingDoesNotMakeACompletePrefixSuffixEligible() {
+    val (editor, input) = editorFor("done ")
+    editor.cfg = "START -> done | x y".parseCFG()
+
+    input.value += "x"
+    input.setSelectionRange(input.value.length, input.value.length)
+    editor.handleFreshUserInsertion()
+
+    assertTrue(input.value.endsWith("\ndone x"))
+    assertNull(editor.pendingTerminalCompletionInsertion)
+    editor.runningJob?.cancel()
+  }
+
+  @Test
   fun plWhileChoosesTheSuffixViableTerminalForAnExactPrefix() = runTest {
     listOf(
       plWhileGrammar.parseCFG(validate = true),
@@ -650,7 +698,7 @@ class JSTidyEditorTest {
       assertEquals("==", completion.expandedPrefix)
       assertTrue(completion.terminalCommitted)
       assertTrue(completion.forcedContinuation.isEmpty())
-      assertEquals((5..10).toList(), completion.branches.single().suffixLengths)
+      assertEquals((5..10).toList(), completion.branches.single().suffixLengths.take(6).toList())
     }
 
     val (editor, input) = editorFor("while ( true ")
@@ -764,7 +812,7 @@ class JSTidyEditorTest {
 
     assertEquals(listOf("(", "value"), completion.forcedContinuation)
     assertEquals(listOf("if", "(", "value"), completion.branches.single().tokens)
-    assertEquals(listOf(1), completion.branches.single().suffixLengths)
+    assertEquals(listOf(1), completion.branches.single().suffixLengths.toList())
   }
 
   @Test
@@ -776,7 +824,7 @@ class JSTidyEditorTest {
     val completion = assertNotNull(cfg.terminalCompletionPlan(listOf("i")))
 
     assertEquals(listOf("("), completion.forcedContinuation)
-    assertEquals(listOf(0, 1), completion.branches.single().suffixLengths)
+    assertEquals(listOf(0, 1), completion.branches.single().suffixLengths.toList())
   }
 
   @Test
@@ -833,7 +881,7 @@ class JSTidyEditorTest {
     assertEquals(4, completion.lexicalCandidateCount)
     assertEquals("Ta", completion.expandedPrefix)
     assertEquals(listOf("Table", "Target", "Task"), completion.branches.map { it.terminal })
-    assertTrue(completion.branches.all { it.suffixLengths == listOf(1) })
+    assertTrue(completion.branches.all { it.suffixLengths.toList() == listOf(1) })
   }
 
   @Test
@@ -844,11 +892,71 @@ class JSTidyEditorTest {
 
     val completion = assertNotNull(cfg.terminalCompletionPlan(listOf("begin", "T")))
     val suffixLengthsByTerminal = completion.branches.associate {
-      it.terminal to it.suffixLengths
+      it.terminal to it.suffixLengths.toList()
     }
 
     assertEquals(listOf(1), suffixLengthsByTerminal["Table"])
     assertEquals(listOf(2), suffixLengthsByTerminal["Target"])
+  }
+
+  @Test
+  fun terminalCompletionHasNoSuffixLengthHorizon() {
+    val width = 11
+    val left = List(width) { "l$it" }
+    val right = List(width) { "r$it" }
+    val cfg = """
+      START -> head ${left.joinToString(" ")}
+      START -> head ${right.joinToString(" ")}
+    """.trimIndent().parseCFG().noEpsilonOrNonterminalStubs
+
+    val completion = assertNotNull(cfg.terminalCompletionPlan(listOf("hea")))
+
+    assertTrue(completion.forcedContinuation.isEmpty())
+    assertEquals(listOf(width), completion.branches.single().suffixLengths.toList())
+  }
+
+  @Test
+  fun forcedContinuationAccountsForLongerCompletions() {
+    val cfg = """
+      START -> if ( x | if ( y z
+    """.trimIndent().parseCFG().noEpsilonOrNonterminalStubs
+
+    val completion = assertNotNull(cfg.terminalCompletionPlan(listOf("i")))
+
+    assertEquals(listOf("("), completion.forcedContinuation)
+    assertEquals(listOf(1, 2), completion.branches.single().suffixLengths.toList())
+  }
+
+  @Test
+  fun epsilonPaddingDoesNotCreateAVisibleCompletion() {
+    val cfg = "START -> done".parseCFG()
+
+    assertNull(cfg.terminalCompletionPlan(listOf("do")))
+  }
+
+  @Test
+  fun epsilonRecursionDoesNotDuplicateVisibleSuffixLengths() {
+    val cfg = """
+      START -> p T
+      T -> T E | ε | x
+      E -> ε
+    """.trimIndent().parseCFG().noNonterminalStubs
+
+    assertEquals(
+      listOf(1),
+      cfg.visibleCompletionCFG.nonemptySuffixLengths(listOf("p")).toList()
+    )
+  }
+
+  @Test
+  fun epsilonPaddingCannotFillAVisibleCompletionSlot() {
+    val cfg = "START -> done | done x | done y".parseCFG()
+    val completion = assertNotNull(cfg.terminalCompletionPlan(listOf("do")))
+
+    assertEquals(
+      setOf("done x", "done y"),
+      cfg.enumTerminalSuffixes(completion.branches.single()).toSet()
+    )
   }
 
   @Test
