@@ -39,8 +39,7 @@ class JSTidyEditorTest {
     LIT -> true | false
   """.trimIndent()
 
-  private val plWhileCfg =
-    plWhileGrammar.parseCFG(validate = true).noEpsilon
+  private val plWhileCfg = plWhileGrammar.parseCFG(validate = true).noEpsilon
 
   private class RecordingEditor(
     editor: HTMLTextAreaElement,
@@ -268,10 +267,7 @@ class JSTidyEditorTest {
       completion.branches.map { it.terminal }
     )
     assertTrue(completion.branches.all { it.suffixLengths.isNotEmpty() })
-    assertEquals(
-      MAX_TERMINAL_COMPLETION_BRANCHES,
-      completion.branches.size
-    )
+    assertEquals(MAX_TERMINAL_COMPLETION_BRANCHES, completion.branches.size)
   }
 
   @Test
@@ -454,22 +450,14 @@ class JSTidyEditorTest {
     val displayText = editor.output.textContent ?: ""
     assertTrue(displayText.startsWith("-> Forward completion"))
     val results = displayText.lineSequence()
-      .map {
-        it.substringAfter(
-          delimiter = ".) ",
-          missingDelimiterValue = ""
-        )
-      }
-      .filter { it.isNotEmpty() }
-      .toList()
+      .map { it.substringAfter(delimiter = ".) ", missingDelimiterValue = "") }
+      .filter { it.isNotEmpty() }.toList()
     assertEquals(MAX_DISP_RESULTS, results.size)
 
     val viableStubs = listOf("<BEXP>", "<EXP>", "<LIT>")
     val resultStubs = results.map { result ->
       assertNotNull(
-        viableStubs.singleOrNull {
-          result.startsWith("while ( $it ")
-        },
+        viableStubs.singleOrNull { result.startsWith("while ( $it ") },
         "Unexpected terminal-completion branch: $result"
       )
     }
