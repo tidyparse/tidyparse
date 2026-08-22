@@ -931,6 +931,7 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
       }
 
       val displayCandidates = candidates
+        ?.let { if (epsilons) it.map(String::removeEpsilon).distinct() else it }
         ?.let { if (scenario != REPAIR) it.take(MAX_DISP_RESULTS) else it }
         ?.let { if (caretInGrammar && gpuRepairResults == null) it.map { it.replace("[START]", "START") } else it }
       val postCompletionSummary = TimeSource.Monotonic.markNow().let { postProcTimer -> {
@@ -949,8 +950,7 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
           workHash = workHash,
           keyOf = { it },
           metric = { index ->
-            results.editDistanceAt(index) * 7919 +
-              (originalLength - results.characterLengthAt(index)).absoluteValue
+            results.editDistanceAt(index) * 7919 + (originalLength - results.characterLengthAt(index)).absoluteValue
           },
           customDiff = results::htmlAt,
           reason = scenario.reason,
@@ -960,6 +960,7 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
         val metric = when (scenario) {
           REPAIR -> levAndLenMetric(displayTokens)
           SUFFIX_COMPLETION -> ({ tokens: List<String> -> tokens.size })
+          COMPLETION -> ({ tokens: List<String> -> tokens.size })
           else -> ({ _: List<String> -> 0 })
         }
         val originalText = displayTokens.joinToString(" ")
