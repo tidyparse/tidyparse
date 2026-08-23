@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="rust.css">
+  <title>Tidyparse Rust Glancer Playground</title>
+</head>
+<body>
+  <div id="rust-app">
+    <header class="toolbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">Rs</span>
+        <span class="brand-copy">
+          <strong>Rust Playground</strong>
+          <small>Monaco + Rust Glancer</small>
+        </span>
+        <span id="glancer-mode" class="mode-badge">syntax prototype</span>
+      </div>
+      <div class="toolbar-actions">
+        <button id="reset-source" type="button">Reset</button>
+        <button id="toggle-theme" class="icon-button" type="button" title="Toggle theme" aria-label="Toggle theme">◐</button>
+        <a class="source-link" href="https://github.com/rust-glancer/rust-glancer" target="_blank" rel="noreferrer">Rust Glancer ↗</a>
+        <button id="run-source" class="run-button" type="button" title="Compile and run (Ctrl/⌘+Enter)">
+          <span class="run-icon" aria-hidden="true">▶</span>
+          <span class="run-label">Run</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="editor-pane" aria-label="Rust source editor">
+        <div class="pane-header">
+          <span>src/main.rs</span>
+          <span>Ctrl/⌘+Space to complete · F12 for definition · Ctrl/⌘+Shift+O for symbols · Ctrl/⌘+Enter to run</span>
+        </div>
+        <div id="rust-editor" aria-label="Rust source code"></div>
+      </section>
+
+      <aside class="inspector" aria-label="Rust Glancer analysis">
+        <section>
+          <div class="section-heading">
+            <h2>Analysis</h2>
+            <span id="diagnostic-count" class="count">0</span>
+          </div>
+          <div id="diagnostics" class="diagnostics" aria-live="polite">
+            <p class="empty-state">Rust Glancer is starting…</p>
+          </div>
+        </section>
+
+        <section class="execution-card" aria-label="Rust program execution">
+          <div class="section-heading">
+            <h2>Execution</h2>
+            <span id="execution-status" class="execution-status" data-state="idle">Not run</span>
+          </div>
+          <div id="execution-tabs" class="execution-tabs" role="tablist" aria-label="Execution details">
+            <button id="execution-tab-button-input" type="button" role="tab" data-tab="input"
+              aria-controls="execution-tab-input" aria-selected="true" tabindex="0">Input</button>
+            <button id="execution-tab-button-output" type="button" role="tab" data-tab="output"
+              aria-controls="execution-tab-output" aria-selected="false" tabindex="-1">Output</button>
+            <button id="execution-tab-button-diagnostics" type="button" role="tab" data-tab="diagnostics"
+              aria-controls="execution-tab-diagnostics" aria-selected="false" tabindex="-1">Diagnostics</button>
+          </div>
+          <div class="execution-content">
+            <section id="execution-tab-input" class="execution-tab" role="tabpanel"
+              aria-labelledby="execution-tab-button-input">
+              <label for="program-input">Standard input</label>
+              <textarea id="program-input" placeholder="Optional stdin…" spellcheck="false"></textarea>
+            </section>
+            <section id="execution-tab-output" class="execution-tab is-hidden" role="tabpanel"
+              aria-labelledby="execution-tab-button-output">
+              <div id="execution-output-meta" class="result-meta">Run the program to see its output.</div>
+              <pre id="execution-output" aria-live="polite">No output yet.</pre>
+            </section>
+            <section id="execution-tab-diagnostics" class="execution-tab is-hidden" role="tabpanel"
+              aria-labelledby="execution-tab-button-diagnostics">
+              <div id="execution-diagnostics-meta" class="result-meta">Compiler diagnostics will appear here.</div>
+              <pre id="execution-diagnostics" aria-live="polite">No diagnostics yet.</pre>
+            </section>
+          </div>
+          <p class="execution-credit">
+            Rust 1.91 compilation and execution provided by
+            <a href="https://godbolt.org/" target="_blank" rel="noreferrer">Compiler Explorer</a>.
+          </p>
+        </section>
+
+        <section class="engine-card">
+          <h2>Browser engine</h2>
+          <dl>
+            <div><dt>Backend</dt><dd id="engine-name">Rust Glancer</dd></div>
+            <div><dt>Revision</dt><dd id="engine-revision">loading…</dd></div>
+            <div><dt>Analysis host</dt><dd>Web Worker · Wasm</dd></div>
+          </dl>
+          <div id="engine-capabilities" class="capabilities"></div>
+        </section>
+      </aside>
+    </main>
+
+    <footer class="statusbar">
+      <span id="cursor-position">Ln 1, Col 1</span>
+      <span class="status-spacer"></span>
+      <span id="analysis-summary">Waiting for analysis</span>
+      <span id="glancer-status" class="runtime-status" data-state="loading" role="status" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span class="status-text">Loading Rust Glancer…</span>
+      </span>
+    </footer>
+  </div>
+  <script src="tidyparse-rust.js"></script>
+</body>
+</html>

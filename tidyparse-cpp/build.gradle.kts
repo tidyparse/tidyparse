@@ -157,6 +157,34 @@ val generateCppStatementGrammar = tasks.register<GenerateCppStatementGrammar>(
   outputFile.set(generatedCppStatementGrammarDir.map { it.file("cppcompletion/Cpp14StatementGrammar.generated.kt") })
 }
 
+fun cachedClangdBuildIsComplete(): Boolean = runCatching {
+  val module = clangdArtifactDir.file("clangd.js").asFile
+  val wasm = clangdArtifactDir.file("clangd.wasm.gz").asFile
+  val manifestFile = clangdArtifactDir.file("clangd-manifest.json").asFile
+  val nativeCompiler = clangdWorkDir.file("build-native/bin/clang++").asFile
+  val nativeProfile = clangdWorkDir.file("native-validator-profile.json").asFile
+  val includeRoot = clangdWorkDir.dir("browser-sysroot/include").asFile
+
+  @Suppress("UNCHECKED_CAST")
+  val manifest = JsonSlurper().parse(manifestFile) as Map<String, Any?>
+  check(manifest["artifactVersion"] == clangdArtifactVersion)
+  val artifacts = manifest["artifacts"] as Map<*, *>
+  val javascript = artifacts["clangd.js"] as Map<*, *>
+  val webAssembly = artifacts["clangd.wasm"] as Map<*, *>
+  val nativeValidator = manifest["nativeValidator"] as Map<*, *>
+  val semanticProfile = manifest["semanticProfile"] as Map<*, *>
+  val headers = semanticProfile["headers"] as Map<*, *>
+
+  check(module.isFile && module.length() == (javascript["bytes"] as Number).toLong())
+  check(fileSha256(module) == javascript["sha256"])
+  check(wasm.isFile && wasm.length() == (webAssembly["compressedBytes"] as Number).toLong())
+  check(fileSha256(wasm) == webAssembly["compressedSha256"])
+  check(nativeCompiler.isFile && fileSha256(nativeCompiler) == nativeValidator["compilerSha256"])
+  check(nativeProfile.isFile && fileSha256(nativeProfile) == nativeValidator["profileSha256"])
+  check(includeRoot.isDirectory && directoryTreeSha256(includeRoot) == headers["treeSha256"])
+  true
+}.getOrDefault(false)
+
 val buildClangdWasm = tasks.register<Exec>("buildClangdWasm") {
   group = "build"
   description = "Builds the pinned, self-hosted clangd WebAssembly artifact"
@@ -171,7 +199,7 @@ val buildClangdWasm = tasks.register<Exec>("buildClangdWasm") {
     "python3",
     "-c",
     """
-      import fcntl, hashlib, pathlib, subprocess, sys
+      import fcntl, hashlib, pathlib, shutil, subprocess, sys
       def recipe_digest(root):
           root = pathlib.Path(root)
           digest = hashlib.sha256(b"tidyparse-clangd-recipe-v1\0")
@@ -190,6 +218,19 @@ val buildClangdWasm = tasks.register<Exec>("buildClangdWasm") {
           print("Acquired browser clangd build lock", flush=True)
           if recipe_digest(sys.argv[3]) != sys.argv[4]:
               raise SystemExit("clangd recipe changed before the locked build; rerun Gradle")
+          native_build = pathlib.Path(sys.argv[5]) / "build-native"
+          native_cache = native_build / "CMakeCache.txt"
+          if native_cache.is_file():
+              sdk_entry = next(
+                  (line for line in native_cache.read_text().splitlines()
+                   if line.startswith("CMAKE_OSX_SYSROOT:")),
+                  None,
+              )
+              cached_sdk = pathlib.Path(sdk_entry.partition("=")[2]) if sdk_entry else None
+              if cached_sdk and cached_sdk.is_absolute() and not cached_sdk.exists():
+                  print("Discarding native CMake metadata for missing macOS SDK:", cached_sdk, flush=True)
+                  native_cache.unlink()
+                  shutil.rmtree(native_build / "CMakeFiles", ignore_errors=True)
           result = subprocess.run(["bash", sys.argv[2]])
           if recipe_digest(sys.argv[3]) != sys.argv[4]:
               raise SystemExit("clangd recipe changed during the locked build; refusing its output")
@@ -198,7 +239,8 @@ val buildClangdWasm = tasks.register<Exec>("buildClangdWasm") {
     buildLock,
     buildScript,
     clangdRecipeDir.asFile.absolutePath,
-    clangdRecipeSha256Value
+    clangdRecipeSha256Value,
+    clangdWorkDir.asFile.absolutePath
   )
   environment("ROOT_DIR", clangdWorkDir.asFile.absolutePath)
   environment("OUTPUT_DIR", clangdArtifactDir.asFile.absolutePath)
@@ -216,6 +258,15 @@ val buildClangdWasm = tasks.register<Exec>("buildClangdWasm") {
   outputs.file(clangdWorkDir.file("build-native/bin/clang++"))
   outputs.file(clangdWorkDir.file("native-validator-profile.json"))
   outputs.dir(clangdWorkDir.dir("browser-sysroot/include"))
+
+  // A project split changes the Gradle task identity and loses its execution history even though
+  // this recipe-keyed external build is still complete. Validate and reuse it instead of spending
+  // hours rebuilding LLVM (or tripping over stale host build metadata).
+  onlyIf("the recipe-keyed clangd build is not already complete") {
+    val needsBuild = !cachedClangdBuildIsComplete()
+    if (!needsBuild) logger.lifecycle("Reusing complete browser clangd build at ${clangdStateDir.asFile}")
+    needsBuild
+  }
 
   doFirst {
     check(clangdRecipeDigest(clangdRecipeDir.asFile) == clangdRecipeSha256Value) {
@@ -602,6 +653,38 @@ tasks {
       cppDeployStagingDir.map { it.file("clangd-manifest.json") },
       cppDeployStagingDir.map { it.file("examples/c/cpp_statements.tidy") }
     )
+
+    doLast {
+      val stagingDir = cppDeployStagingDir.get().asFile
+      val requiredFiles = listOf(
+        "cpp.html",
+        "tidyparse-cpp.js",
+        "tidyparse-cpp.js.map",
+        "clangd.js",
+        "clangd.wasm.gz",
+        "clangd-manifest.json",
+        "examples/c/cpp_statements.tidy"
+      )
+      requiredFiles.forEach { relativePath ->
+        val stagedFile = stagingDir.resolve(relativePath)
+        check(stagedFile.isFile && stagedFile.length() > 0) {
+          "C++ deployment is missing required file: $relativePath"
+        }
+      }
+
+      val html = stagingDir.resolve("cpp.html").readText()
+      check("src=\"tidyparse-cpp.js\"" in html && "tidyparse-web.js" !in html) {
+        "Staged cpp.html must load tidyparse-cpp.js"
+      }
+      @Suppress("UNCHECKED_CAST")
+      val manifest = JsonSlurper().parse(stagingDir.resolve("clangd-manifest.json")) as Map<String, Any?>
+      check(manifest["artifactVersion"] == clangdArtifactVersion) {
+        "Staged clangd manifest and C++ bundle use different artifact versions"
+      }
+      check(stagingDir.resolve("tidyparse-cpp.js").readText().contains(clangdArtifactVersion)) {
+        "Staged C++ bundle does not reference the staged clangd artifact version"
+      }
+    }
   }
 
   register<ManagedSiteDeployTask>("deployCpp") {
@@ -612,6 +695,7 @@ tasks {
 
     sourceDirectory.set(cppDeployStagingDir)
     deploymentId.set("cpp")
+    requiredSiteEntrypoints.put("cpp.html", "tidyparse-cpp.js")
     commitMessage.convention(providers.gradleProperty("deployCppMessage"))
     repositoryUrl.convention(
       providers.gradleProperty("deployCppRepoUrl")
@@ -712,6 +796,48 @@ private fun clangdRecipeDigest(root: File): String {
   }
 
   return HexFormat.of().formatHex(recipeDigest.digest())
+}
+
+private fun fileSha256(file: File): String {
+  return HexFormat.of().formatHex(fileSha256Bytes(file))
+}
+
+private fun fileSha256Bytes(file: File): ByteArray {
+  val digest = MessageDigest.getInstance("SHA-256")
+  file.inputStream().buffered().use { input ->
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    while (true) {
+      val read = input.read(buffer)
+      if (read < 0) break
+      digest.update(buffer, 0, read)
+    }
+  }
+  return digest.digest()
+}
+
+private fun directoryTreeSha256(root: File): String {
+  val digest = MessageDigest.getInstance("SHA-256")
+  val rootPath = root.toPath()
+  Files.walk(rootPath).use { paths ->
+    paths.iterator().asSequence()
+      .filter { it != rootPath && (Files.isSymbolicLink(it) || Files.isRegularFile(it)) }
+      .map { path -> rootPath.relativize(path).joinToString("/") to path }
+      .sortedBy { it.first }
+      .forEach { (relativePath, path) ->
+        val isLink = Files.isSymbolicLink(path)
+        val payload = if (isLink) {
+          Files.readSymbolicLink(path).toString().toByteArray()
+        } else {
+          fileSha256Bytes(path.toFile())
+        }
+        digest.update(relativePath.toByteArray())
+        digest.update(0.toByte())
+        digest.update(if (isLink) 'L'.code.toByte() else 'F'.code.toByte())
+        digest.update(0.toByte())
+        digest.update(payload)
+      }
+  }
+  return HexFormat.of().formatHex(digest.digest())
 }
 
 @CacheableTask

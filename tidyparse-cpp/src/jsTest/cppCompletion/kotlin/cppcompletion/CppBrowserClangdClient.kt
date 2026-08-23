@@ -113,6 +113,7 @@ private data class CppBrowserClangdDocument(
 internal class CppBrowserClangdClient {
   private val serial = Mutex()
   private val pending = mutableMapOf<Int, CompletableDeferred<dynamic>>()
+  private val diagnosticWaiters = mutableMapOf<Pair<String, Int>, CompletableDeferred<dynamic>>()
   private var worker: dynamic = null
   private var port: dynamic = null
   private var ready: CompletableDeferred<Unit>? = null
@@ -131,6 +132,19 @@ internal class CppBrowserClangdClient {
     start()
     val document = updateDocument(source)
     queryContext(document.uri, source, line, character, graphLimit, graphDepth)
+  }
+
+  internal suspend fun publishedDiagnostics(source: String): dynamic = serial.withLock {
+    start()
+    val document = updateDocument(source)
+    val response = CompletableDeferred<dynamic>()
+    val key = document.uri to document.version
+    diagnosticWaiters[key] = response
+    try {
+      withTimeout(CPP_BROWSER_CLANGD_TIMEOUT_MILLIS.milliseconds) { response.await() }
+    } finally {
+      diagnosticWaiters.remove(key)
+    }
   }
 
   internal suspend fun semanticResponse(
@@ -336,6 +350,12 @@ internal class CppBrowserClangdClient {
   private fun accept(message: dynamic) {
     val id = (message?.id as? Number)?.toInt()
     val method = message?.method as? String
+    if (method == "textDocument/publishDiagnostics") {
+      val uri = message.params?.uri as? String ?: return
+      val version = (message.params?.version as? Number)?.toInt() ?: return
+      diagnosticWaiters.remove(uri to version)?.complete(message.params)
+      return
+    }
     if (id != null && method != null) {
       val response = js("({ jsonrpc: '2.0' })")
       response.id = message.id
@@ -357,6 +377,8 @@ internal class CppBrowserClangdClient {
     ready?.completeExceptionally(error)
     pending.values.forEach { it.completeExceptionally(error) }
     pending.clear()
+    diagnosticWaiters.values.forEach { it.completeExceptionally(error) }
+    diagnosticWaiters.clear()
   }
 
 }

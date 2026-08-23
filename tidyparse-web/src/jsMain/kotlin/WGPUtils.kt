@@ -50,9 +50,7 @@ val CFG.groupedLeftAdjEncoding: GroupedLeftAdjEncoding by cache {
         val parentWord = A ushr 5
         val parentMask = 1 shl (A and 31)
 
-        val key =
-          (C.toLong() shl 32) or
-              (parentWord.toLong() and 0xffffffffL)
+        val key = (C.toLong() shl 32) or (parentWord.toLong() and 0xffffffffL)
 
         rows[B][key] = (rows[B][key] ?: 0) or parentMask
 
@@ -201,30 +199,31 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   outCnt[r*n + c] = k;
 }""")
 
-// Keeps only packets belonging to a selected (first suffix terminal, length)
-// slice before any packet data is copied back from the GPU.
+// Orders conditioned suffix packets without relying on workgroup scheduling.
+// Every next-token group receives the same number of slots, and its packets
+// are ordered by suffix length and then by the lexical terminal sequence.
 val suffix_group_select by Shader("""
 struct Params {
   maxSamples : u32,
   stride     : u32,
   prefixSize : u32,
-  pairCount  : u32,
-  capacity   : u32
+  groupCount : u32,
+  capacity   : u32,
+  sortCapacity : u32,
+  padding0   : u32,
+  padding1   : u32
 };
 
-@group(0) @binding(0) var<uniform>                 prm     : Params;
-@group(0) @binding(1) var<storage, read>           packets : array<u32>;
-@group(0) @binding(2) var<storage, read>           pairs   : array<u32>; // token, length, group
-@group(0) @binding(3) var<storage, read_write>     counts  : array<atomic<u32>>;
-@group(0) @binding(4) var<storage, read_write>     selected: array<u32>;
+@group(0) @binding(0) var<uniform>             prm         : Params;
+@group(0) @binding(1) var<storage, read>       packets     : array<u32>;
+@group(0) @binding(2) var<storage, read>       lexicalRank : array<u32>;
+@group(0) @binding(3) var<storage, read_write> selected    : array<u32>;
 
 const HEADER_LEN : u32 = ${PKT_HDR_LEN}u;
 const TOKEN_MASK : u32 = ${PACKED_TOKEN_MASK}u;
+const SENTINEL   : u32 = 0xffffffffu;
 
-@compute @workgroup_size(256) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let sample = gid.x;
-  if (sample >= prm.maxSamples) { return; }
-
+fn packetLength(sample: u32) -> u32 {
   let base = sample * prm.stride;
   var length: u32 = 0u;
   loop {
@@ -232,19 +231,85 @@ const TOKEN_MASK : u32 = ${PACKED_TOKEN_MASK}u;
     if (packets[base + HEADER_LEN + length] == 0u) { break; }
     length = length + 1u;
   }
-  if (length <= prm.prefixSize) { return; }
+  return length;
+}
 
-  let terminal = packets[base + HEADER_LEN + prm.prefixSize] & TOKEN_MASK;
-  let suffixLength = length - prm.prefixSize;
-  for (var pair: u32 = 0u; pair < prm.pairCount; pair = pair + 1u) {
-    let offset = pair * 3u;
-    if (pairs[offset] != terminal || pairs[offset + 1u] != suffixLength) { continue; }
-    let group = pairs[offset + 2u];
-    let slot = atomicAdd(&counts[group], 1u);
-    // Interleave groups by rank: one candidate from every viable next token,
-    // then the second from every group, etc. Empty slots redistribute naturally.
-    if (slot < prm.capacity) { selected[slot * arrayLength(&counts) + group] = sample; }
-    return;
+fn tokenLexicalRank(sample: u32, position: u32) -> u32 {
+  let packed = packets[sample * prm.stride + HEADER_LEN + position];
+  let token = packed & TOKEN_MASK;
+  if (token == 0u) { return SENTINEL; }
+  return lexicalRank[token - 1u];
+}
+
+fn comesBefore(left: u32, right: u32) -> bool {
+  if (right == SENTINEL) { return left != SENTINEL; }
+  if (left == SENTINEL) { return false; }
+
+  let leftLength = packetLength(left);
+  let rightLength = packetLength(right);
+  let leftValid = leftLength > prm.prefixSize;
+  let rightValid = rightLength > prm.prefixSize;
+  if (leftValid != rightValid) { return leftValid; }
+  if (!leftValid) { return left < right; }
+
+  let leftSuffixLength = leftLength - prm.prefixSize;
+  let rightSuffixLength = rightLength - prm.prefixSize;
+  if (leftSuffixLength != rightSuffixLength) { return leftSuffixLength < rightSuffixLength; }
+
+  var position = prm.prefixSize;
+  while (position < leftLength) {
+    let leftToken = tokenLexicalRank(left, position);
+    let rightToken = tokenLexicalRank(right, position);
+    if (leftToken != rightToken) { return leftToken < rightToken; }
+    position = position + 1u;
+  }
+  return left < right;
+}
+
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let group = gid.x;
+  if (group >= prm.groupCount || prm.groupCount == 0u) { return; }
+
+  let perGroup = prm.maxSamples / prm.groupCount;
+  let available = min(prm.capacity, perGroup);
+  for (var slot = 0u; slot < prm.sortCapacity; slot = slot + 1u) {
+    selected[slot * prm.groupCount + group] = SENTINEL;
+  }
+
+  // suffix_enum_words_wor assigns sid % groupCount to this group and emits a
+  // dense localSid prefix. Its first rootCount local IDs contain rank zero for
+  // every planned nonempty suffix length, so deterministic prefix selection
+  // retains those representatives before considering later samples.
+  for (var slot = 0u; slot < available; slot = slot + 1u) {
+    selected[slot * prm.groupCount + group] = slot * prm.groupCount + group;
+  }
+
+  // A group owns one strided selected[] column. A single invocation runs a
+  // bitonic network over its small power-of-two column without atomics, so
+  // scheduling cannot perturb ordering.
+  var width = 2u;
+  while (width <= prm.sortCapacity) {
+    var stride = width >> 1u;
+    while (stride > 0u) {
+      for (var leftSlot = 0u; leftSlot < prm.sortCapacity; leftSlot = leftSlot + 1u) {
+        let rightSlot = leftSlot ^ stride;
+        if (rightSlot > leftSlot) {
+          let leftOffset = leftSlot * prm.groupCount + group;
+          let rightOffset = rightSlot * prm.groupCount + group;
+          let left = selected[leftOffset];
+          let right = selected[rightOffset];
+          let ascending = (leftSlot & width) == 0u;
+          var swap = comesBefore(left, right);
+          if (ascending) { swap = comesBefore(right, left); }
+          if (swap) {
+            selected[leftOffset] = right;
+            selected[rightOffset] = left;
+          }
+        }
+      }
+      stride = stride >> 1u;
+    }
+    width = width << 1u;
   }
 }""")
 
@@ -254,25 +319,33 @@ private suspend fun selectSuffixPackets(
   stride: Int,
   sampleCount: Int,
   batch: SuffixBatch,
+  rootCounts: IntArray,
   limit: Int
 ): IntersectionResults {
   val terminals = batch.slices.map { it.terminal }.distinct()
   if (terminals.isEmpty() || sampleCount == 0) return IntersectionResults.EMPTY
-  val groupOf = terminals.withIndex().associate { it.value to it.index }
-  val pairs = batch.slices.flatMap { slice ->
-    listOf(cfg.tmMap.getValue(slice.terminal) + 1, slice.length, groupOf.getValue(slice.terminal))
-  }.toIntArray()
-  val capacity = minOf(sampleCount, (limit * 8).coerceAtLeast(limit))
+  require(rootCounts.size == terminals.size)
+  val lexicalRanks = IntArray(cfg.tmLst.size)
+  cfg.tmLst.indices.sortedBy(cfg.tmLst::get).forEachIndexed { rank, terminal ->
+    lexicalRanks[terminal] = rank
+  }
+  val perGroup = sampleCount / terminals.size
+  val capacity = minOf(perGroup, (limit * 8).coerceAtLeast(limit))
+  require(rootCounts.all { it <= minOf(capacity, perGroup) }) {
+    "Conditioned suffix budget must retain every planned length root"
+  }
+  var sortCapacity = 1
+  while (sortCapacity < capacity) sortCapacity = sortCapacity shl 1
   val selectedCount = terminals.size * capacity
-  val params = intArrayOf(sampleCount, stride, batch.prefix.size, batch.slices.size, capacity)
-    .toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
-  val pairBuf = pairs.toGPUBuffer(STCPSD)
-  val countBuf = IntArray(terminals.size).toGPUBuffer(STCPSD)
-  val selectedBuf = IntArray(selectedCount) { -1 }.toGPUBuffer(STCPSD)
-
-  suffix_group_select(params, packets, pairBuf, countBuf, selectedBuf)(
-    (sampleCount + 255) / 256
+  val params = intArrayOf(
+    sampleCount, stride, batch.prefix.size, terminals.size,
+    capacity, sortCapacity, 0, 0
   )
+    .toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
+  val lexicalRankBuf = lexicalRanks.toGPUBuffer(STCPSD)
+  val selectedBuf = IntArray(terminals.size * sortCapacity) { -1 }.toGPUBuffer(STCPSD)
+
+  suffix_group_select(params, packets, lexicalRankBuf, selectedBuf)(terminals.size)
 
   val gatherParams = intArrayOf(sampleCount, selectedCount, stride, DISPATCH_GROUP_SIZE_X)
     .toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
@@ -280,7 +353,7 @@ private suspend fun selectSuffixPackets(
   gather_top_k(gatherParams, packets, selectedBuf, compact)(selectedCount)
   val decoded = decodePackets(compact.readJSIntArray(), cfg, stride, selectedCount)
 
-  listOf(params, pairBuf, countBuf, selectedBuf, gatherParams, compact).forEach(GPUBuffer::destroy)
+  listOf(params, lexicalRankBuf, selectedBuf, gatherParams, compact).forEach(GPUBuffer::destroy)
   return decoded
 }
 
@@ -387,7 +460,10 @@ private suspend fun CFG.suffixIntersectionPipeline(
   val pairRoots = mutableListOf<Int>()
   val groupOffsets = mutableListOf(0)
   groups.forEach { group ->
-    rootLengths.indices.filterTo(pairRoots) { root -> rootLengths[root] in group.lengths }
+    rootLengths.indices
+      .filter { root -> rootLengths[root] in group.lengths }
+      .sortedBy(rootLengths::get)
+      .forEach(pairRoots::add)
     groupOffsets += pairRoots.size
   }
   require(groups.isNotEmpty() && groupOffsets.zipWithNext().all { (a, b) -> a < b })
@@ -426,7 +502,8 @@ private suspend fun CFG.suffixIntersectionPipeline(
   log("Conditioned suffix sampling: ${groups.size} groups, lanes=$sampleCount, maxRepairLen=$maxRepairLen")
 
   val decodeStarted = TimeSource.Monotonic.markNow()
-  val result = selectSuffixPackets(packets, this, maxRepairLen, sampleCount, batch, limit)
+  val rootCounts = IntArray(groups.size) { group -> groupOffsets[group + 1] - groupOffsets[group] }
+  val result = selectSuffixPackets(packets, this, maxRepairLen, sampleCount, batch, rootCounts, limit)
   timingTrace.mark("decode", decodeStarted)
   destroyAll(
     packets, suffixSizes, idxUniBuf, cdfBuf,

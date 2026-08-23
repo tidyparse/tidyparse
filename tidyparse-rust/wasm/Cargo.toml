@@ -1,0 +1,23 @@
+[package]
+name = "tidyparse-rust-glancer"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rg_analysis = { git = "https://github.com/rust-glancer/rust-glancer.git", rev = "7c68f1afb5ace31026013dee3a75a8ea4cf1684f" }
+rg_parse = { git = "https://github.com/rust-glancer/rust-glancer.git", rev = "7c68f1afb5ace31026013dee3a75a8ea4cf1684f" }
+rg_syntax = { git = "https://github.com/rust-glancer/rust-glancer.git", rev = "7c68f1afb5ace31026013dee3a75a8ea4cf1684f" }
+rg_text = { git = "https://github.com/rust-glancer/rust-glancer.git", rev = "7c68f1afb5ace31026013dee3a75a8ea4cf1684f" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

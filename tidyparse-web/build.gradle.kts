@@ -529,6 +529,7 @@ window.__tidyparseJcefSend = __tidyparseJcefSend;
 
     sourceDirectory.set(webDeployStagingDir)
     deploymentId.set("web")
+    requiredSiteEntrypoints.put("cpp.html", "tidyparse-cpp.js")
     commitMessage.convention(providers.gradleProperty("deployWebMessage"))
     repositoryUrl.convention(providers.gradleProperty("deployWebRepoUrl").orElse("https://github.com/tidyparse/tidyparse.github.io.git"))
     pushUrl.convention(providers.gradleProperty("deployWebPushUrl").orElse("git@github.com:tidyparse/tidyparse.github.io.git"))

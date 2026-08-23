@@ -1,0 +1,7 @@
+/wasm/target/
+
+/target
+/latex/*
+!/latex/ferroxidase.tex
+*.lock
+/out/

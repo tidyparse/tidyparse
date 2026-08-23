@@ -3,6 +3,7 @@ package buildlogic
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.provider.MapProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputDirectory
@@ -38,6 +39,10 @@ abstract class ManagedSiteDeployTask : DefaultTask() {
   @get:Input
   abstract val deploymentId: Property<String>
 
+  /** Site-relative HTML entrypoints and the site-relative JavaScript bundles they must load. */
+  @get:Input
+  abstract val requiredSiteEntrypoints: MapProperty<String, String>
+
   @Option(option = "msg", description = "Commit message for the GitHub Pages deployment.")
   fun setCommitMessageOption(message: String) = commitMessage.set(message)
 
@@ -71,7 +76,9 @@ abstract class ManagedSiteDeployTask : DefaultTask() {
     val deployBranch = branch.get()
 
     ensureCheckout(repoDir, repoUrl, repoPushUrl, deployBranch)
+    validateSiteEntrypoints(repoDir, sourceDir, previouslyOwnedFiles(repoDir).toSet())
     syncOwnedFiles(sourceDir, repoDir)
+    validateSiteEntrypoints(repoDir)
 
     val status = git(repoDir, "status", "--porcelain")
     if (status.isBlank()) {
@@ -161,10 +168,8 @@ abstract class ManagedSiteDeployTask : DefaultTask() {
     git(repoDir, "push", "origin", "HEAD:$deployBranch")
 
   private fun syncOwnedFiles(sourceDir: File, repoDir: File) {
-    val id = deploymentId.get().also {
-      require(it.matches(Regex("[a-zA-Z0-9._-]+"))) { "Invalid deployment ID: $it" }
-    }
-    val manifest = repoDir.resolve(".tidyparse-deploy-$id.manifest")
+    val id = deploymentId.get()
+    val manifest = deploymentManifest(repoDir)
     val ownedFiles = sourceDir.walkTopDown()
       .filter(File::isFile)
       .map { it.relativeTo(sourceDir).invariantSeparatorsPath }
@@ -173,10 +178,7 @@ abstract class ManagedSiteDeployTask : DefaultTask() {
     val ownedFileSet = ownedFiles.toSet()
     val ownedTargets = ownedFiles.associateWith { managedFile(repoDir, it) }
 
-    val previousFiles = manifest.takeIf(File::isFile)
-      ?.readLines()
-      .orEmpty()
-      .filter(String::isNotBlank)
+    val previousFiles = previouslyOwnedFiles(repoDir)
     val previousTargets = previousFiles.associateWith { managedFile(repoDir, it) }
 
     val otherOwners = repoDir.listFiles()
@@ -223,6 +225,57 @@ abstract class ManagedSiteDeployTask : DefaultTask() {
       "Deployment '$id' did not copy every managed source file into the checkout"
     }
     manifest.writeText(ownedFiles.joinToString(separator = "\n", postfix = "\n"))
+  }
+
+  private fun deploymentManifest(repoDir: File): File {
+    val id = deploymentId.get().also {
+      require(it.matches(Regex("[a-zA-Z0-9._-]+"))) { "Invalid deployment ID: $it" }
+    }
+    return repoDir.resolve(".tidyparse-deploy-$id.manifest")
+  }
+
+  private fun previouslyOwnedFiles(repoDir: File): List<String> =
+    deploymentManifest(repoDir).takeIf(File::isFile)
+      ?.readLines()
+      .orEmpty()
+      .filter(String::isNotBlank)
+      .onEach { managedFile(repoDir, it) }
+
+  /** Validates the site that would result from deleting old ownership, then overlaying [sourceDir]. */
+  private fun validateSiteEntrypoints(
+    repoDir: File,
+    sourceDir: File? = null,
+    previouslyOwned: Set<String> = emptySet()
+  ) {
+    fun prospectiveFile(relativePath: String): File {
+      val sourceFile = sourceDir?.let { managedFile(it, relativePath) }
+      return when {
+        sourceFile?.isFile == true -> sourceFile
+        relativePath in previouslyOwned -> checkNotNull(sourceFile) {
+          "Prospective deletion checks require a deployment source directory"
+        }
+        else -> managedFile(repoDir, relativePath)
+      }
+    }
+
+    requiredSiteEntrypoints.get().forEach { (htmlPath, bundlePath) ->
+      val html = prospectiveFile(htmlPath)
+      val bundle = prospectiveFile(bundlePath)
+      if (!html.isFile) {
+        throw GradleException("Required site entrypoint is missing: $htmlPath")
+      }
+      if (!bundle.isFile || bundle.length() == 0L) {
+        throw GradleException("Site entrypoint '$htmlPath' requires missing or empty bundle: $bundlePath")
+      }
+
+      val expectedScript = Regex(
+        """<script\b[^>]*\bsrc\s*=\s*["']${Regex.escape(bundlePath)}["']""",
+        RegexOption.IGNORE_CASE
+      )
+      if (!expectedScript.containsMatchIn(html.readText())) {
+        throw GradleException("Site entrypoint '$htmlPath' does not load its required bundle '$bundlePath'.")
+      }
+    }
   }
 
   private fun managedFile(repoDir: File, relativePath: String): File {
