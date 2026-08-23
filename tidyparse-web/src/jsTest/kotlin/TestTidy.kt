@@ -243,25 +243,49 @@ class TestTidy {
   }
 
   @Test
-  fun twoVariablesSuffixBatchStopsAfterThreeLengthsPerNextToken() {
+  fun twoVariablesSuffixBatchUsesTheBoundedFirstTerminalSpectrum() {
     val batch = assertNotNull(twoVariablesCompletionCfg.gpuSuffixBatch(
       twoVariablesPrefix,
       terminalCompletion = null,
       limit = 35
     ))
     val lengthsByTerminal = batch.slices.groupBy({ it.terminal }, { it.length })
+    val maximumHorizon = minOf(
+      DEFAULT_COMPLETION_SPECTRUM_BOUND,
+      MAX_WORD_LEN - 2 - twoVariablesPrefix.size
+    )
+    val expected = twoVariablesCompletionCfg.boundedSuffixLengthsByFirstTerminal(
+      twoVariablesPrefix,
+      countPerTerminal = GPU_SUFFIX_LENGTHS_PER_TERMINAL,
+      maxLength = maximumHorizon
+    )
 
     assertEquals(16, batch.prefix.size)
-    assertEquals(listOf(7, 11, 15), lengthsByTerminal["("])
-    assertTrue(lengthsByTerminal.values.all { it.size <= 3 })
-    assertEquals(15, batch.slices.maxOf { it.length })
-    assertEquals(9, batch.slices.size)
+    assertEquals(expected, lengthsByTerminal)
+    assertEquals(listOf(7, 11, 15, 19, 23), lengthsByTerminal["("])
+    assertTrue(lengthsByTerminal.values.all { it.size <= GPU_SUFFIX_LENGTHS_PER_TERMINAL })
+    assertEquals(23, batch.slices.maxOf { it.length })
     assertTrue(batch.prefix.size + batch.slices.maxOf { it.length } < MAX_WORD_LEN - 1)
   }
 
   @Test
   fun suffixBatchDropsSlicesAtTheGpuWordBoundary() {
-    val prefix = List(124) { "p$it" }
+    val prefix = List(124) { "p" }
+    val productions = linkedSetOf<Production>(
+      "P" to listOf("p"),
+      "A" to listOf("a"),
+      "X" to listOf("x"),
+      "XX" to listOf("X", "X"),
+      "TAIL" to listOf("a"),
+      "TAIL" to listOf("A", "X"),
+      "TAIL" to listOf("A", "XX")
+    )
+    for (remaining in 1..123) {
+      val rhs = if (remaining == 1) "TAIL" else "P${remaining - 1}"
+      productions += "P$remaining" to listOf("P", rhs)
+    }
+    productions += START_SYMBOL to listOf("P", "P123")
+    val completionCfg = productions.freeze()
     val terminalCompletion = TerminalCompletionPlan(
       originalPrefix = "a",
       expandedPrefix = "a",
@@ -276,7 +300,7 @@ class TestTidy {
         )
       )
     )
-    val batch = assertNotNull("START -> a".parseCFG().gpuSuffixBatch(
+    val batch = assertNotNull(completionCfg.gpuSuffixBatch(
       tokens = prefix + "a",
       terminalCompletion = terminalCompletion,
       limit = 35
@@ -293,8 +317,41 @@ class TestTidy {
       )
     ))
     assertNull(
-      "START -> a".parseCFG().gpuSuffixBatch(prefix + "a", unsupported, limit = 35),
+      completionCfg.gpuSuffixBatch(prefix + "a", unsupported, limit = 35),
       "A shortest continuation beyond the GPU bound must not be silently omitted"
+    )
+  }
+
+  @Test
+  fun suffixBatchDoesNotSilentlyDropANextTokenBeyondTheSpectrumBound() {
+    val completionCfg = buildString {
+      appendLine("START -> P A")
+      appendLine("START -> P BROOT")
+      appendLine("P -> p")
+      appendLine("A -> a")
+      appendLine("B -> b")
+      appendLine("X -> x")
+      appendLine("BROOT -> B T32")
+      for (length in 32 downTo 2)
+        appendLine("T$length -> X T${length - 1}")
+      appendLine("T1 -> x")
+    }.trimEnd().parseCNF()
+    val prefix = listOf("p")
+
+    val analysis = completionCfg.boundedSuffixLengthAnalysis(
+      prefix,
+      countPerTerminal = GPU_SUFFIX_LENGTHS_PER_TERMINAL,
+      maxLength = DEFAULT_COMPLETION_SPECTRUM_BOUND
+    )
+    assertEquals(setOf("a", "b"), analysis.nextTerminals)
+    assertEquals(setOf("b"), analysis.terminalsBeyondBound)
+    assertEquals(
+      mapOf("a" to listOf(1)),
+      analysis.lengthsByFirstTerminal
+    )
+    assertNull(
+      completionCfg.gpuSuffixBatch(prefix, terminalCompletion = null, limit = MAX_DISP_RESULTS),
+      "A bounded spectrum miss must fall back instead of removing a viable next-token group"
     )
   }
 
@@ -311,10 +368,10 @@ class TestTidy {
     ))
     val words = assertNotNull(
       twoVariablesCompletionCfg.gpuDiverseSuffixes(batch, limit),
-      "The horizon-15 two_variables batch must remain on the GPU"
+      "The bounded two_variables batch must remain on the GPU"
     )
 
-    assertEquals(15, batch.slices.maxOf { it.length })
+    assertEquals(23, batch.slices.maxOf { it.length })
     assertEquals(limit, words.size)
     assertEquals(
       batch.slices.mapTo(linkedSetOf()) { it.terminal },

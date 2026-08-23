@@ -202,30 +202,30 @@ private fun maximumGpuSuffixHorizon(prefixSize: Int): Int =
   (MAX_WORD_LEN - 2 - prefixSize).coerceAtLeast(0)
 
 /**
- * Up to the first three valid lengths for every viable next token. The longest
- * retained length is the horizon of the single porous line sent to WebGPU.
+ * Up to [GPU_SUFFIX_LENGTHS_PER_TERMINAL] exact lengths within the shared
+ * bounded spectrum for every viable next token. The longest retained length
+ * is the horizon of the single porous line sent to WebGPU.
  */
 internal fun CFG.gpuSuffixSlices(prefix: List<Σᐩ>, limit: Int = MAX_DISP_RESULTS): List<SuffixSlice>? {
   if (limit <= 0) return emptyList()
-  val minima = minimumSuffixLengthsByFirstTerminal(prefix).entries.take(limit)
-  if (minima.isEmpty()) return emptyList()
-  val maximumHorizon = maximumGpuSuffixHorizon(prefix.size)
-  // Silently dropping a group here would violate next-token completeness.
-  // Null means that this prefix cannot be represented by the bounded GPU word.
-  if (minima.any { (_, minimum) -> minimum > maximumHorizon }) return null
+  val maximumHorizon = minOf(
+    DEFAULT_COMPLETION_SPECTRUM_BOUND,
+    maximumGpuSuffixHorizon(prefix.size)
+  )
+  val analysis = boundedSuffixLengthAnalysis(
+    prefix,
+    countPerTerminal = GPU_SUFFIX_LENGTHS_PER_TERMINAL,
+    maxLength = maximumHorizon
+  )
+  val selectedTerminals = analysis.nextTerminals.take(limit)
+  // Silently dropping a viable group beyond the bounded spectrum would violate
+  // next-token completeness. Null selects the exact unbounded CPU fallback.
+  if (selectedTerminals.any { it !in analysis.lengthsByFirstTerminal }) return null
 
-  return fairMerge(
-    minima.asSequence().map { (terminal, minimum) ->
-      sequence {
-        yield(SuffixSlice(terminal, minimum))
-        yieldAll(
-          completionIndex.after(prefix + terminal).suffixLengths(includeEmpty = true)
-            .map { SuffixSlice(terminal, it + 1) }
-            .dropWhile { it.length <= minimum }
-        )
-      }.takeWhile { it.length <= maximumHorizon }.take(GPU_SUFFIX_LENGTHS_PER_TERMINAL)
-    }
-  ).toList()
+  return fairMerge(selectedTerminals.asSequence().map { terminal ->
+    analysis.lengthsByFirstTerminal.getValue(terminal).asSequence()
+      .map { SuffixSlice(terminal, it) }
+  }).toList()
 }
 
 internal fun CFG.gpuSuffixBatch(
@@ -251,18 +251,28 @@ internal fun CFG.gpuSuffixBatch(
   }
 
   val prefix = tokens.dropLast(1)
-  val maximumHorizon = maximumGpuSuffixHorizon(prefix.size)
+  val maximumHorizon = minOf(
+    DEFAULT_COMPLETION_SPECTRUM_BOUND,
+    maximumGpuSuffixHorizon(prefix.size)
+  )
   val branchMinima = branches.map { branch ->
     branch to (branch.tokens.size - prefix.size + (branch.suffixLengths.firstOrNull() ?: return null))
   }
   if (branchMinima.any { (_, minimum) -> minimum > maximumHorizon }) return null
-  val slices = fairMerge(branchMinima.asSequence().map { (branch, _) ->
-    val stemLength = branch.tokens.size - prefix.size
-    branch.suffixLengths
-      .map { SuffixSlice(branch.terminal, stemLength + it) }
-      .takeWhile { it.length <= maximumHorizon }
+  // Ask for one extra bounded length because a generated-stub interpretation
+  // may intentionally exclude the otherwise complete one-token word.
+  val analysis = boundedSuffixLengthAnalysis(
+    prefix,
+    countPerTerminal = GPU_SUFFIX_LENGTHS_PER_TERMINAL + 1,
+    maxLength = maximumHorizon
+  )
+  val slices = fairMerge(branchMinima.asSequence().map { (branch, minimum) ->
+    analysis.lengthsByFirstTerminal[branch.terminal].orEmpty().asSequence()
+      .dropWhile { it < minimum }
       .take(GPU_SUFFIX_LENGTHS_PER_TERMINAL)
+      .map { SuffixSlice(branch.terminal, it) }
   }).toList()
+  if (branchMinima.any { (branch, _) -> slices.none { it.terminal == branch.terminal } }) return null
   return SuffixBatch(prefix, slices)
 }
 

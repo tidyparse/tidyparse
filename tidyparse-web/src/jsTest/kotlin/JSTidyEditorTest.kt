@@ -1082,8 +1082,12 @@ class JSTidyEditorTest {
   @Test
   fun ambiguousTerminalCompletionProducesOneSharedSuffixBatch() {
     val cfg = """
-      START -> begin Table x | begin Target y z
-    """.trimIndent().parseCFG().noEpsilon
+      START -> begin Table a
+      START -> begin Table a b c
+      START -> begin Table a b c d e
+      START -> begin Target x y
+      START -> begin Target x y z w
+    """.trimIndent().parseCFG().noEpsilonOrNonterminalStubs
     val tokens = listOf("begin", "T")
     val completion = assertNotNull(cfg.terminalCompletionPlan(tokens))
 
@@ -1092,7 +1096,10 @@ class JSTidyEditorTest {
         prefix = listOf("begin"),
         slices = listOf(
           SuffixSlice("Table", 2),
-          SuffixSlice("Target", 3)
+          SuffixSlice("Target", 3),
+          SuffixSlice("Table", 4),
+          SuffixSlice("Target", 5),
+          SuffixSlice("Table", 6)
         )
       ),
       cfg.gpuSuffixBatch(tokens, completion, limit = MAX_DISP_RESULTS)
