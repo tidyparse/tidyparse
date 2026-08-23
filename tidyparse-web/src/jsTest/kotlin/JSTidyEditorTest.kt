@@ -58,6 +58,7 @@ class JSTidyEditorTest {
       insertion: String,
       offset: Int
     ): Boolean = softPreviewAvailable
+    override fun currentDisplayResultLimit(): Int = MAX_DISP_RESULTS
     override fun readDisplayText(): String = output.textContent ?: ""
     override fun writeDisplayText(s: String) {
       writes++
@@ -180,6 +181,12 @@ class JSTidyEditorTest {
     assertTrue(event.prevented as Boolean)
   }
 
+  private fun RecordingEditor.forwardRows(): List<String> =
+    readDisplayText().lineSequence()
+      .map { it.substringAfter(delimiter = ".) ", missingDelimiterValue = "") }
+      .filter(String::isNotEmpty)
+      .toList()
+
   @Test
   fun trailingWhitespaceDoesNotRestartTokenWork() {
     val (editor, input) = editorFor("a")
@@ -301,7 +308,7 @@ class JSTidyEditorTest {
       completion.branches.map { it.terminal }
     )
     assertTrue(completion.branches.all { it.suffixLengths.firstOrNull() != null })
-    assertEquals(MAX_TERMINAL_COMPLETION_BRANCHES, completion.branches.size)
+    assertTrue(completion.branches.size <= MAX_TERMINAL_COMPLETION_BRANCHES)
   }
 
   @Test
@@ -364,10 +371,13 @@ class JSTidyEditorTest {
   }
 
   @Test
-  fun ordinaryPartialTerminalStillRequiresAContinuation() {
+  fun ordinaryPartialTerminalCanFinishTheInput() {
     val cfg = "START -> done".parseCFG().noEpsilon
 
-    assertNull(cfg.terminalCompletionPlan(listOf("do")))
+    val completion = assertNotNull(cfg.terminalCompletionPlan(listOf("do")))
+
+    assertEquals("done", completion.expandedPrefix)
+    assertEquals(listOf(0), completion.branches.single().suffixLengths.toList())
   }
 
   @Test
@@ -398,7 +408,7 @@ class JSTidyEditorTest {
   }
 
   @Test
-  fun branchLimitRetainsExactTerminalAndShortestStubInterpretation() = runTest {
+  fun branchBudgetRetainsAllViableTerminalInterpretations() = runTest {
     val cfg = """
       START -> S ;
       S -> ID :: ID < FLOATONE
@@ -426,11 +436,7 @@ class JSTidyEditorTest {
       ),
       completion.branches.map { it.terminal }
     )
-    assertTrue(
-      completion.branches.indexOfFirst {
-        it.terminal == "<POSTFIX_OPERATOR>"
-      } >= MAX_TERMINAL_COMPLETION_BRANCHES
-    )
+    assertTrue(completion.branches.size <= MAX_TERMINAL_COMPLETION_BRANCHES)
     assertEquals(
       listOf(2),
       completion.branches
@@ -450,9 +456,10 @@ class JSTidyEditorTest {
     assertEquals(typedText, input.value)
     assertEquals(typedCaret, input.selectionStart)
     assertNull(editor.pendingTerminalCompletionInsertion)
-    val display = editor.output.textContent ?: ""
-    assertContains(display, "ID :: ID < FLOATONE ;")
-    assertContains(display, "ID :: ID <POSTFIX_OPERATOR> ;")
+    val rows = editor.forwardRows()
+    assertEquals(4, rows.size)
+    assertContains(rows, "ID :: ID < FLOATONE ;")
+    assertContains(rows, "ID :: ID <POSTFIX_OPERATOR> ;")
   }
 
   @Test
@@ -483,13 +490,20 @@ class JSTidyEditorTest {
 
     val displayText = editor.output.textContent ?: ""
     assertTrue(displayText.startsWith("-> Forward completion"))
-    val results = displayText.lineSequence()
-      .map { it.substringAfter(delimiter = ".) ", missingDelimiterValue = "") }
-      .filter { it.isNotEmpty() }.toList()
+    val results = editor.forwardRows()
     assertEquals(MAX_DISP_RESULTS, results.size)
+    assertTrue(results.all { it.startsWith("while ( ") })
+
+    val completion = assertNotNull(
+      editor.cfg.terminalCompletionPlan(listOf("while", "(", "<"))
+    )
+    val fullResults = fairMerge(
+      completion.enumerationBranches(MAX_DISP_RESULTS)
+        .map { editor.cfg.visibleCompletionCFG.enumTerminalSuffixes(it, MAX_DISP_RESULTS) }
+    ).distinct().take(MAX_DISP_RESULTS).toList()
 
     val viableStubs = listOf("<BEXP>", "<EXP>", "<LIT>")
-    val resultStubs = results.map { result ->
+    val resultStubs = fullResults.map { result ->
       assertNotNull(
         viableStubs.singleOrNull { result.startsWith("while ( $it ") },
         "Unexpected terminal-completion branch: $result"
@@ -529,6 +543,26 @@ class JSTidyEditorTest {
   }
 
   @Test
+  fun plWhileForwardRowsStayStableWhenSoftWhileCompletionIsCommitted() = runTest {
+    val (editor, input) = editorFor("w")
+    editor.cfg = plWhileCfg
+
+    editor.handleFreshUserInsertion()
+    assertNotNull(editor.runningJob).join()
+
+    assertEquals("hile ( ", editor.pendingTerminalCompletionInsertion)
+    val previewRows = editor.forwardRows()
+    assertEquals(MAX_DISP_RESULTS, previewRows.size)
+
+    editor.pressTab()
+    assertTrue(input.value.endsWith("\nwhile ( "))
+    editor.handleInput()
+    assertNotNull(editor.runningJob).join()
+
+    assertEquals(previewRows, editor.forwardRows())
+  }
+
+  @Test
   fun plWhileExactClosingParenthesisForcesOpeningBrace() {
     listOf(
       plWhileGrammar.parseCFG(validate = true),
@@ -560,7 +594,7 @@ class JSTidyEditorTest {
 
     assertEquals(typedText, input.value)
     assertEquals(" { ", editor.pendingTerminalCompletionInsertion)
-    assertContains(editor.output.textContent ?: "", "if ( true ) {")
+    assertContains(editor.output.textContent ?: "", "if ... ) {")
 
     editor.pressTab()
     assertTrue(input.value.endsWith("\nif ( true ) { "))
@@ -712,7 +746,7 @@ class JSTidyEditorTest {
 
     assertEquals(typedText, input.value)
     assertEquals("= ", editor.pendingTerminalCompletionInsertion)
-    assertContains(editor.output.textContent ?: "", "while ( true ==")
+    assertContains(editor.output.textContent ?: "", "while ... true ==")
 
     editor.pressTab()
     assertTrue(input.value.endsWith("\nwhile ( true == "))
@@ -928,10 +962,13 @@ class JSTidyEditorTest {
   }
 
   @Test
-  fun epsilonPaddingDoesNotCreateAVisibleCompletion() {
+  fun finalTerminalCompletionDoesNotExposeEpsilonPadding() {
     val cfg = "START -> done".parseCFG()
 
-    assertNull(cfg.terminalCompletionPlan(listOf("do")))
+    val completion = assertNotNull(cfg.terminalCompletionPlan(listOf("do")))
+
+    assertTrue(completion.forcedContinuation.isEmpty())
+    assertEquals(listOf(0), completion.branches.single().suffixLengths.toList())
   }
 
   @Test
@@ -949,12 +986,12 @@ class JSTidyEditorTest {
   }
 
   @Test
-  fun epsilonPaddingCannotFillAVisibleCompletionSlot() {
+  fun finalTerminalAndVisibleContinuationsEnumerateWithoutPadding() {
     val cfg = "START -> done | done x | done y".parseCFG()
     val completion = assertNotNull(cfg.terminalCompletionPlan(listOf("do")))
 
     assertEquals(
-      setOf("done x", "done y"),
+      setOf("done", "done x", "done y"),
       cfg.enumTerminalSuffixes(completion.branches.single()).toSet()
     )
   }
@@ -987,21 +1024,95 @@ class JSTidyEditorTest {
 
   @Test
   fun fairMergeBalancesAndFillsDisplayCapacity() {
+    val pulls = IntArray(3)
     val merged = fairMerge(listOf(
-      generateSequence(0) { it + 1 }.map { "a$it" },
-      generateSequence(0) { it + 1 }.map { "b$it" },
-      generateSequence(0) { it + 1 }.map { "c$it" }
-    )).take(29).toList()
+      generateSequence(0) { it + 1 }.onEach { pulls[0]++ }.map { "a$it" },
+      generateSequence(0) { it + 1 }.onEach { pulls[1]++ }.map { "b$it" },
+      generateSequence(0) { it + 1 }.onEach { pulls[2]++ }.map { "c$it" }
+    )).take(MAX_DISP_RESULTS).toList()
 
     assertEquals(10, merged.count { it.startsWith("a") })
     assertEquals(10, merged.count { it.startsWith("b") })
     assertEquals(9, merged.count { it.startsWith("c") })
+    assertEquals(listOf(10, 10, 9), pulls.toList())
 
     val withExhaustedBranch = fairMerge(listOf(
       sequenceOf("a0"),
       generateSequence(0) { it + 1 }.map { "b$it" }
     )).take(6).toList()
     assertEquals(listOf("a0", "b0", "b1", "b2", "b3", "b4"), withExhaustedBranch)
+  }
+
+  @Test
+  fun suffixSlicePlanningBalancesBranchesAndStopsAtTheRequestedLimit() {
+    val cfg = """
+      START -> P A | P B
+      P -> p
+      A -> a | A X
+      X -> x
+      B -> b | B Y
+      Y -> y
+    """.trimIndent().parseCFG(validate = true).noEpsilonOrNonterminalStubs
+
+    assertEquals(
+      listOf(
+        SuffixSlice("a", 1),
+        SuffixSlice("b", 1),
+        SuffixSlice("a", 2),
+        SuffixSlice("b", 2),
+        SuffixSlice("a", 3)
+      ),
+      cfg.diverseSuffixSlices(listOf("p"), limit = 5)
+    )
+  }
+
+  @Test
+  fun suffixSlicePlanningHasNoFixedLengthHorizon() {
+    val tail = List(40) { "t$it" }
+    val cfg = "START -> p a ${tail.joinToString(" ")}".parseCFG().noEpsilonOrNonterminalStubs
+
+    assertEquals(
+      listOf(SuffixSlice("a", tail.size + 1)),
+      cfg.diverseSuffixSlices(listOf("p"), limit = 1)
+    )
+    assertTrue(cfg.diverseSuffixSlices(listOf("missing"), limit = 1).isEmpty())
+    assertTrue(cfg.diverseSuffixSlices(listOf("p"), limit = 0).isEmpty())
+  }
+
+  @Test
+  fun ambiguousTerminalCompletionProducesOneSharedSuffixBatch() {
+    val cfg = """
+      START -> begin Table x | begin Target y z
+    """.trimIndent().parseCFG().noEpsilon
+    val tokens = listOf("begin", "T")
+    val completion = assertNotNull(cfg.terminalCompletionPlan(tokens))
+
+    assertEquals(
+      SuffixBatch(
+        prefix = listOf("begin"),
+        slices = listOf(
+          SuffixSlice("Table", 2),
+          SuffixSlice("Target", 3)
+        )
+      ),
+      cfg.gpuSuffixBatch(tokens, completion, limit = MAX_DISP_RESULTS)
+    )
+  }
+
+  @Test
+  fun completedSoftTerminalIsRetainedOutsideTheGpuSuffixTemplate() {
+    val cfg = "START -> done".parseCFG().noEpsilon
+    val tokens = listOf("do")
+    val completion = assertNotNull(cfg.terminalCompletionPlan(tokens))
+
+    assertEquals(
+      SuffixBatch(
+        prefix = listOf("done"),
+        slices = emptyList(),
+        completeWords = listOf("done")
+      ),
+      cfg.gpuSuffixBatch(tokens, completion, limit = MAX_DISP_RESULTS)
+    )
   }
 
   @Test
@@ -1400,8 +1511,10 @@ class JSTidyEditorTest {
     assertEquals(typedText, input.value)
     assertEquals("f ( ", editor.pendingTerminalCompletionInsertion)
     val outputText = editor.output.textContent ?: ""
-    assertContains(outputText, "if ( x )")
-    assertContains(outputText, "if ( y )")
+    val rows = editor.forwardRows()
+    assertEquals(2, rows.size)
+    assertContains(rows, "if ( x )")
+    assertContains(rows, "if ( y )")
   }
 
   @Test
@@ -1441,7 +1554,7 @@ class JSTidyEditorTest {
   }
 
   @Test
-  fun ambiguousPartialLimitsFanoutToThreeTerminalBranches() = runTest {
+  fun ambiguousPartialFansOutUpToTheDisplayBudget() = runTest {
     val cfg = """
       START -> begin Table w | begin Tangent x | begin Target y | begin Task z
     """.trimIndent().parseCFG().noEpsilon
@@ -1458,6 +1571,6 @@ class JSTidyEditorTest {
     assertContains(text, "begin Table w")
     assertContains(text, "begin Tangent x")
     assertContains(text, "begin Target y")
-    assertFalse(text.contains("begin Task z"))
+    assertContains(text, "begin Task z")
   }
 }

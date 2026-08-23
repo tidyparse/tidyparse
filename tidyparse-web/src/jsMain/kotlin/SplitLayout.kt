@@ -12,7 +12,7 @@ private const val DEFAULT_INPUT_SHARE = 48.0
 private const val MIN_INPUT_SHARE = 30.0
 private const val MAX_INPUT_SHARE = 75.0
 
-fun initSplitLayout() {
+fun initSplitLayout(onResultLimitChanged: () -> Unit = {}) {
   val content = document.getElementById("content") as? HTMLElement ?: return
   val output = document.getElementById("tidyparse-output") as? HTMLElement ?: return
   if (output.parentNode != content) return
@@ -21,6 +21,15 @@ fun initSplitLayout() {
   val divider = getOrCreateWorkspaceDivider(content, output)
 
   setInputShare(content, content.inputShareFromDataset() ?: DEFAULT_INPUT_SHARE)
+  var resultLimit = displayResultLimit(output)
+
+  fun refreshResultLimit() {
+    val next = displayResultLimit(output)
+    if (next != resultLimit) {
+      resultLimit = next
+      onResultLimitChanged()
+    }
+  }
 
   fun updateFromClientX(clientX: Double) {
     val rect = content.getBoundingClientRect()
@@ -52,7 +61,11 @@ fun initSplitLayout() {
     setInputShare(content, current + if (keyEvent.key == "ArrowRight") delta else -delta)
   })
 
-  window.addEventListener("resize", { refreshCodeMirror() })
+  window.requestAnimationFrame { refreshResultLimit() }
+  window.addEventListener("resize", {
+    refreshCodeMirror()
+    window.requestAnimationFrame { refreshResultLimit() }
+  })
 }
 
 private fun getOrCreateWorkspaceDivider(content: HTMLElement, output: Element): HTMLDivElement {

@@ -17,12 +17,10 @@ import kotlin.time.TimeSource
 
 /**
 TODO (soon):
- - Look into constrained inference with llama.cpp / BERT
  - Rank results by more sensible metric
  - Improve support for incrementalization
  *//*
 TODO (maybe):
- - Add Ctrl+Space code completion popup
  - Auto-alignment of the productions
  - Calculate finger-travel distance
  - Collect telemetry for a user study
@@ -131,7 +129,7 @@ private fun hasCmEditor(): Boolean = cmEditor != null && cmEditor != js("undefin
 suspend fun defaultSetup() {
   log("Starting Tidyparse/CFG")
   initTidyCodeMirror()
-  initSplitLayout()
+  initSplitLayout { jsEditor.run { continuation { handleInput() } } }
   inputField.scrollTop = inputField.scrollHeight.toDouble();
 
   if (!fetchUrlExample()) fetchSelectedExample()
@@ -502,4 +500,30 @@ suspend fun fetchExample(examplePath: String, syncSelector: Boolean, updateHash:
   if (response.ok) { applyExampleText(response.text().await()); return true }
   else console.error("Failed to load file '$examplePath': ${response.status}")
   return false
+}
+
+internal const val MIN_DISPLAY_RESULTS = 28
+internal const val DISPLAY_HEADER_LINES = 2
+internal const val DISPLAY_SUMMARY_LINES = 7
+private const val DISPLAY_NON_RESULT_LINES = DISPLAY_HEADER_LINES + DISPLAY_SUMMARY_LINES
+
+internal fun displayResultLimit(availableHeightPx: Double, lineHeightPx: Double): Int =
+  if (availableHeightPx.isFinite() && lineHeightPx.isFinite() && lineHeightPx > 0.0)
+    ((availableHeightPx / lineHeightPx).toInt() - DISPLAY_NON_RESULT_LINES)
+      .coerceAtLeast(MIN_DISPLAY_RESULTS)
+  else MIN_DISPLAY_RESULTS
+
+internal fun displayResultLimit(output: HTMLElement): Int {
+  val style = window.getComputedStyle(output)
+  fun pixels(property: String): Double? =
+    style.getPropertyValue(property).removeSuffix("px").trim().toDoubleOrNull()
+
+  val lineHeight = pixels("line-height") ?: pixels("font-size")?.times(1.2) ?: 0.0
+  val panelHeight = output.clientHeight.toDouble()
+  val viewportHeight = window.innerHeight.toDouble() - output.getBoundingClientRect().top
+  if (panelHeight <= 0.0 || viewportHeight <= 0.0) return MIN_DISPLAY_RESULTS
+  val visibleHeight = minOf(panelHeight, viewportHeight)
+  val contentHeight = visibleHeight -
+          (pixels("padding-top") ?: 0.0) - (pixels("padding-bottom") ?: 0.0)
+  return displayResultLimit(contentHeight, lineHeight)
 }

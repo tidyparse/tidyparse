@@ -9,10 +9,63 @@ import kotlinx.coroutines.*
 import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
 import kotlin.math.absoluteValue
+import kotlin.time.Duration
+import kotlin.time.TimeMark
 import kotlin.time.TimeSource
+
+private const val COMPLETION_DATA_ATTRIBUTE = "data-completion"
+
+private data class SuffixCpuTiming(val step: String, val elapsed: Duration)
+
+private fun <T> MutableList<SuffixCpuTiming>.measure(step: String, block: () -> T): T {
+  val started = TimeSource.Monotonic.markNow()
+  return block().also { add(SuffixCpuTiming(step, started.elapsedNow())) }
+}
+
+private fun List<SuffixCpuTiming>.logSuffixTimings(stage: String) {
+  if (isEmpty()) return
+  log(joinToString(
+    separator = "\n",
+    prefix = "Suffix CPU preprocessing ($stage):\n"
+  ) { "  ${it.step}: ${it.elapsed}" })
+}
+
+private fun encodeCompletion(value: String): String =
+  js("encodeURIComponent(value)") as String
+
+private fun decodeCompletion(value: String): String =
+  try { js("decodeURIComponent(value)") as String } catch (_: dynamic) { value }
+
+private fun List<List<String>>.commonTokenPrefix(): List<String> =
+  firstOrNull()?.let { first ->
+    first.take(first.indices.firstOrNull { i -> any { it.getOrNull(i) != first[i] } } ?: first.size)
+  }.orEmpty()
+
+private fun abbreviatedSuffixHTML(
+  original: String,
+  commonPrefix: List<String>,
+  completion: String
+): String {
+  val aligned = levenshteinAlign(original, completion).filter { it.second != null }
+  if (aligned.isEmpty()) return ""
+  val prefixSize = commonPrefix.size.takeIf {
+    completion.tokenizeByWhitespace().take(it) == commonPrefix
+  } ?: 0
+  val prefix = when (prefixSize) {
+    0 -> ""
+    in 1..3 -> aligned.take(prefixSize).paintDiffs()
+    else -> "${listOf(aligned.first()).paintDiffs()} ... ${aligned.take(prefixSize).takeLast(2).paintDiffs()}"
+  }
+  val suffix = aligned.drop(prefixSize).paintDiffs()
+  val label = listOf(prefix, suffix).filter(String::isNotEmpty).joinToString(" ")
+  return """<span $COMPLETION_DATA_ATTRIBUTE="${encodeCompletion(completion)}">$label</span>"""
+}
 
 /** Compare with [ai.hypergraph.tidyparse.IJTidyEditor] */
 open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): TidyEditor() {
+  private val handleInputDebouncer = BackspaceDebouncer
+  protected var inputWorkInvalidated = false
+
   private val softCompletionManager = SoftCompletionManager(
     editor = editor,
     codeMirror = { codeMirror },
@@ -94,7 +147,7 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
 
   internal val pendingTerminalCompletionInsertion: Σᐩ? get() = softCompletionManager.pendingInsertion
 
-  internal fun discardSoftTerminalCompletion() = softCompletionManager.clear()
+  internal fun discardSoftTerminalCompletion() = softCompletionManager.reset()
 
   internal fun commitSoftTerminalInsertion(): Boolean = softCompletionManager.commit()
 
@@ -128,23 +181,93 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
 
   fun restoreInstructions() = writeDisplayText(instructions)
 
-  override fun handleInput() {
+  protected open fun caretIsInGrammar(): Boolean = caretInGrammar()
+
+  protected open suspend fun holeCompletionCandidates(cfg: CFG, tokens: List<Σᐩ>): Sequence<Σᐩ> =
+    if (!gpuAvailable) cfg.enumSeqSmart(tokens) else completeCode(cfg, tokens).asSequence()
+
+  internal open suspend fun suffixCompletionCandidates(
+    cfg: CFG,
+    tokens: List<Σᐩ>,
+    terminalCompletion: TerminalCompletionPlan?,
+    limit: Int,
+    requestStarted: TimeMark,
+    recordGpuTimings: (Map<String, Int>) -> Unit = {}
+  ): Sequence<Σᐩ> {
+    val cpuTimings = mutableListOf<SuffixCpuTiming>()
+    val completionCFG = cpuTimings.measure("prepare visible completion grammar") {
+      cfg.visibleCompletionCFG
+    }
+    fun cpuCandidates(): Sequence<Σᐩ> =
+      terminalCompletion?.enumerationBranches(limit)
+        ?.map { completionCFG.enumTerminalSuffixes(it, limit) }
+        ?.let(::fairMerge)?.distinct()
+        ?: completionCFG.enumDiverseSuffixes(tokens, limit)
+
+    return if (!gpuAvailable || START_SYMBOL !in completionCFG.nonterminals) cpuCandidates()
+    else try {
+      val batch = cpuTimings.measure("$GPU_SUFFIX_LENGTHS_PER_TERMINAL-slice next-token frontier") {
+        completionCFG.gpuSuffixBatch(tokens, terminalCompletion, limit)
+      } ?: return cpuCandidates().also {
+        cpuTimings.logSuffixTimings("batch planning; GPU word limit exceeded")
+      }
+      cpuTimings.logSuffixTimings("batch planning")
+      log(
+        "Suffix GPU template: ${batch.slices.size} slices " +
+          "(up to $GPU_SUFFIX_LENGTHS_PER_TERMINAL per next token), " +
+          "horizon=${batch.slices.maxOfOrNull { it.length } ?: 0}, " +
+          "complete=${batch.completeWords.size}"
+      )
+      var gpuTimings: Map<String, Int>? = null
+      completionCFG.gpuDiverseSuffixes(batch, limit, requestStarted) { gpuTimings = it }
+        ?.also { gpuTimings?.let(recordGpuTimings) }
+        ?.asSequence()
+        ?: cpuCandidates().also { gpuTimings?.let(recordGpuTimings) }
+    } catch (cancelled: CancellationException) {
+      throw cancelled
+    } catch (failure: Throwable) {
+      log("GPU suffix completion failed; falling back to CPU: ${failure.message}")
+      cpuCandidates()
+    }
+  }
+
+  protected open fun currentDisplayResultLimit(): Int =
+    (output as? HTMLElement)?.let(::displayResultLimit) ?: MAX_DISP_RESULTS
+
+  final override fun handleInput() {
+    val started = TimeSource.Monotonic.markNow()
+    if (handleInputDebouncer.submit(this) { handleInputNow(started) }) {
+      runningJob?.cancel()
+      runningJob = null
+      inputWorkInvalidated = true
+    }
+  }
+
+  protected open fun handleInputNow(started: TimeMark) {
+    val cpuTimings = mutableListOf<SuffixCpuTiming>()
+    val contextStarted = TimeSource.Monotonic.markNow()
     softCompletionManager.invalidateIfChanged()
-    val t0 = TimeSource.Monotonic.markNow()
+    val t0 = started
     val freshUserInsertion = !softCompletionManager.compositionActive() && softCompletionManager.consumeFreshUserInsertion()
-    val caretInGrammar = caretInGrammar()
+    val caretInGrammar = caretIsInGrammar()
     val context = getApplicableContext()
-    log("Applicable context:\n$context")
+    val resultLimit = currentDisplayResultLimit()
     val suffixEligible = context.endsWith(" ") && !caretInMiddle() && !caretInGrammar
 
     val displayTokens = context.tokenizeByWhitespace()
     if (displayTokens.isEmpty()) { restoreInstructions(); return }
     var tokens = displayTokens
+    cpuTimings += SuffixCpuTiming("editor state, context, and tokenization", contextStarted.elapsedNow())
+    val contextLogStarted = TimeSource.Monotonic.markNow()
+    log("Applicable context:\n$context")
+    cpuTimings += SuffixCpuTiming("applicable-context console log", contextLogStarted.elapsedNow())
 
-    val cfg = if (caretInGrammar) {
-      tokens = tokens.map { if (it == "START") "[START]" else it }
-      CFGCFG(names = tokens.filter { it !in setOf("->", "|") }.toSet() + "[START]")
-    } else getLatestCFG()
+    val cfg = cpuTimings.measure("grammar lookup / normalization") {
+      if (caretInGrammar) {
+        tokens = tokens.map { if (it == "START") "[START]" else it }
+        CFGCFG(names = tokens.filter { it !in setOf("->", "|") }.toSet() + "[START]")
+      } else getLatestCFG()
+    }
 
     if (cfg.isEmpty()) {
       softCompletionManager.clear()
@@ -172,11 +295,13 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
         getCaretPosition().let { it.first == it.last } &&
         HOLE_MARKER !in tokens
 
-    val terminalCompletion = activeTerminalPlan
-      ?: if (terminalResolutionEligible) tokens.lastOrNull()
-        ?.takeIf { it !in cfg.terminals || freshUserInsertion && caretAtLastTokenEnd }
-        ?.let { softCompletionManager.cachedPlan(cfg, prefixCFG, tokens) }
-      else null
+    val terminalCompletion = cpuTimings.measure("terminal completion plan") {
+      activeTerminalPlan
+        ?: if (terminalResolutionEligible) tokens.lastOrNull()
+          ?.takeIf { it !in cfg.terminals || freshUserInsertion && caretAtLastTokenEnd }
+          ?.let { softCompletionManager.cachedPlan(cfg, tokens) }
+        else null
+    }
 
     if (
       activeTerminalPlan == null &&
@@ -184,20 +309,21 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
       terminalCompletion != null
     ) softCompletionManager.remember(cfg, terminalCompletion)
 
-    val unambiguousIncompleteExactTerminal =
+    val unambiguousIncompleteExactTerminal = cpuTimings.measure("exact-terminal eligibility") {
       terminalCompletion == null &&
-        terminalResolutionEligible &&
-        freshUserInsertion &&
-        caretAtLastTokenEnd &&
-        tokens.lastOrNull()?.let(cfg::isUnambiguousExactTerminal) == true &&
-        // Token separation is lexical, so even an invalid prefix such as
-        // "... ID }" receives a space without pretending it has a CFG suffix.
-        // The prefix before that token must still have been in suffix mode.
-        tokens !in cfg.language &&
-        cfg.visibleCompletionCFG.let {
-          START_SYMBOL in it.nonterminals &&
-            it.minimumNonemptySuffixLength(tokens.dropLast(1)) != null
-        }
+          terminalResolutionEligible &&
+          freshUserInsertion &&
+          caretAtLastTokenEnd &&
+          tokens.lastOrNull()?.let(cfg::isUnambiguousExactTerminal) == true &&
+          // Token separation is lexical, so even an invalid prefix such as
+          // "... ID }" receives a space without pretending it has a CFG suffix.
+          // The prefix before that token must still have been in suffix mode.
+          tokens !in cfg.language &&
+          cfg.visibleCompletionCFG.let {
+            START_SYMBOL in it.nonterminals &&
+              it.minimumNonemptySuffixLength(tokens.dropLast(1)) != null
+          }
+    }
 
     if (
       !hasActiveSoftInsertion &&
@@ -236,15 +362,16 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
         }
     }
 
-    val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, epsilons, ntStubs).hashCode()
+    val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, epsilons, ntStubs, resultLimit).hashCode()
 
     val hasHoleMarker = HOLE_MARKER in tokens
     if (hasHoleMarker) {
       val unknownToken = tokens.firstOrNull { it != HOLE_MARKER && cfg.tmMap[it] == null }
       if (unknownToken != null) {
         val workHash = tokens.hashCode() + cfg.hashCode() + settingsHash.hashCode()
-        if (workHash == currentWorkHash) return
+        if (!inputWorkInvalidated && workHash == currentWorkHash) return
         runningJob?.cancel()
+        inputWorkInvalidated = false
         currentWorkHash = workHash
         writeDisplayText(unknownTokenHtml(unknownToken))
         return
@@ -260,6 +387,23 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
       }
     }
 
+    val requestCompletionCFG = cpuTimings.measure("prepare visible completion grammar") {
+      cfg.visibleCompletionCFG
+    }
+    val minimumSuffixLength = cpuTimings.measure("minimum suffix query") {
+      if (!containsUnkTok && START_SYMBOL in requestCompletionCFG.nonterminals)
+        requestCompletionCFG.minimumSuffixLength(tokens)
+      else null
+    }
+    val completeInput =
+      if (START_SYMBOL in requestCompletionCFG.nonterminals) minimumSuffixLength == 0
+      else !containsUnkTok && tokens in cfg.language
+    val completeSuffixInput = suffixEligible && completeInput
+    val continuationRequested = cpuTimings.measure("nonempty continuation query") {
+      completeSuffixInput && requestCompletionCFG.minimumNonemptySuffixLength(tokens) != null
+    }
+
+    val routingStarted = TimeSource.Monotonic.markNow()
     val terminalCompletionHash = terminalCompletion?.let {
       listOf(
         TERMINAL_COMPLETION_WORK_SALT,
@@ -269,12 +413,14 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
         it.branches.map { branch -> branch.terminal to branch.suffixLengths.firstOrNull() }
       ).hashCode()
     } ?: 0
-    val workHash = abstractUnk.hashCode() + cfg.hashCode() + settingsHash.hashCode() + terminalCompletionHash
-    if (workHash == currentWorkHash) return
+    val workHash = listOf(abstractUnk, continuationRequested).hashCode() +
+      cfg.hashCode() + settingsHash.hashCode() + terminalCompletionHash
+    if (!inputWorkInvalidated && workHash == currentWorkHash) return
+    inputWorkInvalidated = false
     currentWorkHash = workHash
 
     val cached = cache[workHash]
-    if (cached != null && (!suffixEligible || cached.startsWith("->"))) {
+    if (cached != null && (!continuationRequested || cached.startsWith("->"))) {
       runningJob?.cancel()
       runningJob = null
       return writeDisplayText(cached)
@@ -287,21 +433,26 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
         terminalCompletion != null -> SUFFIX_COMPLETION
 //        !containsUnkTok && forwardCompletion?.isValidContinuation(tokens) == true -> FORWARD_COMPLETION
         // This scenario can be handled much more elegantly using coalegbra and incremental decoding
-        tokens in cfg.language && !suffixEligible -> PARSEABLE
-        !containsUnkTok && (caretInGrammar || tokens in prefixCFG.language) ->
-          handleSuffixCheck(cfg.language, tokens)
+        continuationRequested -> SUFFIX_COMPLETION
+        completeInput -> PARSEABLE
+        !containsUnkTok && !caretInMiddle() && minimumSuffixLength != null -> SUFFIX_COMPLETION
         else -> REPAIR
+      }
+      val suffixTimingTrace =
+        if (scenario == SUFFIX_COMPLETION) linkedMapOf<String, Int>() else null
+      if (suffixTimingTrace != null) {
+        cpuTimings += SuffixCpuTiming("work hashing, cache lookup, and dispatch", routingStarted.elapsedNow())
+        cpuTimings.logSuffixTimings("editor routing")
       }
 
       var gpuRepairResults: IntersectionResults? = null
       val candidates: Sequence<String>? = when (scenario) {
-        STUB -> cfg.enumNTSmall(tokens[0].stripStub()).take(100)
-        COMPLETION -> if (!gpuAvailable) cfg.enumSeqSmart(tokens) else completeCode(cfg, tokens).asSequence()
+        STUB -> cfg.enumNTSmall(tokens[0].stripStub()).take(resultLimit)
+        COMPLETION -> holeCompletionCandidates(cfg, tokens)
         SUFFIX_COMPLETION ->
-          terminalCompletion?.enumerationBranches()
-            ?.map(cfg.visibleCompletionCFG::enumTerminalSuffixes)
-            ?.let(::fairMerge)?.distinct()
-            ?: cfg.visibleCompletionCFG.enumSuffixes(tokens, scenario.data).distinct()
+          suffixCompletionCandidates(cfg, tokens, terminalCompletion, resultLimit, started) {
+            suffixTimingTrace?.putAll(it)
+          }
         INFIX_COMPLETION -> TODO("Infix mode not implemented")
         PARSEABLE -> {
           val parseTree = cfg.parse(tokens.joinToString(" "))?.prettyPrint()
@@ -309,7 +460,7 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
         }
         REPAIR ->
           if (!gpuAvailable) { log("Repairing on CPU..."); sampleGREUntilTimeout(tokens, cfg) }
-          else repairCode(cfg, tokens, LED_BUFFER)
+          else repairCode(cfg, tokens, LED_BUFFER, requestStarted = started)
             .let { results ->
               if (!caretInGrammar) results
               else results.mapTerminals { if (it == "[START]") "START" else it }
@@ -318,14 +469,21 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
 
       val displayCandidates = candidates
         ?.let { if (epsilons) it.map(String::removeEpsilon).distinct() else it }
-        ?.let { if (scenario != REPAIR) it.take(MAX_DISP_RESULTS) else it }
+        ?.let { if (scenario != REPAIR) it.take(resultLimit) else it }
         ?.let { if (caretInGrammar && gpuRepairResults == null) it.map { it.replace("[START]", "START") } else it }
+      if (suffixTimingTrace != null && "preprocessing" !in suffixTimingTrace)
+        suffixTimingTrace["preprocessing"] = t0.elapsedNow().inWholeMilliseconds.toInt()
       val postCompletionSummary = TimeSource.Monotonic.markNow().let { postProcTimer -> {
-        if (gpuAvailable) {
-          mark("postprocessing", postProcTimer)
-          timings["total"] = t0.elapsedNow().inWholeMilliseconds.toInt()
-          log("Results rendered in ${timings["total"]}ms")
-          timings.logTimesheet()
+        val report = when {
+          gpuRepairResults != null -> timings
+          suffixTimingTrace != null -> suffixTimingTrace.toMutableMap()
+          else -> null
+        }
+        report?.let {
+          it["postprocessing"] = postProcTimer.elapsedNow().inWholeMilliseconds.toInt()
+          it["total"] = t0.elapsedNow().inWholeMilliseconds.toInt()
+          log("Results rendered in ${it["total"]}ms")
+          it.logTimesheet()
         }
         ", ${t0.elapsedNow()} latency."
       }}
@@ -339,6 +497,7 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
             results.editDistanceAt(index) * 7919 + (originalLength - results.characterLengthAt(index)).absoluteValue
           },
           customDiff = results::htmlAt,
+          resultsToPost = resultLimit,
           reason = scenario.reason,
           postCompletionSummary = postCompletionSummary
         )
@@ -348,32 +507,27 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
           else -> ({ tokens: List<String> -> tokens.size })
         }
         val originalText = displayTokens.joinToString(" ")
+        val commonPrefix = (terminalCompletion?.branches
+          ?.map { it.tokens }?.commonTokenPrefix() ?: tokens)
+          .let { prefix ->
+            if (caretInGrammar) prefix.map { it.replace("[START]", "START") }
+            else prefix
+          }
         candidates.enumerateInteractively(
           workHash = workHash,
           keyOf = { it },
           metric = { metric(it.tokenizeByWhitespace()) },
-          customDiff = { completion -> levenshteinAlign(originalText, completion).paintDiffs() },
+          customDiff = { completion ->
+            if (scenario == SUFFIX_COMPLETION) abbreviatedSuffixHTML(originalText, commonPrefix, completion)
+            else levenshteinAlign(originalText, completion).paintDiffs()
+          },
+          resultsToPost = resultLimit,
           reason = scenario.reason,
           postCompletionSummary = postCompletionSummary
         )
       }
     }
   }
-
-  suspend fun handleSuffixCheck(cfl: CFL, tokens: List<Σᐩ>): Scenario =
-    if (caretInMiddle()) { // Skip suffix completion if the caret is within line
-      if (gpuAvailable) { if (cfl.cfg.checkSuffix(tokens, 0).let { it.isNotEmpty() && it[0] == 0 }) PARSEABLE else REPAIR }
-      else if (tokens in cfl) PARSEABLE else REPAIR
-    } else {
-      val completionCFG = cfl.cfg.visibleCompletionCFG
-      val suffixLens =
-        if (START_SYMBOL in completionCFG.nonterminals)
-          completionCFG.nonemptySuffixLengths(tokens)
-        else emptySequence()
-      val minimum = suffixLens.firstOrNull()
-      println("Read minimum suffix length: $minimum")
-      if (minimum == null) REPAIR else SUFFIX_COMPLETION(suffixLens)
-    }
 
   var hashIter = 0
 
@@ -395,6 +549,14 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
   }
 
   open fun formatCode(code: String): String = code
+
+  private fun selectedCompletion(index: Int): String =
+    (output as? HTMLElement)
+      ?.querySelector("mark [$COMPLETION_DATA_ATTRIBUTE]")
+      ?.getAttribute(COMPLETION_DATA_ATTRIBUTE)
+      ?.let(::decodeCompletion)
+      ?: readDisplayText().lines()[index + 2]
+        .substringAfter(".) ").replace("\\s+".toRegex(), " ").trim()
 
   open fun navUpdate(event: KeyboardEvent) {
     val key = event.keyCode.toSelectorAction() ?: return
@@ -422,8 +584,7 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
     val currentIdx = lines[htmlIndex].substringBefore(".)").substringAfterLast('>').trim().toInt()
     when (key) {
       ENTER -> {
-        val selection = readDisplayText().lines()[currentIdx + 2]
-          .substringAfter(".) ").replace("\\s+".toRegex(), " ").trim()
+        val selection = selectedCompletion(currentIdx)
         log("Selected: $selection / ${selection in cfg.language}")
         overwriteRegion(getCaretPosition().takeIf { it.last - it.first > 0 } ?: getLineBounds(), selection)
         redecorateLines()
@@ -435,8 +596,7 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
       ARROW_DOWN -> selIdx = ModInt(currentIdx, lines.size - 4) + 1
       ARROW_UP -> selIdx = ModInt(currentIdx, lines.size - 4) + -1
       ARROW_RIGHT -> {
-        val selection = readDisplayText().lines()[currentIdx + 2]
-          .substringAfter(".) ").replace("\\s+".toRegex(), " ").trim()
+        val selection = selectedCompletion(currentIdx)
 
         val toksToTake = currentLine().tokenizeByWhitespace().size + 1
         val continuation = selection.tokenizeByWhitespace().take(toksToTake).joinToString(" ")

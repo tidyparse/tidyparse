@@ -1,18 +1,17 @@
+import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.types.cache
+import ai.hypergraph.tidyparse.MAX_DISP_RESULTS
 import kotlinx.browser.document
 import org.w3c.dom.HTMLSpanElement
 import org.w3c.dom.HTMLTextAreaElement
 
-internal const val MAX_TERMINAL_COMPLETION_BRANCHES = 3
+internal const val MAX_TERMINAL_COMPLETION_BRANCHES = MAX_DISP_RESULTS
 internal const val TERMINAL_COMPLETION_WORK_SALT = "terminal-completion"
+internal const val GPU_SUFFIX_LENGTHS_PER_TERMINAL = 5
 private const val SOFT_COMPLETION_COMMIT_ORIGIN = "+tidyparse-soft-completion"
 
-internal data class TerminalCompletionBranch(
-  val terminal: Σᐩ,
-  val tokens: List<Σᐩ>,
-  val suffixLengths: Sequence<Int>
-)
+internal data class TerminalCompletionBranch(val terminal: Σᐩ, val tokens: List<Σᐩ>, val suffixLengths: Sequence<Int>)
 
 internal data class TerminalCompletionPlan(
   val originalPrefix: Σᐩ,
@@ -48,12 +47,15 @@ internal val CFG.visibleCompletionCFG: CFG by cache {
   }
 }
 
-private fun CFG.validCompletionSuffixLengths(
+fun CFG.validCompletionSuffixLengths(
   tokens: List<Σᐩ>,
   includeCompleteInput: Boolean,
-  prefixCFG: CFG
+  prefixCFG: CFG? = null
 ): Sequence<Int> =
-  if (tokens !in prefixCFG.language) emptySequence()
+  // The completion query itself proves membership in this grammar's prefix
+  // closure.  Consult a prefix grammar only when a caller explicitly supplies
+  // a different eligibility policy.
+  if (prefixCFG != null && tokens !in prefixCFG.language) emptySequence()
   else visibleCompletionCFG.let {
     if (START_SYMBOL in it.nonterminals) it.completionSuffixLengths(tokens, includeCompleteInput)
     else emptySequence()
@@ -61,6 +63,7 @@ private fun CFG.validCompletionSuffixLengths(
 
 private fun CFG.commonForcedContinuation(branch: TerminalCompletionBranch): List<Σᐩ> {
   val includesEmpty = branch.suffixLengths.firstOrNull() == 0
+  if (includesEmpty) return emptyList()
   return visibleCompletionCFG.let {
     if (START_SYMBOL in it.nonterminals)
       it.completionIndex.forcedContinuation(branch.tokens, includesEmpty)
@@ -72,12 +75,10 @@ private fun TerminalCompletionBranch.advanceBy(forcedContinuation: List<Σᐩ>):
   if (forcedContinuation.isEmpty()) this
   else copy(
     tokens = tokens + forcedContinuation,
-    suffixLengths = suffixLengths.map {
-      it - forcedContinuation.size
-    }
+    suffixLengths = suffixLengths.map { it - forcedContinuation.size }
   )
 
-internal fun CFG.terminalCompletionPlan(tokens: List<Σᐩ>, prefixCFG: CFG = prefixClosure): TerminalCompletionPlan? {
+internal fun CFG.terminalCompletionPlan(tokens: List<Σᐩ>, prefixCFG: CFG? = null): TerminalCompletionPlan? {
   val partial = tokens.lastOrNull() ?: return null
   val lexicalCandidates = terminals.filter { it.startsWith(partial) }.sorted()
   if (lexicalCandidates.isEmpty()) return null
@@ -92,11 +93,10 @@ internal fun CFG.terminalCompletionPlan(tokens: List<Σᐩ>, prefixCFG: CFG = pr
     val candidateTokens = prefixTokens + terminal
     val suffixLengths = validCompletionSuffixLengths(
       tokens = candidateTokens,
-      // A complete exact spelling preserves the already-typed terminal
-      // interpretation. When that spelling is also a prefix of a stub, the
-      // complete stub is the competing interpretation we need to retain.
-      // Other partial tokens still require a positive continuation.
-      includeCompleteInput = terminal == partial || (partial in terminals && terminal.isNonterminalStubIn(this)),
+      // Completing an ordinary partial terminal may finish the whole input.
+      // Generated nonterminal stubs still need a positive continuation unless
+      // they compete with an already-complete exact terminal spelling.
+      includeCompleteInput = partial in terminals || !terminal.isNonterminalStubIn(this),
       prefixCFG = prefixCFG
     )
     suffixLengths.firstOrNull()
@@ -133,7 +133,9 @@ internal fun CFG.terminalCompletionPlan(tokens: List<Σᐩ>, prefixCFG: CFG = pr
   )
 }
 
-internal fun TerminalCompletionPlan.enumerationBranches(): List<TerminalCompletionBranch> =
+internal fun TerminalCompletionPlan.enumerationBranches(
+  limit: Int = MAX_TERMINAL_COMPLETION_BRANCHES
+): List<TerminalCompletionBranch> =
   branches.sortedWith(
     compareBy(
       // A partial token can already be a complete terminal while also
@@ -144,31 +146,196 @@ internal fun TerminalCompletionPlan.enumerationBranches(): List<TerminalCompleti
       { it.suffixLengths.firstOrNull() ?: Int.MAX_VALUE },
       { it.terminal }
     )
-  ).take(MAX_TERMINAL_COMPLETION_BRANCHES)
+  ).take(limit)
 
 internal fun CFG.isUnambiguousExactTerminal(token: Σᐩ): Boolean =
   terminals.count { it.startsWith(token) } == 1 && token in terminals
 
-internal fun <T> fairMerge(sequences: List<Sequence<T>>): Sequence<T> = sequence {
-  var active = sequences.map { it.iterator() }
+internal fun <T> fairMerge(sequences: Sequence<Sequence<T>>): Sequence<T> = sequence {
+  val active = ArrayDeque<Iterator<T>>()
+
+  for (sequence in sequences) {
+    val iterator = sequence.iterator()
+    if (iterator.hasNext()) {
+      yield(iterator.next())
+      active.addLast(iterator)
+    }
+  }
 
   while (active.isNotEmpty()) {
-    val nextRound = mutableListOf<Iterator<T>>()
-    for (iterator in active) {
-      if (iterator.hasNext()) {
-        yield(iterator.next())
-        nextRound += iterator
-      }
+    val iterator = active.removeFirst()
+    if (iterator.hasNext()) {
+      yield(iterator.next())
+      active.addLast(iterator)
     }
-    active = nextRound
   }
 }
 
-internal fun CFG.enumTerminalSuffixes(branch: TerminalCompletionBranch): Sequence<Σᐩ> =
+internal fun <T> fairMerge(sequences: List<Sequence<T>>): Sequence<T> = fairMerge(sequences.asSequence())
+
+internal data class SuffixSlice(val terminal: Σᐩ, val length: Int)
+
+internal data class SuffixBatch(
+  val prefix: List<Σᐩ>,
+  val slices: List<SuffixSlice>,
+  val completeWords: List<Σᐩ> = emptyList()
+)
+
+internal fun CFG.diverseSuffixSlices(prefix: List<Σᐩ>, limit: Int = MAX_DISP_RESULTS): List<SuffixSlice> {
+  if (limit == 0) return emptyList()
+  return fairMerge(minimumSuffixLengthsByFirstTerminal(prefix).asSequence().map { (terminal, minimum) ->
+    sequence {
+      // The prefix query has already computed this value. Yield it without
+      // constructing another prefix chart for `prefix + terminal`; only
+      // branches that need a second length pay that cost when fairMerge resumes.
+      yield(SuffixSlice(terminal, minimum))
+      yieldAll(
+        completionIndex.after(prefix + terminal).suffixLengths(includeEmpty = true)
+          .map { SuffixSlice(terminal, it + 1) }
+          .dropWhile { it.length <= minimum }
+      )
+    }
+  }).take(limit).toList()
+}
+
+private fun maximumGpuSuffixHorizon(prefixSize: Int): Int =
+  (MAX_WORD_LEN - 2 - prefixSize).coerceAtLeast(0)
+
+/**
+ * Up to the first three valid lengths for every viable next token. The longest
+ * retained length is the horizon of the single porous line sent to WebGPU.
+ */
+internal fun CFG.gpuSuffixSlices(prefix: List<Σᐩ>, limit: Int = MAX_DISP_RESULTS): List<SuffixSlice>? {
+  if (limit <= 0) return emptyList()
+  val minima = minimumSuffixLengthsByFirstTerminal(prefix).entries.take(limit)
+  if (minima.isEmpty()) return emptyList()
+  val maximumHorizon = maximumGpuSuffixHorizon(prefix.size)
+  // Silently dropping a group here would violate next-token completeness.
+  // Null means that this prefix cannot be represented by the bounded GPU word.
+  if (minima.any { (_, minimum) -> minimum > maximumHorizon }) return null
+
+  return fairMerge(
+    minima.asSequence().map { (terminal, minimum) ->
+      sequence {
+        yield(SuffixSlice(terminal, minimum))
+        yieldAll(
+          completionIndex.after(prefix + terminal).suffixLengths(includeEmpty = true)
+            .map { SuffixSlice(terminal, it + 1) }
+            .dropWhile { it.length <= minimum }
+        )
+      }.takeWhile { it.length <= maximumHorizon }.take(GPU_SUFFIX_LENGTHS_PER_TERMINAL)
+    }
+  ).toList()
+}
+
+internal fun CFG.gpuSuffixBatch(
+  tokens: List<Σᐩ>,
+  terminalCompletion: TerminalCompletionPlan?,
+  limit: Int = MAX_DISP_RESULTS
+): SuffixBatch? {
+  if (terminalCompletion == null)
+    return gpuSuffixSlices(tokens, limit)?.let { SuffixBatch(tokens, it) }
+
+  val branches = terminalCompletion.enumerationBranches(limit)
+  if (terminalCompletion.terminalCommitted) {
+    val branch = branches.single()
+    val completeWords =
+      if (branch.suffixLengths.firstOrNull() == 0) listOf(branch.tokens.joinToString(" "))
+      else emptyList()
+    return SuffixBatch(
+      prefix = branch.tokens,
+      slices = gpuSuffixSlices(branch.tokens, (limit - completeWords.size).coerceAtLeast(0))
+        ?: return null,
+      completeWords = completeWords
+    )
+  }
+
+  val prefix = tokens.dropLast(1)
+  val maximumHorizon = maximumGpuSuffixHorizon(prefix.size)
+  val branchMinima = branches.map { branch ->
+    branch to (branch.tokens.size - prefix.size + (branch.suffixLengths.firstOrNull() ?: return null))
+  }
+  if (branchMinima.any { (_, minimum) -> minimum > maximumHorizon }) return null
+  val slices = fairMerge(branchMinima.asSequence().map { (branch, _) ->
+    val stemLength = branch.tokens.size - prefix.size
+    branch.suffixLengths
+      .map { SuffixSlice(branch.terminal, stemLength + it) }
+      .takeWhile { it.length <= maximumHorizon }
+      .take(GPU_SUFFIX_LENGTHS_PER_TERMINAL)
+  }).toList()
+  return SuffixBatch(prefix, slices)
+}
+
+private fun PTree.restrictTerminal(index: Int, terminal: Σᐩ): PTree? {
+  val widths = mutableMapOf<PTree, Int>()
+  fun width(tree: PTree): Int = widths[tree] ?: (
+    if (tree.branches.isEmpty()) if (tree.epsStr.isEmpty()) 0 else 1
+    else tree.branches.first().let { width(it.first) + width(it.second) }
+  ).also { widths[tree] = it }
+
+  fun restrict(tree: PTree, offset: Int): PTree? {
+    if (offset !in 0 until width(tree)) return null
+    if (tree.branches.isEmpty()) return tree.takeIf { it.root == terminal }
+    val branches = tree.branches.mapNotNull { (left, right) ->
+      val leftWidth = width(left)
+      if (offset < leftWidth) restrict(left, offset)?.let { it to right }
+      else restrict(right, offset - leftWidth)?.let { left to it }
+    }
+    return branches.takeIf { it.isNotEmpty() }?.let { PTree(tree.root, it) }
+  }
+
+  return restrict(this, index)
+}
+
+private fun CFG.enumSuffixSlices(prefix: List<Σᐩ>, slices: List<SuffixSlice>): Sequence<Σᐩ> = sequence {
+  if (slices.isEmpty()) return@sequence
+  val chart = initPTreeListMat(prefix + List(slices.maxOf { it.length }) { HOLE_MARKER })
+    .seekFixpoint().toFullMatrix()
+  val start = bindex[START_SYMBOL]
+  yieldAll(fairMerge(slices.groupBy { it.terminal }.asSequence().map { (terminal, slices) ->
+    slices.asSequence().flatMap { slice ->
+      chart[0, prefix.size + slice.length][start]
+        ?.restrictTerminal(prefix.size, terminal)
+        ?.sampleStrWithoutReplacement()
+        ?: emptySequence()
+    }.distinct()
+  }))
+}
+
+private fun <T> Sequence<T>.replayable(): Sequence<T> {
+  val source by lazy { this@replayable.iterator() }
+  val values = mutableListOf<T>()
+  return sequence {
+    var index = 0
+    while (index < values.size || source.hasNext()) {
+      if (index == values.size) values += source.next()
+      yield(values[index++])
+    }
+  }
+}
+
+// Parse-forest sampling is randomized; replay an effective prefix so committing
+// its soft completion changes the highlighting, not the candidate set.
+private val diverseSuffixCache = LRUCache<Triple<CFG, List<Σᐩ>, Int>, Sequence<Σᐩ>>(128)
+
+internal fun CFG.enumDiverseSuffixes(tokens: List<Σᐩ>, limit: Int = MAX_DISP_RESULTS): Sequence<Σᐩ> {
+  if (limit <= 0) return emptySequence()
+  val prefix = tokens.toList()
+  return diverseSuffixCache.getOrPut(Triple(this, prefix, limit)) {
+    sequence {
+      // K distinct (first token, length) slices guarantee K distinct words;
+      // if fewer exist, this exhausts every slice in the finite suffix language.
+      val slices = diverseSuffixSlices(prefix, limit)
+      yieldAll(enumSuffixSlices(prefix, slices))
+    }.replayable()
+  }.take(limit)
+}
+
+internal fun CFG.enumTerminalSuffixes(branch: TerminalCompletionBranch, limit: Int = MAX_DISP_RESULTS): Sequence<Σᐩ> =
   sequence {
     if (branch.suffixLengths.firstOrNull() == 0) yield(branch.tokens.joinToString(" "))
-    yieldAll(visibleCompletionCFG.enumSuffixes(branch.tokens, branch.suffixLengths))
-  }.distinct()
+    yieldAll(visibleCompletionCFG.enumDiverseSuffixes(branch.tokens, limit))
+  }.distinct().take(limit)
 
 internal class SoftCompletionManager(
   private val editor: HTMLTextAreaElement,
@@ -203,7 +370,6 @@ internal class SoftCompletionManager(
 
   private data class CachedTerminalCompletion(
     val cfgHash: Int,
-    val prefixCFGHash: Int,
     val tokens: List<Σᐩ>,
     val plan: TerminalCompletionPlan?
   )
@@ -306,10 +472,8 @@ internal class SoftCompletionManager(
     }
   }
 
-  internal fun clear() {
-    terminalPrefixResolution = null
-    clearInsertionPreview()
-  }
+  internal fun clear() { terminalPrefixResolution = null; clearInsertionPreview() }
+  internal fun reset() { clear(); clearFreshUserInsertion() }
 
   internal fun remember(cfg: CFG, completion: TerminalCompletionPlan) {
     terminalPrefixResolution = TerminalPrefixResolution(
@@ -544,15 +708,14 @@ internal class SoftCompletionManager(
     return snapshot?.matchesCurrentEditorState() == true
   }
 
-  internal fun cachedPlan(cfg: CFG, prefixCFG: CFG, tokens: List<Σᐩ>): TerminalCompletionPlan? {
+  internal fun cachedPlan(cfg: CFG, tokens: List<Σᐩ>): TerminalCompletionPlan? {
     val cfgHash = cfg.hashCode()
-    val prefixCFGHash = prefixCFG.hashCode()
     cachedTerminalCompletion
-      ?.takeIf { it.cfgHash == cfgHash && it.prefixCFGHash == prefixCFGHash && it.tokens == tokens }
+      ?.takeIf { it.cfgHash == cfgHash && it.tokens == tokens }
       ?.let { return it.plan }
 
-    return cfg.terminalCompletionPlan(tokens, prefixCFG).also { plan ->
-      cachedTerminalCompletion = CachedTerminalCompletion(cfgHash, prefixCFGHash, tokens.toList(), plan)
+    return cfg.terminalCompletionPlan(tokens).also { plan ->
+      cachedTerminalCompletion = CachedTerminalCompletion(cfgHash, tokens.toList(), plan)
     }
   }
 }

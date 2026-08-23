@@ -10,114 +10,34 @@ import org.w3c.dom.*
 import org.w3c.dom.events.*
 import kotlin.js.Promise
 import kotlin.time.Duration.Companion.nanoseconds
-import kotlin.time.TimeSource
 
 val cnfInputField by lazy { document.getElementById("tidyparse-input") as HTMLTextAreaElement }
 val cnfOutputField by lazy { document.getElementById("tidyparse-output") as Node }
 
 // ---- Minimal CNF-only editor ----
-class JSTidyCNFEditor(editor: HTMLTextAreaElement, output: Node) : JSTidyEditor(editor, output) {
+open class JSTidyCNFEditor(editor: HTMLTextAreaElement, output: Node) : JSTidyEditor(editor, output) {
   /** Load a CNF from text and refresh highlighting */
-  fun loadCNFFromText(text: String) { cfg = text.parseCNF() }
+  fun loadCNFFromText(text: String) {
+    discardSoftTerminalCompletion()
+    runningJob?.cancel()
+    currentWorkHash = 0
+    cfg = text.parseCNF()
+  }
 
   override fun getLatestCFG(): CFG = cfg
 
+  override fun caretIsInGrammar(): Boolean = false
+
+  override suspend fun holeCompletionCandidates(cfg: CFG, tokens: List<Σᐩ>): Sequence<Σᐩ> =
+    if (gpuAvailable) super.holeCompletionCandidates(cfg, tokens)
+    else {
+      var iterations = 0
+      cfg.enumSeqSmartSuspendable(tokens) {
+        if (iterations++ % 3 == 0) delay(50.nanoseconds)
+      }
+    }
+
   override fun redecorateLines(cfg: CFG) { decorator.fullDecorate(cfg) }
-
-  override fun handleInput() {
-    val t0 = TimeSource.Monotonic.markNow()
-    val context = getApplicableContext()
-    if (context.isEmpty()) return
-    log("Applicable context:\n$context")
-
-    val tokens = context.tokenizeByWhitespace()
-
-    // Always use the in-memory CFG (loaded from the CNF file)
-    val cfg = getLatestCFG()
-    if (cfg.isEmpty()) return
-
-    val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, epsilons, ntStubs).hashCode()
-
-    val hasHoleMarker = HOLE_MARKER in tokens
-    if (hasHoleMarker) {
-      val unknownToken = tokens.firstOrNull { it != HOLE_MARKER && cfg.tmMap[it] == null }
-      if (unknownToken != null) {
-        val workHash = tokens.hashCode() + cfg.hashCode() + settingsHash.hashCode()
-        if (workHash == currentWorkHash) return
-        runningJob?.cancel()
-        currentWorkHash = workHash
-        writeDisplayText(unknownTokenHtml(unknownToken))
-        return
-      }
-    }
-
-    var containsUnkTok = false
-    val abstractUnk = tokens.map { if (it in cfg.terminals) it else { containsUnkTok = true; "_" } }
-
-    val workHash = abstractUnk.hashCode() + cfg.hashCode() + settingsHash.hashCode()
-    if (workHash == currentWorkHash) return
-    currentWorkHash = workHash
-
-    if (workHash in cache) return writeDisplayText(cache[workHash]!!)
-    else writeDisplayText("")
-
-    runningJob?.cancel()
-
-    val scenario = when {
-      tokens.size == 1 && stubMatcher.matches(tokens[0]) -> Scenario.STUB
-      hasHoleMarker -> Scenario.COMPLETION
-      !containsUnkTok && tokens in cfg.language -> Scenario.PARSEABLE
-      else -> Scenario.REPAIR
-    }
-
-    when(scenario) {
-      Scenario.REPAIR -> writeDisplayText("Searching for repairs... (please be patient)")
-      Scenario.COMPLETION -> writeDisplayText("Generating completions... (please be patient)")
-      Scenario.STUB -> writeDisplayText("Stub completion...")
-      else -> log("Unhandled scenario: $scenario")
-    }
-
-    var i = 0; suspend fun pause(freq: Int = 3) { if (i++ % freq == 0) { delay(50.nanoseconds) }}
-    runningJob = MainScope().launch {
-      val candidateMetric = levAndLenMetric(tokens)
-      val originalText = tokens.joinToString(" ")
-      when (scenario) {
-        Scenario.STUB -> cfg.enumNTSmall(tokens[0].stripStub()).take(100)
-        Scenario.COMPLETION ->
-          (if (!gpuAvailable) cfg.enumSeqSmartSuspendable(tokens, suspender = { pause() })
-          else completeCode(cfg, tokens).asSequence())
-            .take(MAX_DISP_RESULTS)
-            .enumerateInteractively(
-              workHash = workHash,
-              keyOf = { it },
-              metric = { candidateMetric(it.tokenizeByWhitespace()) },
-              customDiff = { levenshteinAlign(originalText, it).paintDiffs() },
-              reason = scenario.reason,
-              postCompletionSummary = { ", ${t0.elapsedNow()} latency." }
-            )
-        Scenario.PARSEABLE -> writeDisplayText(parsedPrefix.dropLast(8).also { cache[workHash] = it })
-        Scenario.REPAIR -> if (gpuAvailable) {
-          val results = repairCode(cfg, tokens, LED_BUFFER)
-          results.indices.asSequence().enumerateInteractively(
-            workHash = workHash,
-            keyOf = { it },
-            metric = { 1 },
-            customDiff = results::htmlAt,
-            reason = scenario.reason,
-            postCompletionSummary = { ", ${t0.elapsedNow()} latency." }
-          )
-        } else sampleGREUntilTimeout(tokens, cfg).enumerateInteractively(
-          workHash = workHash,
-          keyOf = { it },
-          metric = { 1 },
-          customDiff = { levenshteinAlign(originalText, it).paintDiffs() },
-          reason = scenario.reason,
-          postCompletionSummary = { ", ${t0.elapsedNow()} latency." }
-        )
-        else -> Unit.also { log("Skipping $scenario, unimplemented") }
-      }
-    }
-  }
 }
 
 lateinit var jsCnfEditor: JSTidyCNFEditor
@@ -125,12 +45,22 @@ lateinit var jsCnfEditor: JSTidyCNFEditor
 // ---- Modal + wiring for CNF ----
 fun cnfSetup() {
   initTidyCodeMirror()
-  initSplitLayout()
   jsCnfEditor = JSTidyCNFEditor(cnfInputField, cnfOutputField)
+  initSplitLayout { jsCnfEditor.run { continuation { handleInput() } } }
   val overlay = buildCnfModal()
   document.body?.appendChild(overlay)
 
   // Wire keystrokes to the CNF editor (parse/complete/repair)
+  var lastCaretStart = cnfInputField.selectionStart!!
+  var lastCaretEnd = cnfInputField.selectionEnd!!
+  cnfInputField.addEventListener("selectionchange", {
+    val start = cnfInputField.selectionStart!!
+    val end = cnfInputField.selectionEnd!!
+    if (start == end && (start != lastCaretStart || end != lastCaretEnd))
+      jsCnfEditor.run { continuation { handleInput() } }
+    lastCaretStart = start
+    lastCaretEnd = end
+  })
   cnfInputField.addEventListener("input", { jsCnfEditor.run { continuation { handleInput() } } })
   cnfInputField.addEventListener("input", { jsCnfEditor.redecorateLines() })
   val cm = window.asDynamic().cmEditor

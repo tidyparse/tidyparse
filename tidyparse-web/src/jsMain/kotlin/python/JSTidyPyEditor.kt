@@ -9,6 +9,7 @@ import org.w3c.dom.events.KeyboardEvent
 import web.gpu.GPUBuffer
 import kotlin.js.Promise
 import kotlin.math.ln
+import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
 @ExperimentalUnsignedTypes
@@ -171,9 +172,9 @@ class JSTidyPyEditor(editor: HTMLTextAreaElement, output: Node) : JSTidyEditor(e
   override fun setCaretPosition(range: IntRange) =
     cme.setSelection(cme.posFromIndex(range.first), cme.posFromIndex(range.last))
 
-  override fun handleInput() {
+  override fun handleInputNow(started: TimeMark) {
     window.asDynamic().COMPLETIONS = arrayOf<String>()
-    val t0 = TimeSource.Monotonic.markNow()
+    val t0 = started
     val currentLine = currentLine().also { log("Current line is: $it") }
     if (currentLine.isBlank() || currentLine.trimStart().startsWith("#")) return
     val pcs = PyCodeSnippet(currentLine)
@@ -186,7 +187,8 @@ class JSTidyPyEditor(editor: HTMLTextAreaElement, output: Node) : JSTidyEditor(e
 
     val settingsHash = listOf(LED_BUFFER, TIMEOUT_MS, epsilons, neuralRerankerEnabled).hashCode()
     val workHash = abstractUnk.hashCode() + cfg.hashCode() + settingsHash
-    if (workHash == currentWorkHash) return
+    if (!inputWorkInvalidated && workHash == currentWorkHash) return
+    inputWorkInvalidated = false
     currentWorkHash = workHash
 
     if (workHash in cache) return writeDisplayText(cache[workHash]!!)
@@ -204,7 +206,11 @@ class JSTidyPyEditor(editor: HTMLTextAreaElement, output: Node) : JSTidyEditor(e
         var total = 0
         val gpuRepairs = if (gpuAvailable) {
           log("Repairing on GPU...")
-          repairCode(cfg, tokens, LED_BUFFER, rerankerQuery = neuralRerankerQuery(tokens))
+          repairCode(
+            cfg, tokens, LED_BUFFER,
+            rerankerQuery = neuralRerankerQuery(tokens),
+            requestStarted = started
+          )
         } else { log("Repairing on CPU..."); null }
 
         val repairs = gpuRepairs?.pythonRepairs()

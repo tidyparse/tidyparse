@@ -49,8 +49,7 @@ def _format_output_b64(encoded):
         return '__BLACK_ERROR__ ' + traceback.format_exc().replace('\n', ' ') + ' __SRC__ ' + src
 """.trimIndent()
 
-private fun jsStringLiteral(s: String): String =
-  js("(s) => JSON.stringify(s)")(s) as String
+private fun jsStringLiteral(s: String): String = js("(s) => JSON.stringify(s)")(s) as String
 
 private fun pyodideWorkerSource(): String = """
 let pyodide = null;

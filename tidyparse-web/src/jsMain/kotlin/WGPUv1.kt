@@ -65,14 +65,14 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         // Automata construction
         init_lev_chart, init_line_chart,
         // Matrix closure/CFL reachability
-        dag_reach, mdpt_count, mdpt_write,
+        dag_reach, mdpt_count, mdpt_write, line_mdpt_write,
         cfl_mul_upper,
         // Counting/Enumeration
         bp_count, bp_write,
-        ls_dense, ls_cdf,
-        build_root_sizes, enum_words_wor,
+        ls_dense, suffix_ls_dense, ls_cdf,
+        build_root_sizes, enum_words_wor, suffix_enum_words_wor,
         // Sampling
-        markov_score, wdfa_score, select_top_k, gather_top_k, // rerank_top_k,
+        markov_score, wdfa_score, select_top_k, gather_top_k, suffix_group_select, // rerank_top_k,
         // Debugging
         wdfa_score_raw, active_nt_count,
 
@@ -127,9 +127,11 @@ suspend fun repairCode(
   cfg: CFG,
   code: List<String>,
   ledBuffer: Int = Int.MAX_VALUE,
-  rerankerQuery: List<String>? = null
+  rerankerQuery: List<String>? = null,
+  requestStarted: TimeMark = TimeSource.Monotonic.markNow()
 ): IntersectionResults {
   timings = linkedMapOf()
+  mark("preprocessing", requestStarted)
   val preprocT = TimeSource.Monotonic.markNow()
   val fsa: FSA = makeLevFSA(code, MAX_LEV_RAD)
   log("Made levFSA in ${preprocT.elapsedNow()}")
@@ -141,13 +143,13 @@ suspend fun repairCode(
 //  val dpInSparse = fsa.byteFormat(cfg).toGPUBuffer()
 //  log("Initial nonzeros: ${dpIn.count { it != 0 }}")
 
-  mark("preprocessing", preprocT)
+  mark("build input FSA", preprocT)
 //  val words = intersectionPipelineV2(cfg, fsa, ledBuffer, codePoints, rerankerQuery)
   val words = intersectionPipeline(cfg, fsa, ledBuffer, codePoints, rerankerQuery)
 //  val distinctWords = words.distinct()
 //  log("Distinct: ${distinctWords.size} words")
 
-  return words.also { log("Received: ${words.size} words in ${preprocT.elapsedNow()} (round trip)") }
+  return words.also { log("Received: ${words.size} words in ${requestStarted.elapsedNow()} (round trip)") }
 }
 
 suspend fun intersectionPipeline(
@@ -2069,7 +2071,8 @@ class Shader constructor(val src: String) {
       val (reachBuf, _) = dag_reach.invokeDAGFixpoint(fsa)
       log("DAG fixpoint in ${t0.elapsedNow()}")
 
-      val (allFSAPairsFlattened, allFSAPairsOffsets) = buildMidpointsGPU(fsa.numStates, reachBuf)
+      val (allFSAPairsFlattened, allFSAPairsOffsets) =
+        buildMidpointsGPU(fsa.numStates, reachBuf).also { reachBuf.destroy() }
       log("Sparse reachability took ${t0.elapsedNow()} / (${4 * (allFSAPairsFlattened.size + allFSAPairsOffsets.size)} bytes)")
 
       /** Memory layout: [CFL_STRUCT] */
