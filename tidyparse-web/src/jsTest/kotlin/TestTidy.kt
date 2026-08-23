@@ -49,6 +49,21 @@ class TestTidy {
   private val twoVariablesPrefix =
     "( ( p & q ) & p ) = ( p & ( q &".tokenizeByWhitespace()
 
+  private val plWhileCompletionCfg by lazy {
+    """
+      START -> STM+
+      STM+ -> STM+ ; STM | STM
+      STM -> ASGN | IFS | while ( BEXP ) { STM+ } | for ( ASGN ; BEXP ; ASGN ) { STM+ } | { STM+ } | { } | return EXP ; | break | continue | EXP | STM ;
+      ASGN -> LHS = EXP | LHS += EXP | LHS -= EXP | LHS *= EXP | LHS /= EXP | LHS %= EXP
+      LHS -> ID | ID . ID | ID [ EXP ] | ( LHS )
+      IFS -> ID = if ( BEXP ) { EXP } else { EXP } | if ( BEXP ) { STM+ } else { STM+ } | if ( BEXP ) { STM+ }
+      EXP -> ID | NUM | STR | LIT | EXP + EXP | EXP - EXP | EXP * EXP | EXP / EXP | EXP % EXP | ( EXP ) | ID ( ) | ID ( ARGS ) | EXP . ID | EXP [ EXP ] | BEXP
+      ARGS -> EXP | EXP , ARGS
+      BEXP -> EXP == EXP | EXP != EXP | EXP < EXP | BEXP && BEXP | BEXP or BEXP | ( BEXP ) | ! BEXP | LIT
+      LIT -> true | false
+    """.trimIndent().parseCFG(validate = true).noEpsilon.visibleCompletionCFG
+  }
+
   val snippets by lazy {
     PYTHON_SNIPPETS.trim('\n', '\r').lines().chunked(4).also {
       require(it.all { snippet -> snippet.size == 4 }) {
@@ -398,8 +413,8 @@ class TestTidy {
       T2 -> X X
       A -> a
       B -> b
-      X -> x
       X -> y
+      X -> x
     """.trimIndent().parseCNF()
     val prefix = listOf("p")
     val batch = SuffixBatch(
@@ -476,18 +491,7 @@ class TestTidy {
     tryBootstrappingGPU()
     if (!gpuAvailable) return@browserTest
 
-    val completionCfg = """
-      START -> STM+
-      STM+ -> STM+ ; STM | STM
-      STM -> ASGN | IFS | while ( BEXP ) { STM+ } | for ( ASGN ; BEXP ; ASGN ) { STM+ } | { STM+ } | { } | return EXP ; | break | continue | EXP | STM ;
-      ASGN -> LHS = EXP | LHS += EXP | LHS -= EXP | LHS *= EXP | LHS /= EXP | LHS %= EXP
-      LHS -> ID | ID . ID | ID [ EXP ] | ( LHS )
-      IFS -> ID = if ( BEXP ) { EXP } else { EXP } | if ( BEXP ) { STM+ } else { STM+ } | if ( BEXP ) { STM+ }
-      EXP -> ID | NUM | STR | LIT | EXP + EXP | EXP - EXP | EXP * EXP | EXP / EXP | EXP % EXP | ( EXP ) | ID ( ) | ID ( ARGS ) | EXP . ID | EXP [ EXP ] | BEXP
-      ARGS -> EXP | EXP , ARGS
-      BEXP -> EXP == EXP | EXP != EXP | EXP < EXP | BEXP && BEXP | BEXP or BEXP | ( BEXP ) | ! BEXP | LIT
-      LIT -> true | false
-    """.trimIndent().parseCFG(validate = true).noEpsilon.visibleCompletionCFG
+    val completionCfg = plWhileCompletionCfg
     val prefix = "while ( ID == NUM ) { ID = ID + NUM ;".tokenizeByWhitespace()
     val limit = 35
     val batch = assertNotNull(completionCfg.gpuSuffixBatch(prefix, terminalCompletion = null, limit = limit))
@@ -514,6 +518,90 @@ class TestTidy {
     )
     assertEquals(words.size, words.distinct().size)
     assertTrue(words.all { it in completionCfg.language })
+  }
+
+  @Test
+  fun testGpuPlWhileRetainsTheSingleTokenClosingBraceCompletion() = browserTest {
+    tryBootstrappingGPU()
+    if (!gpuAvailable) return@browserTest
+
+    val prefix =
+      "for ( ( ID ) += STR ; true ; ID -= STR ) { continue".tokenizeByWhitespace()
+    val limit = 29
+    val batch = assertNotNull(
+      plWhileCompletionCfg.gpuSuffixBatch(prefix, terminalCompletion = null, limit = limit)
+    )
+
+    assertEquals(
+      mapOf(
+        ";" to listOf(2, 3, 4, 5, 6),
+        "}" to listOf(1, 2, 3, 4, 5)
+      ),
+      batch.slices.groupBy({ it.terminal }, { it.length })
+    )
+
+    val words = assertNotNull(plWhileCompletionCfg.gpuDiverseSuffixes(batch, limit))
+    val shortest = (prefix + "}").joinToString(" ")
+
+    assertContains(words, shortest)
+    val closingBraceGroup = words.filter {
+      it.tokenizeByWhitespace()[prefix.size] == "}"
+    }
+    val closingBraceOrder = closingBraceGroup.map {
+      (it.tokenizeByWhitespace().size - prefix.size) to it
+    }
+    assertEquals(
+      closingBraceOrder.sortedWith(compareBy<Pair<Int, String>>({ it.first }, { it.second })),
+      closingBraceOrder,
+      "Candidates within a next-token group must be ordered by suffix length, then lexically"
+    )
+    // Forward completion uses token count as its UI ranking metric. The exact
+    // closing brace is the unique shortest result and must therefore render first.
+    assertEquals(shortest, words.minBy { it.tokenizeByWhitespace().size })
+    assertTrue(words.all { it in plWhileCompletionCfg.language })
+  }
+
+  @Test
+  fun testGpuSuffixPoolOrdersOneGroupAndCoversEveryPlannedLength() = browserTest {
+    tryBootstrappingGPU()
+    if (!gpuAvailable) return@browserTest
+
+    // This finite language has 2 + 4 + 8 words across its three suffix roots,
+    // so asking for all 14 observes the whole GPU candidate pool without host
+    // display truncation.
+    val suffixCfg = """
+      START -> P L2
+      START -> P L3
+      START -> P L4
+      P -> p
+      L2 -> A X
+      L3 -> A T2
+      L4 -> A T3
+      A -> a
+      X -> x
+      X -> y
+      T2 -> X X
+      T3 -> X T2
+    """.trimIndent().parseCNF()
+    val prefix = listOf("p")
+    val plannedLengths = listOf(2, 3, 4)
+    val batch = SuffixBatch(
+      prefix,
+      plannedLengths.map { SuffixSlice("a", it) }
+    )
+
+    val words = assertNotNull(suffixCfg.gpuDiverseSuffixes(batch, limit = 14))
+    val ordering = words.map {
+      (it.tokenizeByWhitespace().size - prefix.size) to it
+    }
+
+    assertEquals(14, words.size)
+    assertEquals(plannedLengths.toSet(), ordering.mapTo(linkedSetOf()) { it.first })
+    assertEquals(
+      ordering.sortedWith(compareBy<Pair<Int, String>>({ it.first }, { it.second })),
+      ordering
+    )
+    assertTrue(words.all { it in suffixCfg.language })
   }
 
   @Test

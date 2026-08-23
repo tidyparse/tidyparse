@@ -48,7 +48,8 @@ class JSTidyEditorTest {
     editor: HTMLTextAreaElement,
     output: HTMLDivElement,
     override var cfg: CFG,
-    private val softPreviewAvailable: Boolean
+    private val softPreviewAvailable: Boolean,
+    private val displayLimit: Int
   ) : JSTidyEditor(editor, output) {
     var writes = 0
 
@@ -58,7 +59,7 @@ class JSTidyEditorTest {
       insertion: String,
       offset: Int
     ): Boolean = softPreviewAvailable
-    override fun currentDisplayResultLimit(): Int = MAX_DISP_RESULTS
+    override fun currentDisplayResultLimit(): Int = displayLimit
     override fun readDisplayText(): String = output.textContent ?: ""
     override fun writeDisplayText(s: String) {
       writes++
@@ -86,7 +87,8 @@ class JSTidyEditorTest {
 
   private fun editorFor(
     line: String,
-    softPreviewAvailable: Boolean = true
+    softPreviewAvailable: Boolean = true,
+    displayLimit: Int = MAX_DISP_RESULTS
   ): Pair<RecordingEditor, HTMLTextAreaElement> {
     window.asDynamic().cmEditor = null
 
@@ -104,7 +106,7 @@ class JSTidyEditorTest {
     output.innerHTML = "instructions"
     input.value = "START -> S\nS -> a\n---\n$line"
     input.setSelectionRange(input.value.length, input.value.length)
-    return RecordingEditor(input, output, cfg, softPreviewAvailable) to input
+    return RecordingEditor(input, output, cfg, softPreviewAvailable, displayLimit) to input
   }
 
   @Test
@@ -225,6 +227,28 @@ class JSTidyEditorTest {
     assertNotNull(editor.runningJob).join()
 
     assertTrue((editor.output.textContent ?: "").startsWith("-> Forward completion"))
+  }
+
+  @Test
+  fun gpuPlWhileSingleTokenSuffixRendersFirst() = runTest {
+    tryBootstrappingGPU()
+    if (!gpuAvailable) return@runTest
+
+    val prefix = "for ( ( ID ) += STR ; true ; ID -= STR ) { continue"
+    val expected = "$prefix }"
+    val (editor, _) = editorFor(prefix, displayLimit = 29)
+    editor.cfg = plWhileCfg
+
+    editor.handleInput()
+    assertNotNull(editor.runningJob).join()
+
+    val encoded = assertNotNull(
+      (editor.output as HTMLDivElement)
+        .querySelector("mark [data-completion]")
+        ?.getAttribute("data-completion")
+    )
+    val renderedFirst = js("decodeURIComponent(encoded)") as String
+    assertEquals(expected, renderedFirst)
   }
 
   @Test
