@@ -28,8 +28,13 @@ jobs:
           distribution: temurin
           java-version: 21
           cache: gradle
-      - name: Build with Gradle
-        run: ./gradlew jsTest -x :tidyparse-cpp:jsTest
+      - name: Test supported browser projects
+        run: |
+          ./gradlew \
+            :tidyparse-core:jsBrowserTest \
+            :tidyparse-web:jsBrowserTest \
+            :tidyparse-python:jsBrowserTest \
+            :tidyparse-wgpu:jsBrowserTest
       - name: Upload Test Reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -38,6 +43,5 @@ jobs:
           path: |
             tidyparse-core/build/reports/tests/jsBrowserTest/
             tidyparse-web/build/reports/tests/jsBrowserTest/
-            tidyparse-cpp/build/reports/tests/jsBrowserTest/
             tidyparse-python/build/reports/tests/jsBrowserTest/
             tidyparse-wgpu/build/reports/tests/jsBrowserTest/
