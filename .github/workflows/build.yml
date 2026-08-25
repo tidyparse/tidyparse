@@ -7,6 +7,7 @@ on:
       - '**.kts'
       - '**.js'
       - 'tidyparse-cpp/**'
+      - 'tidyparse-python/**'
       - '**.tidy'
       - '**.zip'
       - '.github/workflows/build.yml'
@@ -37,3 +38,4 @@ jobs:
             tidyparse-core/build/reports/tests/jsBrowserTest/
             tidyparse-web/build/reports/tests/jsBrowserTest/
             tidyparse-cpp/build/reports/tests/jsBrowserTest/
+            tidyparse-python/build/reports/tests/jsBrowserTest/
