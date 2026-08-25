@@ -3,6 +3,7 @@ import kotlin.js.Promise
 
 private const val TY_WASM_EXPECTED_VERSION = "423b9fbf1"
 private const val TY_WORKSPACE_ROOT = "/workspace"
+private const val TY_REPAIR_CANDIDATE_PATH = "$TY_WORKSPACE_ROOT/.tidyparse-repair-candidate.py"
 
 /**
  * Direct, single-file browser host for ty's wasm-bindgen API.
@@ -52,7 +53,6 @@ class TyEngine(
       val result = snapshot(mapDiagnostics())
       result.capabilities = arrayOf(
         "diagnostics",
-        "completion",
         "hover",
         "definition",
         "inlay hints",
@@ -81,13 +81,6 @@ class TyEngine(
       onStatus("error", failure.message ?: "ty analysis failed")
       throw failure
     }
-  }
-
-  fun completions(line: Int, column: Int): Array<dynamic> {
-    requireInitialized()
-    val values = workspace.completions(fileHandle, newTyPosition(line, column))
-      .unsafeCast<Array<dynamic>>()
-    return mapTyArray(values, ::plainCompletion)
   }
 
   fun hover(line: Int, column: Int): dynamic {
@@ -134,6 +127,41 @@ class TyEngine(
     requireInitialized()
     val formatted = workspace.format(fileHandle)
     return if (tyDefined(formatted)) formatted as String else null
+  }
+
+  /**
+   * Formats a single-line repair with the Ruff formatter already embedded in ty_wasm.
+   *
+   * Ruff can intentionally expand delimiter layouts and semicolon suites across physical lines.
+   * Monaco repairs replace one complete line, so normalize that layout back to one line; the caller
+   * rechecks the exact result against the full document and falls back to the already-admitted raw
+   * spelling when a statement-level rewrite cannot be compacted safely.
+   */
+  fun formatRepairCandidate(candidate: String): String {
+    requireInitialized()
+    val fallback = candidate.trim()
+    if (fallback.isEmpty()) return fallback
+
+    val source = "$fallback\n"
+    return try {
+      val formatted = withRepairScratch(source) { handle -> workspace.format(handle) }
+      normalizeRuffRepair(fallback, if (tyDefined(formatted)) formatted as String else null)
+    } catch (_: Throwable) {
+      fallback
+    }
+  }
+
+  /** Checks a speculative full-file repair without disturbing the editor's active ty file. */
+  fun isSemanticallyAdmissible(source: String): Boolean {
+    requireInitialized()
+    return withRepairScratch(source) { handle ->
+      val values = workspace.checkFile(handle).unsafeCast<Array<dynamic>>()
+      try {
+        values.isEmpty()
+      } finally {
+        values.forEach(::freeTyWrapper)
+      }
+    }
   }
 
   fun signatureHelp(line: Int, column: Int): dynamic {
@@ -196,6 +224,19 @@ class TyEngine(
     }
   }
 
+  private fun <T> withRepairScratch(source: String, action: (dynamic) -> T): T {
+    // Recreate the file instead of rapidly updating one open handle. ty's virtual filesystem can
+    // coalesce same-turn updates, which would let a cached analysis or format escape to the next
+    // candidate. Reusing the deleted path keeps the project database bounded.
+    val handle = workspace.openFile(TY_REPAIR_CANDIDATE_PATH, source)
+    return try {
+      action(handle)
+    } finally {
+      // ty_wasm intentionally consumes FileHandle when closing a file.
+      workspace.closeFile(handle)
+    }
+  }
+
   private fun mapDiagnostics(): Array<dynamic> {
     val values = workspace.checkFile(fileHandle).unsafeCast<Array<dynamic>>()
     return mapTyArray(values, ::plainDiagnostic)
@@ -210,23 +251,6 @@ class TyEngine(
       result.tags = value.tags()
       result.range = plainRange(value.toRange(workspace))
       result.display = value.display(workspace)
-      result
-    } finally {
-      freeTyWrapper(value)
-    }
-
-  private fun plainCompletion(value: dynamic): dynamic =
-    try {
-      val result = tyObject()
-      val name = value.name as String
-      val insertText = value.insert_text
-      result.name = name
-      result.kind = value.kind
-      result.insertText = if (tyDefined(insertText)) insertText else name
-      result.detail = value.detail
-      result.documentation = value.documentation
-      result.moduleName = value.module_name
-      result.additionalTextEdits = plainTextEdits(value.additional_text_edits)
       result
     } finally {
       freeTyWrapper(value)
@@ -393,6 +417,21 @@ class TyEngine(
       freeTyWrapper(currentFile)
     }
   }
+}
+
+internal fun normalizeRuffRepair(fallback: String, formatted: String?): String {
+  val raw = fallback.trim()
+  val normalized = formatted?.trim().orEmpty()
+  if (normalized.isBlank()) return raw
+  if ('\n' !in normalized && '\r' !in normalized) return normalized
+
+  val flattened = buildString {
+    normalized.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.forEach { line ->
+      if (isNotEmpty() && last() !in "([{" && line.first() !in ")]}") append(' ')
+      append(line)
+    }
+  }
+  return flattened.ifBlank { raw }
 }
 
 private fun newTyWorkspace(

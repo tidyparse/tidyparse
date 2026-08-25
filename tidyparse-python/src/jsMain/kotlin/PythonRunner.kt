@@ -13,9 +13,7 @@ data class PythonExecutionResult(
 )
 
 /** Client for the independently generated classic Pyodide worker. */
-class PythonRunner(
-  private val onStatus: (state: String, message: String) -> Unit
-) {
+class PythonRunner(private val onStatus: (state: String, message: String) -> Unit) {
   private data class PendingRun(
     val resolve: (PythonExecutionResult) -> Unit,
     val reject: (Throwable) -> Unit,

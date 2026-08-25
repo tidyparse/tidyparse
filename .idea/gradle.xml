@@ -31,8 +31,10 @@
             <option value="$PROJECT_DIR$/tidyparse-cpp" />
             <option value="$PROJECT_DIR$/tidyparse-intellij" />
             <option value="$PROJECT_DIR$/tidyparse-python" />
+            <option value="$PROJECT_DIR$/tidyparse-python/repair-worker" />
             <option value="$PROJECT_DIR$/tidyparse-rust" />
             <option value="$PROJECT_DIR$/tidyparse-web" />
+            <option value="$PROJECT_DIR$/tidyparse-wgpu" />
           </set>
         </option>
       </GradleProjectSettings>

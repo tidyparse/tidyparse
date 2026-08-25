@@ -2,6 +2,7 @@ import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.tidyparse.*
+import ai.hypergraph.tidyparse.wgpu.*
 import kotlinx.browser.*
 import kotlinx.coroutines.*
 import org.w3c.dom.*
@@ -103,7 +104,13 @@ class JSTidyPyEditor(editor: HTMLTextAreaElement, output: Node) : JSTidyEditor(e
       val tokens = pcs.lexedTokens().tokenizeByWhitespace().map { if (it == "|") "OR" else it }
       val errHst = mutableMapOf<String, Int>()
 
-      return repairCode(cfg, tokens, LED_BUFFER, rerankerQuery = neuralRerankerQuery(tokens))
+      return repairCode(
+        cfg,
+        tokens,
+        LED_BUFFER,
+        rerankerQuery = neuralRerankerQuery(tokens),
+        reranker = RepairReranker::rerankOrOriginal
+      )
           .pythonRepairs().map {
             pcs.restitch(levenshteinAlign(tokens.dropLast(1), it.tokenizeByWhitespace()))
           }.distinct().filterCompilerErrors(errHst).take(maxResults).toList().also { errHst.logRejections() }
@@ -209,6 +216,7 @@ class JSTidyPyEditor(editor: HTMLTextAreaElement, output: Node) : JSTidyEditor(e
           repairCode(
             cfg, tokens, LED_BUFFER,
             rerankerQuery = neuralRerankerQuery(tokens),
+            reranker = RepairReranker::rerankOrOriginal,
             requestStarted = started
           )
         } else { log("Repairing on CPU..."); null }
@@ -225,6 +233,7 @@ class JSTidyPyEditor(editor: HTMLTextAreaElement, output: Node) : JSTidyEditor(e
         compilerFilteredRepairs.withIndex().enumerateInteractively(
           workHash = workHash,
           keyOf = { it.value },
+          resultsToPost = MAX_DISP_RESULTS,
           metric = { repair ->
             repairMetric?.invoke(repair.value.tokenizeByWhitespace()) ?: repair.index
           },

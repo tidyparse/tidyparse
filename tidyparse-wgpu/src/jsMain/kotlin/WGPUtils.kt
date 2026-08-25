@@ -1,20 +1,19 @@
-import GPUBufferUsage.STCPSD
-import Shader.Companion.GPUBuffer
-import Shader.Companion.buildLanguageSizeBuf
-import Shader.Companion.packMetadata
-import Shader.Companion.readIndices
-import Shader.Companion.toGPUBuffer
-import Shader.Companion.writeU32
+package ai.hypergraph.tidyparse.wgpu
+
+import ai.hypergraph.tidyparse.wgpu.GPUBufferUsage.STCPSD
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.GPUBuffer
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.buildLanguageSizeBuf
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.packMetadata
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.readIndices
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.toGPUBuffer
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.writeU32
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.parsing.bindex
 import ai.hypergraph.kaliningraph.parsing.leftAdj
 import ai.hypergraph.kaliningraph.parsing.nonterminals
-import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
-import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.kaliningraph.types.cache
-import ai.hypergraph.tidyparse.PyCodeSnippet
 import web.gpu.GPUBuffer
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
@@ -513,7 +512,7 @@ private suspend fun CFG.suffixIntersectionPipeline(
 }
 
 /** Builds and decodes one porous GPU forest for all selected suffix slices. */
-internal suspend fun CFG.gpuDiverseSuffixes(
+suspend fun CFG.gpuDiverseSuffixes(
   batch: SuffixBatch,
   limit: Int,
   requestStarted: TimeMark = TimeSource.Monotonic.markNow(),
@@ -789,81 +788,6 @@ const PKT_HDR_LEN : u32 = ${PKT_HDR_LEN}u;
   packets[base + 1u] = cost;
 }""")
 
-suspend fun debugWDFATokenIndexing(cfg: CFG = pythonStatementCNFAllProds, wdfaBuf: GPUBuffer? = wdfa) {
-  log("Debugging WDFA token indexing...")
-  if (wdfaBuf == null) return log("WDFA rank testing skipped: buffer not loaded")
-
-  val lines = """
-    x = 1 + 1
-    [ i for i in j ]
-    stripped_lines = lambda f : (l.rstrip("\n") for l in f)
-    newlist = [word for word in words if len(word) == 9]
-    Keys = [x for x in d if d[x] == 'a']
-    gen_fun = lambda num: (x for u in range(num) for x in (u*2, u*10, u*u))
-    [2 * x if x > 2 else add_nothing_to_list for x in some_list]
-    lines = [[float(x) for x in line] for line in csv.reader(f)]
-    filtered = [x for x in common if x in words]
-    () + (1, 'a') + (2, 'b') + (3, 'c')
-  """.lines().map { it.trim() }.filter { it.isNotBlank() }
-
-  val packets = IntArray(lines.size * MAX_WORD_LEN)
-  val decoded = mutableListOf<List<String>>()
-
-  lines.forEachIndexed { i, line ->
-    val toks = PyCodeSnippet(line).lexedTokens().tokenizeByWhitespace().filter { it in cfg.terminals }
-
-    decoded += toks
-
-    val base = i * MAX_WORD_LEN
-    packets[base + 0] = 0 // edit distance, ignored by wdfa_score_raw
-    packets[base + 1] = 0 // score filled by wdfa_score_raw
-
-    toks.forEachIndexed { j, tok ->
-      val tid = cfg.tmMap[tok] ?: error("Token not in cfg.tmMap: $tok from $line")
-
-      // Packet convention: 0 = terminator, local terminal i = i + 1.
-      packets[base + PKT_HDR_LEN + j] = tid + 1
-    }
-
-    packets[base + PKT_HDR_LEN + toks.size] = 0
-  }
-
-  val packetBuf = packets.toGPUBuffer(STCPSD)
-  val prmBuf = intArrayOf(
-    lines.size,              // maxSamples
-    lines.size,              // k, unused
-    MAX_WORD_LEN,            // stride
-    DISPATCH_GROUP_SIZE_X
-  ).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
-
-  wdfa_score_raw(packetBuf, wdfaBuf, prmBuf)(DISPATCH_GROUP_SIZE_X, 1)
-
-  val scored = packetBuf.readJSIntArray()
-  val rows = lines.indices.map { lines[it] to scored[it * MAX_WORD_LEN + 1].toUInt().toLong() }
-  val sorted = rows.sortedByDescending { it.second }
-
-  log("GPU WDFA sorted order:")
-  sorted.forEachIndexed { rank, row -> log("${rank + 1}. ${row.first} // gpu=${row.second}") }
-
-  val expected = listOf(
-    "gen_fun = lambda num: (x for u in range(num) for x in (u*2, u*10, u*u))",
-    "() + (1, 'a') + (2, 'b') + (3, 'c')",
-    "[2 * x if x > 2 else add_nothing_to_list for x in some_list]",
-    "lines = [[float(x) for x in line] for line in csv.reader(f)]",
-    """stripped_lines = lambda f : (l.rstrip("\n") for l in f)""",
-    "newlist = [word for word in words if len(word) == 9]",
-    "Keys = [x for x in d if d[x] == 'a']",
-    "filtered = [x for x in common if x in words]",
-    "x = 1 + 1",
-    "[ i for i in j ]"
-  )
-
-  val got = sorted.map { it.first }
-  log("GPU WDFA ordering: ${if (got == expected)"PASS" else "FAIL"}")
-
-  packetBuf.destroy()
-  prmBuf.destroy()
-}
 val line_mdpt_write by Shader("""struct Uni { n : u32 };
 @group(0) @binding(0) var<storage, read_write> offsets : array<u32>;
 @group(0) @binding(1) var<storage, read_write>  flat_mp : array<u32>;

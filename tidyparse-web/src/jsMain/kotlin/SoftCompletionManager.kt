@@ -1,7 +1,10 @@
 import ai.hypergraph.kaliningraph.cache.LRUCache
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.types.cache
-import ai.hypergraph.tidyparse.MAX_DISP_RESULTS
+import ai.hypergraph.tidyparse.wgpu.MAX_DISP_RESULTS
+import ai.hypergraph.tidyparse.wgpu.SuffixBatch
+import ai.hypergraph.tidyparse.wgpu.SuffixSlice
+import ai.hypergraph.tidyparse.wgpu.MAX_WORD_LEN
 import kotlinx.browser.document
 import org.w3c.dom.HTMLSpanElement
 import org.w3c.dom.HTMLTextAreaElement
@@ -172,14 +175,6 @@ internal fun <T> fairMerge(sequences: Sequence<Sequence<T>>): Sequence<T> = sequ
 }
 
 internal fun <T> fairMerge(sequences: List<Sequence<T>>): Sequence<T> = fairMerge(sequences.asSequence())
-
-internal data class SuffixSlice(val terminal: Σᐩ, val length: Int)
-
-internal data class SuffixBatch(
-  val prefix: List<Σᐩ>,
-  val slices: List<SuffixSlice>,
-  val completeWords: List<Σᐩ> = emptyList()
-)
 
 internal fun CFG.diverseSuffixSlices(prefix: List<Σᐩ>, limit: Int = MAX_DISP_RESULTS): List<SuffixSlice> {
   if (limit == 0) return emptyList()

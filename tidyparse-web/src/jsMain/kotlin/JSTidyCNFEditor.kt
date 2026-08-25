@@ -4,6 +4,7 @@ import ai.hypergraph.kaliningraph.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.tidyparse.*
+import ai.hypergraph.tidyparse.wgpu.*
 import kotlinx.browser.*
 import kotlinx.coroutines.*
 import org.w3c.dom.*

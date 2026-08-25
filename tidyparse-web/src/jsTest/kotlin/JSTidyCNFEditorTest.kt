@@ -3,7 +3,7 @@ import ai.hypergraph.kaliningraph.parsing.Σᐩ
 import ai.hypergraph.kaliningraph.parsing.pretty
 import ai.hypergraph.kaliningraph.parsing.parseCNF
 import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
-import ai.hypergraph.tidyparse.MAX_DISP_RESULTS
+import ai.hypergraph.tidyparse.wgpu.MAX_DISP_RESULTS
 import kotlinx.browser.document
 import kotlinx.browser.window
 import kotlinx.coroutines.test.runTest

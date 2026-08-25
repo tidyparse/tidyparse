@@ -56,7 +56,7 @@ kotlin {
     getByName("jsMain") {
       dependencies {
         implementation(project(":tidyparse-core"))
-        implementation("com.ionspin.kotlin:bignum:0.3.10")
+        implementation(project(":tidyparse-wgpu"))
         implementation("org.jetbrains.kotlin-wrappers:kotlin-web:2026.8.0")
       }
     }
@@ -65,7 +65,6 @@ kotlin {
       dependencies {
         implementation(kotlin("test-js"))
         implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
-        implementation("com.ionspin.kotlin:bignum:0.3.10")
       }
     }
   }

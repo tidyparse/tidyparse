@@ -1,3 +1,5 @@
+package ai.hypergraph.tidyparse.wgpu
+
 import ai.hypergraph.kaliningraph.image.escapeHTML
 
 const val LEV_EDIT_MATCH = 0
@@ -11,7 +13,7 @@ const val LEV_EDIT_SUBSTITUTE = 3
  * when requested. The List facade is for string-only consumers; collection
  * operations on it necessarily render text and discard the packet metadata.
  */
-class IntersectionResults internal constructor(
+class IntersectionResults(
   private val rows: List<IntArray>,
   private val terminals: List<String>
 ) : AbstractList<String>() {
@@ -77,7 +79,7 @@ class IntersectionResults internal constructor(
     }
   }
 
-  internal fun mapTerminals(transform: (String) -> String): IntersectionResults =
+  fun mapTerminals(transform: (String) -> String): IntersectionResults =
     IntersectionResults(rows, terminals.map(transform))
 
   internal fun takeResults(count: Int): IntersectionResults = selectResults(rows.indices.take(count))
@@ -88,9 +90,9 @@ class IntersectionResults internal constructor(
   internal fun sameTokens(index: Int, other: IntersectionResults, otherIndex: Int): Boolean =
     rows[index].sameTokens(other.rows[otherIndex])
 
-  internal fun terminalCountAt(index: Int): Int = rows[index].size - PKT_HDR_LEN
+  fun terminalCountAt(index: Int): Int = rows[index].size - PKT_HDR_LEN
 
-  internal fun terminalTextAt(row: Int, position: Int): String =
+  fun terminalTextAt(row: Int, position: Int): String =
     terminals[rows[row][position + PKT_HDR_LEN].terminalId()]
 
   internal operator fun plus(other: IntersectionResults): IntersectionResults = when {

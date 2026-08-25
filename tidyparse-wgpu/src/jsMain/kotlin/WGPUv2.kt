@@ -1,12 +1,13 @@
-import GPUBufferUsage.STCPSD
-import Shader.Companion.GPUBuffer
-import Shader.Companion.buildLanguageSizeBuf
-import Shader.Companion.packMetadata
-import Shader.Companion.readIndices
-import Shader.Companion.toGPUBuffer
+package ai.hypergraph.tidyparse.wgpu
+
+import ai.hypergraph.tidyparse.wgpu.GPUBufferUsage.STCPSD
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.GPUBuffer
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.buildLanguageSizeBuf
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.packMetadata
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.readIndices
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.toGPUBuffer
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
-import ai.hypergraph.tidyparse.*
 import js.typedarrays.Int32Array
 import kotlinx.coroutines.await
 import kotlin.js.Promise
@@ -104,6 +105,7 @@ suspend fun intersectionPipelineV2(
   ledBuffer: Int,
   codePoints: IntArray,
   rerankerQuery: List<String>? = null,
+  reranker: RepairRerankerCallback? = null,
   chartInitializer: Shader = init_lev_chart
 ): IntersectionResults {
   require(cfg.tmLst.size < PACKED_TOKEN_LIMIT) {
@@ -216,7 +218,8 @@ suspend fun intersectionPipelineV2(
   log("V2 language size: total=$totalLangSize across ${rootEntries.size} roots, maxRepairLen=$maxRepairLen, buckets=[$bucketSummary]")
 
   val decodeT = TimeSource.Monotonic.markNow()
-  val decoderTopK = if (rerankerQuery != null) RERANKER_TOP_K_SAMP else TOP_K_SAMP
+  val shouldRerank = rerankerQuery != null && reranker != null
+  val decoderTopK = if (shouldRerank) RERANKER_TOP_K_SAMP else TOP_K_SAMP
   log("V2 decoding ${rootEntries.size} roots across ${rootsByDist.size} edit-distance bucket(s)")
   var result = IntersectionResults.EMPTY
   for ((dist, roots) in rootsByDist) {
@@ -259,10 +262,10 @@ suspend fun intersectionPipelineV2(
   mark("decode", decodeT)
 
   val rankedResult =
-    if (rerankerQuery != null) {
+    if (shouldRerank) {
       val candidates = result.takeResults(RERANKER_TOP_K_SAMP)
       val rerankT = TimeSource.Monotonic.markNow()
-      RepairReranker.rerankOrOriginal(rerankerQuery, candidates)
+      reranker(rerankerQuery, candidates)
         .let(candidates::selectResults)
         .also { mark("rerank", rerankT) }
     } else result

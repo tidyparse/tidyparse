@@ -1,22 +1,21 @@
 @file:OptIn(ExperimentalUnsignedTypes::class, ExperimentalStdlibApi::class)
 
-import GPUBufferUsage.STCPSD
-import Shader.Companion.GPUBuffer
-import Shader.Companion.buildLanguageSizeBuf
-import Shader.Companion.packMetadata
-import Shader.Companion.readIndices
-import Shader.Companion.toGPUBuffer
-import Shader.Companion.writeU32
+package ai.hypergraph.tidyparse.wgpu
+
+import ai.hypergraph.tidyparse.wgpu.GPUBufferUsage.STCPSD
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.GPUBuffer
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.buildLanguageSizeBuf
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.packMetadata
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.readIndices
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.toGPUBuffer
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.writeU32
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.types.cache
-import ai.hypergraph.tidyparse.*
 import js.array.asList
 import js.buffer.*
 import js.typedarrays.Int32Array
-import kotlinx.browser.document
 import kotlinx.coroutines.await
-import org.w3c.dom.HTMLDivElement
 import web.events.*
 import web.gpu.*
 import kotlin.js.Promise
@@ -43,6 +42,13 @@ const val smallMem = "{ requiredLimits: { maxBufferSize: 1073741824, maxStorageB
 const val MAX_LEV_RAD = 5 // Edit metadata has six deletion codes; the seventh code is insertion.
 
 suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
+  // Shader pipelines, grammar encodings, and model buffers are device-owned and cached.
+  // Replacing a live device would leave those caches pointing at invalid foreign buffers.
+  if (gpuAvailable) {
+    reportRuntimeStatus("ready", "WebGPU ready")
+    return
+  }
+
   val tmpDev = try {
     (navigator.gpu as? GPU)?.requestAdapter()?.also {
       gpu = if (needsExtraMemory) it.requestDevice(js(largeMem))
@@ -94,17 +100,6 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
     log("Bootstrapping GPU successful!")
     gpuAvailable = true
 
-    (document.getElementById("gpuAvail") as? HTMLDivElement)?.also { node ->
-      if (node.querySelector("object") == null) {
-        node.appendChild(
-          document.createElement("object").apply {
-            setAttribute("type", "image/svg+xml")
-            setAttribute("data", "/webgpu.svg")
-            setAttribute("width", "24")
-            setAttribute("height", "24")
-          })
-      }
-    }
     markWebGPUStatus("ready", "WebGPU ready")
   } else {
     markWebGPUStatus("error", "WebGPU unavailable")
@@ -113,14 +108,7 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
 }
 
 private fun markWebGPUStatus(state: String, label: String) {
-  val node = document.getElementById("gpuAvail") as? HTMLDivElement ?: return
-  node.classList.remove("pending")
-  node.classList.remove("warming")
-  node.classList.remove("ready")
-  node.classList.remove("error")
-  node.classList.add(state)
-  node.setAttribute("aria-label", label)
-  node.setAttribute("title", label)
+  reportRuntimeStatus(state, label)
 }
 
 suspend fun repairCode(
@@ -128,6 +116,7 @@ suspend fun repairCode(
   code: List<String>,
   ledBuffer: Int = Int.MAX_VALUE,
   rerankerQuery: List<String>? = null,
+  reranker: RepairRerankerCallback? = null,
   requestStarted: TimeMark = TimeSource.Monotonic.markNow()
 ): IntersectionResults {
   timings = linkedMapOf()
@@ -145,7 +134,7 @@ suspend fun repairCode(
 
   mark("build input FSA", preprocT)
 //  val words = intersectionPipelineV2(cfg, fsa, ledBuffer, codePoints, rerankerQuery)
-  val words = intersectionPipeline(cfg, fsa, ledBuffer, codePoints, rerankerQuery)
+  val words = intersectionPipeline(cfg, fsa, ledBuffer, codePoints, rerankerQuery, reranker)
 //  val distinctWords = words.distinct()
 //  log("Distinct: ${distinctWords.size} words")
 
@@ -158,6 +147,7 @@ suspend fun intersectionPipeline(
   ledBuffer: Int,
   codePoints: IntArray,
   rerankerQuery: List<String>? = null,
+  reranker: RepairRerankerCallback? = null,
   chartInitializer: Shader = init_lev_chart
 ): IntersectionResults {
   require(cfg.tmLst.size < PACKED_TOKEN_LIMIT) {
@@ -312,7 +302,8 @@ suspend fun intersectionPipeline(
   log("Enumerated $toDecode samples in ${timings["enumerate"]}ms (${outBuf.size}B)")
 
   val decodeT = TimeSource.Monotonic.markNow()
-  val decoderTopK = if (rerankerQuery != null) RERANKER_TOP_K_SAMP else TOP_K_SAMP
+  val shouldRerank = rerankerQuery != null && reranker != null
+  val decoderTopK = if (shouldRerank) RERANKER_TOP_K_SAMP else TOP_K_SAMP
   val result =
     if (wdfa != null) wdfaDecoder(outBuf, wdfa!!, maxRepairLen, cfg, toDecode, decoderTopK)
     else if (ngrams != null) ngramDecoder(outBuf, ngrams!!, maxRepairLen, cfg, toDecode, decoderTopK)
@@ -320,10 +311,10 @@ suspend fun intersectionPipeline(
   mark("decode", decodeT)
 
   val rankedResults =
-    if (rerankerQuery != null) {
+    if (shouldRerank) {
       val candidates = result.takeResults(RERANKER_TOP_K_SAMP)
       val rerankT = TimeSource.Monotonic.markNow()
-      RepairReranker.rerankOrOriginal(rerankerQuery, candidates)
+      reranker(rerankerQuery, candidates)
         .let(candidates::selectResults)
         .also { mark("rerank", rerankT) }
     } else result
@@ -1345,6 +1336,7 @@ val prefix_sum_p2 by Shader("""$PFX_SUM_PARAMS $SAT_ARTH
 // Longest word WGSL can handle. If ~2^9<MAX_WORD_LEN, pipeline breaks some on architectures
 const val MAX_WORD_LEN = 128
 const val MAX_SAMPLES = 2_000_000 // Maximum number of samples to draw before reranking
+const val MAX_DISP_RESULTS = 29
 const val TOP_K_SAMP = 10 * MAX_DISP_RESULTS // Maximum results to sample, some of which may be displayed to the user
 const val RERANKER_TOP_K_SAMP = 1_000
 const val DISPATCH_GROUP_SIZE_X = 65_535
@@ -2347,7 +2339,7 @@ suspend fun awaitGPUQueue() {
 }
 
 // Measures only the work submitted inside `block`, not older queued work.
-suspend inline fun timedGPUIsolated(label: String, block: () -> Unit): Int {
+internal suspend inline fun timedGPUIsolated(label: String, block: () -> Unit): Int {
   if (PROFILE_WGPU_KERNELS) awaitGPUQueue() // drain previous queued work
 
   val t = TimeSource.Monotonic.markNow()

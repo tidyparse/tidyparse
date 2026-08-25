@@ -2,8 +2,9 @@ import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.tidyparse.PyCodeSnippet
-import ai.hypergraph.tidyparse.MAX_DISP_RESULTS
+import ai.hypergraph.tidyparse.wgpu.MAX_DISP_RESULTS
 import ai.hypergraph.tidyparse.sampleGREUntilTimeout
+import ai.hypergraph.tidyparse.wgpu.*
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.promise
 import kotlinx.coroutines.withTimeout
@@ -527,7 +528,7 @@ class TestTidy {
 
     val prefix =
       "for ( ( ID ) += STR ; true ; ID -= STR ) { continue".tokenizeByWhitespace()
-    val limit = 29
+    val limit = MAX_DISP_RESULTS
     val batch = assertNotNull(
       plWhileCompletionCfg.gpuSuffixBatch(prefix, terminalCompletion = null, limit = limit)
     )

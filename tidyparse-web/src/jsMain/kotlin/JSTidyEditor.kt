@@ -4,6 +4,7 @@ import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.tidyparse.*
 import ai.hypergraph.tidyparse.TidyEditor.Scenario.*
+import ai.hypergraph.tidyparse.wgpu.*
 import kotlinx.browser.window
 import kotlinx.coroutines.*
 import org.w3c.dom.*
@@ -231,7 +232,7 @@ open class JSTidyEditor(val editor: HTMLTextAreaElement, val output: Node): Tidy
     }
   }
 
-  protected open fun currentDisplayResultLimit(): Int =
+  protected override fun currentDisplayResultLimit(): Int =
     (output as? HTMLElement)?.let(::displayResultLimit) ?: MAX_DISP_RESULTS
 
   final override fun handleInput() {

@@ -8,6 +8,7 @@ on:
       - '**.js'
       - 'tidyparse-cpp/**'
       - 'tidyparse-python/**'
+      - 'tidyparse-wgpu/**'
       - '**.tidy'
       - '**.zip'
       - '.github/workflows/build.yml'
@@ -39,3 +40,4 @@ jobs:
             tidyparse-web/build/reports/tests/jsBrowserTest/
             tidyparse-cpp/build/reports/tests/jsBrowserTest/
             tidyparse-python/build/reports/tests/jsBrowserTest/
+            tidyparse-wgpu/build/reports/tests/jsBrowserTest/

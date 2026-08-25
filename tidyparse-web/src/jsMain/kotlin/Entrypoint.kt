@@ -1,10 +1,11 @@
 @file:OptIn(ExperimentalUnsignedTypes::class)
 
-import GPUBufferUsage.STCPSD
-import Shader.Companion.GPUBuffer
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
+import ai.hypergraph.tidyparse.wgpu.*
+import ai.hypergraph.tidyparse.wgpu.GPUBufferUsage.STCPSD
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.GPUBuffer
 import js.buffer.ArrayBuffer
 import js.typedarrays.Int32Array
 import kotlinx.browser.*
@@ -12,7 +13,6 @@ import kotlinx.coroutines.*
 import org.w3c.dom.*
 import org.w3c.dom.events.KeyboardEvent
 import org.w3c.fetch.RequestInit
-import web.gpu.GPUBuffer
 import kotlin.time.TimeSource
 
 /**
@@ -46,6 +46,8 @@ val parser = Parser(
 
 // ./gradlew :tidyparse-web:jsBrowserDevelopmentRun --continuous
 fun main() {
+  configureRepairReranker(::browserRerankerWeights)
+  configureWgpuRuntime(::log, ::markWebGpuStatus)
   MainScope().launch {
     try {
       if (window["REPAIR_MODE"] == "headless") headlessSetup()
@@ -215,7 +217,6 @@ suspend fun pythonSetup() {
         log("Loaded n-grams into ${jsPyEditor.ngramTensor.size / 1000000}mb GPU buffer in ${t0.elapsedNow()}")
         loadWDFA()
         markNeuralRerankerAvailable()
-        debugWDFATokenIndexing()
       } else {
         markNeuralRerankerUnavailable("Neural reranker unavailable: WebGPU unavailable")
       }
@@ -349,6 +350,26 @@ private fun markNeuralRerankerStatus(state: String, label: String) {
   node.setAttribute("title", label)
 }
 
+private fun markWebGpuStatus(state: String, label: String) {
+  val node = document.getElementById("gpuAvail") as? HTMLDivElement ?: return
+  node.classList.remove("pending")
+  node.classList.remove("warming")
+  node.classList.remove("ready")
+  node.classList.remove("error")
+  node.classList.add(state)
+  node.setAttribute("aria-label", label)
+  node.setAttribute("title", label)
+
+  if (state == "ready" && node.querySelector("object") == null) {
+    node.appendChild(document.createElement("object").apply {
+      setAttribute("type", "image/svg+xml")
+      setAttribute("data", "/webgpu.svg")
+      setAttribute("width", "24")
+      setAttribute("height", "24")
+    })
+  }
+}
+
 val exSelector by lazy { document.getElementById("ex-selector") as HTMLSelectElement }
 val decorator by lazy { TextareaDecorator(inputField, parser) }
 val pyDecorator by lazy { PyTextareaDecorator(jsPyEditor.cme) }
@@ -360,11 +381,6 @@ val epscheck by lazy { document.getElementById("epsilon-checkbox") as HTMLInputE
 val ntscheck by lazy { document.getElementById("ntstubs-checkbox") as HTMLInputElement }
 val timeout by lazy { document.getElementById("timeout") as HTMLInputElement }
 val ledBuffSel by lazy { document.getElementById("led-buffer") as HTMLInputElement }
-
-var wdfa: GPUBuffer? = null
-var ngrams: GPUBuffer? = null
-var wdfaNumStates: Int = 0
-var wdfaNumEdges: Int = 0
 
 suspend fun loadWDFA(file: String = "wdfa.bin") {
   fun loadWDFAFromArrayBuffer(ab: ArrayBuffer) {

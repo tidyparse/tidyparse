@@ -1,3 +1,5 @@
+package ai.hypergraph.tidyparse.wgpu
+
 import ai.hypergraph.kaliningraph.parsing.parseCFG
 import ai.hypergraph.kaliningraph.parsing.tmMap
 import kotlin.test.Test

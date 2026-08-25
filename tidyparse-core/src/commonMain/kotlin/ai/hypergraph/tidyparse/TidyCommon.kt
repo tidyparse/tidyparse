@@ -104,8 +104,6 @@ suspend fun CFG.maxParsableFragmentB(tokens: List<Σᐩ>, pad: Int = 3): Pair<In
   return monoEditBounds
 }
 
-const val MAX_DISP_RESULTS = 29
-
 var i = 0
 suspend fun pause(freq: Int = 300_000) { if (i++ % freq == 0) { delay(50.nanoseconds) } }
 

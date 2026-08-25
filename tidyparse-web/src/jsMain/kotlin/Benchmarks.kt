@@ -1,9 +1,10 @@
-import Shader.Companion.GPUBuffer
-import Shader.Companion.bindBuffers
-import Shader.Companion.toGPUBuffer
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.repair.pythonStatementCNFAllProds
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
+import ai.hypergraph.tidyparse.wgpu.*
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.GPUBuffer
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.bindBuffers
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.toGPUBuffer
 import js.array.asList
 import js.typedarrays.Int32Array
 import kotlinx.coroutines.await
@@ -16,7 +17,11 @@ import kotlin.time.*
 
 suspend fun GPUBuffer.readInts(): IntArray {
 //      val t0 = TimeSource.Monotonic.markNow()
-  val readDst = GPUBuffer(size.toInt(), GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
+  val readDst = GPUBuffer(
+    size.toInt(),
+    ai.hypergraph.tidyparse.wgpu.GPUBufferUsage.COPY_DST or
+      ai.hypergraph.tidyparse.wgpu.GPUBufferUsage.MAP_READ
+  )
   val cmd = gpu.createCommandEncoder()
   cmd.copyBufferToBuffer(source = this, sourceOffset = 0.0, destination = readDst, destinationOffset = 0.0, size = size)
   gpu.queue.submit(arrayOf(cmd.finish()))

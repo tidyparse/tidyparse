@@ -32,6 +32,7 @@ abstract class TidyEditor {
   }
   open fun setCaretPosition(range: IntRange): Unit = TODO()
   abstract fun currentLine(): Σᐩ
+  protected abstract fun currentDisplayResultLimit(): Int
   open fun overwriteRegion(region: IntRange, s: Σᐩ): Unit = TODO()
   abstract fun writeDisplayText(s: Σᐩ)
   abstract fun writeDisplayText(s: (Σᐩ) -> Σᐩ)
@@ -141,7 +142,7 @@ abstract class TidyEditor {
     keyOf: (T) -> K,
     metric: (T) -> Int,
     customDiff: suspend (T) -> String,
-    resultsToPost: Int = MAX_DISP_RESULTS,
+    resultsToPost: Int = currentDisplayResultLimit(),
     timer: TimeSource.Monotonic.ValueTimeMark = TimeSource.Monotonic.markNow(),
     shouldContinue: () -> Boolean = { currentWorkHash == workHash && timer.hasTimeLeft() },
     postCompletionSummary: () -> String = { "." },

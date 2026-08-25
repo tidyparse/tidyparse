@@ -1,7 +1,11 @@
+package ai.hypergraph.tidyparse.wgpu
+
 import ai.hypergraph.kaliningraph.parsing.tmMap
 import ai.hypergraph.kaliningraph.repair.s2pg
 import js.buffer.ArrayBuffer
-import kotlinx.coroutines.*
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.await
 import kotlin.js.Promise
 import kotlin.math.min
@@ -19,6 +23,15 @@ private const val RERANKER_CLS_D = 91
 private const val RERANKER_BOS = 91
 private const val RERANKER_EOS = 92
 private const val RERANKER_ASCII_OFFSET = 33
+
+typealias RerankerWeightsLoader = suspend (path: String) -> ArrayBuffer?
+
+private var rerankerWeightsLoader: RerankerWeightsLoader? = null
+
+/** Installs the consumer-specific asset loader used by the shared reranker. */
+fun configureRepairReranker(weightsLoader: RerankerWeightsLoader) {
+  rerankerWeightsLoader = weightsLoader
+}
 
 var neuralRerankerEnabled = false
 
@@ -97,7 +110,9 @@ object RepairReranker {
   }
 
   private suspend fun loadWeights(): dynamic {
-    val loaded = browserRerankerWeights(RERANKER_WEIGHTS) ?: error("Failed to load $RERANKER_WEIGHTS")
+    val loader = rerankerWeightsLoader
+      ?: error("Repair reranker has not been configured with a weights loader")
+    val loaded = loader(RERANKER_WEIGHTS) ?: error("Failed to load $RERANKER_WEIGHTS")
     return materializeF32Safetensors(loaded)
   }
 
@@ -368,7 +383,7 @@ object RepairReranker {
 
 
 //language=js
-val RERANKER_2000_JS = """
+private val RERANKER_2000_JS = """
 const model = (() => {
 const getTensorBuffer = (safetensorBuffer, tensorMetadata) => {
   return safetensorBuffer.subarray(...tensorMetadata.data_offsets);

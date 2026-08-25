@@ -2,6 +2,7 @@ import kotlinx.browser.document
 import kotlinx.browser.window
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.promise
 import org.w3c.dom.HTMLButtonElement
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.HTMLPreElement
@@ -11,6 +12,13 @@ import kotlin.math.max
 
 private const val PYTHON_SOURCE_KEY = "tidyparse-python3-source"
 private const val PYTHON_THEME_KEY = "tidyparse-python3-theme"
+
+private data class RepairCompletionInvocation(
+  val requestId: Int,
+  val modelVersion: Int,
+  val line: Int,
+  val column: Int
+)
 
 private const val DEFAULT_PYTHON_SOURCE = """from dataclasses import dataclass
 from math import hypot
@@ -51,8 +59,10 @@ fun pythonSetup() {
 }
 
 private class PythonPlayground {
+  private val scope = MainScope()
   private lateinit var editorHost: HTMLElement
   private lateinit var status: HTMLElement
+  private lateinit var repairStatus: HTMLElement
   private lateinit var analysisSummary: HTMLElement
   private lateinit var diagnosticCount: HTMLElement
   private lateinit var diagnostics: HTMLElement
@@ -75,22 +85,33 @@ private class PythonPlayground {
   private var model: dynamic = null
   private lateinit var engine: TyEngine
   private lateinit var runner: PythonRunner
+  private lateinit var repairClient: PythonSyntaxRepairClient
 
   private var darkTheme = false
   private var analysisTimer = 0
   private var engineReady = false
   private var engineSourceVersion = -1
+  private var repairRequestId = 0
+  private var armedRepair: RepairCompletionInvocation? = null
 
   suspend fun start() {
     bindElements()
     applyInitialTheme()
     monaco = loadMonaco()
     createEditor()
+    repairClient = PythonSyntaxRepairClient(::setRepairStatus)
     bindEvents()
 
     engine = TyEngine(::setRuntimeStatus)
     runner = PythonRunner { state, message ->
       if (state == "error") setExecutionStatus("error", message)
+    }
+    scope.launch {
+      try {
+        repairClient.initialize()
+      } catch (failure: Throwable) {
+        console.warn("Syntax repair will remain unavailable", failure)
+      }
     }
 
     val initializedAtVersion = modelVersion()
@@ -108,6 +129,7 @@ private class PythonPlayground {
   private fun bindElements() {
     editorHost = element("python-editor")
     status = element("ty-status")
+    repairStatus = element("repair-status")
     analysisSummary = element("analysis-summary")
     diagnosticCount = element("diagnostic-count")
     diagnostics = element("diagnostics")
@@ -169,14 +191,19 @@ private class PythonPlayground {
     options.tabSize = 4
     options.insertSpaces = true
     options.detectIndentation = false
-    options.quickSuggestions = js("({ other: true, comments: false, strings: false })")
-    options.suggest = js("({ showKeywords: true, showSnippets: true })")
+    options.autoClosingBrackets = "never"
+    options.quickSuggestions = false
+    options.suggestOnTriggerCharacters = false
+    options.wordBasedSuggestions = "off"
+    options.suggest = js("({ showKeywords: false, showSnippets: false })")
     options.inlayHints = js("({ enabled: 'on' })")
     editor = monaco.editor.create(editorHost, options)
   }
 
   private fun bindEvents() {
     model.onDidChangeContent {
+      armedRepair = null
+      repairRequestId++
       saveSource(model.getValue() as String)
       analysisSummary.textContent = if (engineReady) "Analyzing current source…" else "Loading ty…"
       if (analysisTimer != 0) window.clearTimeout(analysisTimer)
@@ -208,6 +235,33 @@ private class PythonPlayground {
 
     val runKey = int(monaco.KeyMod.CtrlCmd) or int(monaco.KeyCode.Enter)
     editor.addCommand(runKey, { runPython() })
+
+    val triggerRepairCompletion = {
+      val position = editor.getPosition()
+      if (defined(position)) {
+        repairRequestId++
+        armedRepair = RepairCompletionInvocation(
+          requestId = repairRequestId,
+          modelVersion = modelVersion(),
+          line = int(position.lineNumber),
+          column = int(position.column)
+        )
+      }
+      editor.trigger("tidyparse.syntaxRepair", "editor.action.triggerSuggest", js("({})"))
+      Unit
+    }
+    listOf(monaco.KeyMod.CtrlCmd, monaco.KeyMod.WinCtrl)
+      .map { int(it) or int(monaco.KeyCode.Space) }
+      .distinct()
+      .forEach { keybinding -> editor.addCommand(keybinding, triggerRepairCompletion) }
+
+    val repairAction = js("({})")
+    repairAction.id = "tidyparse.triggerSyntaxRepair"
+    repairAction.label = "Trigger TidyParse Syntax Repair"
+    repairAction.contextMenuGroupId = "navigation"
+    repairAction.contextMenuOrder = 1.5
+    repairAction.run = { _: dynamic -> triggerRepairCompletion() }
+    editor.addAction(repairAction)
     bindExecutionTabs()
   }
 
@@ -241,15 +295,47 @@ private class PythonPlayground {
 
   private fun installProviders() {
     val completionProvider = js("({})")
-    completionProvider.triggerCharacters = arrayOf(".")
     completionProvider.provideCompletionItems =
-      { requestedModel: dynamic, position: dynamic, _: dynamic, _: dynamic ->
+      { requestedModel: dynamic, position: dynamic, _: dynamic, cancellation: dynamic ->
         if (requestedModel != model || !engineReady) null
         else {
-          synchronizeEngine()
-          completionResult(requestedModel, position, engine.completions(
-            int(position.lineNumber), int(position.column)
-          ))
+          val invocation = consumeRepairInvocation(position)
+          if (invocation == null) {
+            emptyCompletionResult()
+          } else {
+            synchronizeEngine()
+            val source = requestedModel.getValue() as String
+            val originalLine = requestedModel.getLineContent(invocation.line) as String
+            scope.promise {
+              val repairResult = try {
+                repairClient.repairLine(originalLine)
+              } catch (failure: Throwable) {
+                console.warn("Unable to generate syntax repairs", failure)
+                PythonRepairResult(
+                  repairMode = true,
+                  repairs = emptyList(),
+                  displayResultLimit = 0
+                )
+              }
+
+              if (!repairInvocationIsCurrent(invocation, originalLine, cancellation)) {
+                emptyCompletionResult()
+              } else if (!repairResult.repairMode) {
+                emptyCompletionResult()
+              } else {
+                val admissible = admissibleRepairs(
+                  invocation = invocation,
+                  source = source,
+                  originalLine = originalLine,
+                  candidates = repairResult.repairs,
+                  completionLimit = repairResult.displayResultLimit,
+                  cancellation = cancellation
+                )
+                if (admissible.isEmpty()) emptyCompletionResult()
+                else repairCompletionResult(requestedModel, position, admissible, originalLine)
+              }
+            }
+          }
         }
       }
     monaco.languages.registerCompletionItemProvider("python", completionProvider)
@@ -306,6 +392,56 @@ private class PythonPlayground {
         }
       }
     monaco.languages.registerDocumentFormattingEditProvider("python", formatProvider)
+  }
+
+  private fun consumeRepairInvocation(position: dynamic): RepairCompletionInvocation? {
+    val invocation = armedRepair
+    armedRepair = null
+    return invocation?.takeIf {
+      it.requestId == repairRequestId &&
+        it.modelVersion == modelVersion() &&
+        it.line == int(position.lineNumber) &&
+        it.column == int(position.column)
+    }
+  }
+
+  private fun admissibleRepairs(
+    invocation: RepairCompletionInvocation,
+    source: String,
+    originalLine: String,
+    candidates: List<String>,
+    completionLimit: Int,
+    cancellation: dynamic
+  ): List<String> = semanticallyAdmissibleRepairs(
+    candidates = candidates,
+    originalLine = originalLine,
+    completionLimit = completionLimit,
+    isCurrent = { repairInvocationIsCurrent(invocation, originalLine, cancellation) },
+    sourceWithLine = { repairedLine -> replaceLine(source, invocation.line, repairedLine) },
+    isSemanticallyAdmissible = engine::isSemanticallyAdmissible,
+    formatCandidate = engine::formatRepairCandidate
+  )
+
+  private fun repairInvocationIsCurrent(
+    invocation: RepairCompletionInvocation,
+    originalLine: String,
+    cancellation: dynamic
+  ): Boolean =
+    invocation.requestId == repairRequestId &&
+      invocation.modelVersion == modelVersion() &&
+      (model.getLineContent(invocation.line) as? String) == originalLine &&
+      !(cancellation?.isCancellationRequested as? Boolean ?: false)
+
+  private fun replaceLine(source: String, line: Int, replacement: String): String {
+    val start = js("({})")
+    start.lineNumber = line
+    start.column = 1
+    val end = js("({})")
+    end.lineNumber = line
+    end.column = model.getLineMaxColumn(line)
+    val startOffset = int(model.getOffsetAt(start))
+    val endOffset = int(model.getOffsetAt(end))
+    return source.replaceRange(startOffset, endOffset, replacement)
   }
 
   private fun synchronizeEngine(): dynamic {
@@ -404,7 +540,7 @@ private class PythonPlayground {
     engineRevision.title = "Astral ruff revision $revision"
     modeBadge.textContent = "type-aware"
     engineCapabilities.textContent = ""
-    listOf("diagnostics", "completion", "hover", "definition", "inlay hints", "formatting")
+    listOf("diagnostics", "syntax repair", "hover", "definition", "inlay hints", "formatting")
       .forEach { capability ->
         val item = document.createElement("span") as HTMLElement
         item.className = "capability"
@@ -413,53 +549,49 @@ private class PythonPlayground {
       }
   }
 
-  private fun completionResult(requestedModel: dynamic, position: dynamic, items: dynamic): dynamic {
-    val word = requestedModel.getWordUntilPosition(position)
-    val defaultRange = js("({})")
-    defaultRange.startLineNumber = position.lineNumber
-    defaultRange.endLineNumber = position.lineNumber
-    defaultRange.startColumn = word.startColumn
-    defaultRange.endColumn = word.endColumn
-
-    val suggestions = (0 until arrayLength(items)).mapNotNull { index ->
-      val source = items[index]
-      val name = source.name as? String ?: return@mapNotNull null
+  private fun repairCompletionResult(
+    requestedModel: dynamic,
+    position: dynamic,
+    repairs: List<String>,
+    originalLine: String
+  ): dynamic {
+    val repairRange = js("({})")
+    repairRange.startLineNumber = position.lineNumber
+    repairRange.endLineNumber = position.lineNumber
+    repairRange.startColumn = 1
+    repairRange.endColumn = requestedModel.getLineMaxColumn(position.lineNumber)
+    val repairSuggestions = repairs.mapIndexed { index, repair ->
       val item = js("({})")
-      item.label = completionLabel(source, name)
-      item.insertText = source.insertText as? String ?: name
-      item.kind = completionKind(int(source.kind, -1))
-      item.detail = source.detail as? String ?: "ty completion"
-      item.documentation = (source.documentation as? String)?.let { markdown(it) }
-      item.range = defaultRange
-      item.sortText = index.toString().padStart(6, '0')
-      val additional = source.additionalTextEdits
-      if (arrayLength(additional) > 0) {
-        item.additionalTextEdits = (0 until arrayLength(additional)).map { editIndex ->
-          val sourceEdit = additional[editIndex]
-          val edit = js("({})")
-          edit.range = monacoRange(sourceEdit.range)
-          edit.text = sourceEdit.text as? String ?: ""
-          edit
-        }.toTypedArray()
-      }
+      val rendered = repair.trim().let { if (it.length <= 96) it else it.take(93) + "…" }
+      val label = js("({})")
+      label.label = rendered
+      label.description = "TidyParse syntax repair"
+      item.label = label
+      item.insertText = repair
+      item.insertTextRules = monaco.languages.CompletionItemInsertTextRule.KeepWhitespace
+      item.filterText = originalLine
+      item.kind = monaco.languages.CompletionItemKind.Text
+      item.detail = repairClient.completionDetail()
+      item.documentation = markdown(
+        "Ranked locally by TidyParse, admitted only when the full repaired file has no ty diagnostics, and formatted with Ruff."
+      )
+      item.range = repairRange
+      item.sortText = "0" + index.toString().padStart(6, '0')
+      item.preselect = index == 0
       item
-    }.toTypedArray()
+    }
 
     val result = js("({})")
-    result.suggestions = suggestions
-    result.incomplete = true
+    result.suggestions = repairSuggestions.toTypedArray()
+    result.incomplete = false
     return result
   }
 
-  private fun completionLabel(source: dynamic, name: String): dynamic {
-    val module = source.moduleName as? String
-    val detail = source.detail as? String
-    if (module.isNullOrBlank() && detail.isNullOrBlank()) return name
-    val label = js("({})")
-    label.label = name
-    if (!module.isNullOrBlank()) label.detail = " (import $module)"
-    if (!detail.isNullOrBlank()) label.description = detail
-    return label
+  private fun emptyCompletionResult(): dynamic {
+    val result = js("({})")
+    result.suggestions = emptyArray<dynamic>()
+    result.incomplete = false
+    return result
   }
 
   private fun hoverResult(source: dynamic): dynamic {
@@ -624,35 +756,6 @@ private class PythonPlayground {
     else -> "error"
   }
 
-  private fun completionKind(kind: Int): dynamic = when (kind) {
-    0 -> monaco.languages.CompletionItemKind.Text
-    1 -> monaco.languages.CompletionItemKind.Method
-    2 -> monaco.languages.CompletionItemKind.Function
-    3 -> monaco.languages.CompletionItemKind.Constructor
-    4 -> monaco.languages.CompletionItemKind.Field
-    5 -> monaco.languages.CompletionItemKind.Variable
-    6 -> monaco.languages.CompletionItemKind.Class
-    7 -> monaco.languages.CompletionItemKind.Interface
-    8 -> monaco.languages.CompletionItemKind.Module
-    9 -> monaco.languages.CompletionItemKind.Property
-    10 -> monaco.languages.CompletionItemKind.Unit
-    11 -> monaco.languages.CompletionItemKind.Value
-    12 -> monaco.languages.CompletionItemKind.Enum
-    13 -> monaco.languages.CompletionItemKind.Keyword
-    14 -> monaco.languages.CompletionItemKind.Snippet
-    15 -> monaco.languages.CompletionItemKind.Color
-    16 -> monaco.languages.CompletionItemKind.File
-    17 -> monaco.languages.CompletionItemKind.Reference
-    18 -> monaco.languages.CompletionItemKind.Folder
-    19 -> monaco.languages.CompletionItemKind.EnumMember
-    20 -> monaco.languages.CompletionItemKind.Constant
-    21 -> monaco.languages.CompletionItemKind.Struct
-    22 -> monaco.languages.CompletionItemKind.Event
-    23 -> monaco.languages.CompletionItemKind.Operator
-    24 -> monaco.languages.CompletionItemKind.TypeParameter
-    else -> monaco.languages.CompletionItemKind.Variable
-  }
-
   private fun markdown(value: String): dynamic {
     val markdown = js("({})")
     markdown.value = value
@@ -703,6 +806,12 @@ private class PythonPlayground {
     status.setAttribute("data-state", state)
     status.title = message
     status.querySelector(".status-text")?.textContent = message
+  }
+
+  private fun setRepairStatus(state: String, message: String) {
+    repairStatus.setAttribute("data-state", state)
+    repairStatus.title = message
+    repairStatus.querySelector(".status-text")?.textContent = message
   }
 
   private fun modelVersion(): Int = int(model.getVersionId())

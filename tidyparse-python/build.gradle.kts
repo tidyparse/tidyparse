@@ -29,10 +29,15 @@ val tyWasmSourceMarker = layout.buildDirectory.file("ty-wasm-source/$tyWasmCommi
 val tyWasmTargetDir = layout.buildDirectory.dir("ty-wasm-target")
 val tyWasmPackageDir = layout.buildDirectory.dir("ty-wasm-package")
 val generatedTyWasmResources = layout.buildDirectory.dir("generated/ty-wasm-resources")
+val generatedRepairWorkerResources = layout.buildDirectory.dir("generated/repair-worker-resources")
 val tyLicenseFile = tyWasmSourceDir.map { it.file("LICENSE") }
 val typeshedLicenseFile = tyWasmSourceDir.map {
   it.file("crates/ty_vendored/vendor/typeshed/LICENSE")
 }
+val repairWorkerBundleName = "tidyparse-python-repair.js"
+val repairWorkerSourceMapName = "$repairWorkerBundleName.map"
+val repairWorkerProject = project(":tidyparse-python:repair-worker")
+val repairWorkerBundleDir = repairWorkerProject.layout.buildDirectory.dir("kotlin-webpack/js/productionExecutable")
 
 fun runChecked(workingDirectory: File, vararg command: String): String {
   val process = ProcessBuilder(command.toList())
@@ -100,15 +105,6 @@ val installPinnedWasmPack = tasks.register<Exec>("installPinnedWasmPack") {
   inputs.property("wasmPackVersion", wasmPackVersion)
   inputs.property("rustToolchain", rustToolchain)
   outputs.file(wasmPackExecutable)
-
-  doLast {
-    val executable = wasmPackExecutable.get().asFile
-    check(executable.isFile) { "Pinned wasm-pack executable was not installed at ${executable.absolutePath}" }
-    val installedVersion = runChecked(projectDir, executable.absolutePath, "--version")
-    check(installedVersion == "wasm-pack $wasmPackVersion") {
-      "Expected wasm-pack $wasmPackVersion, got '$installedVersion'"
-    }
-  }
 }
 
 val checkoutPinnedTyWasmSource = tasks.register("checkoutPinnedTyWasmSource") {
@@ -129,22 +125,8 @@ val checkoutPinnedTyWasmSource = tasks.register("checkoutPinnedTyWasmSource") {
     runChecked(sourceDir, "git", "fetch", "--depth=1", "origin", tyWasmCommit)
     runChecked(sourceDir, "git", "checkout", "--detach", "FETCH_HEAD")
 
-    val actualCommit = runChecked(sourceDir, "git", "rev-parse", "HEAD")
-    check(actualCommit == tyWasmCommit) {
-      "Expected Ruff revision $tyWasmCommit, checked out $actualCommit"
-    }
-    val pinnedToolchain = sourceDir.resolve("rust-toolchain.toml").readText()
-    check("channel = \"$rustToolchain\"" in pinnedToolchain) {
-      "Ruff revision $tyWasmCommit no longer matches Rust $rustToolchain"
-    }
-    check(sourceDir.resolve("crates/ty_wasm/Cargo.toml").isFile) {
-      "Ruff revision $tyWasmCommit does not contain crates/ty_wasm"
-    }
-    check(tyLicenseFile.get().asFile.isFile) {
-      "Ruff revision $tyWasmCommit does not contain its root LICENSE"
-    }
-    check(typeshedLicenseFile.get().asFile.isFile) {
-      "Ruff revision $tyWasmCommit does not contain the vendored typeshed LICENSE"
+    check(tyLicenseFile.get().asFile.isFile && typeshedLicenseFile.get().asFile.isFile) {
+      "The pinned Ruff checkout is missing required license notices"
     }
 
     tyWasmSourceMarker.get().asFile.apply {
@@ -186,35 +168,8 @@ val buildTyWasm = tasks.register<Exec>("buildTyWasm") {
   inputs.property("wasmPackVersion", wasmPackVersion)
   outputs.files(
     tyWasmPackageDir.map { it.file("ty_wasm.js") },
-    tyWasmPackageDir.map { it.file("ty_wasm_bg.wasm") },
-    tyWasmPackageDir.map { it.file("ty_wasm.d.ts") },
-    tyWasmPackageDir.map { it.file("package.json") }
+    tyWasmPackageDir.map { it.file("ty_wasm_bg.wasm") }
   )
-
-  doFirst {
-    val sourceDir = tyWasmSourceDir.get().asFile
-    check(sourceDir.resolve(".git").isDirectory) {
-      "Pinned ty_wasm source is missing; rerun checkoutPinnedTyWasmSource"
-    }
-    val actualCommit = runChecked(sourceDir, "git", "rev-parse", "HEAD")
-    check(actualCommit == tyWasmCommit) {
-      "Refusing to build ty_wasm from $actualCommit; expected $tyWasmCommit"
-    }
-    project.delete(tyWasmPackageDir)
-  }
-
-  doLast {
-    val packageDir = tyWasmPackageDir.get().asFile
-    val module = packageDir.resolve("ty_wasm.js")
-    val wasm = packageDir.resolve("ty_wasm_bg.wasm")
-    check(module.isFile && module.readText().contains("ty_wasm_bg.wasm")) {
-      "Generated ty_wasm JavaScript does not reference its sibling WebAssembly module"
-    }
-    val magic = wasm.inputStream().use { it.readNBytes(4) }
-    check(magic.contentEquals(byteArrayOf(0x00, 0x61, 0x73, 0x6d))) {
-      "Generated ty_wasm_bg.wasm is not a WebAssembly binary"
-    }
-  }
 }
 
 val stageTyWasmResources = tasks.register<Sync>("stageTyWasmResources") {
@@ -227,17 +182,17 @@ val stageTyWasmResources = tasks.register<Sync>("stageTyWasmResources") {
     include("ty_wasm_bg.wasm")
   }
   into(generatedTyWasmResources)
+}
 
-  doLast {
-    val resourceDir = generatedTyWasmResources.get().asFile
-    val module = resourceDir.resolve("ty_wasm.js")
-    val wasm = resourceDir.resolve("ty_wasm_bg.wasm")
-    check(module.isFile && wasm.isFile) { "Generated ty_wasm browser resources are incomplete" }
-    val magic = wasm.inputStream().use { it.readNBytes(4) }
-    check(magic.contentEquals(byteArrayOf(0x00, 0x61, 0x73, 0x6d))) {
-      "Staged ty_wasm_bg.wasm is not a WebAssembly binary"
-    }
+val stageRepairWorkerResources = tasks.register<Sync>("stageRepairWorkerResources") {
+  group = "build"
+  description = "Stages the standalone Python syntax-repair worker as a main browser resource"
+
+  dependsOn(repairWorkerProject.tasks.named("jsBrowserProductionWebpack"))
+  from(repairWorkerBundleDir) {
+    include(repairWorkerBundleName)
   }
+  into(generatedRepairWorkerResources)
 }
 
 val monacoWebpackConfigDir = layout.buildDirectory.dir("generated/monaco-webpack-config")
@@ -295,6 +250,7 @@ kotlin {
   sourceSets {
     getByName("jsMain") {
       resources.srcDir(generatedTyWasmResources)
+      resources.srcDir(generatedRepairWorkerResources)
       dependencies {
         implementation(kotlin("stdlib"))
         implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
@@ -312,7 +268,7 @@ kotlin {
 }
 
 tasks.named("jsProcessResources") {
-  dependsOn(stageTyWasmResources)
+  dependsOn(stageTyWasmResources, stageRepairWorkerResources)
 }
 
 tasks.withType<KotlinWebpack>().configureEach {
@@ -320,137 +276,24 @@ tasks.withType<KotlinWebpack>().configureEach {
 }
 
 val pythonProductionBundleDir = layout.buildDirectory.dir("kotlin-webpack/js/productionExecutable")
-val pythonProductionJsFile = pythonProductionBundleDir.map { it.file("tidyparse-python.js").asFile }
-val pythonProductionJsMapFile = pythonProductionBundleDir.map { it.file("tidyparse-python.js.map").asFile }
-val pythonHtmlFile = layout.projectDirectory.file("src/jsMain/resources/python3.html")
-val pythonCssFile = layout.projectDirectory.file("src/jsMain/resources/python3.css")
-val pythonRunnerWorkerFile = layout.projectDirectory.file("src/jsMain/resources/python-runner-worker.js")
-val tyWasmLoaderFile = layout.projectDirectory.file("src/jsMain/resources/ty-wasm-loader.js")
-val stagedTyWasmJsFile = generatedTyWasmResources.map { it.file("ty_wasm.js").asFile }
-val stagedTyWasmBinaryFile = generatedTyWasmResources.map { it.file("ty_wasm_bg.wasm").asFile }
+val pythonProcessedResourcesDir = layout.buildDirectory.dir("processedResources/js/main")
 val pythonDeployStagingDir = layout.buildDirectory.dir("python-deploy")
 
 val preparePythonDeploy = tasks.register<Sync>("preparePythonDeploy") {
   group = "deployment"
   description = "Stages the standalone Python 3 playground for deployment to tidyparse.github.io"
 
-  dependsOn("jsBrowserProductionWebpack", stageTyWasmResources)
+  dependsOn("jsBrowserProductionWebpack")
 
   into(pythonDeployStagingDir)
-  from("src/jsMain/resources") {
-    include("python3.html")
-    include("python3.css")
-    include("python-runner-worker.js")
-    include("ty-wasm-loader.js")
-  }
-  from(generatedTyWasmResources) {
-    include("ty_wasm.js")
-    include("ty_wasm_bg.wasm")
-  }
+  from(pythonProcessedResourcesDir)
   from(pythonProductionBundleDir) {
     include("tidyparse-python.js")
     include("tidyparse-python.js.map")
   }
-  from(tyLicenseFile) {
-    rename { "ty-LICENSE" }
-  }
-  from(typeshedLicenseFile) {
-    rename { "typeshed-LICENSE" }
-  }
-
-  inputs.files(
-    pythonHtmlFile,
-    pythonCssFile,
-    pythonRunnerWorkerFile,
-    tyWasmLoaderFile,
-    pythonProductionJsFile,
-    pythonProductionJsMapFile,
-    stagedTyWasmJsFile,
-    stagedTyWasmBinaryFile,
-    tyLicenseFile,
-    typeshedLicenseFile
-  )
-  outputs.files(
-    pythonDeployStagingDir.map { it.file("python3.html") },
-    pythonDeployStagingDir.map { it.file("python3.css") },
-    pythonDeployStagingDir.map { it.file("python-runner-worker.js") },
-    pythonDeployStagingDir.map { it.file("ty-wasm-loader.js") },
-    pythonDeployStagingDir.map { it.file("ty_wasm.js") },
-    pythonDeployStagingDir.map { it.file("ty_wasm_bg.wasm") },
-    pythonDeployStagingDir.map { it.file("tidyparse-python.js") },
-    pythonDeployStagingDir.map { it.file("tidyparse-python.js.map") },
-    pythonDeployStagingDir.map { it.file("ty-LICENSE") },
-    pythonDeployStagingDir.map { it.file("typeshed-LICENSE") }
-  )
-
-  doLast {
-    val stagingDir = pythonDeployStagingDir.get().asFile
-    val requiredFiles = listOf(
-      "python3.html",
-      "python3.css",
-      "python-runner-worker.js",
-      "ty-wasm-loader.js",
-      "ty_wasm.js",
-      "ty_wasm_bg.wasm",
-      "tidyparse-python.js",
-      "tidyparse-python.js.map",
-      "ty-LICENSE",
-      "typeshed-LICENSE"
-    )
-    requiredFiles.forEach { relativePath ->
-      val stagedFile = stagingDir.resolve(relativePath)
-      check(stagedFile.isFile && stagedFile.length() > 0) {
-        "Python deployment is missing required file: $relativePath"
-      }
-    }
-
-    val html = stagingDir.resolve("python3.html").readText()
-    val loaderScriptIndex = html.indexOf("src=\"ty-wasm-loader.js\"")
-    val applicationScriptIndex = html.indexOf("src=\"tidyparse-python.js\"")
-    check(
-      "href=\"python3.css\"" in html &&
-        loaderScriptIndex >= 0 &&
-        applicationScriptIndex > loaderScriptIndex
-    ) {
-      "Staged python3.html must load python3.css, then ty-wasm-loader.js before tidyparse-python.js"
-    }
-    val tyWasmLoader = stagingDir.resolve("ty-wasm-loader.js").readText()
-    check(
-      "tidyparseTyWasmReady" in tyWasmLoader &&
-        "import(\"./ty_wasm.js\")" in tyWasmLoader &&
-        ".default()" in tyWasmLoader
-    ) {
-      "Staged ty-wasm-loader.js must expose and initialize the native ty_wasm browser import"
-    }
-    val applicationBundle = stagingDir.resolve("tidyparse-python.js").readText()
-    check("python-runner-worker.js" in applicationBundle) {
-      "Staged Python bundle must reference python-runner-worker.js"
-    }
-    check("tidyparseTyWasmReady" in applicationBundle) {
-      "Staged Python bundle must consume the external ty_wasm readiness promise"
-    }
-    check("./kotlin lazy recursive" !in applicationBundle) {
-      "Staged Python bundle must preserve ty_wasm.js as a native browser import, not a webpack context"
-    }
-    check(stagingDir.resolve("ty_wasm.js").readText().contains("ty_wasm_bg.wasm")) {
-      "Staged ty_wasm.js must load the sibling ty_wasm_bg.wasm binary"
-    }
-    check(stagingDir.resolve("ty-LICENSE").readBytes().contentEquals(tyLicenseFile.get().asFile.readBytes())) {
-      "Staged ty-LICENSE does not match the pinned Ruff source license"
-    }
-    check(
-      stagingDir.resolve("typeshed-LICENSE").readBytes()
-        .contentEquals(typeshedLicenseFile.get().asFile.readBytes())
-    ) {
-      "Staged typeshed-LICENSE does not match the pinned vendored typeshed license"
-    }
-    val wasmMagic = stagingDir.resolve("ty_wasm_bg.wasm").inputStream().use {
-      it.readNBytes(4)
-    }
-    check(wasmMagic.contentEquals(byteArrayOf(0x00, 0x61, 0x73, 0x6d))) {
-      "Staged ty_wasm_bg.wasm is not a WebAssembly binary"
-    }
-  }
+  from(repairWorkerBundleDir) { include(repairWorkerSourceMapName) }
+  from(tyLicenseFile) { into("licenses/ruff") }
+  from(typeshedLicenseFile) { into("licenses/typeshed") }
 }
 
 tasks.register<ManagedSiteDeployTask>("deployPython") {

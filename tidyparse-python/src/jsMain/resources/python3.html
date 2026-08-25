@@ -15,7 +15,7 @@
         <span class="brand-mark" aria-hidden="true">Py</span>
         <span class="brand-copy">
           <strong>Python 3 Playground</strong>
-          <small>Monaco + ty</small>
+          <small>Monaco + ty + TidyParse</small>
         </span>
         <span id="ty-mode" class="mode-badge">type analysis</span>
       </div>
@@ -35,7 +35,7 @@
       <section class="editor-pane" aria-label="Python source editor">
         <div class="pane-header">
           <span>main.py</span>
-          <span>Ctrl/⌘+Space to complete · F12 for definition · Shift+Alt+F to format · Ctrl/⌘+Enter to run</span>
+          <span>Ctrl+Space repairs syntax · F12 for definition · Shift+Alt+F to format · Ctrl/⌘+Enter to run</span>
         </div>
         <div id="python-editor" aria-label="Python source code"></div>
       </section>
@@ -105,6 +105,10 @@
       <span id="cursor-position">Ln 1, Col 1</span>
       <span class="status-spacer"></span>
       <span id="analysis-summary">Waiting for analysis</span>
+      <span id="repair-status" class="runtime-status" data-state="loading" role="status" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span class="status-text">Loading syntax repair…</span>
+      </span>
       <span id="ty-status" class="runtime-status" data-state="loading" role="status" aria-live="polite">
         <span class="status-dot" aria-hidden="true"></span>
         <span class="status-text">Loading ty…</span>

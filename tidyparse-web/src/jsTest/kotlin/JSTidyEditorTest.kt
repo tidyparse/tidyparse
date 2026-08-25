@@ -6,7 +6,8 @@ import ai.hypergraph.kaliningraph.parsing.nonemptySuffixLengths
 import ai.hypergraph.kaliningraph.parsing.parseCFG
 import ai.hypergraph.kaliningraph.parsing.prefixClosure
 import ai.hypergraph.kaliningraph.parsing.terminals
-import ai.hypergraph.tidyparse.MAX_DISP_RESULTS
+import ai.hypergraph.tidyparse.wgpu.MAX_DISP_RESULTS
+import ai.hypergraph.tidyparse.wgpu.*
 import kotlinx.browser.document
 import kotlinx.browser.window
 import kotlinx.coroutines.test.runTest
@@ -236,7 +237,7 @@ class JSTidyEditorTest {
 
     val prefix = "for ( ( ID ) += STR ; true ; ID -= STR ) { continue"
     val expected = "$prefix }"
-    val (editor, _) = editorFor(prefix, displayLimit = 29)
+    val (editor, _) = editorFor(prefix, displayLimit = MAX_DISP_RESULTS)
     editor.cfg = plWhileCfg
 
     editor.handleInput()

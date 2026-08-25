@@ -379,7 +379,12 @@ dd { margin: 0; text-align: right; font-size: 12px; }
   background: var(--success);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 16%, transparent);
 }
-.runtime-status[data-state="loading"] .status-dot { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+.runtime-status[data-state="loading"] .status-dot,
+.runtime-status[data-state="warming"] .status-dot,
+.runtime-status[data-state="working"] .status-dot {
+  background: var(--accent);
+  animation: pulse 1.2s ease-in-out infinite;
+}
 .runtime-status[data-state="error"] .status-dot { background: var(--danger); }
 
 @keyframes pulse { 50% { opacity: 0.35; transform: scale(0.78); } }
@@ -395,7 +400,8 @@ dd { margin: 0; text-align: right; font-size: 12px; }
 @media (max-width: 560px) {
   .source-link,
   .brand-copy small,
-  #analysis-summary { display: none; }
+  #analysis-summary,
+  #repair-status .status-text { display: none; }
   .run-button { min-width: 74px; }
   .workspace { padding: 6px; gap: 6px; }
 }
