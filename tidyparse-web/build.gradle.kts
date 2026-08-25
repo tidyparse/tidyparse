@@ -27,9 +27,7 @@ buildscript {
   }
 }
 
-plugins {
-  kotlin("multiplatform")
-}
+plugins { kotlin("multiplatform") }
 
 group = "ai.hypergraph"
 version = "0.23.0"
@@ -42,8 +40,6 @@ kotlin {
       runTask { mainOutputFileName = "tidyparse-web.js" }
 
       webpackTask {
-        // We need this to work on Chrome when deployed due to the PLATFORM_CALLER_STACKTRACE_DEPTH hack
-        mode = DEVELOPMENT
         mainOutputFileName = "tidyparse-web.js"
         devtool = "source-map" // For debugging; remove for production
       }
@@ -299,6 +295,9 @@ tasks {
     val browserConsoleTailProcess = AtomicReference<Process?>()
     usesService(browserConsoleTailService)
 
+    if (!providers.gradleProperty("runRepairBenchmarks").isPresent)
+      filter.excludeTestsMatching("TestTidy.benchmarkRepairCode*")
+
     testLogging {
       showStandardStreams = true
       showExceptions = true
@@ -335,7 +334,8 @@ tasks {
   }
 
   register<Exec>("replotMetrics") {
-    commandLine("../gradlew", "clean", "jsBrowserTest", "--info") // --info flag is crucial to read output
+    // --info flag is crucial to read output
+    commandLine("../gradlew", ":tidyparse-web:clean", ":tidyparse-web:jsBrowserTest", "--info", "-PrunRepairBenchmarks=true")
 
     standardOutput = ByteArrayOutputStream()
 

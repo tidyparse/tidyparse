@@ -34,13 +34,8 @@ kotlin {
     binaries.executable()
 
     browser {
-      commonWebpackConfig {
-        configDirectory = workerWebpackConfigDir.get().asFile
-      }
-
-      runTask {
-        mainOutputFileName = repairWorkerBundleName
-      }
+      commonWebpackConfig { configDirectory = workerWebpackConfigDir.get().asFile }
+      runTask { mainOutputFileName = repairWorkerBundleName }
 
       webpackTask {
         mode = PRODUCTION

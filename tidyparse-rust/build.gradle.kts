@@ -3,9 +3,7 @@ import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpack
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.DEVELOPMENT
 
-plugins {
-  kotlin("multiplatform")
-}
+plugins { kotlin("multiplatform") }
 
 group = "ai.hypergraph"
 version = "0.23.0"
@@ -210,9 +208,7 @@ val prepareRustDeploy = tasks.register<Sync>("prepareRustDeploy") {
     )
     requiredFiles.forEach { relativePath ->
       val stagedFile = stagingDir.resolve(relativePath)
-      check(stagedFile.isFile && stagedFile.length() > 0) {
-        "Rust deployment is missing required file: $relativePath"
-      }
+      check(stagedFile.isFile && stagedFile.length() > 0) { "Rust deployment is missing required file: $relativePath" }
     }
 
     val html = stagingDir.resolve("rust.html").readText()

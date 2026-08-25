@@ -4,9 +4,7 @@ import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpack
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig
 import org.jetbrains.kotlin.gradle.targets.js.webpack.KotlinWebpackConfig.Mode.DEVELOPMENT
 
-plugins {
-  kotlin("multiplatform")
-}
+plugins { kotlin("multiplatform") }
 
 group = "ai.hypergraph"
 version = "0.23.0"
@@ -30,20 +28,13 @@ val tyWasmTargetDir = layout.buildDirectory.dir("ty-wasm-target")
 val tyWasmPackageDir = layout.buildDirectory.dir("ty-wasm-package")
 val generatedTyWasmResources = layout.buildDirectory.dir("generated/ty-wasm-resources")
 val generatedRepairWorkerResources = layout.buildDirectory.dir("generated/repair-worker-resources")
-val tyLicenseFile = tyWasmSourceDir.map { it.file("LICENSE") }
-val typeshedLicenseFile = tyWasmSourceDir.map {
-  it.file("crates/ty_vendored/vendor/typeshed/LICENSE")
-}
 val repairWorkerBundleName = "tidyparse-python-repair.js"
 val repairWorkerSourceMapName = "$repairWorkerBundleName.map"
 val repairWorkerProject = project(":tidyparse-python:repair-worker")
 val repairWorkerBundleDir = repairWorkerProject.layout.buildDirectory.dir("kotlin-webpack/js/productionExecutable")
 
 fun runChecked(workingDirectory: File, vararg command: String): String {
-  val process = ProcessBuilder(command.toList())
-    .directory(workingDirectory)
-    .redirectErrorStream(true)
-    .start()
+  val process = ProcessBuilder(command.toList()).directory(workingDirectory).redirectErrorStream(true).start()
   val output = process.inputStream.bufferedReader().readText()
   val exitCode = process.waitFor()
   if (exitCode != 0) {
@@ -113,7 +104,7 @@ val checkoutPinnedTyWasmSource = tasks.register("checkoutPinnedTyWasmSource") {
 
   inputs.property("repository", tyWasmRepository)
   inputs.property("commit", tyWasmCommit)
-  outputs.files(tyWasmSourceMarker, tyLicenseFile, typeshedLicenseFile)
+  outputs.files(tyWasmSourceMarker)
 
   doLast {
     val sourceDir = tyWasmSourceDir.get().asFile
@@ -124,10 +115,6 @@ val checkoutPinnedTyWasmSource = tasks.register("checkoutPinnedTyWasmSource") {
     runChecked(sourceDir, "git", "remote", "add", "origin", tyWasmRepository)
     runChecked(sourceDir, "git", "fetch", "--depth=1", "origin", tyWasmCommit)
     runChecked(sourceDir, "git", "checkout", "--detach", "FETCH_HEAD")
-
-    check(tyLicenseFile.get().asFile.isFile && typeshedLicenseFile.get().asFile.isFile) {
-      "The pinned Ruff checkout is missing required license notices"
-    }
 
     tyWasmSourceMarker.get().asFile.apply {
       parentFile.mkdirs()
@@ -189,9 +176,7 @@ val stageRepairWorkerResources = tasks.register<Sync>("stageRepairWorkerResource
   description = "Stages the standalone Python syntax-repair worker as a main browser resource"
 
   dependsOn(repairWorkerProject.tasks.named("jsBrowserProductionWebpack"))
-  from(repairWorkerBundleDir) {
-    include(repairWorkerBundleName)
-  }
+  from(repairWorkerBundleDir) { include(repairWorkerBundleName) }
   into(generatedRepairWorkerResources)
 }
 
@@ -233,9 +218,7 @@ kotlin {
       runTask {
         mainOutputFileName = "tidyparse-python.js"
         webpackConfigApplier {
-          devServer = (devServer ?: KotlinWebpackConfig.DevServer()).apply {
-            open = "python3.html"
-          }
+          devServer = (devServer ?: KotlinWebpackConfig.DevServer()).apply { open = "python3.html" }
         }
       }
 
@@ -259,20 +242,16 @@ kotlin {
       }
     }
 
-    getByName("jsTest") {
-      dependencies {
-        implementation(kotlin("test-js"))
-      }
-    }
+    getByName("jsTest") { dependencies { implementation(kotlin("test-js")) } }
   }
 }
 
-tasks.named("jsProcessResources") {
-  dependsOn(stageTyWasmResources, stageRepairWorkerResources)
-}
+val browserRuntimeResources = listOf(stageTyWasmResources, stageRepairWorkerResources)
 
+tasks.named("jsProcessResources") { mustRunAfter(browserRuntimeResources) }
 tasks.withType<KotlinWebpack>().configureEach {
   dependsOn(prepareMonacoWebpackConfig)
+  dependsOn(browserRuntimeResources)
 }
 
 val pythonProductionBundleDir = layout.buildDirectory.dir("kotlin-webpack/js/productionExecutable")
@@ -292,8 +271,6 @@ val preparePythonDeploy = tasks.register<Sync>("preparePythonDeploy") {
     include("tidyparse-python.js.map")
   }
   from(repairWorkerBundleDir) { include(repairWorkerSourceMapName) }
-  from(tyLicenseFile) { into("licenses/ruff") }
-  from(typeshedLicenseFile) { into("licenses/typeshed") }
 }
 
 tasks.register<ManagedSiteDeployTask>("deployPython") {

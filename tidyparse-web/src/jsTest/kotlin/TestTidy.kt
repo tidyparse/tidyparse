@@ -85,7 +85,7 @@ class TestTidy {
   }
 
   @Test
-  fun testRepairCodeGPU() = browserTest {
+  fun benchmarkRepairCodeGPU() = browserTest {
     tryBootstrappingGPU()
     benchmarkRepair("GPU") { repairCode(cfg, code = it, LED_BUFFER) }
   }
@@ -644,7 +644,19 @@ class TestTidy {
   }
 
   @Test
-  fun testRepairCodeCPU() = browserTest {
+  fun testRepairCodeCPUSmoke() = browserTest {
+    val smokeCfg = """
+      START -> A B
+      A -> a
+      B -> b
+    """.trimIndent().parseCFG()
+    val repairs = sampleGREUntilTimeout(listOf("a"), smokeCfg).distinct().toList()
+
+    assertContains(repairs, "a b")
+  }
+
+  @Test
+  fun benchmarkRepairCodeCPU() = browserTest {
     benchmarkRepair("CPU") { sampleGREUntilTimeout(it, cfg).distinct().toList() }
   }
 

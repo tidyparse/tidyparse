@@ -22,16 +22,8 @@ fun main() {
   installRuntimeStatusSink(::postStatus)
   self.onmessage = { event: dynamic ->
     val request = event.data
-    val repairGeneration = if (request?.type as? String == "repair") {
-      ++latestRepairGeneration
-    } else {
-      0
-    }
-    workerScope.launch {
-      workerMutex.withLock {
-        handleWorkerRequest(request, repairGeneration)
-      }
-    }
+    val repairGeneration = if (request?.type as? String == "repair") { ++latestRepairGeneration } else { 0 }
+    workerScope.launch { workerMutex.withLock { handleWorkerRequest(request, repairGeneration) } }
   }
   postStatus("loading", "Syntax repair worker loaded")
 }

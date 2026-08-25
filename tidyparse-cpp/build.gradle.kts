@@ -463,8 +463,6 @@ kotlin {
       }
 
       webpackTask {
-        // We need this to work on Chrome when deployed due to the PLATFORM_CALLER_STACKTRACE_DEPTH hack
-        mode = DEVELOPMENT
         mainOutputFileName = "tidyparse-cpp.js"
         devtool = "source-map" // For debugging; remove for production
       }
@@ -490,9 +488,7 @@ kotlin {
     }
 
     getByName("commonTest") {
-      dependencies {
-        implementation(kotlin("test"))
-      }
+      dependencies { implementation(kotlin("test")) }
     }
 
     getByName("jsMain") {
@@ -738,9 +734,7 @@ abstract class CppBrowserConsoleTailService : BuildService<BuildServiceParameter
 
 abstract class ClangdRecipeSha256Source :
   ValueSource<String, ClangdRecipeSha256Source.Parameters> {
-  interface Parameters : ValueSourceParameters {
-    val directory: DirectoryProperty
-  }
+  interface Parameters : ValueSourceParameters { val directory: DirectoryProperty }
 
   override fun obtain(): String {
     val root = parameters.directory.get().asFile
