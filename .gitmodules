@@ -1,3 +1,7 @@
 [submodule "galoisenne"]
 	path = galoisenne
 	url = https://github.com/breandan/galoisenne.git
+
+[submodule "api2cfg"]
+	path = api2cfg
+	url = https://github.com/breandan/api2cfg.git
