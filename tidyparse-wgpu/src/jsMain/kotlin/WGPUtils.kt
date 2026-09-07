@@ -143,7 +143,8 @@ suspend fun logActiveNTGrid(
   val allIndices = (0 until numStates * numStates).toList()
   val allVals = countsBuf.readIndices(allIndices)
 
-  val totalActiveNTs = allVals.fold(0L) { acc, i -> acc + i }
+  var totalActiveNTs = 0L
+  for (i in 0..<allVals.length) totalActiveNTs += allVals[i]
   val totalUTCells = (numStates.toLong() * (numStates - 1)) / 2
   val maxPossibleActive = totalUTCells * numNTs
 
@@ -413,9 +414,8 @@ private suspend fun CFG.suffixIntersectionPipeline(
   val rootsStarted = TimeSource.Monotonic.markNow()
   val startNT = bindex[START_SYMBOL]
   val rootQuery = fsa.finalIdxs.map { it * numNTs + startNT }
-  val roots = rootQuery.zip(dpBuf.readIndices(rootQuery))
-    .filter { (_, value) -> value != 0 }
-    .map { it.first }
+  val rootReachability = dpBuf.readIndices(rootQuery)
+  val roots = rootQuery.filterIndexed { i, _ -> rootReachability[i] != 0 }
   timingTrace.mark("read roots", rootsStarted)
   if (roots.isEmpty()) {
     destroyAll(activeBuf, wordBuf, metaBuf, dpBuf)
@@ -639,7 +639,7 @@ suspend fun checkSuffixPipeline(cfg: CFG, fsa: FSA, suffixLen: Int, codePoints: 
   }
 
   val reachability = dpBuf.readIndices(queryIndices)
-  val listSuffixes = reachability.withIndex().filter { it.value != 0 }.map { it.index }
+  val listSuffixes = (0..<reachability.length).filter { reachability[it] != 0 }
 
   listOf(activeBuf, metaBuf, dpBuf, wordBuf).forEach(GPUBuffer::destroy)
   return listSuffixes

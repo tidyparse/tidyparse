@@ -81,12 +81,6 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         markov_score, wdfa_score, select_top_k, gather_top_k, suffix_group_select, // rerank_top_k,
         // Debugging
         wdfa_score_raw, active_nt_count,
-
-        // V2 (untested)
-        wdfa_frontier_init_v2, wdfa_frontier_count_succ_v2,
-        wdfa_frontier_write_exact_v2, wdfa_frontier_parent_weights_v2,
-        wdfa_frontier_sampled_step_v2, wdfa_frontier_emit_done_packets_v2,
-        wdfa_frontier_pack_packets_v2, select_top_k_unique_v2
       ).forEach { it.bind() }
 //      benchmarkWGPU() // TODO: remove for deployment
 //      benchmarkWGPURepair()
@@ -181,17 +175,17 @@ suspend fun intersectionPipeline(
   }
 
   val closureT = TimeSource.Monotonic.markNow()
+
   cfl_mul_upper.invokeCFLFixpoint(numStates, dpBuf, activeBuf, metaBuf)
+
   mark("matrix closure", closureT)
   log("Matrix closure reached in: ${timings["matrix closure"]}ms")
 
   val rootsT = TimeSource.Monotonic.markNow()
   val startNT     = cfg.bindex[START_SYMBOL]
   val rootQuery   = fsa.finalIdxs.map { it * numNTs + startNT }
-  val allStartIds = rootQuery
-    .zip(dpBuf.readIndices(rootQuery))
-    .filter { (_, v) -> v != 0 }
-    .map { it.first }
+  val rootReachability = dpBuf.readIndices(rootQuery)
+  val allStartIds = rootQuery.filterIndexed { i, _ -> rootReachability[i] != 0 }
   mark("read roots", rootsT)
 
   if (allStartIds.isEmpty()) {
@@ -990,14 +984,13 @@ fn flushParentMask(r: u32, c: u32, aw: u32, mask: u32, tgtBase: u32, snt: u32, N
     if (newlyActive != 0u) { _ = atomicOr(&active_nts[tgtBase + aw], newlyActive); }
 
     var localChanges = 0u;
-
-    // Newly active A means dp_in[r,c,A] was zero.
-    var nb = newlyActive;
+    // Write all new binary support, but count only entries that become active.
+    var pending = newBinary;
     loop {
-        if (nb == 0u) { break; }
+        if (pending == 0u) { break; }
 
-        let bit = firstTrailingBit(nb);
-        nb = nb & (nb - 1u);
+        let bit = firstTrailingBit(pending);
+        pending = pending & (pending - 1u);
 
         if (bit == 0xffffffffu) { break; }
 
@@ -1005,28 +998,10 @@ fn flushParentMask(r: u32, c: u32, aw: u32, mask: u32, tgtBase: u32, snt: u32, N
         if (A >= NT) { continue; }
 
         let dpIdx = r * snt + c * NT + A;
-        dp_in[dpIdx] = 0x01u;
-        localChanges = localChanges + 1u;
-    }
-
-    // Already-active A may still be terminal/literal-only, so add binary bit.
-    // This preserves binary support for downstream consumers, but does not
-    // grow active_nts and therefore must not keep the fixpoint alive.
-    var ab = newBinary & oldActive;
-    loop {
-        if (ab == 0u) { break; }
-
-        let bit = firstTrailingBit(ab);
-        ab = ab & (ab - 1u);
-
-        if (bit == 0xffffffffu) { break; }
-
-        let A = (aw << 5u) + bit;
-        if (A >= NT) { continue; }
-
-        let dpIdx = r * snt + c * NT + A;
-        let old = dp_in[dpIdx];
-        if ((old & 0x01u) == 0u) { dp_in[dpIdx] = old | 0x01u; }
+        dp_in[dpIdx] = dp_in[dpIdx] | 1u;
+        if ((newlyActive & (1u << bit)) != 0u) {
+            localChanges = localChanges + 1u;
+        }
     }
 
     return localChanges;
@@ -1412,12 +1387,8 @@ struct Frame { dp: u32, rk: u32 }
 
 // ---------- Feistel permutation helpers (for WOR-by-rank when total not saturated) ----------
 fn ceil_pow2_even(x: u32) -> u32 {
-  // returns smallest even k such that 2^k >= x, capped at 32
-  var k: u32 = 0u;
-  var p: u32 = 1u;
-  while (p < x && k < 32u) { p = p << 1u; k = k + 1u; }
-  if ((k & 1u) == 1u) { k = k + 1u; }
-  return min(k, 32u);
+    let k = 32u - countLeadingZeros(max(x, 1u) - 1u);
+    return (k + 1u) & 0xfffffffeu;
 }
 
 // 4-round Feistel permutation over k bits (k even, <= 32)
@@ -1923,7 +1894,7 @@ class Shader constructor(val src: String) {
       gpu.queue.writeBuffer(this, (wordIndex * 4).toDouble(), tmp)
     }
 
-    suspend fun GPUBuffer.readIndices(indices: List<Int>): List<Int> {
+    suspend fun GPUBuffer.readIndices(indices: List<Int>): Int32Array<ArrayBuffer> {
       val t0 = TimeSource.Monotonic.markNow()
       val stagingBuffer = GPUBuffer(indices.size * 4L, GPUBufferUsage.COPY_DST or GPUBufferUsage.MAP_READ)
       val encoder = gpu.createCommandEncoder()
@@ -1937,11 +1908,11 @@ class Shader constructor(val src: String) {
         )
       }
       gpu.queue.submit(arrayOf(encoder.finish()))
-      stagingBuffer.mapAsync(web.gpu.GPUMapMode.READ).unsafeCast<Promise<*>>().await()
-      val t = Int32Array(stagingBuffer.getMappedRange())
-        .asList().toIntArray().toList().also { stagingBuffer.destroy() }
+      stagingBuffer.mapAsync(GPUMapMode.READ).unsafeCast<Promise<*>>().await()
+      val result = Int32Array(stagingBuffer.getMappedRange()).slice()
+      stagingBuffer.destroy()
       log("Read ${indices.size}/${size.toInt()} bytes in ${t0.elapsedNow()}")
-      return t
+      return result
     }
 
     fun createParseChart(usage: Int, totalSizeInInts: Int): GPUBuffer {
