@@ -2,7 +2,7 @@ package ai.hypergraph.tidyparse.wgpu
 
 import ai.hypergraph.tidyparse.wgpu.GPUBufferUsage.STCPSD
 import ai.hypergraph.tidyparse.wgpu.Shader.Companion.GPUBuffer
-import ai.hypergraph.tidyparse.wgpu.Shader.Companion.buildLanguageSizeBuf
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.buildLanguageSizeCDF
 import ai.hypergraph.tidyparse.wgpu.Shader.Companion.packMetadata
 import ai.hypergraph.tidyparse.wgpu.Shader.Companion.readIndices
 import ai.hypergraph.tidyparse.wgpu.Shader.Companion.toGPUBuffer
@@ -439,12 +439,12 @@ private suspend fun CFG.suffixIntersectionPipeline(
   val cdfBuf = GPUBuffer(bpStorageBuf.size / 2, STCPSD)
   if (PROFILE_WGPU_KERNELS) awaitGPUQueue()
   val sizesStarted = TimeSource.Monotonic.markNow()
-  val lsDense = buildLanguageSizeBuf(
+  buildLanguageSizeCDF(
     numStates, numNTs, dpBuf, metaBuf, tmBuf,
     bpCountBuf, bpOffsetBuf, bpStorageBuf, cdfBuf
   )
   if (PROFILE_WGPU_KERNELS) awaitGPUQueue()
-  timingTrace.mark("build ls dense", sizesStarted)
+  timingTrace.mark("build language-size CDF", sizesStarted)
 
   val groups = batch.slices.groupBy { it.terminal }.map { (terminal, slices) ->
     SuffixSamplingGroup(tmMap.getValue(terminal), slices.mapTo(linkedSetOf()) { it.length })
@@ -477,13 +477,12 @@ private suspend fun CFG.suffixIntersectionPipeline(
   for (span in 1..<numStates) {
     val spanBuf = span.toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
     suffix_ls_dense(
-      dpBuf, lsDense, suffixSizes, metaBuf, tmBuf, spanBuf,
+      dpBuf, cdfBuf, suffixSizes, metaBuf, tmBuf, spanBuf,
       bpCountBuf, bpOffsetBuf, bpStorageBuf, idxUniBuf
     )(numStates - span, 1, numNTs * groups.size)
     spanBuf.destroy()
   }
   timingTrace.mark("build suffix sizes", conditionedStarted)
-  lsDense.destroy()
 
   val perGroup = minOf(40_000 / groups.size, (limit * 8).coerceAtLeast(limit))
   val sampleCount = perGroup * groups.size
@@ -891,10 +890,10 @@ $TM_DECODING_HELPERS
 """
 
 //language=wgsl
-val suffix_ls_dense by Shader("""$CFL_STRUCT $SUFFIX_TERM_STRUCT $SAT_ARTH
+val suffix_ls_dense by Shader("""$CFL_STRUCT $SUFFIX_TERM_STRUCT
 struct SpanUni { span : u32 };
 @group(0) @binding(0) var<storage, read>           dp_in : array<u32>;
-@group(0) @binding(1) var<storage, read>         ls_dense : array<u32>;
+@group(0) @binding(1) var<storage, read>        ls_sparse : array<u32>;
 @group(0) @binding(2) var<storage, read_write> suffix_sizes : array<u32>;
 @group(0) @binding(3) var<storage, read>              cs : CFLStruct;
 @group(0) @binding(4) var<storage, read>       terminals : Terminals;
@@ -903,6 +902,8 @@ struct SpanUni { span : u32 };
 @group(0) @binding(7) var<storage, read>       bp_offset : array<u32>;
 @group(0) @binding(8) var<storage, read>      bp_storage : array<u32>;
 @group(0) @binding(9) var<storage, read_write>    idx_uni : SuffixIndexUniforms;
+
+$WGSL_LANG_SIZE
 
 $SUFFIX_CHART_DECODING_HELPERS
 
@@ -944,7 +945,7 @@ fn matchingLiteralCount(val: u32, nt: u32, required: u32) -> u32 {
 
 fn conditionedSize(group: u32, dpIdx: u32) -> u32 {
   if (spansSuffix(dpIdx)) { return suffix_sizes[suffixIndex(group, dpIdx)]; }
-  return ls_dense[dpIdx];
+  return max(langSize(dpIdx, cs.numNonterminals), 1u);
 }
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {

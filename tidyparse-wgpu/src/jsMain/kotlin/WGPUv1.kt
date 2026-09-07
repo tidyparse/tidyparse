@@ -4,7 +4,7 @@ package ai.hypergraph.tidyparse.wgpu
 
 import ai.hypergraph.tidyparse.wgpu.GPUBufferUsage.STCPSD
 import ai.hypergraph.tidyparse.wgpu.Shader.Companion.GPUBuffer
-import ai.hypergraph.tidyparse.wgpu.Shader.Companion.buildLanguageSizeBuf
+import ai.hypergraph.tidyparse.wgpu.Shader.Companion.buildLanguageSizeCDF
 import ai.hypergraph.tidyparse.wgpu.Shader.Companion.packMetadata
 import ai.hypergraph.tidyparse.wgpu.Shader.Companion.readIndices
 import ai.hypergraph.tidyparse.wgpu.Shader.Companion.toGPUBuffer
@@ -75,7 +75,7 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         cfl_mul_upper,
         // Counting/Enumeration
         bp_count, bp_write,
-        ls_dense, suffix_ls_dense,
+        ls_cdf, suffix_ls_dense,
         build_root_sizes, enum_words_wor, suffix_enum_words_wor,
         // Sampling
         markov_score, wdfa_score, select_top_k, gather_top_k, suffix_group_select, // rerank_top_k,
@@ -228,15 +228,14 @@ suspend fun intersectionPipeline(
 
   val cdfBuf = GPUBuffer(totalExp * 4, STCPSD)
   if (PROFILE_WGPU_KERNELS) awaitGPUQueue()
-  val lsDenseT = TimeSource.Monotonic.markNow()
-  val lsDense = buildLanguageSizeBuf(
+  val cdfT = TimeSource.Monotonic.markNow()
+  buildLanguageSizeCDF(
     numStates, numNTs, dpBuf, metaBuf, tmBuf,
     bpCountBuf, bpOffsetBuf, bpStorageBuf, cdfBuf
   )
   if (PROFILE_WGPU_KERNELS) awaitGPUQueue()
-  mark("build ls dense", lsDenseT)
-  log("Built lsDense and CDF in ${timings["build ls dense"]}ms (${lsDense.size + cdfBuf.size}B)")
-  lsDense.destroy()
+  mark("build language-size CDF", cdfT)
+  log("Built language-size CDF in ${timings["build language-size CDF"]}ms (${cdfBuf.size}B)")
 
   val numRoots = startIdxs.size / 2
   val rootSizes = GPUBuffer(numRoots * 4, STCPSD)
@@ -620,17 +619,9 @@ fn sat_mul(a: u32, b: u32) -> u32 {
 //language=wgsl
 const val WGSL_LANG_SIZE = """$SAT_ARTH
 fn langSize(dpIdx: u32, numNTs: u32) -> u32 {
-  let val = dp_in[dpIdx];
-  let nt  = dpIdx % numNTs;
-
-  let litCount = count_tms(val, nt);
-
-  let expCnt = bp_count[dpIdx];
-  if (expCnt == 0u) { return litCount; }
-  let base = bp_offset[dpIdx];
-  let last = ls_sparse[base + expCnt - 1u];
-
-  return last;
+  let count = bp_count[dpIdx];
+  if (count != 0u) { return ls_sparse[bp_offset[dpIdx] + count - 1u]; }
+  return count_tms(dp_in[dpIdx], dpIdx % numNTs);
 }"""
 
 //language=text
@@ -1134,17 +1125,18 @@ val bp_write by Shader("""$CFL_STRUCT
 }""")
 
 //language=wgsl
-val ls_dense by Shader("""$CFL_STRUCT $TERM_STRUCT $SAT_ARTH
+val ls_cdf by Shader("""$CFL_STRUCT $TERM_STRUCT
 struct SpanUni { span : u32 };
 @group(0) @binding(0) var<storage, read>           dp_in : array<u32>;
-@group(0) @binding(1) var<storage, read_write>  ls_dense : array<u32>;
-@group(0) @binding(2) var<storage, read>              cs : CFLStruct;
-@group(0) @binding(3) var<storage, read>       terminals : Terminals;
-@group(0) @binding(4) var<uniform>                    su : SpanUni;
-@group(0) @binding(5) var<storage, read>        bp_count : array<u32>;
-@group(0) @binding(6) var<storage, read>       bp_offset : array<u32>;
-@group(0) @binding(7) var<storage, read>      bp_storage : array<u32>;
-@group(0) @binding(8) var<storage, read_write> ls_sparse : array<u32>;
+@group(0) @binding(1) var<storage, read>              cs : CFLStruct;
+@group(0) @binding(2) var<storage, read>       terminals : Terminals;
+@group(0) @binding(3) var<uniform>                    su : SpanUni;
+@group(0) @binding(4) var<storage, read>        bp_count : array<u32>;
+@group(0) @binding(5) var<storage, read>       bp_offset : array<u32>;
+@group(0) @binding(6) var<storage, read>      bp_storage : array<u32>;
+@group(0) @binding(7) var<storage, read_write> ls_sparse : array<u32>;
+
+$WGSL_LANG_SIZE
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let r = gid.x;
@@ -1158,12 +1150,9 @@ struct SpanUni { span : u32 };
     
     let val = dp_in[dpIdx];
     if (val == 0u) { return; }
+    if ((val & 0x01u) == 0u) { return; }
 
-    let litCount = count_tms(val, A);
-
-    if ((val & 0x01u) == 0u) { ls_dense[dpIdx] = max(litCount, 1u); return; }
-
-    var total: u32 = litCount;
+    var total = count_tms(val, A);
 
     let base = bp_offset[dpIdx];
     let count = bp_count[dpIdx];
@@ -1171,10 +1160,11 @@ struct SpanUni { span : u32 };
         let pairBase = (base + i) * 2u;
         let left = bp_storage[pairBase];
         let right = bp_storage[pairBase + 1u];
-        total = sat_add(total, sat_mul(ls_dense[left], ls_dense[right]));
+        let leftSize = max(langSize(left, NT), 1u);
+        let rightSize = max(langSize(right, NT), 1u);
+        total = sat_add(total, sat_mul(leftSize, rightSize));
         ls_sparse[base + i] = total;
     }
-    ls_dense[dpIdx] = max(total, 1u);  // total==0 should not happen, but guard anyway
 }""")
 
 const val PFX_SUM_PARAMS = """struct PrefixSumUni { n : u32, numBlocks : u32, threads : u32 };"""
@@ -2046,7 +2036,7 @@ class Shader constructor(val src: String) {
       return Triple(bpCountBuf, bpOffsetBuf, bpStorageBuf)
     }
 
-    fun buildLanguageSizeBuf(
+    fun buildLanguageSizeCDF(
       nStates: Int,
       nNT: Int,
       dpIn: GPUBuffer,
@@ -2056,21 +2046,16 @@ class Shader constructor(val src: String) {
       bpOffsetBuf: GPUBuffer,
       bpStorageBuf: GPUBuffer,
       cdfBuf: GPUBuffer
-    ): GPUBuffer {
-      val totalCells = nStates * nStates * nNT
-      val lsDenseBuf = GPUBuffer(totalCells * 4, STCPSD)
-
+    ) {
       for (span in 1..<nStates) {
         val spanBuf = span.toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
 
-        ls_dense(
-          dpIn, lsDenseBuf, metaBuf, tmBuf, spanBuf,
+        ls_cdf(
+          dpIn, metaBuf, tmBuf, spanBuf,
           bpCountBuf, bpOffsetBuf, bpStorageBuf, cdfBuf
         )(nStates - span, 1, nNT)
+        spanBuf.destroy()
       }
-
-      log("Size of lsDenseBuf: ${lsDenseBuf.size} bytes  (|Q|=$nStates, |V|=$nNT)")
-      return lsDenseBuf
     }
   }
 
@@ -2252,7 +2237,7 @@ fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer 
 
   log("Done")
 
-  return flat.asList().toGPUBuffer()
+  return flat.asIntArray().toGPUBuffer(STCPSD)
 }
 
 const val PROFILE_WGPU_KERNELS = true

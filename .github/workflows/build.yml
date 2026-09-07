@@ -11,6 +11,9 @@ on:
       - 'tidyparse-wgpu/**'
       - '**.tidy'
       - '**.zip'
+      - '.gitmodules'
+      - 'api2cfg'
+      - 'galoisenne'
       - '.github/workflows/build.yml'
 
 jobs:
