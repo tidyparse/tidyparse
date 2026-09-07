@@ -436,18 +436,15 @@ private suspend fun CFG.suffixIntersectionPipeline(
     return IntersectionResults.EMPTY
   }
 
+  val cdfBuf = GPUBuffer(bpStorageBuf.size / 2, STCPSD)
+  if (PROFILE_WGPU_KERNELS) awaitGPUQueue()
   val sizesStarted = TimeSource.Monotonic.markNow()
   val lsDense = buildLanguageSizeBuf(
     numStates, numNTs, dpBuf, metaBuf, tmBuf,
-    bpCountBuf, bpOffsetBuf, bpStorageBuf
+    bpCountBuf, bpOffsetBuf, bpStorageBuf, cdfBuf
   )
+  if (PROFILE_WGPU_KERNELS) awaitGPUQueue()
   timingTrace.mark("build ls dense", sizesStarted)
-  val cdfBuf = GPUBuffer(bpStorageBuf.size / 2, STCPSD)
-  timingTrace["build cdf"] = timedGPUIsolated("Build suffix CDF") {
-    ls_cdf(dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf, bpCountBuf, bpStorageBuf)(
-      numStates, numStates, (numNTs + DENSE_NT_WORKGROUP_SIZE - 1) / DENSE_NT_WORKGROUP_SIZE
-    )
-  }
 
   val groups = batch.slices.groupBy { it.terminal }.map { (terminal, slices) ->
     SuffixSamplingGroup(tmMap.getValue(terminal), slices.mapTo(linkedSetOf()) { it.length })

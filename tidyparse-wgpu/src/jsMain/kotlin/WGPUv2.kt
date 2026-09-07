@@ -194,14 +194,15 @@ suspend fun intersectionPipelineV2(
   val rootLangSizes =
     if (rootEntries.isEmpty()) emptyList()
     else {
+      val cdfBuf = GPUBuffer(totalExp * 4, STCPSD)
       val lsDense = buildLanguageSizeBuf(
         numStates, numNTs, dpBuf, metaBuf, tmBuf,
-        bpCountBuf, bpOffsetBuf, bpStorageBuf
+        bpCountBuf, bpOffsetBuf, bpStorageBuf, cdfBuf
       )
       try {
         lsDense.readIndices(rootEntries.map { it.first }).map(::u32ToLongV2)
       } finally {
-        lsDense.destroy()
+        destroyAll(lsDense, cdfBuf)
       }
     }
   mark("build ls dense", langSizeT)

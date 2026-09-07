@@ -75,7 +75,7 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         cfl_mul_upper,
         // Counting/Enumeration
         bp_count, bp_write,
-        ls_dense, suffix_ls_dense, ls_cdf,
+        ls_dense, suffix_ls_dense,
         build_root_sizes, enum_words_wor, suffix_enum_words_wor,
         // Sampling
         markov_score, wdfa_score, select_top_k, gather_top_k, suffix_group_select, // rerank_top_k,
@@ -229,29 +229,20 @@ suspend fun intersectionPipeline(
   if (MAX_WORD_LEN < maxRepairLen) {
 //    timings.logTimingsToJSConsole()
     destroyAll(activeBuf, wordBuf, metaBuf, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf)
-    return IntersectionResults.EMPTY.also {
-      log("Max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)")
-    }
+    return IntersectionResults.EMPTY.also { log("Max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)") }
   }
 
+  val cdfBuf = GPUBuffer(totalExp * 4, STCPSD)
+  if (PROFILE_WGPU_KERNELS) awaitGPUQueue()
   val lsDenseT = TimeSource.Monotonic.markNow()
   val lsDense = buildLanguageSizeBuf(
     numStates, numNTs, dpBuf, metaBuf, tmBuf,
-    bpCountBuf, bpOffsetBuf, bpStorageBuf
+    bpCountBuf, bpOffsetBuf, bpStorageBuf, cdfBuf
   )
+  if (PROFILE_WGPU_KERNELS) awaitGPUQueue()
   mark("build ls dense", lsDenseT)
-  log("Built lsDense in ${timings["build ls dense"]}ms (${lsDense.size}B)")
-
-  val cdfBuf = GPUBuffer(totalExp * 4, STCPSD)
-  timings["build cdf"] = timedGPUIsolated("Build CDF") {
-    val ntWorkgroups = (numNTs + DENSE_NT_WORKGROUP_SIZE - 1) / DENSE_NT_WORKGROUP_SIZE
-    ls_cdf(
-      dpBuf, lsDense, bpOffsetBuf, cdfBuf, metaBuf, tmBuf,
-      bpCountBuf, bpStorageBuf
-    )(numStates, numStates, ntWorkgroups)
-  }
+  log("Built lsDense and CDF in ${timings["build ls dense"]}ms (${lsDense.size + cdfBuf.size}B)")
   lsDense.destroy()
-  log("Pairing function construction took: ${timings["build cdf"]}ms (${cdfBuf.size}B)")
 
   val numRoots = startIdxs.size / 2
   val rootSizes = GPUBuffer(numRoots * 4, STCPSD)
@@ -1178,6 +1169,7 @@ struct SpanUni { span : u32 };
 @group(0) @binding(5) var<storage, read>        bp_count : array<u32>;
 @group(0) @binding(6) var<storage, read>       bp_offset : array<u32>;
 @group(0) @binding(7) var<storage, read>      bp_storage : array<u32>;
+@group(0) @binding(8) var<storage, read_write> ls_sparse : array<u32>;
 
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
     let r = gid.x;
@@ -1205,47 +1197,9 @@ struct SpanUni { span : u32 };
         let left = bp_storage[pairBase];
         let right = bp_storage[pairBase + 1u];
         total = sat_add(total, sat_mul(ls_dense[left], ls_dense[right]));
+        ls_sparse[base + i] = total;
     }
     ls_dense[dpIdx] = max(total, 1u);  // total==0 should not happen, but guard anyway
-}""")
-
-//language=wgsl
-val ls_cdf by Shader("""$CFL_STRUCT $TERM_STRUCT $SAT_ARTH
-@group(0) @binding(0) var<storage, read>             dp_in : array<u32>;
-@group(0) @binding(1) var<storage, read>          ls_dense : array<u32>;
-@group(0) @binding(2) var<storage, read>         bp_offset : array<u32>;
-@group(0) @binding(3) var<storage, read_write>   ls_sparse : array<u32>;
-@group(0) @binding(4) var<storage, read>                cs : CFLStruct;
-@group(0) @binding(5) var<storage, read>         terminals : Terminals;
-@group(0) @binding(6) var<storage, read>          bp_count : array<u32>;
-@group(0) @binding(7) var<storage, read>        bp_storage : array<u32>;
-
-@compute @workgroup_size(1,1,$DENSE_NT_WORKGROUP_SIZE) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-    let r = gid.x;
-    let c = gid.y;
-    if (c <= r) { return; }
-    let N = cs.numStates;
-    let NT = cs.numNonterminals;
-    let A = gid.z;
-    if (A >= NT) { return; }
-    let dpIdx = (r * N + c) * NT + A;
-
-    let val = dp_in[dpIdx];
-    if (val == 0u) { return; }
-
-    var acc    : u32 = 0u;
-    let outPos = bp_offset[dpIdx];
-    let count = bp_count[dpIdx];
-
-    let litCount = count_tms(val, A);
-
-    for (var i = 0u; i < count; i = i + 1u) {
-        let pairBase = (outPos + i) * 2u;
-        let left = bp_storage[pairBase];
-        let right = bp_storage[pairBase + 1u];
-        acc = sat_add(acc, sat_mul(ls_dense[left], ls_dense[right]));
-        ls_sparse[outPos + i] = sat_add(acc, litCount);
-    }
 }""")
 
 const val PFX_SUM_PARAMS = """struct PrefixSumUni { n : u32, numBlocks : u32, threads : u32 };"""
@@ -2129,7 +2083,8 @@ class Shader constructor(val src: String) {
       tmBuf: GPUBuffer,
       bpCountBuf: GPUBuffer,
       bpOffsetBuf: GPUBuffer,
-      bpStorageBuf: GPUBuffer
+      bpStorageBuf: GPUBuffer,
+      cdfBuf: GPUBuffer
     ): GPUBuffer {
       val totalCells = nStates * nStates * nNT
       val lsDenseBuf = GPUBuffer(totalCells * 4, STCPSD)
@@ -2139,7 +2094,7 @@ class Shader constructor(val src: String) {
 
         ls_dense(
           dpIn, lsDenseBuf, metaBuf, tmBuf, spanBuf,
-          bpCountBuf, bpOffsetBuf, bpStorageBuf
+          bpCountBuf, bpOffsetBuf, bpStorageBuf, cdfBuf
         )(nStates - span, 1, nNT)
       }
 
