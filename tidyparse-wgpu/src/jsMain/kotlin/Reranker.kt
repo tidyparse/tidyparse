@@ -29,14 +29,11 @@ typealias RerankerWeightsLoader = suspend (path: String) -> ArrayBuffer?
 private var rerankerWeightsLoader: RerankerWeightsLoader? = null
 
 /** Installs the consumer-specific asset loader used by the shared reranker. */
-fun configureRepairReranker(weightsLoader: RerankerWeightsLoader) {
-  rerankerWeightsLoader = weightsLoader
-}
+fun configureRepairReranker(weightsLoader: RerankerWeightsLoader) { rerankerWeightsLoader = weightsLoader }
 
 var neuralRerankerEnabled = false
 
-fun neuralRerankerQuery(tokens: List<String>): List<String>? =
-  if (neuralRerankerEnabled) tokens else null
+fun neuralRerankerQuery(tokens: List<String>): List<String>? = if (neuralRerankerEnabled) tokens else null
 
 object RepairReranker {
   private val scope = MainScope()

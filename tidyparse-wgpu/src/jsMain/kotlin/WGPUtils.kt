@@ -1500,3 +1500,12 @@ fn write_empty_packet(sid: u32, levDist: u32) {
   // terminator
   if (PKT_HDR_LEN + wLen < stride) { sampled[outBase + PKT_HDR_LEN + wLen] = 0u; }
 }""".trimIndent())
+
+/** Shared input types for conditioned WebGPU suffix enumeration. */
+data class SuffixSlice(val terminal: String, val length: Int)
+
+data class SuffixBatch(
+  val prefix: List<String>,
+  val slices: List<SuffixSlice>,
+  val completeWords: List<String> = emptyList()
+)
