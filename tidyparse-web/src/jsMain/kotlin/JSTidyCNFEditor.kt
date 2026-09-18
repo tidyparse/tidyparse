@@ -126,11 +126,16 @@ fun cnfSetup() {
     finishCnfLoad(name, text)
   } catch (e: dynamic) { console.error("Failed to parse CNF:", e) }
 
+  val gpuReady = MainScope().launch { tryBootstrappingGPU(true) }
   (document.getElementById("pythonCnfBtn") as HTMLButtonElement)
     .addEventListener("click", { MainScope().launch { try {
         val text = pythonStatementCNFAllProds.joinToString("\n") { it.pretty() }
-        loadCnfTextFromSource("Python CNF", text)
-        loadWDFA("wdfa.bin")
+        installCnfTextSource("Python CNF", text)
+        val cfg = jsCnfEditor.getLatestCFG()
+        gpuReady.join()
+        loadPythonPCFG(cfg)
+        if (jsCnfEditor.getLatestCFG() === cfg) finishCnfLoad("Python CNF", text)
+        if (gpuAvailable) loadWDFA("wdfa.bin")
       } catch (e: dynamic) { console.error("Python CNF / WDFA load error:", e) }
     }})
 
@@ -172,7 +177,6 @@ fun cnfSetup() {
     if ((e as KeyboardEvent).key == "Escape" && window.asDynamic().tidySelectedFile != undefined) hide()
   })
 
-  MainScope().launch { tryBootstrappingGPU(true) }
 }
 
 private fun buildCnfModal(): HTMLDivElement {

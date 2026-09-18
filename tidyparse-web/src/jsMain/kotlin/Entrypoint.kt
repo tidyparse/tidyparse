@@ -213,6 +213,7 @@ suspend fun pythonSetup() {
     try {
       tryBootstrappingGPU(true)
       if (gpuAvailable) {
+        loadPythonPCFG(jsPyEditor.getLatestCFG())
         ngrams = jsPyEditor.ngrams.toGpuHash(cfg = jsPyEditor.getLatestCFG()).loadToGPUBuffer()
         log("Loaded n-grams into ${jsPyEditor.ngramTensor.size / 1000000}mb GPU buffer in ${t0.elapsedNow()}")
         loadWDFA()
@@ -411,6 +412,14 @@ suspend fun loadNgrams(
 
   val n = parseNgrams(loaded, target)
   log("Loaded ${target.size} $n-grams in ${t0.elapsedNow()}")
+}
+
+suspend fun loadPythonPCFG(cfg: CFG) {
+  if (!gpuAvailable) return
+  val file = "python_statement_pcfg.txt"
+  val response = window.fetch(browserResourceUrl(file)).await()
+  if (response.ok) cfg.loadPCFG(response.text().await())
+  else log("Failed to load PCFG from $file: ${response.status}")
 }
 
 private fun parseNgrams(raw: String, target: MutableMap<List<String>, Double>): Int {
