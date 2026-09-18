@@ -274,18 +274,20 @@ suspend fun intersectionPipeline(
 
   idxUniBuf.writeU32(wordIndex = 5, value = toDecode)
 
-  val samplingT = TimeSource.Monotonic.markNow()
-  val samplingBuf = preparePCFGSampling(
-    dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, cdfBuf, tmBuf, idxUniBuf, rootCDF, cfg.pcfgBuf
-  )
-  if (PROFILE_WGPU_KERNELS) awaitGPUQueue()
-  mark("prepare PCFG sampling", samplingT)
+  val samplingBuf = cfg.pcfgBuf?.let { pcfg ->
+    val samplingT = TimeSource.Monotonic.markNow()
+    preparePCFGSampling(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, cdfBuf, tmBuf, idxUniBuf, rootCDF, pcfg)
+      .also {
+        if (PROFILE_WGPU_KERNELS) awaitGPUQueue()
+        mark("prepare PCFG sampling", samplingT)
+      }
+  }
   val outBuf = GPUBuffer(toDecode * maxRepairLen * 4, STCPSD)
 
   timings["enumerate"] = timedGPUIsolated("Enumerate") {
     enum_words_wor(
       dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf,
-      cdfBuf, tmBuf, idxUniBuf, rootSizes, samplingBuf, outBuf
+      cdfBuf, tmBuf, idxUniBuf, rootSizes, samplingBuf ?: rootCDF, outBuf
     ).dispatchFlat(toDecode)
   }
 
@@ -310,8 +312,9 @@ suspend fun intersectionPipeline(
     } else result
 
   return rankedResults.also {
+    samplingBuf?.destroy()
     destroyAll(
-      outBuf, rootSizes, rootCDF, samplingBuf, metaBuf, dpBuf, activeBuf, wordBuf,
+      outBuf, rootSizes, rootCDF, metaBuf, dpBuf, activeBuf, wordBuf,
       idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf
     )
   }
@@ -497,8 +500,7 @@ val CFG.termBuf: GPUBuffer by cache {
 }
 
 private val pcfgBuffers = js("new WeakMap()") // Symbol IDs belong to this grammar instance.
-private val uniformPCFG by lazy { 0.toGPUBuffer(STCPSD) }
-internal val CFG.pcfgBuf: GPUBuffer get() = pcfgBuffers.get(this).unsafeCast<GPUBuffer?>() ?: uniformPCFG
+internal val CFG.pcfgBuf: GPUBuffer? get() = pcfgBuffers.get(this).unsafeCast<GPUBuffer?>()
 
 /** Load CNF productions of the form `A -> B C [numerator/denominator]` (or `A -> token [...]`). */
 fun CFG.loadPCFG(text: String) {
@@ -519,16 +521,15 @@ fun CFG.loadPCFG(text: String) {
     val cost = if (numerator == 0.0) -1 else (-ln(numerator / denominator) * SCALE).roundToInt()
     rows[parent][left to right] = weight to cost
   }
-  // [enabled, row offsets (absolute, including sentinel), sorted (left, right, weight, log-cost) records]
-  val data = MutableList(nts.size + 2) { 0 }
-  data[0] = 1
+  // [row offsets (absolute, including sentinel), sorted (left, right, weight, log-cost) records]
+  val data = MutableList(nts.size + 1) { 0 }
   rows.forEachIndexed { nt, row ->
-    data[nt + 1] = data.size
+    data[nt] = data.size
     row.entries.sortedWith(compareBy({ it.key.first }, { it.key.second.toUInt() })).forEach { (rhs, scores) ->
       data.addAll(listOf(rhs.first, rhs.second, scores.first, scores.second))
     }
   }
-  data[nts.size + 1] = data.size
+  data[nts.size] = data.size
   val previous = pcfgBuffers.get(this).unsafeCast<GPUBuffer?>()
   pcfgBuffers.set(this, data.toGPUBuffer(STCPSD))
   previous?.destroy()
@@ -539,8 +540,6 @@ internal suspend fun preparePCFGSampling(
   dp: GPUBuffer, counts: GPUBuffer, offsets: GPUBuffer, storage: GPUBuffer, cdf: GPUBuffer,
   terminals: GPUBuffer, indices: GPUBuffer, rootCdf: GPUBuffer, pcfg: GPUBuffer
 ): GPUBuffer {
-  if (pcfg.size.toInt() == 4)
-    return packStructBorrowed(listOf(0), rootCdf, pcfg, pcfg)
   val cells = (dp.size / 4).toInt()
   val choiceCounts = GPUBuffer(dp.size, STCPSD)
   pcfg_choice_counts(dp, counts, terminals, indices, choiceCounts).dispatchFlat((cells + 255) / 256)
@@ -558,8 +557,15 @@ internal suspend fun preparePCFGSampling(
   if (total != 0L)
     pcfg_order(dp, counts, offsets, storage, cdf, terminals, indices, weights, rows, choices)
       .dispatchFlat((cells + 63) / 64)
-  return packStructBorrowed(listOf(1), rootCdf, rows, choices)
-    .also { destroyAll(weights, rows, choices) }
+  // No header: row/choice offsets follow directly from the root and chart sizes.
+  val sampling = GPUBuffer(rootCdf.size + rows.size + choices.size, STCPSD)
+  val pack = gpu.createCommandEncoder()
+  pack.copyBufferToBuffer(rootCdf, 0.0, sampling, 0.0, rootCdf.size)
+  pack.copyBufferToBuffer(rows, 0.0, sampling, rootCdf.size, rows.size)
+  pack.copyBufferToBuffer(choices, 0.0, sampling, rootCdf.size + rows.size, choices.size)
+  gpu.queue.submit(arrayOf(pack.finish()))
+  destroyAll(weights, rows, choices)
+  return sampling
 }
 
 //language=wgsl
@@ -1415,9 +1421,9 @@ fn weight_prefix(base: u32, end: u32) -> u32 {
 
 // Sparse PCFG rows are sorted by (left, right); SAT_MAX denotes a terminal rule.
 fn rule_weight(nt: u32, left: u32, right: u32) -> vec2<u32> {
-  let start = pcfg(nt + 1u);
+  let start = pcfg(nt);
   var lo = 0u;
-  var hi = (pcfg(nt + 2u) - start) / 4u;
+  var hi = (pcfg(nt + 1u) - start) / 4u;
   while (lo < hi) {
     let mid = (lo + hi) / 2u;
     let pos = start + 4u * mid;
@@ -1461,14 +1467,20 @@ fn branch_size(d: u32, literals: u32, branch: u32) -> u32 {
     choices[rows[d]] = Choice(branch_size(d, literals, 0u), 0u, branch_weight(d, literals, 0u).y);
     return;
   }
-  let prefix = pcfg(idx_uni.numNonterminals + 1u) + 2u * rows[d];
+  let prefix = pcfg(idx_uni.numNonterminals) + 2u * rows[d];
   var totalWeight = 0u;
+  var previousWeight = 0u;
+  var uniform = true;
   for (var b = 0u; b < count; b++) {
+    var weight = 0u;
     if (branch_size(d, literals, b) != 0u) {
       let rule = branch_weight(d, literals, b);
-      totalWeight = sat_add(totalWeight, rule.x);
+      weight = rule.x;
       weights[prefix + 2u * b + 1u] = rule.y;
     }
+    uniform = uniform && (b == 0u || weight == previousWeight);
+    previousWeight = weight;
+    totalWeight = sat_add(totalWeight, weight);
     weights[prefix + 2u * b] = totalWeight;
   }
   let seed = atomicLoad(&idx_uni.targetCnt) ^ 0xA511E9B3u;
@@ -1489,24 +1501,29 @@ fn branch_size(d: u32, literals: u32, branch: u32) -> u32 {
       continue;
     }
     let mid = (lo + hi) / 2u;
-    let splitWeight = weight_prefix(prefix, mid);
-    var mass = vec2<u32>(splitWeight - weight_prefix(prefix, lo), weight_prefix(prefix, hi) - splitWeight);
-    // Subtracting a saturated prefix loses information; retain exact sums in that rare case.
-    if (totalWeight == SAT_MAX) {
-      mass = vec2<u32>(0u);
-      for (var b = lo; b < hi; b++) {
-        if (branch_size(d, literals, b) != 0u) {
-          let side = select(0u, 1u, b >= mid);
-          mass[side] = sat_add(mass[side], branch_weight(d, literals, b).x);
+    let random = mix32(seed ^ mix32(d) ^ mix32(lo) ^ mix32(hi));
+    var leftFirst: bool;
+    if (uniform) { leftFirst = random % (hi - lo) < mid - lo; }
+    else {
+      let splitWeight = weight_prefix(prefix, mid);
+      var mass = vec2<u32>(splitWeight - weight_prefix(prefix, lo), weight_prefix(prefix, hi) - splitWeight);
+      // Subtracting a saturated prefix loses information; retain exact sums in that rare case.
+      if (totalWeight == SAT_MAX) {
+        mass = vec2<u32>(0u);
+        for (var b = lo; b < hi; b++) {
+          if (branch_size(d, literals, b) != 0u) {
+            let side = select(0u, 1u, b >= mid);
+            mass[side] = sat_add(mass[side], branch_weight(d, literals, b).x);
+          }
         }
       }
+      let total = sat_add(mass.x, mass.y);
+      let q = random % 1000u;
+      let needle = (total / 1000u) * q + ((total % 1000u) * q) / 1000u;
+      leftFirst = needle < mass.x;
     }
-    let total = sat_add(mass.x, mass.y);
-    let q = mix32(seed ^ mix32(d) ^ mix32(lo) ^ mix32(hi)) % 1000u;
-    let needle = (total / 1000u) * q + ((total % 1000u) * q) / 1000u;
     let left = vec2<u32>(lo, mid);
     let right = vec2<u32>(mid, hi);
-    let leftFirst = needle < mass.x;
     stack[top] = select(left, right, leftFirst); top++;
     stack[top] = select(right, left, leftFirst); top++;
   }
@@ -1515,11 +1532,6 @@ fn branch_size(d: u32, literals: u32, branch: u32) -> u32 {
 /** See [PTree.sampleStrWithoutReplacement] for CPU version. */
 //language=wgsl
 val enum_words_wor by Shader("""$TERM_STRUCT
-struct Sampling {
-  weighted: u32,
-  cdfOffset: u32, cdfSize: u32, rowsOffset: u32, rowsSize: u32,
-  choicesOffset: u32, choicesSize: u32, payload: array<u32>
-};
 @group(0) @binding(0) var<storage, read>        dp_in       : array<u32>;
 @group(0) @binding(1) var<storage, read>        bp_count    : array<u32>;
 @group(0) @binding(2) var<storage, read>        bp_offset   : array<u32>;
@@ -1528,10 +1540,10 @@ struct Sampling {
 @group(0) @binding(5) var<storage, read>        terminals   : Terminals;
 @group(0) @binding(6) var<storage, read_write>  idx_uni     : IndexUniforms;
 @group(0) @binding(7) var<storage, read>        root_sizes  : array<u32>;   // length = numRoots
-@group(0) @binding(8) var<storage, read>        sampling    : Sampling;    // root CDF + ordered branch CDFs
+@group(0) @binding(8) var<storage, read>        sampling    : array<u32>;  // root CDF, optionally followed by PCFG rows/choices
 @group(0) @binding(9) var<storage, read_write>  sampled     : array<u32>;   // out packets
 
-fn root_cdf(i: u32) -> u32 { return sampling.payload[sampling.cdfOffset + i]; }
+fn root_cdf(i: u32) -> u32 { return sampling[i]; }
 
 $CHART_DECODING_HELPERS
 
@@ -1656,20 +1668,21 @@ $WGSL_MIX32
 // The seeded PCFG order is built once per chart; decoding only searches rank intervals.
 fn weighted_branch(d: u32, literals: u32, rank: u32) -> vec3<u32> {
   let count = literals + bp_count[d];
-  let base = sampling.choicesOffset + 3u * sampling.payload[sampling.rowsOffset + d];
-  if (count == 1u) { return vec3<u32>(0u, rank, sampling.payload[base + 2u]); }
+  let rows = idx_uni.numStartIndices / 2u;
+  let base = rows + arrayLength(&dp_in) + 3u * sampling[rows + d];
+  if (count == 1u) { return vec3<u32>(0u, rank, sampling[base + 2u]); }
   var lo = 0u;
   var hi = count;
   if (bp_count[d] == 0u) { lo = rank; hi = rank; }
   while (lo < hi) {
     let mid = (lo + hi) >> 1u;
-    if (rank < sampling.payload[base + 3u * mid]) { hi = mid; }
+    if (rank < sampling[base + 3u * mid]) { hi = mid; }
     else { lo = mid + 1u; }
   }
   var previous = 0u;
-  if (lo != 0u) { previous = sampling.payload[base + 3u * (lo - 1u)]; }
+  if (lo != 0u) { previous = sampling[base + 3u * (lo - 1u)]; }
   let pos = base + 3u * lo;
-  return vec3<u32>(sampling.payload[pos + 1u], rank - previous, sampling.payload[pos + 2u]);
+  return vec3<u32>(sampling[pos + 1u], rank - previous, sampling[pos + 2u]);
 }
 
 fn rng_next(state: ptr<function, u32>) -> u32 {
@@ -1715,6 +1728,7 @@ fn write_empty_packet(sid: u32, levDist: u32) {
 
   let numRoots = idx_uni.numStartIndices / 2u;
   if (numRoots == 0u) { return; }
+  let weighted = arrayLength(&sampling) > numRoots;
 
   let lastRoot = numRoots - 1u;
   let total    = sat_add(root_cdf(lastRoot), root_sizes[lastRoot]);
@@ -1727,7 +1741,7 @@ fn write_empty_packet(sid: u32, levDist: u32) {
 
   // A uniform permutation of ranks would erase the PCFG's priority on early results.
   var prk = sid;
-  if (sampling.weighted == 0u) { prk = permute_in_range(sid, runSeed, total); }
+  if (!weighted) { prk = permute_in_range(sid, runSeed, total); }
 
   // Root selection by (root_cdf, root_sizes)
   var rLo: u32 = 0u;
@@ -1788,97 +1802,58 @@ fn write_empty_packet(sid: u32, levDist: u32) {
 
     if (tot == 0u) { write_empty_packet(sid, levDist); return; }
 
-    if (sampling.weighted != 0u) {
+    let saturated = !weighted && lastCDF == SAT_MAX && expCnt != 0u;
+    var branch: u32;
+    var inside = 0u;
+    if (weighted) {
       let choice = weighted_branch(d, litCount, rk);
+      branch = choice.x;
+      inside = choice.y;
       pcfgCost = sat_add(pcfgCost, choice.z);
-      if (choice.x < litCount) {
-        if (!decodeLiteral(d, val, choice.x, &word, &wLen)) { write_empty_packet(sid, levDist); return; }
-        continue;
+    } else if (saturated) {
+      // Saturated CDFs lose rank information; preserve the original RNG fallback.
+      let pickLit = litCount != 0u && rand_bounded(&rng, sat_add(litCount, expCnt)) < litCount;
+      if (pickLit) { branch = rand_bounded(&rng, litCount); }
+      else { branch = litCount + rand_bounded(&rng, expCnt); }
+    } else {
+      if (rk >= tot) { rk %= tot; }
+      branch = rk;
+      if (rk >= litCount) {
+        if (expCnt == 0u) { write_empty_packet(sid, levDist); return; }
+        let cIx = min(binarySearchCDF(base2, expCnt, rk), base2 + expCnt - 1u);
+        var previous = litCount;
+        if (cIx != base2) { previous = ls_sparse[cIx - 1u]; }
+        branch = litCount + cIx - base2;
+        inside = rk - previous;
       }
-      let pos = 2u * (base2 + choice.x - litCount);
-      let left = bp_storage[pos];
-      let right = bp_storage[pos + 1u];
-      let sizeR = langSize(right, idx_uni.numNonterminals);
-      if (sizeR == 0u || top + 2u > ${MAX_WORD_LEN}u) { write_empty_packet(sid, levDist); return; }
-      stack[top] = Frame(right, choice.y % sizeR); top++;
-      stack[top] = Frame(left, choice.y / sizeR); top++;
+    }
+
+    if (branch < litCount) {
+      if (!decodeLiteral(d, val, branch, &word, &wLen)) { write_empty_packet(sid, levDist); return; }
       continue;
     }
 
-    // ---- Saturation-aware fallback ----
-    // If the expansion CDF is saturated, binarySearchCDF collapses to the first production.
-    // Switch to RNG-driven choice to restore diversity.
-    if (lastCDF == SAT_MAX && expCnt != 0u) {
-      // choose literal vs expansion (roughly proportional to litCount vs expCnt)
-      let pickLit = (litCount != 0u) && (rand_bounded(&rng, sat_add(litCount, expCnt)) < litCount);
-
-      if (pickLit) {
-        let v = rand_bounded(&rng, litCount);
-        if (!decodeLiteral(d, val, v, &word, &wLen)) { write_empty_packet(sid, levDist); return; }
-        continue;
-      }
-
-      // choose expansion uniformly among expCnt
-      let rel      = rand_bounded(&rng, expCnt);
-      let choiceIx = base2 + rel;
-
-      let left  = bp_storage[2u * choiceIx + 0u];
-      let right = bp_storage[2u * choiceIx + 1u];
-
-      let sizeR = langSize(right, idx_uni.numNonterminals);
-      let sizeL = langSize(left,  idx_uni.numNonterminals);
-
-      var rkL: u32 = 0u;
-      var rkR: u32 = 0u;
-
-      if (sizeR == 0u || sizeL == 0u) { write_empty_packet(sid, levDist); return; }
-
+    let pos = 2u * (base2 + branch - litCount);
+    let left = bp_storage[pos];
+    let right = bp_storage[pos + 1u];
+    let sizeR = langSize(right, idx_uni.numNonterminals);
+    if (sizeR == 0u || top + 2u > ${MAX_WORD_LEN}u) { write_empty_packet(sid, levDist); return; }
+    var rkL = inside / sizeR;
+    var rkR = inside % sizeR;
+    if (saturated) {
+      let sizeL = langSize(left, idx_uni.numNonterminals);
+      if (sizeL == 0u) { write_empty_packet(sid, levDist); return; }
       if (sizeR == SAT_MAX || sizeL == SAT_MAX) {
         rkL = randomRankForSize(&rng, sizeL);
         rkR = randomRankForSize(&rng, sizeR);
       } else {
-        let prod   = sat_mul(sizeL, sizeR);
-        let inside = rand_bounded(&rng, prod);
+        inside = rand_bounded(&rng, sat_mul(sizeL, sizeR));
         rkL = inside / sizeR;
         rkR = inside % sizeR;
       }
-
-      if (top + 2u > ${MAX_WORD_LEN}u) { write_empty_packet(sid, levDist); return; }
-      stack[top] = Frame(right, rkR); top++;
-      stack[top] = Frame(left,  rkL); top++;
-      continue;
     }
-
-    // ---- Normal rank/CDF path (non-saturated) ----
-    if (rk >= tot) { rk = rk % tot; }
-
-    if (rk < litCount) {
-      if (!decodeLiteral(d, val, rk, &word, &wLen)) { write_empty_packet(sid, levDist); return; }
-      continue;
-    }
-
-    if (expCnt == 0u) { write_empty_packet(sid, levDist); return; }
-    let choiceIx = binarySearchCDF(base2, expCnt, rk);
-
-    // if choiceIx == base2+expCnt, rk was out of range; clamp to last
-    let cIx = select(choiceIx, base2 + expCnt - 1u, choiceIx >= base2 + expCnt);
-
-    var prevCDF = litCount;
-    if (cIx != base2) { prevCDF = ls_sparse[cIx - 1u]; }
-    let inside  = rk - prevCDF;
-
-    let left  = bp_storage[2u * cIx + 0u];
-    let right = bp_storage[2u * cIx + 1u];
-
-    let sizeR = langSize(right, idx_uni.numNonterminals);
-    if (sizeR == 0u) { write_empty_packet(sid, levDist); return; }
-
-    let rkL = inside / sizeR;
-    let rkR = inside % sizeR;
-
-    if (top + 2u > ${MAX_WORD_LEN}u) { write_empty_packet(sid, levDist); return; }
     stack[top] = Frame(right, rkR); top++;
-    stack[top] = Frame(left,  rkL); top++;
+    stack[top] = Frame(left, rkL); top++;
   }
 
   // Write packet
