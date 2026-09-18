@@ -8,7 +8,10 @@ version = "0.23.0"
 kotlin {
   js {
     browser {
-      testTask { useKarma { useChromeHeadless() } }
+      testTask {
+        inputs.file("karma.config.d/karma.conf.js")
+        useKarma { useChromeHeadless() }
+      }
     }
   }
 
