@@ -503,7 +503,7 @@ internal val CFG.pcfgBuf: GPUBuffer get() = pcfgBuffers.get(this).unsafeCast<GPU
 /** Load CNF productions of the form `A -> B C [numerator/denominator]` (or `A -> token [...]`). */
 fun CFG.loadPCFG(text: String) {
   val nts = nonterminals.withIndex().associate { it.value to it.index }
-  val rows = Array(nts.size) { mutableMapOf<Pair<Int, Int>, Int>() }
+  val rows = Array(nts.size) { mutableMapOf<Pair<Int, Int>, Pair<Int, Int>>() }
   text.lineSequence().filter { it.isNotBlank() }.forEach { line ->
     val rule = line.substringBeforeLast(" [").trim().split(Regex("\\s+"))
     val fraction = line.substringAfterLast('[').substringBefore(']').split('/')
@@ -515,15 +515,17 @@ fun CFG.loadPCFG(text: String) {
     val left = (if (rule.size == 3) tmMap[rule[2]] else nts[rule[2]]) ?: return@forEach
     val right = if (rule.size == 3) -1 else nts[rule[3]] ?: return@forEach
     // Keep even rare productions reachable when quantizing to thousandths.
-    rows[parent][left to right] = (1000 * numerator / denominator).roundToInt().coerceAtLeast(1)
+    val weight = (1000 * numerator / denominator).roundToInt().coerceAtLeast(1)
+    val cost = if (numerator == 0.0) -1 else (-ln(numerator / denominator) * SCALE).roundToInt()
+    rows[parent][left to right] = weight to cost
   }
-  // [enabled, row offsets (absolute, including sentinel), sorted (left, right, weight) triples]
+  // [enabled, row offsets (absolute, including sentinel), sorted (left, right, weight, log-cost) records]
   val data = MutableList(nts.size + 2) { 0 }
   data[0] = 1
   rows.forEachIndexed { nt, row ->
     data[nt + 1] = data.size
-    row.entries.sortedWith(compareBy({ it.key.first }, { it.key.second.toUInt() })).forEach { (rhs, weight) ->
-      data.addAll(listOf(rhs.first, rhs.second, weight))
+    row.entries.sortedWith(compareBy({ it.key.first }, { it.key.second.toUInt() })).forEach { (rhs, scores) ->
+      data.addAll(listOf(rhs.first, rhs.second, scores.first, scores.second))
     }
   }
   data[nts.size + 1] = data.size
@@ -547,9 +549,9 @@ internal suspend fun preparePCFGSampling(
   val total = rows.readIndices(listOf(last))[0].toUInt().toLong() +
       choiceCounts.readIndices(listOf(last))[0].toUInt().toLong()
   choiceCounts.destroy()
-  val choices = GPUBuffer(maxOf(total, 1L) * 8, STCPSD)
-  // Temporary row weight prefixes share a binding with a copy of the grammar weights.
-  val weights = GPUBuffer(pcfg.size + total * 4, STCPSD)
+  val choices = GPUBuffer(maxOf(total, 1L) * 12, STCPSD)
+  // Temporary (weight prefix, rule cost) pairs share a binding with the grammar weights.
+  val weights = GPUBuffer(pcfg.size + total * 8, STCPSD)
   val encoder = gpu.createCommandEncoder()
   encoder.copyBufferToBuffer(pcfg, 0.0, weights, 0.0, pcfg.size)
   gpu.queue.submit(arrayOf(encoder.finish()))
@@ -1330,7 +1332,7 @@ const val TOP_K_SAMP = 10 * MAX_DISP_RESULTS // Maximum results to sample, some 
 const val RERANKER_TOP_K_SAMP = 1_000
 const val DISPATCH_GROUP_SIZE_X = 65_535
 // Length of the packet header in each repair buffer
-const val PKT_HDR_LEN = 2 // [intersection priority/edit distance, decoder rank cost]
+const val PKT_HDR_LEN = 2 // [edit distance, PCFG log-cost (then combined decoder rank cost)]
 const val PACKED_EDIT_SHIFT = 24
 const val PACKED_TOKEN_LIMIT = 1 shl PACKED_EDIT_SHIFT
 const val PACKED_TOKEN_MASK = PACKED_TOKEN_LIMIT - 1
@@ -1383,11 +1385,11 @@ val pcfg_choice_counts by Shader("""$TERM_STRUCT
   let d = gid.x + gid.y * idx_uni.threads * 256u;
   if (d >= arrayLength(&dp_in)) { return; }
   let count = bp_count[d] + count_tms(dp_in[d], d % idx_uni.numNonterminals);
-  counts[d] = select(0u, count, dp_in[d] != 0u && count > 1u);
+  counts[d] = select(0u, count, dp_in[d] != 0u);
 }""")
 
 // Build the same weighted partition order once per ambiguous chart row, including
-// saturated rows. Single-choice rows need no records. Enumeration stays O(log B).
+// saturated rows. Forced branches retain their PCFG costs too. Enumeration stays O(log B).
 //language=wgsl
 val pcfg_order by Shader("""$TERM_STRUCT
 @group(0) @binding(0) var<storage, read> dp_in: array<u32>;
@@ -1399,7 +1401,8 @@ val pcfg_order by Shader("""$TERM_STRUCT
 @group(0) @binding(6) var<storage, read_write> idx_uni: IndexUniforms;
 @group(0) @binding(7) var<storage, read_write> weights: array<u32>;
 @group(0) @binding(8) var<storage, read> rows: array<u32>;
-@group(0) @binding(9) var<storage, read_write> choices: array<vec2<u32>>;
+struct Choice { end: u32, branch: u32, cost: u32 };
+@group(0) @binding(9) var<storage, read_write> choices: array<Choice>;
 
 const NEG_MASK: u32 = ${NEG_STR_LIT};
 $WGSL_LANG_SIZE
@@ -1407,26 +1410,26 @@ $WGSL_MIX32
 fn pcfg(i: u32) -> u32 { return weights[i]; }
 fn weight_prefix(base: u32, end: u32) -> u32 {
   if (end == 0u) { return 0u; }
-  return weights[base + end - 1u];
+  return weights[base + 2u * (end - 1u)];
 }
 
 // Sparse PCFG rows are sorted by (left, right); SAT_MAX denotes a terminal rule.
-fn rule_weight(nt: u32, left: u32, right: u32) -> u32 {
+fn rule_weight(nt: u32, left: u32, right: u32) -> vec2<u32> {
   let start = pcfg(nt + 1u);
   var lo = 0u;
-  var hi = (pcfg(nt + 2u) - start) / 3u;
+  var hi = (pcfg(nt + 2u) - start) / 4u;
   while (lo < hi) {
     let mid = (lo + hi) / 2u;
-    let pos = start + 3u * mid;
+    let pos = start + 4u * mid;
     let l = pcfg(pos);
     let r = pcfg(pos + 1u);
-    if (l == left && r == right) { return pcfg(pos + 2u); }
+    if (l == left && r == right) { return vec2<u32>(pcfg(pos + 2u), pcfg(pos + 3u)); }
     if (l < left || (l == left && r < right)) { lo = mid + 1u; } else { hi = mid; }
   }
-  return 1u;
+  return vec2<u32>(1u, ${(-ln(0.001) * SCALE).roundToInt()}u);
 }
 
-fn branch_weight(d: u32, literals: u32, branch: u32) -> u32 {
+fn branch_weight(d: u32, literals: u32, branch: u32) -> vec2<u32> {
   let nt = d % idx_uni.numNonterminals;
   if (branch < literals) {
     let predicate = dp_in[d] & PREDICATE_MASK;
@@ -1453,14 +1456,20 @@ fn branch_size(d: u32, literals: u32, branch: u32) -> u32 {
   if (d >= arrayLength(&dp_in) || dp_in[d] == 0u) { return; }
   let literals = count_tms(dp_in[d], d % idx_uni.numNonterminals);
   let count = literals + bp_count[d];
-  if (count <= 1u) { return; }
-  let prefix = pcfg(idx_uni.numNonterminals + 1u) + rows[d];
+  if (count == 0u) { return; }
+  if (count == 1u) {
+    choices[rows[d]] = Choice(branch_size(d, literals, 0u), 0u, branch_weight(d, literals, 0u).y);
+    return;
+  }
+  let prefix = pcfg(idx_uni.numNonterminals + 1u) + 2u * rows[d];
   var totalWeight = 0u;
   for (var b = 0u; b < count; b++) {
     if (branch_size(d, literals, b) != 0u) {
-      totalWeight = sat_add(totalWeight, branch_weight(d, literals, b));
+      let rule = branch_weight(d, literals, b);
+      totalWeight = sat_add(totalWeight, rule.x);
+      weights[prefix + 2u * b + 1u] = rule.y;
     }
-    weights[prefix + b] = totalWeight;
+    weights[prefix + 2u * b] = totalWeight;
   }
   let seed = atomicLoad(&idx_uni.targetCnt) ^ 0xA511E9B3u;
   var stack: array<vec2<u32>, 32>;
@@ -1475,7 +1484,7 @@ fn branch_size(d: u32, literals: u32, branch: u32) -> u32 {
     let hi = range.y;
     if (hi - lo == 1u) {
       cumulative = sat_add(cumulative, branch_size(d, literals, lo));
-      choices[out] = vec2<u32>(cumulative, lo);
+      choices[out] = Choice(cumulative, lo, weights[prefix + 2u * lo + 1u]);
       out++;
       continue;
     }
@@ -1488,7 +1497,7 @@ fn branch_size(d: u32, literals: u32, branch: u32) -> u32 {
       for (var b = lo; b < hi; b++) {
         if (branch_size(d, literals, b) != 0u) {
           let side = select(0u, 1u, b >= mid);
-          mass[side] = sat_add(mass[side], branch_weight(d, literals, b));
+          mass[side] = sat_add(mass[side], branch_weight(d, literals, b).x);
         }
       }
     }
@@ -1645,21 +1654,22 @@ fn permute_in_range(sid: u32, seed: u32, total: u32) -> u32 {
 $WGSL_MIX32
 
 // The seeded PCFG order is built once per chart; decoding only searches rank intervals.
-fn weighted_branch(d: u32, literals: u32, rank: u32) -> vec2<u32> {
+fn weighted_branch(d: u32, literals: u32, rank: u32) -> vec3<u32> {
   let count = literals + bp_count[d];
-  if (count == 1u) { return vec2<u32>(0u, rank); }
-  let base = sampling.payload[sampling.rowsOffset + d];
+  let base = sampling.choicesOffset + 3u * sampling.payload[sampling.rowsOffset + d];
+  if (count == 1u) { return vec3<u32>(0u, rank, sampling.payload[base + 2u]); }
   var lo = 0u;
   var hi = count;
   if (bp_count[d] == 0u) { lo = rank; hi = rank; }
   while (lo < hi) {
     let mid = (lo + hi) >> 1u;
-    if (rank < sampling.payload[sampling.choicesOffset + 2u * (base + mid)]) { hi = mid; }
+    if (rank < sampling.payload[base + 3u * mid]) { hi = mid; }
     else { lo = mid + 1u; }
   }
   var previous = 0u;
-  if (lo != 0u) { previous = sampling.payload[sampling.choicesOffset + 2u * (base + lo - 1u)]; }
-  return vec2<u32>(sampling.payload[sampling.choicesOffset + 2u * (base + lo) + 1u], rank - previous);
+  if (lo != 0u) { previous = sampling.payload[base + 3u * (lo - 1u)]; }
+  let pos = base + 3u * lo;
+  return vec3<u32>(sampling.payload[pos + 1u], rank - previous, sampling.payload[pos + 2u]);
 }
 
 fn rng_next(state: ptr<function, u32>) -> u32 {
@@ -1754,6 +1764,7 @@ fn write_empty_packet(sid: u32, levDist: u32) {
 
   var word : array<u32, ${MAX_WORD_LEN}u>;
   var wLen : u32 = 0u;
+  var pcfgCost = 0u;
 
   loop {
     if (top == 0u) { break; }
@@ -1779,6 +1790,7 @@ fn write_empty_packet(sid: u32, levDist: u32) {
 
     if (sampling.weighted != 0u) {
       let choice = weighted_branch(d, litCount, rk);
+      pcfgCost = sat_add(pcfgCost, choice.z);
       if (choice.x < litCount) {
         if (!decodeLiteral(d, val, choice.x, &word, &wLen)) { write_empty_packet(sid, levDist); return; }
         continue;
@@ -1874,7 +1886,7 @@ fn write_empty_packet(sid: u32, levDist: u32) {
   let outBase = sid * stride;
 
   sampled[outBase + 0u] = levDist;
-  sampled[outBase + 1u] = 0u; // markov_score fills later
+  sampled[outBase + 1u] = pcfgCost;
 
   for (var i = 0u; i < wLen && (PKT_HDR_LEN + i) < stride; i = i + 1u) { sampled[outBase + PKT_HDR_LEN + i] = word[i]; }
   // terminator
@@ -1885,6 +1897,7 @@ fn write_empty_packet(sid: u32, levDist: u32) {
 const val SAMPLER_PARAMS = """struct Params { maxSamples: u32, k: u32, stride: u32, threads: u32 };"""
 //language=wgsl
 val markov_score by Shader("""$SAMPLER_PARAMS
+$SAT_ARTH
 @group(0) @binding(0) var<storage, read_write>  packets : array<u32>; // sampledWords/outBuf
 @group(0) @binding(1) var<storage, read>          ngram : array<u32>; // hash table
 @group(0) @binding(2) var<uniform>                  prm : Params;
@@ -1930,7 +1943,7 @@ fn lookupScore(key: u32) -> u32 {
     let w1  : u32 = packets[base + PKT_HDR_LEN] & TOKEN_MASK;
     var t2  : u32 = w1 - 1u;
 
-    var score       : u32 = 0u;
+    var score       : u32 = packets[base + 1u]; // -log(P_CFG * P_ngram) = -log(P_CFG) - log(P_ngram)
     var doneSuffix  : u32 = 0u;
 
     loop {
@@ -1948,12 +1961,12 @@ fn lookupScore(key: u32) -> u32 {
 
         // ----- accumulate n-gram score ----------------------
         let key = packGram(t0, t1, t2, tok - 1u);
-        score  += lookupScore(key);
+        score = sat_add(score, lookupScore(key));
 
         t0 = t1; t1 = t2; t2 = tok - 1u;
     }
 
-    packets[base + 1u] = score + (packets[base] + 1u) * 10000000u;
+    packets[base + 1u] = sat_add(score, (packets[base] + 1u) * 10000000u);
 }""")
 
 //language=wgsl
@@ -1976,8 +1989,11 @@ const WDFA_SCORE_INVALID : u32 = 0xffffffffu;
   let stride = prm.stride;
   let base = sid * stride;
 
+  if (packets[base + 1u] == WDFA_SCORE_INVALID) { return; }
   var q = wdfa.startState;
-  var cost = wdfa.startCost;
+  // Convert cached PCFG log-cost to the WDFA's scale before multiplying probabilities in log space.
+  let pcfgCost = u32(min(round(f32(packets[base + 1u]) * (f32(wdfa.scale) / $SCALE)), f32(WDFA_INF)));
+  var cost = sat_add_wdfa(wdfa.startCost, pcfgCost);
 
   var pos : u32 = 0u;
   loop {
