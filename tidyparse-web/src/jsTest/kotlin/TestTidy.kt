@@ -2,6 +2,7 @@ import ai.hypergraph.kaliningraph.repair.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.tokenizeByWhitespace
 import ai.hypergraph.tidyparse.PyCodeSnippet
+import ai.hypergraph.tidyparse.hasTimeLeft
 import ai.hypergraph.tidyparse.wgpu.MAX_DISP_RESULTS
 import ai.hypergraph.tidyparse.sampleGREUntilTimeout
 import ai.hypergraph.tidyparse.wgpu.*
@@ -655,18 +656,84 @@ class TestTidy {
     assertContains(repairs, "a b")
   }
 
+//  @Test
+//  fun testPackedDAFSARepairMatchesSparseGRE() = browserTest {
+//    val smokeCfg = """
+//      START -> A B | A X
+//      X -> B C
+//      A -> a
+//      B -> b
+//      C -> c
+//    """.trimIndent().parseCFG()
+//    val broken = listOf("a")
+//
+//    val greRepairs = sampleGREUntilTimeout(broken, smokeCfg).toSet()
+//    val packed = assertNotNull(repairWithPackedDAFSA(broken, smokeCfg))
+//    val dafsaRepairs = packed.words().toSet()
+//
+//    assertEquals(greRepairs, dafsaRepairs)
+//    assertContains(dafsaRepairs, "a b")
+//    assertContains(dafsaRepairs, "a b c")
+//    val ranks = mutableSetOf<String>()
+//    dafsaRepairs.forEach {
+//      val tokens = it.tokenizeByWhitespace()
+//      assertTrue(packed.recognizes(tokens), "DAFSA did not recognize '$it'")
+//      val rank = packed.rank(tokens)
+//      ranks.add(rank.toString())
+//      assertEquals(tokens, packed.unrank(rank))
+//    }
+//    assertEquals(dafsaRepairs.size, ranks.size)
+//    assertEquals(dafsaRepairs.size.toString(), packed.languageSize.toString())
+//  }
+//
+//  @Test
+//  fun testPackedDAFSARepairMatchesSparseGREOnPythonData() = browserTest {
+//    val (broken, _) = repairs.first()
+//    val greRepairs = sampleGREUntilTimeout(broken, cfg).toSet()
+//    val packed = assertNotNull(repairWithPackedDAFSA(broken, cfg))
+//    val dafsaWords = packed.words().toList()
+//    val dafsaRepairs = dafsaWords.toSet()
+//
+//    assertEquals(greRepairs, dafsaRepairs)
+//    assertEquals(22_676, dafsaRepairs.size)
+//    assertEquals(dafsaRepairs.size.toString(), packed.languageSize.toString())
+//    listOf(dafsaWords.first(), dafsaWords[dafsaWords.size / 2], dafsaWords.last()).forEach {
+//      val tokens = it.tokenizeByWhitespace()
+//      assertEquals(tokens, packed.unrank(packed.rank(tokens)))
+//    }
+//  }
+
   @Test
   fun benchmarkRepairCodeCPU() = browserTest {
     benchmarkRepair("CPU") { sampleGREUntilTimeout(it, cfg).distinct().toList() }
   }
 
-  suspend fun benchmarkRepair(name: String, repair: suspend (List<String>) -> List<String>) {
+//  @Test
+//  fun benchmarkRepairCodeDAFSA() = browserTest {
+//    val comparisonCases = repairs.take(5).toList().asSequence()
+//    benchmarkRepair("GRE (5-case DAFSA comparison)", comparisonCases) {
+//      sampleGREUntilTimeout(it, cfg).distinct().toList()
+//    }
+//    benchmarkRepair("DAFSA (5-case comparison)", repairs.take(5)) { tokens ->
+//      val packed = repairWithPackedDAFSA(tokens, cfg)?.also {
+//        log("Packed DAFSA ${it.summarize()}")
+//      } ?: return@benchmarkRepair emptyList()
+//      val enumerationClock = TimeSource.Monotonic.markNow()
+//      packed.words { enumerationClock.hasTimeLeft() }.toList()
+//    }
+//  }
+
+  suspend fun benchmarkRepair(
+    name: String,
+    repairCases: Sequence<Pair<List<String>, List<String>>> = repairs,
+    repair: suspend (List<String>) -> List<String>
+  ) {
     log("Testing $name repairs...")
 
     val startTime = TimeSource.Monotonic.markNow()
     var totalResults = 0; var totalRepairs = 0; var totalMatches = 0
 
-    repairs.forEach { (line, fixed) ->
+    repairCases.forEach { (line, fixed) ->
       totalRepairs++
       val t0 = TimeSource.Monotonic.markNow()
       val repairResults = repair(line)

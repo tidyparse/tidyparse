@@ -12,7 +12,6 @@ import ai.hypergraph.tidyparse.wgpu.Shader.Companion.writeU32
 import ai.hypergraph.kaliningraph.automata.*
 import ai.hypergraph.kaliningraph.parsing.*
 import ai.hypergraph.kaliningraph.types.cache
-import js.array.asList
 import js.buffer.*
 import js.typedarrays.Int32Array
 import kotlinx.coroutines.await
@@ -76,7 +75,7 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         // Counting/Enumeration
         bp_count, bp_write,
         ls_cdf, suffix_ls_dense,
-        build_root_sizes, pcfg_choice_counts, pcfg_order, enum_words_wor, suffix_enum_words_wor,
+        build_root_sizes, enum_words_wor, suffix_enum_words_wor,
         // Sampling
         markov_score, wdfa_score, select_top_k, gather_top_k, suffix_group_select, // rerank_top_k,
         // Debugging
@@ -143,7 +142,7 @@ suspend fun intersectionPipeline(
   rerankerQuery: List<String>? = null,
   reranker: RepairRerankerCallback? = null,
   chartInitializer: Shader = init_lev_chart
-): IntersectionResults {
+): IntersectionResults = GPUBufferScope().use { buffers ->
   require(cfg.tmLst.size < PACKED_TOKEN_LIMIT) {
     "Packed repair packets support fewer than $PACKED_TOKEN_LIMIT terminals"
   }
@@ -151,17 +150,17 @@ suspend fun intersectionPipeline(
   log("FSA(|Q|=$numStates, |δ|=${fsa.transit.size}), ${cfg.calcStats()}")
 
   val metaT = TimeSource.Monotonic.markNow()
-  val metaBuf = packMetadata(cfg, fsa)
+  val metaBuf = buffers.own(packMetadata(cfg, fsa))
   mark("pack metadata", metaT)
   log("Packed metadata in ${timings["pack metadata"]}ms")
 
   val tmBuf       = cfg.termBuf // Borrowed from the CFG cache; never destroy per invocation.
-  val wordBuf     = codePoints.toGPUBuffer()
+  val wordBuf     = buffers.own(codePoints.toGPUBuffer())
   val totalSize   = numStates * numStates * numNTs
   val activeWords = (numNTs + 31) ushr 5
 
-  val dpBuf     = Shader.createParseChart(STCPSD, totalSize)
-  val activeBuf = GPUBuffer((numStates * numStates * activeWords * 4).toLong(), STCPSD)
+  val dpBuf     = buffers.own(Shader.createParseChart(STCPSD, totalSize))
+  val activeBuf = buffers.newBuffer((numStates * numStates * activeWords * 4).toLong())
 
   log(
     "Buffers: dp=${dpBuf.size}B (${totalSize} cells), " +
@@ -190,14 +189,14 @@ suspend fun intersectionPipeline(
 
   if (allStartIds.isEmpty()) {
 //    timings.logTimingsToJSConsole()
-    destroyAll(activeBuf, wordBuf, metaBuf, dpBuf)
-    return IntersectionResults.EMPTY.also { log("No valid parse found: dpComplete has no entries in final states!") }
+    return@use IntersectionResults.EMPTY.also { log("No valid parse found: dpComplete has no entries in final states!") }
   }
 
   log("Valid parse found: dpComplete has ${allStartIds.size} start indices")
 
   val bpT = TimeSource.Monotonic.markNow()
   val (bpCountBuf, bpOffsetBuf, bpStorageBuf) = Shader.buildBackpointers(numStates, numNTs, dpBuf, metaBuf)
+  buffers.own(bpCountBuf, bpOffsetBuf, bpStorageBuf)
   mark("build backpointers", bpT)
   val totalExp = bpStorageBuf.size.toInt() / (2 * 4)
   log("Built backpointers in ${timings["build backpointers"]}ms | expansions=$totalExp")
@@ -222,11 +221,10 @@ suspend fun intersectionPipeline(
   val maxRepairLen = fsa.width + fsa.height + 10
   if (MAX_WORD_LEN < maxRepairLen) {
 //    timings.logTimingsToJSConsole()
-    destroyAll(activeBuf, wordBuf, metaBuf, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf)
-    return IntersectionResults.EMPTY.also { log("Max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)") }
+    return@use IntersectionResults.EMPTY.also { log("Max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)") }
   }
 
-  val cdfBuf = GPUBuffer(totalExp * 4, STCPSD)
+  val cdfBuf = buffers.newBuffer(totalExp * 4)
   if (PROFILE_WGPU_KERNELS) awaitGPUQueue()
   val cdfT = TimeSource.Monotonic.markNow()
   buildLanguageSizeCDF(
@@ -238,20 +236,20 @@ suspend fun intersectionPipeline(
   log("Built language-size CDF in ${timings["build language-size CDF"]}ms (${cdfBuf.size}B)")
 
   val numRoots = startIdxs.size / 2
-  val rootSizes = GPUBuffer(numRoots * 4, STCPSD)
+  val rootSizes = buffers.newBuffer(numRoots * 4)
 
   /** Memory layout: [IDX_UNIFORM_STRUCT] */
-  val idxUniBuf = packStruct(
+  val idxUniBuf = buffers.own(packStruct(
     listOf(0, maxRepairLen, numNTs, numStates, DISPATCH_GROUP_SIZE_X, MAX_SAMPLES),
     startIdxs.toGPUBuffer()
-  )
+  ))
 
   timings["build root sizes"] = timedGPUIsolated("Build root sizes (roots=$numRoots)") {
     build_root_sizes(dpBuf, bpCountBuf, bpOffsetBuf, cdfBuf, tmBuf, rootSizes, idxUniBuf)((numRoots + 255) / 256)
   }
 
   val rootCDFTime = TimeSource.Monotonic.markNow()
-  val rootCDF = Shader.prefixSumGPU(rootSizes, numRoots)
+  val rootCDF = buffers.own(Shader.prefixSumGPU(rootSizes, numRoots))
   mark("prefix root cdf", rootCDFTime)
   log("Built root CDF in ${timings["prefix root cdf"]}ms (${rootCDF.size}B)")
 
@@ -267,27 +265,26 @@ suspend fun intersectionPipeline(
   val langIntSize = langIntSize()
   mark("read lang size", langSizeT)
 
-  val maxSamples = if (ngrams != null) MAX_SAMPLES.toLong() else 40_000
-  val toDecode = minOf(maxSamples, langIntSize).toInt()
-  val pct = toDecode.toDouble() * 100.0 / langIntSize.toDouble().coerceAtLeast(1.0)
-  log("Language saturation: $pct% ($toDecode/$langIntSize), maxRepairLen=$maxRepairLen")
-
+  val toDecode = minOf(MAX_SAMPLES.toLong(), langIntSize).toInt()
+  if (toDecode == 0) return@use IntersectionResults.EMPTY
   idxUniBuf.writeU32(wordIndex = 5, value = toDecode)
-
-  val samplingBuf = cfg.pcfgBuf?.let { pcfg ->
-    val samplingT = TimeSource.Monotonic.markNow()
-    preparePCFGSampling(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, cdfBuf, tmBuf, idxUniBuf, rootCDF, pcfg)
+  val pcfgIndexBuf = cfg.pcfgBuf?.let { pcfg ->
+    val indexT = TimeSource.Monotonic.markNow()
+    buffers.own(buildPCFGDecodeIndex(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, tmBuf, idxUniBuf, pcfg))
       .also {
         if (PROFILE_WGPU_KERNELS) awaitGPUQueue()
-        mark("prepare PCFG sampling", samplingT)
+        log("Build PCFG decode index: ${TimeSource.Monotonic.markNow() - indexT}")
+        mark("build PCFG decode index", indexT)
       }
   }
-  val outBuf = GPUBuffer(toDecode * maxRepairLen * 4, STCPSD)
+  val pct = toDecode.toDouble() * 100.0 / langIntSize.toDouble().coerceAtLeast(1.0)
+  log("Language saturation: $pct% ($toDecode/$langIntSize), maxRepairLen=$maxRepairLen")
+  val outBuf = buffers.newBuffer(toDecode * maxRepairLen * 4)
 
   timings["enumerate"] = timedGPUIsolated("Enumerate") {
     enum_words_wor(
       dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf,
-      cdfBuf, tmBuf, idxUniBuf, rootSizes, samplingBuf ?: rootCDF, outBuf
+      cdfBuf, tmBuf, idxUniBuf, rootSizes, pcfgIndexBuf ?: rootCDF, outBuf
     ).dispatchFlat(toDecode)
   }
 
@@ -302,22 +299,13 @@ suspend fun intersectionPipeline(
     else uniformDecoder(outBuf, cfg, maxRepairLen, toDecode)
   mark("decode", decodeT)
 
-  val rankedResults =
-    if (shouldRerank) {
-      val candidates = result.takeResults(RERANKER_TOP_K_SAMP)
-      val rerankT = TimeSource.Monotonic.markNow()
-      reranker(rerankerQuery, candidates)
-        .let(candidates::selectResults)
-        .also { mark("rerank", rerankT) }
-    } else result
-
-  return rankedResults.also {
-    samplingBuf?.destroy()
-    destroyAll(
-      outBuf, rootSizes, rootCDF, metaBuf, dpBuf, activeBuf, wordBuf,
-      idxUniBuf, cdfBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf
-    )
-  }
+  if (shouldRerank) {
+    val candidates = result.takeResults(RERANKER_TOP_K_SAMP)
+    val rerankT = TimeSource.Monotonic.markNow()
+    reranker(rerankerQuery, candidates)
+      .let(candidates::selectResults)
+      .also { mark("rerank", rerankT) }
+  } else result
 }
 
 suspend fun GPUBuffer.readJSIntArray(): JSIntArray {
@@ -457,34 +445,31 @@ suspend fun scoreSelectGather(
   stride       : Int,
   k            : Int,
   profileLabel : String? = null
-): JSIntArray {
+): JSIntArray = GPUBufferScope().use { buffers ->
   val t0 = TimeSource.Monotonic.markNow()
   val threads = DISPATCH_GROUP_SIZE_X
   /** Memory layout: [SAMPLER_PARAMS] */
-  val prmBuf  = intArrayOf(maxSamples, k, stride, threads).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
+  val prmBuf = buffers.own(intArrayOf(maxSamples, k, stride, threads)
+    .toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST))
 
-  suspend fun dispatch(label: String, block: () -> Unit) {
-    if (profileLabel == null) block()
-    else timedGPUIsolated(label, block)
-  }
+  suspend fun dispatch(label: String, block: () -> Unit) = if (profileLabel == null) block() else timedGPUIsolated(label, block)
 
   dispatch(profileLabel ?: "Score") { scoreShader(packets, model, prmBuf).dispatchFlat(maxSamples) }
 
   val totalGroups = (maxSamples + 255) / 256
-  val idxBuf = IntArray(k) { -1 }.toGPUBuffer(STCPSD)
-  val scrBuf = IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD)
+  val idxBuf = buffers.own(IntArray(k) { -1 }.toGPUBuffer(STCPSD))
+  val scrBuf = buffers.own(IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD))
 
   dispatch("Select top-k") { select_top_k(prmBuf, packets, idxBuf, scrBuf).dispatchFlat(totalGroups) }
 
-  val bestBuf = GPUBuffer(k * stride * 4, STCPSD)
+  val bestBuf = buffers.newBuffer(k * stride * 4)
 
   dispatch("Gather top-k") { gather_top_k(prmBuf, packets, idxBuf, bestBuf)(k) }
 
   val topK = bestBuf.readJSIntArray()
   log("${profileLabel ?: "Score"}/select/gather read ${topK.length} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
 
-  destroyAll(prmBuf, idxBuf, scrBuf, bestBuf)
-  return topK
+  topK
 }
 
 // Maps NTs to terminals for sampling. This buffer is cached and borrowed by each pipeline invocation.
@@ -505,7 +490,7 @@ internal val CFG.pcfgBuf: GPUBuffer? get() = pcfgBuffers.get(this).unsafeCast<GP
 /** Load CNF productions of the form `A -> B C [numerator/denominator]` (or `A -> token [...]`). */
 fun CFG.loadPCFG(text: String) {
   val nts = nonterminals.withIndex().associate { it.value to it.index }
-  val rows = Array(nts.size) { mutableMapOf<Pair<Int, Int>, Pair<Int, Int>>() }
+  val rows = Array(nts.size) { mutableMapOf<Pair<Int, Int>, Int>() }
   text.lineSequence().filter { it.isNotBlank() }.forEach { line ->
     val rule = line.substringBeforeLast(" [").trim().split(Regex("\\s+"))
     val fraction = line.substringAfterLast('[').substringBefore(']').split('/')
@@ -516,56 +501,20 @@ fun CFG.loadPCFG(text: String) {
     val parent = nts[rule[0]] ?: return@forEach
     val left = (if (rule.size == 3) tmMap[rule[2]] else nts[rule[2]]) ?: return@forEach
     val right = if (rule.size == 3) -1 else nts[rule[3]] ?: return@forEach
-    // Keep even rare productions reachable when quantizing to thousandths.
-    val weight = (1000 * numerator / denominator).roundToInt().coerceAtLeast(1)
     val cost = if (numerator == 0.0) -1 else (-ln(numerator / denominator) * SCALE).roundToInt()
-    rows[parent][left to right] = weight to cost
+    rows[parent][left to right] = cost
   }
-  // [row offsets (absolute, including sentinel), sorted (left, right, weight, log-cost) records]
+  // [row offsets (absolute, including sentinel), sorted (left, right, log-cost) records]
   val data = MutableList(nts.size + 1) { 0 }
   rows.forEachIndexed { nt, row ->
     data[nt] = data.size
-    row.entries.sortedWith(compareBy({ it.key.first }, { it.key.second.toUInt() })).forEach { (rhs, scores) ->
-      data.addAll(listOf(rhs.first, rhs.second, scores.first, scores.second))
-    }
+    row.entries.sortedWith(compareBy({ it.key.first }, { it.key.second.toUInt() }))
+      .forEach { (rhs, cost) -> data.addAll(listOf(rhs.first, rhs.second, cost)) }
   }
   data[nts.size] = data.size
   val previous = pcfgBuffers.get(this).unsafeCast<GPUBuffer?>()
   pcfgBuffers.set(this, data.toGPUBuffer(STCPSD))
   previous?.destroy()
-}
-
-/** Pack root ranks and weighted branch intervals for this chart/seed; rebuild if targetCnt changes. */
-internal suspend fun preparePCFGSampling(
-  dp: GPUBuffer, counts: GPUBuffer, offsets: GPUBuffer, storage: GPUBuffer, cdf: GPUBuffer,
-  terminals: GPUBuffer, indices: GPUBuffer, rootCdf: GPUBuffer, pcfg: GPUBuffer
-): GPUBuffer {
-  val cells = (dp.size / 4).toInt()
-  val choiceCounts = GPUBuffer(dp.size, STCPSD)
-  pcfg_choice_counts(dp, counts, terminals, indices, choiceCounts).dispatchFlat((cells + 255) / 256)
-  val rows = Shader.prefixSumGPU(choiceCounts, cells)
-  val last = cells - 1
-  val total = rows.readIndices(listOf(last))[0].toUInt().toLong() +
-      choiceCounts.readIndices(listOf(last))[0].toUInt().toLong()
-  choiceCounts.destroy()
-  val choices = GPUBuffer(maxOf(total, 1L) * 12, STCPSD)
-  // Temporary (weight prefix, rule cost) pairs share a binding with the grammar weights.
-  val weights = GPUBuffer(pcfg.size + total * 8, STCPSD)
-  val encoder = gpu.createCommandEncoder()
-  encoder.copyBufferToBuffer(pcfg, 0.0, weights, 0.0, pcfg.size)
-  gpu.queue.submit(arrayOf(encoder.finish()))
-  if (total != 0L)
-    pcfg_order(dp, counts, offsets, storage, cdf, terminals, indices, weights, rows, choices)
-      .dispatchFlat((cells + 63) / 64)
-  // No header: row/choice offsets follow directly from the root and chart sizes.
-  val sampling = GPUBuffer(rootCdf.size + rows.size + choices.size, STCPSD)
-  val pack = gpu.createCommandEncoder()
-  pack.copyBufferToBuffer(rootCdf, 0.0, sampling, 0.0, rootCdf.size)
-  pack.copyBufferToBuffer(rows, 0.0, sampling, rootCdf.size, rows.size)
-  pack.copyBufferToBuffer(choices, 0.0, sampling, rootCdf.size + rows.size, choices.size)
-  gpu.queue.submit(arrayOf(pack.finish()))
-  destroyAll(weights, rows, choices)
-  return sampling
 }
 
 //language=wgsl
@@ -1332,7 +1281,7 @@ val prefix_sum_p2 by Shader("""$PFX_SUM_PARAMS $SAT_ARTH
 
 // Longest word WGSL can handle. If ~2^9<MAX_WORD_LEN, pipeline breaks some on architectures
 const val MAX_WORD_LEN = 128
-const val MAX_SAMPLES = 2_000_000 // Maximum number of samples to draw before reranking
+const val MAX_SAMPLES = 100_000 // Maximum number of samples to draw before reranking
 const val MAX_DISP_RESULTS = 29
 const val TOP_K_SAMP = 10 * MAX_DISP_RESULTS // Maximum results to sample, some of which may be displayed to the user
 const val RERANKER_TOP_K_SAMP = 1_000
@@ -1379,156 +1328,6 @@ const val WGSL_MIX32 = """fn mix32(x: u32) -> u32 {
 }
 """
 
-//language=wgsl
-val pcfg_choice_counts by Shader("""$TERM_STRUCT
-@group(0) @binding(0) var<storage, read> dp_in: array<u32>;
-@group(0) @binding(1) var<storage, read> bp_count: array<u32>;
-@group(0) @binding(2) var<storage, read> terminals: Terminals;
-@group(0) @binding(3) var<storage, read_write> idx_uni: IndexUniforms;
-@group(0) @binding(4) var<storage, read_write> counts: array<u32>;
-
-@compute @workgroup_size(256) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let d = gid.x + gid.y * idx_uni.threads * 256u;
-  if (d >= arrayLength(&dp_in)) { return; }
-  let count = bp_count[d] + count_tms(dp_in[d], d % idx_uni.numNonterminals);
-  counts[d] = select(0u, count, dp_in[d] != 0u);
-}""")
-
-// Build the same weighted partition order once per ambiguous chart row, including
-// saturated rows. Forced branches retain their PCFG costs too. Enumeration stays O(log B).
-//language=wgsl
-val pcfg_order by Shader("""$TERM_STRUCT
-@group(0) @binding(0) var<storage, read> dp_in: array<u32>;
-@group(0) @binding(1) var<storage, read> bp_count: array<u32>;
-@group(0) @binding(2) var<storage, read> bp_offset: array<u32>;
-@group(0) @binding(3) var<storage, read> bp_storage: array<u32>;
-@group(0) @binding(4) var<storage, read> ls_sparse: array<u32>;
-@group(0) @binding(5) var<storage, read> terminals: Terminals;
-@group(0) @binding(6) var<storage, read_write> idx_uni: IndexUniforms;
-@group(0) @binding(7) var<storage, read_write> weights: array<u32>;
-@group(0) @binding(8) var<storage, read> rows: array<u32>;
-struct Choice { end: u32, branch: u32, cost: u32 };
-@group(0) @binding(9) var<storage, read_write> choices: array<Choice>;
-
-const NEG_MASK: u32 = ${NEG_STR_LIT};
-$WGSL_LANG_SIZE
-$WGSL_MIX32
-fn pcfg(i: u32) -> u32 { return weights[i]; }
-fn weight_prefix(base: u32, end: u32) -> u32 {
-  if (end == 0u) { return 0u; }
-  return weights[base + 2u * (end - 1u)];
-}
-
-// Sparse PCFG rows are sorted by (left, right); SAT_MAX denotes a terminal rule.
-fn rule_weight(nt: u32, left: u32, right: u32) -> vec2<u32> {
-  let start = pcfg(nt);
-  var lo = 0u;
-  var hi = (pcfg(nt + 1u) - start) / 4u;
-  while (lo < hi) {
-    let mid = (lo + hi) / 2u;
-    let pos = start + 4u * mid;
-    let l = pcfg(pos);
-    let r = pcfg(pos + 1u);
-    if (l == left && r == right) { return vec2<u32>(pcfg(pos + 2u), pcfg(pos + 3u)); }
-    if (l < left || (l == left && r < right)) { lo = mid + 1u; } else { hi = mid; }
-  }
-  return vec2<u32>(1u, ${(-ln(0.001) * SCALE).roundToInt()}u);
-}
-
-fn branch_weight(d: u32, literals: u32, branch: u32) -> vec2<u32> {
-  let nt = d % idx_uni.numNonterminals;
-  if (branch < literals) {
-    let predicate = dp_in[d] & PREDICATE_MASK;
-    var variant = branch;
-    if (predicate != LIT_ALL) {
-      let excluded = ((predicate >> 1u) & 0x03ffffffu) - 1u;
-      variant = select(excluded, branch + select(0u, 1u, branch >= excluded), (predicate & NEG_MASK) != 0u);
-    }
-    return rule_weight(nt, get_all_tms(get_offsets(nt) + variant), SAT_MAX);
-  }
-  let pos = 2u * (bp_offset[d] + branch - literals);
-  return rule_weight(nt, bp_storage[pos] % idx_uni.numNonterminals, bp_storage[pos + 1u] % idx_uni.numNonterminals);
-}
-
-fn branch_size(d: u32, literals: u32, branch: u32) -> u32 {
-  if (branch < literals) { return 1u; }
-  let pos = 2u * (bp_offset[d] + branch - literals);
-  return sat_mul(langSize(bp_storage[pos], idx_uni.numNonterminals),
-                 langSize(bp_storage[pos + 1u], idx_uni.numNonterminals));
-}
-
-@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let d = gid.x + gid.y * idx_uni.threads * 64u;
-  if (d >= arrayLength(&dp_in) || dp_in[d] == 0u) { return; }
-  let literals = count_tms(dp_in[d], d % idx_uni.numNonterminals);
-  let count = literals + bp_count[d];
-  if (count == 0u) { return; }
-  if (count == 1u) {
-    choices[rows[d]] = Choice(branch_size(d, literals, 0u), 0u, branch_weight(d, literals, 0u).y);
-    return;
-  }
-  let prefix = pcfg(idx_uni.numNonterminals) + 2u * rows[d];
-  var totalWeight = 0u;
-  var previousWeight = 0u;
-  var uniform = true;
-  for (var b = 0u; b < count; b++) {
-    var weight = 0u;
-    if (branch_size(d, literals, b) != 0u) {
-      let rule = branch_weight(d, literals, b);
-      weight = rule.x;
-      weights[prefix + 2u * b + 1u] = rule.y;
-    }
-    uniform = uniform && (b == 0u || weight == previousWeight);
-    previousWeight = weight;
-    totalWeight = sat_add(totalWeight, weight);
-    weights[prefix + 2u * b] = totalWeight;
-  }
-  let seed = atomicLoad(&idx_uni.targetCnt) ^ 0xA511E9B3u;
-  var stack: array<vec2<u32>, 32>;
-  stack[0] = vec2<u32>(0u, count);
-  var top = 1u;
-  var out = rows[d];
-  var cumulative = 0u;
-  while (top != 0u) {
-    top--;
-    let range = stack[top];
-    let lo = range.x;
-    let hi = range.y;
-    if (hi - lo == 1u) {
-      cumulative = sat_add(cumulative, branch_size(d, literals, lo));
-      choices[out] = Choice(cumulative, lo, weights[prefix + 2u * lo + 1u]);
-      out++;
-      continue;
-    }
-    let mid = (lo + hi) / 2u;
-    let random = mix32(seed ^ mix32(d) ^ mix32(lo) ^ mix32(hi));
-    var leftFirst: bool;
-    if (uniform) { leftFirst = random % (hi - lo) < mid - lo; }
-    else {
-      let splitWeight = weight_prefix(prefix, mid);
-      var mass = vec2<u32>(splitWeight - weight_prefix(prefix, lo), weight_prefix(prefix, hi) - splitWeight);
-      // Subtracting a saturated prefix loses information; retain exact sums in that rare case.
-      if (totalWeight == SAT_MAX) {
-        mass = vec2<u32>(0u);
-        for (var b = lo; b < hi; b++) {
-          if (branch_size(d, literals, b) != 0u) {
-            let side = select(0u, 1u, b >= mid);
-            mass[side] = sat_add(mass[side], branch_weight(d, literals, b).x);
-          }
-        }
-      }
-      let total = sat_add(mass.x, mass.y);
-      let q = random % 1000u;
-      let needle = (total / 1000u) * q + ((total % 1000u) * q) / 1000u;
-      leftFirst = needle < mass.x;
-    }
-    let left = vec2<u32>(lo, mid);
-    let right = vec2<u32>(mid, hi);
-    stack[top] = select(left, right, leftFirst); top++;
-    stack[top] = select(right, left, leftFirst); top++;
-  }
-}""")
-
 /** See [PTree.sampleStrWithoutReplacement] for CPU version. */
 //language=wgsl
 val enum_words_wor by Shader("""$TERM_STRUCT
@@ -1540,7 +1339,7 @@ val enum_words_wor by Shader("""$TERM_STRUCT
 @group(0) @binding(5) var<storage, read>        terminals   : Terminals;
 @group(0) @binding(6) var<storage, read_write>  idx_uni     : IndexUniforms;
 @group(0) @binding(7) var<storage, read>        root_sizes  : array<u32>;   // length = numRoots
-@group(0) @binding(8) var<storage, read>        sampling    : array<u32>;  // root CDF, optionally followed by PCFG rows/choices
+@group(0) @binding(8) var<storage, read>        sampling    : array<u32>;  // uniform root CDF or PCFG histogram/provenance index
 @group(0) @binding(9) var<storage, read_write>  sampled     : array<u32>;   // out packets
 
 fn root_cdf(i: u32) -> u32 { return sampling[i]; }
@@ -1665,26 +1464,6 @@ fn permute_in_range(sid: u32, seed: u32, total: u32) -> u32 {
 // ---------- RNG helpers (used when saturation makes rank/CDF meaningless) ----------
 $WGSL_MIX32
 
-// The seeded PCFG order is built once per chart; decoding only searches rank intervals.
-fn weighted_branch(d: u32, literals: u32, rank: u32) -> vec3<u32> {
-  let count = literals + bp_count[d];
-  let rows = idx_uni.numStartIndices / 2u;
-  let base = rows + arrayLength(&dp_in) + 3u * sampling[rows + d];
-  if (count == 1u) { return vec3<u32>(0u, rank, sampling[base + 2u]); }
-  var lo = 0u;
-  var hi = count;
-  if (bp_count[d] == 0u) { lo = rank; hi = rank; }
-  while (lo < hi) {
-    let mid = (lo + hi) >> 1u;
-    if (rank < sampling[base + 3u * mid]) { hi = mid; }
-    else { lo = mid + 1u; }
-  }
-  var previous = 0u;
-  if (lo != 0u) { previous = sampling[base + 3u * (lo - 1u)]; }
-  let pos = base + 3u * lo;
-  return vec3<u32>(sampling[pos + 1u], rank - previous, sampling[pos + 2u]);
-}
-
 fn rng_next(state: ptr<function, u32>) -> u32 {
   var x = *state;
   x ^= x << 13u;
@@ -1722,13 +1501,86 @@ fn write_empty_packet(sid: u32, levDist: u32) {
   if (PKT_HDR_LEN < stride) { sampled[outBase + PKT_HDR_LEN] = 0u; }
 }
 
+struct PCFGFrame { dp: u32, slice: u32, rank: u32 }
+
+// Each invocation independently unranks one word using the log-tier provenance.
+// The root table merges all accepting roots in ascending negative-log probability.
+fn decode_pcfg(sid: u32) {
+  if (sid >= sampling[0]) { return; }
+  let rootCount = sampling[1];
+  let tiers = sampling[2];
+  let choices = sampling[3];
+  let slices = sampling[4];
+  var lo = 0u;
+  var hi = rootCount;
+  while (lo < hi) {
+    let mid = (lo + hi) >> 1u;
+    if (sid < sampling[5u + 4u * mid]) { hi = mid; } else { lo = mid + 1u; }
+  }
+  if (lo == rootCount) { return; }
+  let rootEntry = 5u + 4u * lo;
+  var previous = 0u;
+  if (lo != 0u) { previous = sampling[rootEntry - 4u]; }
+  let rootIdx = sampling[rootEntry + 1u];
+  let levDist = getEditDist(rootIdx);
+  let cost = sampling[rootEntry + 3u];
+
+  var stack: array<PCFGFrame, ${MAX_WORD_LEN}u>;
+  var top = 1u;
+  stack[0] = PCFGFrame(getStartIdx(rootIdx), sampling[rootEntry + 2u], sid - previous);
+  var word: array<u32, ${MAX_WORD_LEN}u>;
+  var wLen = 0u;
+  while (top != 0u) {
+    top--;
+    let frame = stack[top];
+    let slice = slices + 3u * frame.slice;
+    let tier = tiers + 2u * sampling[slice];
+    // Coarse tiers share one CDF, but each product still selects an exact-cost slice.
+    let needle = sampling[slice + 1u] + frame.rank;
+    let first = sampling[tier];
+    let count = sampling[tier + 1u];
+    lo = 0u;
+    hi = count;
+    while (lo < hi) {
+      let mid = (lo + hi) >> 1u;
+      if (needle < sampling[choices + 4u * (first + mid)]) { hi = mid; }
+      else { lo = mid + 1u; }
+    }
+    if (lo == count) { write_empty_packet(sid, levDist); return; }
+    let choice = choices + 4u * (first + lo);
+    previous = 0u;
+    if (lo != 0u) { previous = sampling[choice - 4u]; }
+    let rank = needle - previous;
+    let branch = sampling[choice + 1u];
+    let val = dp_in[frame.dp];
+    let literals = count_tms(val, frame.dp % idx_uni.numNonterminals);
+    if (branch < literals) {
+      if (!decodeLiteral(frame.dp, val, branch, &word, &wLen)) { write_empty_packet(sid, levDist); return; }
+      continue;
+    }
+    let pos = 2u * (bp_offset[frame.dp] + branch - literals);
+    let leftSlice = sampling[choice + 2u];
+    let rightSlice = sampling[choice + 3u];
+    let rightCount = sampling[slices + 3u * rightSlice + 2u];
+    if (rightCount == 0u || top + 2u > ${MAX_WORD_LEN}u) { write_empty_packet(sid, levDist); return; }
+    stack[top] = PCFGFrame(bp_storage[pos + 1u], rightSlice, rank % rightCount); top++;
+    stack[top] = PCFGFrame(bp_storage[pos], leftSlice, rank / rightCount); top++;
+  }
+  let stride = idx_uni.maxWordLen;
+  let outBase = sid * stride;
+  sampled[outBase] = levDist;
+  sampled[outBase + 1u] = cost;
+  for (var i = 0u; i < wLen && PKT_HDR_LEN + i < stride; i++) { sampled[outBase + PKT_HDR_LEN + i] = word[i]; }
+  if (PKT_HDR_LEN + wLen < stride) { sampled[outBase + PKT_HDR_LEN + wLen] = 0u; }
+}
+
 @compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
   let sid = gid.x + gid.y * idx_uni.threads;
   if (sid >= idx_uni.max_samples) { return; }
 
   let numRoots = idx_uni.numStartIndices / 2u;
   if (numRoots == 0u) { return; }
-  let weighted = arrayLength(&sampling) > numRoots;
+  if (arrayLength(&sampling) > numRoots) { decode_pcfg(sid); return; }
 
   let lastRoot = numRoots - 1u;
   let total    = sat_add(root_cdf(lastRoot), root_sizes[lastRoot]);
@@ -1739,9 +1591,7 @@ fn write_empty_packet(sid: u32, levDist: u32) {
 
   let runSeed: u32 = atomicLoad(&idx_uni.targetCnt) ^ 0xA511E9B3u;
 
-  // A uniform permutation of ranks would erase the PCFG's priority on early results.
-  var prk = sid;
-  if (!weighted) { prk = permute_in_range(sid, runSeed, total); }
+  let prk = permute_in_range(sid, runSeed, total);
 
   // Root selection by (root_cdf, root_sizes)
   var rLo: u32 = 0u;
@@ -1778,7 +1628,6 @@ fn write_empty_packet(sid: u32, levDist: u32) {
 
   var word : array<u32, ${MAX_WORD_LEN}u>;
   var wLen : u32 = 0u;
-  var pcfgCost = 0u;
 
   loop {
     if (top == 0u) { break; }
@@ -1802,15 +1651,10 @@ fn write_empty_packet(sid: u32, levDist: u32) {
 
     if (tot == 0u) { write_empty_packet(sid, levDist); return; }
 
-    let saturated = !weighted && lastCDF == SAT_MAX && expCnt != 0u;
+    let saturated = lastCDF == SAT_MAX && expCnt != 0u;
     var branch: u32;
     var inside = 0u;
-    if (weighted) {
-      let choice = weighted_branch(d, litCount, rk);
-      branch = choice.x;
-      inside = choice.y;
-      pcfgCost = sat_add(pcfgCost, choice.z);
-    } else if (saturated) {
+    if (saturated) {
       // Saturated CDFs lose rank information; preserve the original RNG fallback.
       let pickLit = litCount != 0u && rand_bounded(&rng, sat_add(litCount, expCnt)) < litCount;
       if (pickLit) { branch = rand_bounded(&rng, litCount); }
@@ -1861,7 +1705,7 @@ fn write_empty_packet(sid: u32, levDist: u32) {
   let outBase = sid * stride;
 
   sampled[outBase + 0u] = levDist;
-  sampled[outBase + 1u] = pcfgCost;
+  sampled[outBase + 1u] = 0u;
 
   for (var i = 0u; i < wLen && (PKT_HDR_LEN + i) < stride; i = i + 1u) { sampled[outBase + PKT_HDR_LEN + i] = word[i]; }
   // terminator
@@ -2181,23 +2025,23 @@ class Shader constructor(val src: String) {
 
     private const val WORKGROUP_SIZE = 256
 
-    fun prefixSumGPU(inputBuf: GPUBuffer, length: Int): GPUBuffer {
+    fun prefixSumGPU(inputBuf: GPUBuffer, length: Int): GPUBuffer = GPUBufferScope().use { buffers ->
       val numBlocks = (length + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE
       val groupsX   = minOf(numBlocks, DISPATCH_GROUP_SIZE_X)
       val groupsY   = (numBlocks + groupsX - 1) / groupsX
 
-      val outputBuf     = GPUBuffer(inputBuf.size.toInt(), STCPSD)
-      val blockSumsBuf  = GPUBuffer(numBlocks * 4, STCPSD)
-      val uniBuf        = intArrayOf(length, numBlocks, groupsX).toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST)
+      val outputBuf    = buffers.newBuffer(inputBuf.size.toInt())
+      val blockSumsBuf = buffers.newBuffer(numBlocks * 4)
+      val uniBuf       = buffers.own(intArrayOf(length, numBlocks, groupsX)
+        .toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST))
 
       prefix_sum_p1(inputBuf, outputBuf, blockSumsBuf, uniBuf)(groupsX, groupsY)
 
-      if (numBlocks == 1) return outputBuf.also { blockSumsBuf.destroy(); uniBuf.destroy() }
-
-      val scannedBlockSumsBuf = prefixSumGPU(blockSumsBuf, numBlocks)
-      prefix_sum_p2(outputBuf, scannedBlockSumsBuf, uniBuf)(groupsX, groupsY)
-
-      return outputBuf.also { destroyAll(scannedBlockSumsBuf, blockSumsBuf, uniBuf) }
+      if (numBlocks > 1) {
+        val scannedBlockSumsBuf = buffers.own(prefixSumGPU(blockSumsBuf, numBlocks))
+        prefix_sum_p2(outputBuf, scannedBlockSumsBuf, uniBuf)(groupsX, groupsY)
+      }
+      buffers.detach(outputBuf)
     }
 
     suspend fun packMetadata(cfg: CFG, fsa: FSA): GPUBuffer {
@@ -2300,31 +2144,30 @@ class Shader constructor(val src: String) {
   }
 
   // Invocation strategies: eliminates some of the ceremony of calling a GSL shader
-  suspend fun invokeCFLFixpoint(numStates: Int, dpIn: GPUBuffer, activeBuf: GPUBuffer, metaBuf: GPUBuffer) {
-    var t0 = TimeSource.Monotonic.markNow()
-    val iterationBuf = intArrayOf(0, 0).toGPUBuffer(STCPSD)
-    val changedCellsBuf = GPUBuffer(numStates * numStates * 4, STCPSD)
-    val binaryNtsBuf = GPUBuffer(activeBuf.size, STCPSD)
-    val changeIndex = listOf(0)
-    val workgroupsX = (numStates + CFL_WORKGROUP_SIZE_X - 1) / CFL_WORKGROUP_SIZE_X
-    val workgroupsY = (numStates + CFL_WORKGROUP_SIZE_Y - 1) / CFL_WORKGROUP_SIZE_Y
+  suspend fun invokeCFLFixpoint(numStates: Int, dpIn: GPUBuffer, activeBuf: GPUBuffer, metaBuf: GPUBuffer): Unit =
+    GPUBufferScope().use { buffers ->
+      var t0 = TimeSource.Monotonic.markNow()
+      val iterationBuf = buffers.own(intArrayOf(0, 0).toGPUBuffer(STCPSD))
+      val changedCellsBuf = buffers.newBuffer(numStates * numStates * 4)
+      val binaryNtsBuf = buffers.newBuffer(activeBuf.size)
+      val changeIndex = listOf(0)
+      val workgroupsX = (numStates + CFL_WORKGROUP_SIZE_X - 1) / CFL_WORKGROUP_SIZE_X
+      val workgroupsY = (numStates + CFL_WORKGROUP_SIZE_Y - 1) / CFL_WORKGROUP_SIZE_Y
 
-    for (round in 0..<numStates) {
-      if (round != 0) iterationBuf.writeU32(wordIndex = 0, value = 0)
-      iterationBuf.writeU32(wordIndex = 1, value = round)
+      for (round in 0..<numStates) {
+        if (round != 0) iterationBuf.writeU32(wordIndex = 0, value = 0)
+        iterationBuf.writeU32(wordIndex = 1, value = round)
 
-      cfl_mul_upper(
-        dpIn, activeBuf, metaBuf, iterationBuf, changedCellsBuf, binaryNtsBuf
-      )(workgroupsX, workgroupsY)
-      val changesThisRound = iterationBuf.readIndices(changeIndex)[0]
-      log("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
-      t0 = TimeSource.Monotonic.markNow()
+        cfl_mul_upper(
+          dpIn, activeBuf, metaBuf, iterationBuf, changedCellsBuf, binaryNtsBuf
+        )(workgroupsX, workgroupsY)
+        val changesThisRound = iterationBuf.readIndices(changeIndex)[0]
+        log("Round=$round, changes=$changesThisRound, time=${t0.elapsedNow()}")
+        t0 = TimeSource.Monotonic.markNow()
 
-      if (changesThisRound == 0) break
+        if (changesThisRound == 0) break
+      }
     }
-
-    destroyAll(iterationBuf, changedCellsBuf, binaryNtsBuf)
-  }
 
   suspend fun invokeDAGFixpoint(fsa: FSA): Pair<GPUBuffer, Int> {
     val adjList = fsa.adjList
@@ -2379,14 +2222,12 @@ class Shader constructor(val src: String) {
 fun packStruct(constants: List<Int> = emptyList(), vararg buffers: GPUBuffer): GPUBuffer =
   packStructInternal(constants, true, buffers)
 
-fun packStructBorrowed(constants: List<Int> = emptyList(), vararg buffers: GPUBuffer): GPUBuffer =
-  packStructInternal(constants, false, buffers)
-
 private fun packStructInternal(
   constants: List<Int> = emptyList(),
   destroyInputs: Boolean,
   buffers: Array<out GPUBuffer>
-): GPUBuffer {
+): GPUBuffer = GPUBufferScope().use { owned ->
+  if (destroyInputs) owned.own(*buffers)
   if (buffers.isEmpty()) error("At least one payload buffer required")
 
   // ── lengths & offsets (in *ints*, not bytes) ──────────────────────────────
@@ -2404,7 +2245,7 @@ private fun packStructInternal(
   val totalBytes   = headerBytes + payloadBytes
 
   // ── allocate destination buffer ───────────────────────────────────────────
-  val metaBuf = GPUBuffer(totalBytes, STCPSD)
+  val metaBuf = owned.newBuffer(totalBytes)
 
   // ── upload header (one writeBuffer) ───────────────────────────────────────
   gpu.queue.writeBuffer(metaBuf, 0.0, JSIntArray(headerInts.size).apply { set(headerInts.toTypedArray(), 0) })
@@ -2418,10 +2259,20 @@ private fun packStructInternal(
 
   gpu.queue.submit(arrayOf(enc.finish()))
 
-  return metaBuf.also { if (destroyInputs) destroyAll(*buffers) }
+  owned.detach(metaBuf)
 }
 
-fun destroyAll(vararg buffers: GPUBuffer) = buffers.forEach(GPUBuffer::destroy)
+// Owns temporary GPU buffers until the surrounding use block exits.
+internal class GPUBufferScope : AutoCloseable {
+  private val buffers = mutableListOf<GPUBuffer>()
+  fun newBuffer(byteSize: Number, usage: Int = STCPSD): GPUBuffer = own(GPUBuffer(byteSize, usage))
+  fun own(buffer: GPUBuffer): GPUBuffer = buffer.also { buffers += it }
+  fun own(vararg buffers: GPUBuffer) { this.buffers.addAll(buffers) }
+  /** Transfers a returned buffer to the caller without destroying it. */
+  fun detach(buffer: GPUBuffer): GPUBuffer = buffer
+    .also { check(buffers.remove(it)) { "Cannot transfer a buffer this scope does not own" } }
+  override fun close() = buffers.asReversed().forEach(GPUBuffer::destroy)
+}
 
 const val NEWLINE_ID = 1
 const val BOS_ID     = 2
@@ -2482,12 +2333,7 @@ fun Map<List<UInt>, UInt>.loadToGPUBuffer(loadFactor: Double = 0.75): GPUBuffer 
 
 const val PROFILE_WGPU_KERNELS = true
 
-suspend fun awaitGPUQueue() {
-  gpu.queue.asDynamic()
-    .onSubmittedWorkDone()
-    .unsafeCast<Promise<*>>()
-    .await()
-}
+suspend fun awaitGPUQueue() = gpu.queue.asDynamic().onSubmittedWorkDone().unsafeCast<Promise<*>>().await()
 
 // Measures only the work submitted inside `block`, not older queued work.
 internal suspend inline fun timedGPUIsolated(label: String, block: () -> Unit): Int {

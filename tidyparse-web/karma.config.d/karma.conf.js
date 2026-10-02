@@ -15,13 +15,15 @@ fs.mkdirSync(ciLogsDir, { recursive: true });
 
 // Kotlin/JS copies resources into kotlin/, but Karma only serves files declared
 // in its config. Keep the production root URL working in browser tests.
-config.files.push({
-    pattern: path.resolve(__dirname, 'kotlin', blackArchiveName),
-    included: false,
-    served: true,
-    watched: false
-});
-config.proxies[`/${blackArchiveName}`] = `/base/kotlin/${blackArchiveName}`;
+for (const resourceName of [blackArchiveName, 'python_statement_pcfg.txt']) {
+    config.files.push({
+        pattern: path.resolve(__dirname, 'kotlin', resourceName),
+        included: false,
+        served: true,
+        watched: false
+    });
+    config.proxies[`/${resourceName}`] = `/base/kotlin/${resourceName}`;
+}
 
 if (isCi) {
     chromeFlags.push(
@@ -41,7 +43,11 @@ config.set({
     pingTimeout: karmaTimeoutMs,
     retryLimit: 0,
     processKillTimeout: isCi ? 30000 : 2000,
-    client: { captureConsole: true, mocha: { timeout: karmaTimeoutMs } },
+    client: {
+        captureConsole: true,
+        mocha: { timeout: karmaTimeoutMs },
+        pcfgHistogramBenchmark: process.env.PCFG_HISTOGRAM_BENCHMARK === '1'
+    },
     browserConsoleLogOptions: {
         level: 'debug',
         terminal: true,
