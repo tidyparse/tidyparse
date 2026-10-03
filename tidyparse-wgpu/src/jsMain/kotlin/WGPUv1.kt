@@ -75,6 +75,10 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         // Counting/Enumeration
         bp_count, bp_write,
         ls_cdf, suffix_ls_dense,
+        uniform_choice_counts, uniform_index,
+        greedy_choice_counts, greedy_pcfg_order,
+        histogram_choice_counts, pcfg_min_cost, pcfg_scale, pcfg_choice_labels, pcfg_dense_convolve, pcfg_build_root_cdf,
+        histogram_compile_row_counts, histogram_compile_row_map, histogram_compile_nodes, histogram_compile_roots,
         build_root_sizes, enum_words_wor, suffix_enum_words_wor,
         // Sampling
         markov_score, wdfa_score, select_top_k, gather_top_k, suffix_group_select, // rerank_top_k,
@@ -176,6 +180,7 @@ suspend fun intersectionPipeline(
   val closureT = TimeSource.Monotonic.markNow()
 
   cfl_mul_upper.invokeCFLFixpoint(numStates, dpBuf, activeBuf, metaBuf)
+  buffers.release(activeBuf, wordBuf)
 
   mark("matrix closure", closureT)
   log("Matrix closure reached in: ${timings["matrix closure"]}ms")
@@ -224,7 +229,7 @@ suspend fun intersectionPipeline(
     return@use IntersectionResults.EMPTY.also { log("Max repair length exceeded $MAX_WORD_LEN ($maxRepairLen)") }
   }
 
-  val cdfBuf = buffers.newBuffer(totalExp * 4)
+  val cdfBuf = buffers.newBuffer(maxOf(4, totalExp * 4))
   if (PROFILE_WGPU_KERNELS) awaitGPUQueue()
   val cdfT = TimeSource.Monotonic.markNow()
   buildLanguageSizeCDF(
@@ -234,6 +239,7 @@ suspend fun intersectionPipeline(
   if (PROFILE_WGPU_KERNELS) awaitGPUQueue()
   mark("build language-size CDF", cdfT)
   log("Built language-size CDF in ${timings["build language-size CDF"]}ms (${cdfBuf.size}B)")
+  buffers.release(metaBuf)
 
   val numRoots = startIdxs.size / 2
   val rootSizes = buffers.newBuffer(numRoots * 4)
@@ -268,27 +274,26 @@ suspend fun intersectionPipeline(
   val toDecode = minOf(MAX_SAMPLES.toLong(), langIntSize).toInt()
   if (toDecode == 0) return@use IntersectionResults.EMPTY
   idxUniBuf.writeU32(wordIndex = 5, value = toDecode)
-  val pcfgIndexBuf = cfg.pcfgBuf?.let { pcfg ->
-    val indexT = TimeSource.Monotonic.markNow()
-    buffers.own(buildPCFGDecodeIndex(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, tmBuf, idxUniBuf, pcfg))
-      .also {
-        if (PROFILE_WGPU_KERNELS) awaitGPUQueue()
-        log("Build PCFG decode index: ${TimeSource.Monotonic.markNow() - indexT}")
-        mark("build PCFG decode index", indexT)
-      }
-  }
+  val indexT = TimeSource.Monotonic.markNow()
+
+  val bijection = greedyPCFGIndex(numStates, numNTs, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, cdfBuf, tmBuf, idxUniBuf, cfg.pcfgBuf)
+//   val bijection = uniformIndex(numStates, numNTs, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, cdfBuf, tmBuf, idxUniBuf)
+//   val bijection = histogramSemiringIndex(numStates, numNTs, dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, cdfBuf, tmBuf, idxUniBuf, cfg.pcfgBuf)
+
+  buffers.own(bijection)
+  if (PROFILE_WGPU_KERNELS) awaitGPUQueue()
+  mark("build word bijection", indexT)
+  log("Build word bijection: ${timings["build word bijection"]}ms")
+  buffers.release(dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf, cdfBuf, rootSizes, rootCDF)
+
   val pct = toDecode.toDouble() * 100.0 / langIntSize.toDouble().coerceAtLeast(1.0)
   log("Language saturation: $pct% ($toDecode/$langIntSize), maxRepairLen=$maxRepairLen")
   val outBuf = buffers.newBuffer(toDecode * maxRepairLen * 4)
-
   timings["enumerate"] = timedGPUIsolated("Enumerate") {
-    enum_words_wor(
-      dpBuf, bpCountBuf, bpOffsetBuf, bpStorageBuf,
-      cdfBuf, tmBuf, idxUniBuf, rootSizes, pcfgIndexBuf ?: rootCDF, outBuf
-    ).dispatchFlat(toDecode)
+    enum_words_wor(bijection, idxUniBuf, outBuf).dispatchFlat(toDecode)
   }
-
   log("Enumerated $toDecode samples in ${timings["enumerate"]}ms (${outBuf.size}B)")
+  buffers.release(bijection, idxUniBuf)
 
   val decodeT = TimeSource.Monotonic.markNow()
   val shouldRerank = rerankerQuery != null && reranker != null
@@ -490,7 +495,7 @@ internal val CFG.pcfgBuf: GPUBuffer? get() = pcfgBuffers.get(this).unsafeCast<GP
 /** Load CNF productions of the form `A -> B C [numerator/denominator]` (or `A -> token [...]`). */
 fun CFG.loadPCFG(text: String) {
   val nts = nonterminals.withIndex().associate { it.value to it.index }
-  val rows = Array(nts.size) { mutableMapOf<Pair<Int, Int>, Int>() }
+  val rows = Array(nts.size) { mutableMapOf<Pair<Int, Int>, Pair<Int, Int>>() }
   text.lineSequence().filter { it.isNotBlank() }.forEach { line ->
     val rule = line.substringBeforeLast(" [").trim().split(Regex("\\s+"))
     val fraction = line.substringAfterLast('[').substringBefore(']').split('/')
@@ -501,15 +506,17 @@ fun CFG.loadPCFG(text: String) {
     val parent = nts[rule[0]] ?: return@forEach
     val left = (if (rule.size == 3) tmMap[rule[2]] else nts[rule[2]]) ?: return@forEach
     val right = if (rule.size == 3) -1 else nts[rule[3]] ?: return@forEach
+    // Keep even rare productions reachable when quantizing to thousandths.
+    val weight = (1000 * numerator / denominator).roundToInt().coerceAtLeast(1)
     val cost = if (numerator == 0.0) -1 else (-ln(numerator / denominator) * SCALE).roundToInt()
-    rows[parent][left to right] = cost
+    rows[parent][left to right] = weight to cost
   }
-  // [row offsets (absolute, including sentinel), sorted (left, right, log-cost) records]
+  // [row offsets (absolute, including sentinel), sorted (left, right, weight, log-cost) records]
   val data = MutableList(nts.size + 1) { 0 }
   rows.forEachIndexed { nt, row ->
     data[nt] = data.size
     row.entries.sortedWith(compareBy({ it.key.first }, { it.key.second.toUInt() }))
-      .forEach { (rhs, cost) -> data.addAll(listOf(rhs.first, rhs.second, cost)) }
+      .forEach { (rhs, scores) -> data.addAll(listOf(rhs.first, rhs.second, scores.first, scores.second)) }
   }
   data[nts.size] = data.size
   val previous = pcfgBuffers.get(this).unsafeCast<GPUBuffer?>()
@@ -1281,7 +1288,7 @@ val prefix_sum_p2 by Shader("""$PFX_SUM_PARAMS $SAT_ARTH
 
 // Longest word WGSL can handle. If ~2^9<MAX_WORD_LEN, pipeline breaks some on architectures
 const val MAX_WORD_LEN = 128
-const val MAX_SAMPLES = 100_000 // Maximum number of samples to draw before reranking
+const val MAX_SAMPLES = 300_000 // Maximum number of samples to draw before reranking
 const val MAX_DISP_RESULTS = 29
 const val TOP_K_SAMP = 10 * MAX_DISP_RESULTS // Maximum results to sample, some of which may be displayed to the user
 const val RERANKER_TOP_K_SAMP = 1_000
@@ -1328,389 +1335,17 @@ const val WGSL_MIX32 = """fn mix32(x: u32) -> u32 {
 }
 """
 
-/** See [PTree.sampleStrWithoutReplacement] for CPU version. */
 //language=wgsl
-val enum_words_wor by Shader("""$TERM_STRUCT
-@group(0) @binding(0) var<storage, read>        dp_in       : array<u32>;
-@group(0) @binding(1) var<storage, read>        bp_count    : array<u32>;
-@group(0) @binding(2) var<storage, read>        bp_offset   : array<u32>;
-@group(0) @binding(3) var<storage, read>        bp_storage  : array<u32>;
-@group(0) @binding(4) var<storage, read>        ls_sparse   : array<u32>;
-@group(0) @binding(5) var<storage, read>        terminals   : Terminals;
-@group(0) @binding(6) var<storage, read_write>  idx_uni     : IndexUniforms;
-@group(0) @binding(7) var<storage, read>        root_sizes  : array<u32>;   // length = numRoots
-@group(0) @binding(8) var<storage, read>        sampling    : array<u32>;  // uniform root CDF or PCFG histogram/provenance index
-@group(0) @binding(9) var<storage, read_write>  sampled     : array<u32>;   // out packets
-
-fn root_cdf(i: u32) -> u32 { return sampling[i]; }
-
-$CHART_DECODING_HELPERS
-
-const PKT_HDR_LEN : u32 = ${PKT_HDR_LEN}u;
-const NEG_MASK    : u32 = ${NEG_STR_LIT};
-const TOKEN_MASK  : u32 = ${PACKED_TOKEN_MASK}u;
-const EDIT_SHIFT  : u32 = ${PACKED_EDIT_SHIFT}u;
-
-$WGSL_LANG_SIZE
-
-fn binarySearchCDF(base: u32, len: u32, needle: u32) -> u32 {
-  var lo: u32 = 0u;
-  var hi: u32 = len;
-  while (lo < hi) {
-    let mid = (lo + hi) >> 1u;
-    if (needle < ls_sparse[base + mid]) { hi = mid; } else { lo = mid + 1u; }
-  }
-
-  return base + lo;
-}
-
+internal const val PACK_EDIT_TOKEN_HELPER = """
 fn packEditToken(token: u32, val: u32) -> u32 {
   let editCode = (val & EDIT_DEL_MASK) >> EDIT_DEL_SHIFT;
   var editTag = 0u;
   if (editCode == EDIT_INSERT_CODE) { editTag = ${PACKED_INSERTION_TAG}u; }
   else if (editCode != 0u) { editTag = editCode + ${PACKED_SUBSTITUTION_TAG}u; }
   else if ((val & EDIT_SUB_BIT) != 0u) { editTag = ${PACKED_SUBSTITUTION_TAG}u; }
-  return (token & TOKEN_MASK) | (editTag << EDIT_SHIFT);
+  return (token & ${PACKED_TOKEN_MASK}u) | (editTag << ${PACKED_EDIT_SHIFT}u);
 }
-
-fn decodeLiteral(
-  dpIdx: u32,
-  val: u32,
-  variant: u32, // must be < litCount(dpIdx)
-  word: ptr<function, array<u32, ${MAX_WORD_LEN}u>>,
-  wLen: ptr<function, u32>
-) -> bool {
-  let cap = idx_uni.maxWordLen - PKT_HDR_LEN;
-  if (*wLen >= cap || *wLen >= ${MAX_WORD_LEN}u) { return false; }
-
-  let nt    = dpIdx % idx_uni.numNonterminals;
-  let ntLen = get_nt_tm_lens(nt);
-  if (ntLen == 0u) { return false; }
-  let ntOff = get_offsets(nt);
-  let predicate = val & PREDICATE_MASK;
-  var token: u32;
-
-  // wildcard: choose variant mod |Σ_A|
-  if (predicate == LIT_ALL) { token = get_all_tms(ntOff + (variant % ntLen)) + 1u; }
-  else {
-    let negLit = (predicate & NEG_MASK) != 0u;
-    let litEnc = (predicate >> 1u) & 0x03ffffffu;
-    if (litEnc == 0u || litEnc > ntLen) { return false; }
-
-    if (negLit) {
-      if (ntLen <= 1u) { return false; }
-      // exclude the (litEnc-1)th terminal from Σ_A
-      let excl = litEnc - 1u;
-      let v    = variant % (ntLen - 1u);
-      let idx  = select(v, v + 1u, v >= excl);
-      token = get_all_tms(ntOff + idx) + 1u;
-    } else { token = get_all_tms(ntOff + (litEnc - 1u)) + 1u; }
-  }
-  (*word)[*wLen] = packEditToken(token, val);
-  *wLen = *wLen + 1u;
-  return true;
-}
-
-struct Frame { dp: u32, rk: u32 }
-
-// ---------- Feistel permutation helpers (for WOR-by-rank when total not saturated) ----------
-fn ceil_pow2_even(x: u32) -> u32 {
-    let k = 32u - countLeadingZeros(max(x, 1u) - 1u);
-    return (k + 1u) & 0xfffffffeu;
-}
-
-// 4-round Feistel permutation over k bits (k even, <= 32)
-fn feistel_perm(x: u32, seed: u32, k_even: u32) -> u32 {
-  let h: u32 = k_even >> 1u;
-  let mask: u32 = (1u << h) - 1u;
-
-  var l: u32 = x & mask;
-  var r: u32 = (x >> h) & mask;
-
-  for (var round: u32 = 0u; round < 4u; round = round + 1u) {
-    let f: u32 = ((r * 0x9e3779b9u) ^ (seed + round * 0x7f4a7c15u)) & mask;
-    let nl: u32 = r;
-    let nr: u32 = l ^ f;
-    l = nl; r = nr;
-  }
-
-  return (r << h) | l;
-}
-
-// Permute sid into [0,total) via cycle-walking on [0, 2^k).
-// IMPORTANT: handle k=32 without ever computing (1u<<32).
-fn permute_in_range(sid: u32, seed: u32, total: u32) -> u32 {
-  let k_even: u32 = ceil_pow2_even(total);
-
-  var x: u32 = sid;
-
-  // If k < 32, we can mask into [0,2^k)
-  if (k_even < 32u) {
-    let m: u32 = 1u << k_even;
-    let mask: u32 = m - 1u;
-    x = sid & mask;
-  }
-
-  var attempts: u32 = 0u;
-  while (attempts < 64u) {
-    x = feistel_perm(x, seed, k_even);
-    if (x < total) { return x; }
-    attempts = attempts + 1u;
-  }
-
-  return x % total;
-}
-
-// ---------- RNG helpers (used when saturation makes rank/CDF meaningless) ----------
-$WGSL_MIX32
-
-fn rng_next(state: ptr<function, u32>) -> u32 {
-  var x = *state;
-  x ^= x << 13u;
-  x ^= x >> 17u;
-  x ^= x << 5u;
-  *state = x;
-  return x;
-}
-
-fn rand_bounded(state: ptr<function, u32>, bound: u32) -> u32 {
-  if (bound == 0u) { return 0u; }
-  let threshold = (0xffffffffu - bound + 1u) % bound;
-  var attempts: u32 = 0u;
-  while (attempts < 32u) {
-    let r = rng_next(state);
-    if (r >= threshold) { return r % bound; }
-    attempts = attempts + 1u;
-  }
-
-  return rng_next(state) % bound;
-}
-
-fn randomRankForSize(state: ptr<function, u32>, size: u32) -> u32 {
-  if (size == 0u) { return 0u; }
-  if (size == SAT_MAX) { return rand_bounded(state, SAT_MAX); }
-  return rand_bounded(state, size);
-}
-
-// ---------- Utility: write an empty packet (so failures don't leave garbage) ----------
-fn write_empty_packet(sid: u32, levDist: u32) {
-  let stride  = idx_uni.maxWordLen;
-  let outBase = sid * stride;
-  sampled[outBase + 0u] = levDist;
-  sampled[outBase + 1u] = 0u;
-  if (PKT_HDR_LEN < stride) { sampled[outBase + PKT_HDR_LEN] = 0u; }
-}
-
-struct PCFGFrame { dp: u32, slice: u32, rank: u32 }
-
-// Each invocation independently unranks one word using the log-tier provenance.
-// The root table merges all accepting roots in ascending negative-log probability.
-fn decode_pcfg(sid: u32) {
-  if (sid >= sampling[0]) { return; }
-  let rootCount = sampling[1];
-  let tiers = sampling[2];
-  let choices = sampling[3];
-  let slices = sampling[4];
-  var lo = 0u;
-  var hi = rootCount;
-  while (lo < hi) {
-    let mid = (lo + hi) >> 1u;
-    if (sid < sampling[5u + 4u * mid]) { hi = mid; } else { lo = mid + 1u; }
-  }
-  if (lo == rootCount) { return; }
-  let rootEntry = 5u + 4u * lo;
-  var previous = 0u;
-  if (lo != 0u) { previous = sampling[rootEntry - 4u]; }
-  let rootIdx = sampling[rootEntry + 1u];
-  let levDist = getEditDist(rootIdx);
-  let cost = sampling[rootEntry + 3u];
-
-  var stack: array<PCFGFrame, ${MAX_WORD_LEN}u>;
-  var top = 1u;
-  stack[0] = PCFGFrame(getStartIdx(rootIdx), sampling[rootEntry + 2u], sid - previous);
-  var word: array<u32, ${MAX_WORD_LEN}u>;
-  var wLen = 0u;
-  while (top != 0u) {
-    top--;
-    let frame = stack[top];
-    let slice = slices + 3u * frame.slice;
-    let tier = tiers + 2u * sampling[slice];
-    // Coarse tiers share one CDF, but each product still selects an exact-cost slice.
-    let needle = sampling[slice + 1u] + frame.rank;
-    let first = sampling[tier];
-    let count = sampling[tier + 1u];
-    lo = 0u;
-    hi = count;
-    while (lo < hi) {
-      let mid = (lo + hi) >> 1u;
-      if (needle < sampling[choices + 4u * (first + mid)]) { hi = mid; }
-      else { lo = mid + 1u; }
-    }
-    if (lo == count) { write_empty_packet(sid, levDist); return; }
-    let choice = choices + 4u * (first + lo);
-    previous = 0u;
-    if (lo != 0u) { previous = sampling[choice - 4u]; }
-    let rank = needle - previous;
-    let branch = sampling[choice + 1u];
-    let val = dp_in[frame.dp];
-    let literals = count_tms(val, frame.dp % idx_uni.numNonterminals);
-    if (branch < literals) {
-      if (!decodeLiteral(frame.dp, val, branch, &word, &wLen)) { write_empty_packet(sid, levDist); return; }
-      continue;
-    }
-    let pos = 2u * (bp_offset[frame.dp] + branch - literals);
-    let leftSlice = sampling[choice + 2u];
-    let rightSlice = sampling[choice + 3u];
-    let rightCount = sampling[slices + 3u * rightSlice + 2u];
-    if (rightCount == 0u || top + 2u > ${MAX_WORD_LEN}u) { write_empty_packet(sid, levDist); return; }
-    stack[top] = PCFGFrame(bp_storage[pos + 1u], rightSlice, rank % rightCount); top++;
-    stack[top] = PCFGFrame(bp_storage[pos], leftSlice, rank / rightCount); top++;
-  }
-  let stride = idx_uni.maxWordLen;
-  let outBase = sid * stride;
-  sampled[outBase] = levDist;
-  sampled[outBase + 1u] = cost;
-  for (var i = 0u; i < wLen && PKT_HDR_LEN + i < stride; i++) { sampled[outBase + PKT_HDR_LEN + i] = word[i]; }
-  if (PKT_HDR_LEN + wLen < stride) { sampled[outBase + PKT_HDR_LEN + wLen] = 0u; }
-}
-
-@compute @workgroup_size(1,1,1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-  let sid = gid.x + gid.y * idx_uni.threads;
-  if (sid >= idx_uni.max_samples) { return; }
-
-  let numRoots = idx_uni.numStartIndices / 2u;
-  if (numRoots == 0u) { return; }
-  if (arrayLength(&sampling) > numRoots) { decode_pcfg(sid); return; }
-
-  let lastRoot = numRoots - 1u;
-  let total    = sat_add(root_cdf(lastRoot), root_sizes[lastRoot]);
-  if (total == 0u) { return; }
-
-  // strict WOR bound (for non-saturated total, this is meaningful; for SAT_MAX it just caps very late)
-  if (sid >= total) { return; }
-
-  let runSeed: u32 = atomicLoad(&idx_uni.targetCnt) ^ 0xA511E9B3u;
-
-  let prk = permute_in_range(sid, runSeed, total);
-
-  // Root selection by (root_cdf, root_sizes)
-  var rLo: u32 = 0u;
-  var rHi: u32 = numRoots;
-  loop {
-    if (rLo + 1u >= rHi) { break; }
-    let mid  = (rLo + rHi) >> 1u;
-    let base = root_cdf(mid);
-
-    if (prk < base) {
-      rHi = mid;
-    } else {
-      let size = root_sizes[mid];
-      let end  = sat_add(base, size);
-      if (prk < end) { rLo = mid; rHi = mid + 1u; break; }
-      rLo = mid + 1u;
-    }
-  }
-
-  let rootIdx = min(rLo, lastRoot);
-  let base    = root_cdf(rootIdx);
-  let rootSize = root_sizes[rootIdx];
-  if (rootSize == 0u) { return; }
-  var rk      = select(prk - base, prk, prk < base); // rank within chosen root
-  if (rootSize != SAT_MAX && rk >= rootSize) { rk = rk % rootSize; }
-  let dpRoot  = getStartIdx(rootIdx);
-  let levDist = getEditDist(rootIdx);
-
-  var rng: u32 = mix32(runSeed ^ sid ^ prk);
-  // DFS decode by rank (without replacement by construction)
-  var stack : array<Frame, ${MAX_WORD_LEN}u>;
-  var top   : u32 = 0u;
-  stack[top] = Frame(dpRoot, rk); top++;
-
-  var word : array<u32, ${MAX_WORD_LEN}u>;
-  var wLen : u32 = 0u;
-
-  loop {
-    if (top == 0u) { break; }
-    top = top - 1u;
-
-    let fr = stack[top];
-    let d  = fr.dp;
-    rk     = fr.rk;
-
-    let val      = dp_in[d];
-    if (val == 0u) { write_empty_packet(sid, levDist); return; }
-
-    let nt       = d % idx_uni.numNonterminals;
-    let litCount = count_tms(val, nt);
-
-    let expCnt   = bp_count[d];
-    let base2    = bp_offset[d];
-    var lastCDF  : u32 = 0u;
-    if (expCnt != 0u) { lastCDF = ls_sparse[base2 + expCnt - 1u]; }
-    let tot      = select(litCount, lastCDF, expCnt != 0u);
-
-    if (tot == 0u) { write_empty_packet(sid, levDist); return; }
-
-    let saturated = lastCDF == SAT_MAX && expCnt != 0u;
-    var branch: u32;
-    var inside = 0u;
-    if (saturated) {
-      // Saturated CDFs lose rank information; preserve the original RNG fallback.
-      let pickLit = litCount != 0u && rand_bounded(&rng, sat_add(litCount, expCnt)) < litCount;
-      if (pickLit) { branch = rand_bounded(&rng, litCount); }
-      else { branch = litCount + rand_bounded(&rng, expCnt); }
-    } else {
-      if (rk >= tot) { rk %= tot; }
-      branch = rk;
-      if (rk >= litCount) {
-        if (expCnt == 0u) { write_empty_packet(sid, levDist); return; }
-        let cIx = min(binarySearchCDF(base2, expCnt, rk), base2 + expCnt - 1u);
-        var previous = litCount;
-        if (cIx != base2) { previous = ls_sparse[cIx - 1u]; }
-        branch = litCount + cIx - base2;
-        inside = rk - previous;
-      }
-    }
-
-    if (branch < litCount) {
-      if (!decodeLiteral(d, val, branch, &word, &wLen)) { write_empty_packet(sid, levDist); return; }
-      continue;
-    }
-
-    let pos = 2u * (base2 + branch - litCount);
-    let left = bp_storage[pos];
-    let right = bp_storage[pos + 1u];
-    let sizeR = langSize(right, idx_uni.numNonterminals);
-    if (sizeR == 0u || top + 2u > ${MAX_WORD_LEN}u) { write_empty_packet(sid, levDist); return; }
-    var rkL = inside / sizeR;
-    var rkR = inside % sizeR;
-    if (saturated) {
-      let sizeL = langSize(left, idx_uni.numNonterminals);
-      if (sizeL == 0u) { write_empty_packet(sid, levDist); return; }
-      if (sizeR == SAT_MAX || sizeL == SAT_MAX) {
-        rkL = randomRankForSize(&rng, sizeL);
-        rkR = randomRankForSize(&rng, sizeR);
-      } else {
-        inside = rand_bounded(&rng, sat_mul(sizeL, sizeR));
-        rkL = inside / sizeR;
-        rkR = inside % sizeR;
-      }
-    }
-    stack[top] = Frame(right, rkR); top++;
-    stack[top] = Frame(left, rkL); top++;
-  }
-
-  // Write packet
-  let stride  = idx_uni.maxWordLen;
-  let outBase = sid * stride;
-
-  sampled[outBase + 0u] = levDist;
-  sampled[outBase + 1u] = 0u;
-
-  for (var i = 0u; i < wLen && (PKT_HDR_LEN + i) < stride; i = i + 1u) { sampled[outBase + PKT_HDR_LEN + i] = word[i]; }
-  // terminator
-  if (PKT_HDR_LEN + wLen < stride) { sampled[outBase + PKT_HDR_LEN + wLen] = 0u; }
-}""".trimIndent())
+"""
 
 //language=wgsl
 const val SAMPLER_PARAMS = """struct Params { maxSamples: u32, k: u32, stride: u32, threads: u32 };"""
@@ -2091,7 +1726,7 @@ class Shader constructor(val src: String) {
       val offBuf = prefixSumGPU(cntBuf, totalPairs)
       val last   = listOf(totalPairs - 1)
       val totalM = offBuf.readIndices(last)[0] + cntBuf.readIndices(last)[0]
-      val flatBuf = GPUBuffer(totalM * 4, STCPSD)
+      val flatBuf = GPUBuffer(maxOf(4, totalM * 4), STCPSD)
       mdpt_write(reachBuf, offBuf, flatBuf, uniBuf)(states, states)
 
       return (flatBuf to offBuf).also { uniBuf.destroy(); cntBuf.destroy() }
@@ -2113,7 +1748,7 @@ class Shader constructor(val src: String) {
       val totalExpansions = bpOffsetBuf.readIndices(lastIdx)[0] + bpCountBuf.readIndices(lastIdx)[0]
       log("Total expansions: $totalExpansions")
 
-      val bpStorageBuf = GPUBuffer(totalExpansions * 2 * 4, STCPSD)
+      val bpStorageBuf = GPUBuffer(maxOf(8, totalExpansions * 2 * 4), STCPSD)
 
       bp_write(dpIn, bpOffsetBuf, bpStorageBuf, metaBuf)(numStates, numStates, ntWorkgroups)
 
@@ -2271,6 +1906,8 @@ internal class GPUBufferScope : AutoCloseable {
   /** Transfers a returned buffer to the caller without destroying it. */
   fun detach(buffer: GPUBuffer): GPUBuffer = buffer
     .also { check(buffers.remove(it)) { "Cannot transfer a buffer this scope does not own" } }
+  /** Release owned intermediates after their last submitted GPU operation. */
+  fun release(vararg buffers: GPUBuffer) = buffers.forEach { detach(it).destroy() }
   override fun close() = buffers.asReversed().forEach(GPUBuffer::destroy)
 }
 

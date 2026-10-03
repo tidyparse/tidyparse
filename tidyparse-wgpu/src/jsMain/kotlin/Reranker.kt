@@ -107,15 +107,17 @@ object RepairReranker {
   }
 
   private suspend fun loadWeights(): dynamic {
-    val loader = rerankerWeightsLoader
-      ?: error("Repair reranker has not been configured with a weights loader")
+    val loader = rerankerWeightsLoader ?: error("Repair reranker has not been configured with a weights loader")
     val loaded = loader(RERANKER_WEIGHTS) ?: error("Failed to load $RERANKER_WEIGHTS")
     return materializeF32Safetensors(loaded)
   }
 
-  //language=js
-  private fun materializeF32Safetensors(rawSafetensors: ArrayBuffer): dynamic =
-    js("""(function(buffer) {
+  internal fun materializeF32Safetensors(rawSafetensors: ArrayBuffer): dynamic {
+    // Inline JS functions here make Kotlin/JS mislabel later declarations in source maps.
+    // Compile this self-contained body only when the reranker actually loads its weights.
+    //language=js
+    val source = """
+      "use strict";
       function fail(message) { throw new Error(message); }
       function assert(condition, message) { if (!condition) fail(message); }
       function tensorElementCount(shape) {
@@ -222,7 +224,10 @@ object RepairReranker {
         offset += chunk.byteLength;
       }
       return out;
-    })(rawSafetensors)""")
+      //# sourceURL=tidyparse-reranker-materialize.js
+    """
+    return js("Function")("buffer", source)(rawSafetensors)
+  }
 
   private fun encodeTokens(tokens: List<String>, maxLength: Int): String? {
     val ids = ArrayList<Int>(tokens.size + 2)
