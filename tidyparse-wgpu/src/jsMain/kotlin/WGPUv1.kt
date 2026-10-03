@@ -76,7 +76,7 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         bp_count, bp_write,
         ls_cdf, suffix_ls_dense,
         uniform_choice_counts, uniform_index,
-        greedy_choice_counts, greedy_pcfg_order,
+        greedy_active_rows, greedy_choice_counts, greedy_pcfg_order,
         histogram_choice_counts, pcfg_min_cost, pcfg_scale, pcfg_choice_labels, pcfg_dense_convolve, pcfg_build_root_cdf,
         histogram_compile_row_counts, histogram_compile_row_map, histogram_compile_nodes, histogram_compile_roots,
         build_root_sizes, enum_words_wor, suffix_enum_words_wor,

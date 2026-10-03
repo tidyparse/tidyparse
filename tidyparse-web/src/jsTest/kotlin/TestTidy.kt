@@ -645,6 +645,16 @@ class TestTidy {
   }
 
   @Test
+  fun testGreedyBijectionRepairsLongListWithinStandardGPUBufferLimit() = browserTest {
+    tryBootstrappingGPU()
+    assertTrue(gpuAvailable, "WebGPU is required for the memory regression test")
+    // Corpus case 38: retaining empty chart rows made the index exceed the standard 1 GiB limit.
+    val tokens = ("[ " + List(28) { "STRING" }.joinToString(" , ") + " NEWLINE").tokenizeByWhitespace()
+    val results = repairCode(pythonStatementCNFAllProds, tokens, ledBuffer = 1)
+    assertTrue(results.isNotEmpty(), "The unterminated list must produce repairs")
+  }
+
+  @Test
   fun testRepairCodeCPUSmoke() = browserTest {
     val smokeCfg = """
       START -> A B

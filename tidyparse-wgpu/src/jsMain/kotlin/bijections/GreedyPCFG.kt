@@ -16,11 +16,8 @@ internal suspend fun greedyPCFGIndex(
   dp: GPUBuffer, counts: GPUBuffer, offsets: GPUBuffer, storage: GPUBuffer, cdf: GPUBuffer,
   terminals: GPUBuffer, indices: GPUBuffer, pcfg: GPUBuffer?
 ): GPUBuffer = GPUBufferScope().use { buffers ->
-  val bijection = buffers.own(allocateGreedyBijection(numStates, numNTs, dp, counts, terminals, indices))
-  val nodes = numStates.toLong() * (numStates - 1) / 2 * numNTs + 1
-  val roots = (indices.size.toLong() / 4 - 8) / 2
-  // Header, node offsets/counts and roots occupy 5 + 2*N + 3*R words; each choice adds four.
-  val choices = (bijection.size.toLong() / 4 - 5 - 2 * nodes - 3 * roots) / 4
+  val (bijection, rowMap, choices) =
+    allocateGreedyBijection(numStates, numNTs, dp, counts, terminals, indices, buffers)
   val grammarBytes = pcfg?.size?.toLong() ?: 0L
   val weights = buffers.newBuffer(maxOf(4L, grammarBytes + choices * 8))
   bijection.writeU32(3, (grammarBytes / 4).toInt())
@@ -29,7 +26,7 @@ internal suspend fun greedyPCFGIndex(
     encoder.copyBufferToBuffer(pcfg, 0.0, weights, 0.0, pcfg.size)
     gpu.queue.submit(arrayOf(encoder.finish()))
   }
-  greedy_pcfg_order(dp, counts, offsets, storage, cdf, terminals, indices, weights, bijection)
+  greedy_pcfg_order(dp, counts, offsets, storage, cdf, terminals, indices, weights, bijection, rowMap)
     .dispatchFlat(((dp.size.toLong() / 4 + 63) / 64).toInt())
   bijection.writeU32(3, 0) // The build temporarily uses rankLimit for the grammar size.
   buffers.detach(bijection)
@@ -37,13 +34,18 @@ internal suspend fun greedyPCFGIndex(
 
 private suspend fun allocateGreedyBijection(
   numStates: Int, numNTs: Int, dp: GPUBuffer, counts: GPUBuffer,
-  terminals: GPUBuffer, indices: GPUBuffer
-): GPUBuffer = GPUBufferScope().use { owned ->
-  val nodes = numStates.toLong() * (numStates - 1) / 2 * numNTs + 1 // Node zero is epsilon.
+  terminals: GPUBuffer, indices: GPUBuffer, owned: GPUBufferScope
+): Triple<GPUBuffer, GPUBuffer, Long> {
+  val rows = numStates.toLong() * (numStates - 1) / 2 * numNTs
   val roots = (indices.size.toLong() / 4 - 8) / 2
+  val groups = ((dp.size.toLong() / 4 + 255) / 256).toInt()
+  val activeRows = owned.newBuffer((rows + 1) * 4)
+  greedy_active_rows(dp, indices, activeRows).dispatchFlat(groups)
+  val rowMap = owned.own(Shader.prefixSumGPU(activeRows, (rows + 1).toInt()))
+  val nodes = rowMap.readIndices(listOf(rows.toInt()))[0].toUInt().toLong() + 1 // Node zero is epsilon.
+  owned.release(activeRows)
   val choiceCounts = owned.newBuffer((nodes + 1) * 4)
-  greedy_choice_counts(dp, counts, terminals, indices, choiceCounts)
-    .dispatchFlat(((dp.size.toLong() / 4 + 255) / 256).toInt())
+  greedy_choice_counts(dp, counts, terminals, indices, choiceCounts, rowMap).dispatchFlat(groups)
   val offsets = owned.own(Shader.prefixSumGPU(choiceCounts, (nodes + 1).toInt()))
   val choices = offsets.readIndices(listOf(nodes.toInt()))[0].toUInt().toLong()
   val bytes = (5 + 2 * nodes + 4 * choices + 3 * roots) * 4
@@ -56,8 +58,9 @@ private suspend fun allocateGreedyBijection(
   val encoder = gpu.createCommandEncoder()
   encoder.copyBufferToBuffer(offsets, 0.0, result, 16.0, offsets.size)
   gpu.queue.submit(arrayOf(encoder.finish()))
-  log("Greedy PCFG: ${nodes - 1} chart rows, 1 partition, $choices choices, ${bytes / 1024} KiB")
-  owned.detach(result)
+  owned.release(choiceCounts, offsets)
+  log("Greedy PCFG: $rows chart rows, ${nodes - 1} active nodes, $choices choices, ${bytes / 1024} KiB")
+  return Triple(result, rowMap, choices)
 }
 
 //language=wgsl
@@ -72,20 +75,33 @@ fn bij_row(cell: u32) -> u32 {
 """
 
 //language=wgsl
+internal val greedy_active_rows by Shader("""$IDX_UNIFORM_STRUCT $GREEDY_CHART_ROW
+@group(0) @binding(0) var<storage, read> dp: array<u32>;
+@group(0) @binding(1) var<storage, read_write> idx_uni: IndexUniforms;
+@group(0) @binding(2) var<storage, read_write> active_flags: array<u32>;
+@compute @workgroup_size(256) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let cell = gid.x + gid.y * ${DISPATCH_GROUP_SIZE_X}u * 256u;
+  if (cell >= arrayLength(&dp) || dp[cell] == 0u) { return; }
+  let pair = cell / idx_uni.numNonterminals;
+  if (pair / idx_uni.numStates >= pair % idx_uni.numStates) { return; }
+  active_flags[bij_row(cell)] = 1u;
+}
+""")
+
+//language=wgsl
 internal val greedy_choice_counts by Shader("""$TERM_STRUCT $GREEDY_CHART_ROW
 @group(0) @binding(0) var<storage, read> dp: array<u32>;
 @group(0) @binding(1) var<storage, read> counts: array<u32>;
 @group(0) @binding(2) var<storage, read> terminals: Terminals;
 @group(0) @binding(3) var<storage, read_write> idx_uni: IndexUniforms;
 @group(0) @binding(4) var<storage, read_write> output: array<u32>;
+@group(0) @binding(5) var<storage, read> row_map: array<u32>;
 @compute @workgroup_size(256) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let cell = gid.x + gid.y * ${DISPATCH_GROUP_SIZE_X}u * 256u;
-  if (cell >= arrayLength(&dp)) { return; }
+  if (cell >= arrayLength(&dp) || dp[cell] == 0u) { return; }
   let pair = cell / idx_uni.numNonterminals;
   if (pair / idx_uni.numStates >= pair % idx_uni.numStates) { return; }
-  var count = 0u;
-  if (dp[cell] != 0u) { count = counts[cell] + count_tms(dp[cell], cell % idx_uni.numNonterminals); }
-  output[bij_row(cell) + 1u] = count;
+  output[row_map[bij_row(cell)] + 1u] = counts[cell] + count_tms(dp[cell], cell % idx_uni.numNonterminals);
 }
 """)
 
@@ -106,6 +122,9 @@ $WGSL_MIX32
 @group(0) @binding(6) var<storage, read_write> idx_uni: IndexUniforms;
 @group(0) @binding(7) var<storage, read_write> weights: array<u32>;
 @group(0) @binding(8) var<storage, read_write> bijection: WordBijection;
+@group(0) @binding(9) var<storage, read> row_map: array<u32>;
+
+fn greedy_node(cell: u32) -> u32 { return row_map[bij_row(cell)] + 1u; }
 
 fn greedy_size(cell: u32) -> u32 {
   let count = bp_count[cell];
@@ -165,8 +184,8 @@ fn greedy_write_choice(cell: u32, literals: u32, branch: u32, choice: u32, end: 
     bijection.data[base + 2u] = packEditToken(greedy_token(cell, branch) + 1u, dp_in[cell]);
   } else {
     let edge = 2u * (bp_offset[cell] + branch - literals);
-    bijection.data[base + 1u] = bij_row(bp_storage[edge]) + 1u;
-    bijection.data[base + 2u] = bij_row(bp_storage[edge + 1u]) + 1u;
+    bijection.data[base + 1u] = greedy_node(bp_storage[edge]);
+    bijection.data[base + 2u] = greedy_node(bp_storage[edge + 1u]);
   }
   bijection.data[base + 3u] = cost;
 }
@@ -184,7 +203,7 @@ fn greedy_roots() {
     let base = bij_roots_base() + 3u * root;
     cumulative = bij_add(cumulative, greedy_size(cell));
     bijection.data[base] = cumulative;
-    bijection.data[base + 1u] = bij_row(cell) + 1u;
+    bijection.data[base + 1u] = greedy_node(cell);
     bijection.data[base + 2u] = idx_uni.startIndices[2u * root + 1u];
   }
 }
@@ -197,7 +216,7 @@ fn greedy_roots() {
   if (cell >= arrayLength(&dp_in) || dp_in[cell] == 0u) { return; }
   let pair = cell / idx_uni.numNonterminals;
   if (pair % idx_uni.numStates <= pair / idx_uni.numStates) { return; }
-  let node = bij_row(cell) + 1u;
+  let node = greedy_node(cell);
   let first = bij_first(node);
   let count = bij_end(node) - first;
   if (count == 0u) { return; }
