@@ -81,7 +81,7 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         histogram_compile_row_counts, histogram_compile_row_map, histogram_compile_nodes, histogram_compile_roots,
         build_root_sizes, enum_words_wor, suffix_enum_words_wor,
         // Sampling
-        markov_score, wdfa_score, select_top_k, gather_top_k, suffix_group_select, // rerank_top_k,
+        markov_score, wdfa_score, select_top_k, merge_top_k, gather_top_k, suffix_group_select, // rerank_top_k,
         // Debugging
         wdfa_score_raw, active_nt_count,
       ).forEach { it.bind() }
@@ -451,28 +451,26 @@ suspend fun scoreSelectGather(
   k            : Int,
   profileLabel : String? = null
 ): JSIntArray = GPUBufferScope().use { buffers ->
+  val resultCount = minOf(k, maxSamples)
   val t0 = TimeSource.Monotonic.markNow()
   val threads = DISPATCH_GROUP_SIZE_X
   /** Memory layout: [SAMPLER_PARAMS] */
-  val prmBuf = buffers.own(intArrayOf(maxSamples, k, stride, threads)
+  val prmBuf = buffers.own(intArrayOf(maxSamples, resultCount, stride, threads)
     .toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST))
 
   suspend fun dispatch(label: String, block: () -> Unit) = if (profileLabel == null) block() else timedGPUIsolated(label, block)
 
   dispatch(profileLabel ?: "Score") { scoreShader(packets, model, prmBuf).dispatchFlat(maxSamples) }
 
-  val totalGroups = (maxSamples + 255) / 256
-  val idxBuf = buffers.own(IntArray(k) { -1 }.toGPUBuffer(STCPSD))
-  val scrBuf = buffers.own(IntArray(k) { Int.MAX_VALUE }.toGPUBuffer(STCPSD))
+  lateinit var idxBuf: GPUBuffer
+  dispatch("Select top-k") { idxBuf = buffers.own(selectTopKIndices(packets, maxSamples, stride, resultCount)) }
 
-  dispatch("Select top-k") { select_top_k(prmBuf, packets, idxBuf, scrBuf).dispatchFlat(totalGroups) }
+  val bestBuf = buffers.newBuffer(resultCount.toLong() * stride * 4)
 
-  val bestBuf = buffers.newBuffer(k * stride * 4)
-
-  dispatch("Gather top-k") { gather_top_k(prmBuf, packets, idxBuf, bestBuf)(k) }
+  dispatch("Gather top-k") { gather_top_k(prmBuf, packets, idxBuf, bestBuf).dispatchFlat(resultCount) }
 
   val topK = bestBuf.readJSIntArray()
-  log("${profileLabel ?: "Score"}/select/gather read ${topK.length} = ${k}x${stride}x4 bytes in ${t0.elapsedNow()}")
+  log("${profileLabel ?: "Score"}/select/gather read ${topK.length} = ${resultCount}x${stride}x4 bytes in ${t0.elapsedNow()}")
 
   topK
 }
@@ -1481,66 +1479,6 @@ const WDFA_SCORE_INVALID : u32 = 0xffffffffu;
 
   // Preserve the current edit-distance-first ranking convention.
   packets[base + 1u] = sat_add_wdfa(cost, (packets[base] + 1u) * EDIT_COST_STRIDE);
-}""")
-
-//language=wgsl
-val select_top_k by Shader("""$SAMPLER_PARAMS
-@group(0) @binding(0) var<uniform>                  prm : Params;
-@group(0) @binding(1) var<storage, read>        packets : array<u32>;
-@group(0) @binding(2) var<storage, read_write>   topIdx : array<atomic<u32>>;
-@group(0) @binding(3) var<storage, read_write> topScore : array<atomic<u32>>;
-
-const TOPK_EMPTY_SCORE : u32 = 0x7fffffffu;
-
-@compute @workgroup_size(256) fn main(
-    @builtin(workgroup_id)        workgroup_id : vec3<u32>,
-    @builtin(local_invocation_id) local_id     : vec3<u32>
-) {
-    let workgroup_linear_id = workgroup_id.x + workgroup_id.y * prm.threads;
-    let i = workgroup_linear_id * 256u + local_id.x;
-    if (i >= prm.maxSamples || prm.k == 0u) { return; }
-
-    let score : u32 = packets[i * prm.stride + 1u];
-    if (score >= TOPK_EMPTY_SCORE) { return; }
-
-    loop {
-        var worstPos : u32 = 0u;
-        var worstVal : u32 = atomicLoad(&topScore[0]);
-        for (var j : u32 = 1u; j < prm.k; j = j + 1u) {
-            let v = atomicLoad(&topScore[j]);
-            if (v > worstVal) { worstVal = v; worstPos = j; }
-        }
-
-        if (score > worstVal) { return; }
-        let old = atomicCompareExchangeWeak(&topScore[worstPos], worstVal, score);
-        if (old.exchanged) { atomicStore(&topIdx[worstPos], i); return; }
-    }
-}""")
-
-//language=wgsl
-val gather_top_k by Shader("""$SAMPLER_PARAMS
-@group(0) @binding(0) var<uniform>                prm : Params;
-@group(0) @binding(1) var<storage, read>      packets : array<u32>;  // full outBuf
-@group(0) @binding(2) var<storage, read>       topIdx : array<u32>;  // k indices
-@group(0) @binding(3) var<storage, read_write> bestPk : array<u32>;  // compacted result
-
-@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-    let j : u32 = gid.x;
-    if (j >= prm.k) { return; }
-
-    let srcIdx : u32 = topIdx[j];
-    let stride : u32 = prm.stride;
-    let dstOff : u32 = j      * stride;
-
-    if (srcIdx == 0xFFFFFFFFu) {
-        bestPk[dstOff + 0u] = 0u;
-        bestPk[dstOff + 1u] = 0xFFFFFFFFu;
-        if (${PKT_HDR_LEN}u < stride) { bestPk[dstOff + ${PKT_HDR_LEN}u] = 0u; }
-        return;
-    }
-
-    let srcOff : u32 = srcIdx * stride;
-    for (var t: u32 = 0u; t < stride; t = t + 1u) { bestPk[dstOff + t] = packets[srcOff + t]; }
 }""")
 
 //language=wgsl

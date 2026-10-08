@@ -200,6 +200,191 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   outCnt[r*n + c] = k;
 }""")
 
+private const val TOP_K_TILE_SIZE = 256
+private const val TOP_K_WORKGROUP_SIZE = 128
+
+/**
+ * Hierarchical top-k reduction using truncated parallel merge sort:
+ * 1. Batcher's bitonic sorting network sorts each 256-packet tile in workgroup memory.
+ * 2. A merge tree combines pairs of sorted runs, retaining only the first k entries at each level.
+ * 3. Each output lane binary-searches its co-ranks (the two input prefix lengths whose sum is its
+ *    output rank), then selects the next entry. This gives every output exactly one writer.
+ *
+ * The merge step uses parallel merging by co-ranking; see Siebert and Traeff,
+ * "Perfectly load-balanced, optimal, stable, parallel merge": https://arxiv.org/abs/1303.4312.
+ * Here co-ranking is performed per output element, costing O(log w) comparisons for run width w.
+ *
+ * Select packet indices in ascending (unsigned score, input index) order.
+ * Scores >= 0x7fffffff retain the historical invalid-score meaning; missing results are UINT_MAX.
+ * Each sorted run retains at most k entries: anything discarded already has k predecessors in
+ * that run and therefore cannot enter the global top k. The packet scores remain immutable.
+ * The returned buffer may have scratch capacity beyond its first k entries.
+ */
+internal fun selectTopKIndices(packets: GPUBuffer, samples: Int, stride: Int, k: Int): GPUBuffer =
+  GPUBufferScope().use { buffers ->
+    require(samples > 0 && k in 1..samples)
+    var runs = (samples - 1) / TOP_K_TILE_SIZE + 1
+    var width = minOf(k, TOP_K_TILE_SIZE)
+
+    // An odd final run is padded at each level, so its next level can be slightly larger.
+    var capacity = runs.toLong() * width
+    var plannedRuns = runs
+    var plannedWidth = width
+    while (plannedRuns > 1) {
+      plannedRuns = (plannedRuns + 1) / 2
+      plannedWidth = minOf(k.toLong(), plannedWidth.toLong() * 2).toInt()
+      capacity = maxOf(capacity, plannedRuns.toLong() * plannedWidth)
+    }
+    val byteSize = capacity * 4
+    val limit = minOf(gpu.limits.maxBufferSize.toLong(), gpu.limits.maxStorageBufferBindingSize.toLong())
+    require(byteSize <= limit) { "Top-k selection needs $byteSize bytes per scratch buffer, exceeding the WebGPU limit of $limit" }
+
+    var input = buffers.newBuffer(byteSize)
+    val initialParams = buffers.own(intArrayOf(samples, k, stride, DISPATCH_GROUP_SIZE_X)
+      .toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST))
+    select_top_k(initialParams, packets, input).dispatchFlat(runs)
+    buffers.release(initialParams)
+
+    if (runs > 1) {
+      var output = buffers.newBuffer(byteSize)
+      while (runs > 1) {
+        val nextRuns = (runs + 1) / 2
+        val nextWidth = minOf(k.toLong(), width.toLong() * 2).toInt()
+        val params = buffers.own(intArrayOf(width, runs, nextWidth, stride)
+          .toGPUBuffer(GPUBufferUsage.UNIFORM or GPUBufferUsage.COPY_DST))
+        val workgroups = ((nextRuns.toLong() * nextWidth + TOP_K_WORKGROUP_SIZE - 1) / TOP_K_WORKGROUP_SIZE).toInt()
+        merge_top_k(params, packets, input, output).dispatchFlat(workgroups)
+        buffers.release(params)
+        val previous = input
+        input = output
+        output = previous
+        runs = nextRuns
+        width = nextWidth
+      }
+    }
+    buffers.detach(input)
+  }
+
+//language=wgsl
+private const val TOP_K_ORDER = """
+const TOPK_EMPTY: vec2<u32> = vec2<u32>(0x7fffffffu, 0xffffffffu);
+fn topk_less(a: vec2<u32>, b: vec2<u32>) -> bool { return a.x < b.x || (a.x == b.x && a.y < b.y); }
+"""
+
+// Each lane owns a disjoint compare-exchange pair at each bitonic sorting step.
+//language=wgsl
+internal val select_top_k by Shader("""$SAMPLER_PARAMS $TOP_K_ORDER
+@group(0) @binding(0) var<uniform> prm: Params;
+@group(0) @binding(1) var<storage, read> packets: array<u32>;
+@group(0) @binding(2) var<storage, read_write> indices: array<u32>;
+var<workgroup> tile: array<vec2<u32>, ${TOP_K_TILE_SIZE}>;
+
+@compute @workgroup_size($TOP_K_WORKGROUP_SIZE) fn main(
+  @builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index) lane: u32
+) {
+  let run = group.x + group.y * prm.threads;
+  if (run * ${TOP_K_TILE_SIZE}u >= prm.maxSamples) { return; }
+  for (var pos = lane; pos < ${TOP_K_TILE_SIZE}u; pos += ${TOP_K_WORKGROUP_SIZE}u) {
+    let index = run * ${TOP_K_TILE_SIZE}u + pos;
+    var key = TOPK_EMPTY;
+    if (index < prm.maxSamples) {
+      let score = packets[index * prm.stride + 1u];
+      if (score < TOPK_EMPTY.x) { key = vec2<u32>(score, index); }
+    }
+    tile[pos] = key;
+  }
+  workgroupBarrier();
+  for (var size = 2u; size <= ${TOP_K_TILE_SIZE}u; size *= 2u) {
+    for (var step = size / 2u; step > 0u; step /= 2u) {
+      let left = (lane / step) * (2u * step) + lane % step;
+      let right = left + step;
+      let a = tile[left];
+      let b = tile[right];
+      let ascending = (left & size) == 0u;
+      let swap = select(topk_less(a, b), topk_less(b, a), ascending);
+      tile[left] = select(a, b, swap);
+      tile[right] = select(b, a, swap);
+      workgroupBarrier();
+    }
+  }
+  let width = min(prm.k, ${TOP_K_TILE_SIZE}u);
+  for (var pos = lane; pos < width; pos += ${TOP_K_WORKGROUP_SIZE}u) {
+    indices[run * width + pos] = tile[pos].y;
+  }
+}""")
+
+// Parallel merge by co-ranking: binary partition gives each output its own writer. No global atomics,
+// locks, or k-sized private arrays are needed, including when k exceeds the initial tile size.
+//language=wgsl
+internal val merge_top_k by Shader("""$TOP_K_ORDER
+struct MergeParams { width: u32, runs: u32, outputWidth: u32, stride: u32 };
+@group(0) @binding(0) var<uniform> prm: MergeParams;
+@group(0) @binding(1) var<storage, read> packets: array<u32>;
+@group(0) @binding(2) var<storage, read> input: array<u32>;
+@group(0) @binding(3) var<storage, read_write> output: array<u32>;
+
+fn key_at(run: u32, pos: u32) -> vec2<u32> {
+  if (run >= prm.runs || pos >= prm.width) { return TOPK_EMPTY; }
+  let index = input[run * prm.width + pos];
+  if (index == 0xffffffffu) { return TOPK_EMPTY; }
+  return vec2<u32>(packets[index * prm.stride + 1u], index);
+}
+
+@compute @workgroup_size($TOP_K_WORKGROUP_SIZE) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let out = gid.x + gid.y * ${DISPATCH_GROUP_SIZE_X}u * ${TOP_K_WORKGROUP_SIZE}u;
+  if (out >= ((prm.runs + 1u) / 2u) * prm.outputWidth) { return; }
+  let leftRun = (out / prm.outputWidth) * 2u;
+  let rank = out % prm.outputWidth;
+  let rightCount = select(0u, prm.width, leftRun + 1u < prm.runs);
+  var selected = TOPK_EMPTY;
+  if (rank < prm.width + rightCount) {
+    var lo = rank - min(rank, rightCount);
+    var hi = min(rank, prm.width);
+    // Partition the first 'rank' entries between the two runs, then take the next entry.
+    while (lo <= hi) {
+      let left = (lo + hi) / 2u;
+      let right = rank - left;
+      if (left > 0u && topk_less(key_at(leftRun + 1u, right), key_at(leftRun, left - 1u))) {
+        hi = left - 1u;
+      } else if (right > 0u && topk_less(key_at(leftRun, left), key_at(leftRun + 1u, right - 1u))) {
+        lo = left + 1u;
+      } else {
+        let a = key_at(leftRun, left);
+        let b = key_at(leftRun + 1u, right);
+        selected = select(b, a, topk_less(a, b));
+        break;
+      }
+    }
+  }
+  output[out] = selected.y;
+}""")
+
+//language=wgsl
+val gather_top_k by Shader("""$SAMPLER_PARAMS
+@group(0) @binding(0) var<uniform>                prm : Params;
+@group(0) @binding(1) var<storage, read>      packets : array<u32>;  // full outBuf
+@group(0) @binding(2) var<storage, read>       topIdx : array<u32>;  // k indices
+@group(0) @binding(3) var<storage, read_write> bestPk : array<u32>;  // compacted result
+
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+    let j : u32 = gid.x + gid.y * prm.threads;
+    if (j >= prm.k) { return; }
+
+    let srcIdx : u32 = topIdx[j];
+    let stride : u32 = prm.stride;
+    let dstOff : u32 = j      * stride;
+
+    if (srcIdx == 0xFFFFFFFFu) {
+        bestPk[dstOff + 0u] = 0u;
+        bestPk[dstOff + 1u] = 0xFFFFFFFFu;
+        if (${PKT_HDR_LEN}u < stride) { bestPk[dstOff + ${PKT_HDR_LEN}u] = 0u; }
+        return;
+    }
+
+    let srcOff : u32 = srcIdx * stride;
+    for (var t: u32 = 0u; t < stride; t = t + 1u) { bestPk[dstOff + t] = packets[srcOff + t]; }
+}""")
+
 // Orders conditioned suffix packets without relying on workgroup scheduling.
 // Every next-token group receives the same number of slots, and its packets
 // are ordered by suffix length and then by the lexical terminal sequence.
