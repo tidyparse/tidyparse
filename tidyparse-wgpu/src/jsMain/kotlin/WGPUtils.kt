@@ -14,10 +14,12 @@ import ai.hypergraph.tidyparse.wgpu.Shader.Companion.packMetadata
 import ai.hypergraph.tidyparse.wgpu.Shader.Companion.readIndices
 import ai.hypergraph.tidyparse.wgpu.Shader.Companion.toGPUBuffer
 import ai.hypergraph.tidyparse.wgpu.Shader.Companion.writeU32
+import org.kosat.round
 import web.gpu.GPUBuffer
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
+fun GPUBuffer.sizeMB(): Double = (size/1000000).round(2)
 
 data class GrammarEncoding(val flat: IntArray, val offsets: IntArray)
 // leftAdjGrouped[B] = triples:

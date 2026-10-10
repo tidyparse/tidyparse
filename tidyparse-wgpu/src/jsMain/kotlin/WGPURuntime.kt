@@ -1,5 +1,6 @@
 package ai.hypergraph.tidyparse.wgpu
 
+import ai.hypergraph.kaliningraph.parsing.CFG
 import web.gpu.GPUBuffer
 
 /** Consumer-owned hooks and model buffers used by the reusable WebGPU pipelines. */
@@ -10,6 +11,9 @@ var wdfa: GPUBuffer? = null
 var ngrams: GPUBuffer? = null
 var wdfaNumStates: Int = 0
 var wdfaNumEdges: Int = 0
+
+internal val pcfgBuffers = js("new WeakMap()") // Symbol IDs belong to this grammar instance.
+internal val CFG.pcfgBuf: GPUBuffer? get() = pcfgBuffers.get(this).unsafeCast<GPUBuffer?>()
 
 typealias RepairRerankerCallback = suspend (query: List<String>, candidates: IntersectionResults) -> List<Int>
 

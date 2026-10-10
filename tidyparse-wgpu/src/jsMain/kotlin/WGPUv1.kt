@@ -55,7 +55,7 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
     }
   } catch (t: Throwable) {
     gpuAvailable = false
-    markWebGPUStatus("error", "WebGPU unavailable: ${t.message ?: t.toString()}")
+    reportRuntimeStatus("error", "WebGPU unavailable: ${t.message ?: t.toString()}")
     return
   }
 
@@ -85,27 +85,20 @@ suspend fun tryBootstrappingGPU(needsExtraMemory: Boolean = false) {
         // Debugging
         wdfa_score_raw, active_nt_count,
       ).forEach { it.bind() }
-//      benchmarkWGPU() // TODO: remove for deployment
-//      benchmarkWGPURepair()
-//      benchmarkReach()
     } catch (e: Exception) {
-      e.printStackTrace()
-      markWebGPUStatus("error", "WebGPU unavailable: ${e.message ?: e.toString()}")
+      log(e.stackTraceToString())
+      reportRuntimeStatus("error", "WebGPU unavailable: ${e.message ?: e.toString()}")
       return
     }
 
     log("Bootstrapping GPU successful!")
     gpuAvailable = true
 
-    markWebGPUStatus("ready", "WebGPU ready")
+    reportRuntimeStatus("ready", "WebGPU ready")
   } else {
-    markWebGPUStatus("error", "WebGPU unavailable")
-    print("GPU not detected.")
+    reportRuntimeStatus("error", "WebGPU unavailable")
+    log("GPU not detected.")
   }
-}
-
-private fun markWebGPUStatus(state: String, label: String) {
-  reportRuntimeStatus(state, label)
 }
 
 suspend fun repairCode(
@@ -238,7 +231,7 @@ suspend fun intersectionPipeline(
   )
   if (PROFILE_WGPU_KERNELS) awaitGPUQueue()
   mark("build language-size CDF", cdfT)
-  log("Built language-size CDF in ${timings["build language-size CDF"]}ms (${cdfBuf.size}B)")
+  log("Built language-size CDF in ${timings["build language-size CDF"]}ms (${cdfBuf.sizeMB()} MB)")
   buffers.release(metaBuf)
 
   val numRoots = startIdxs.size / 2
@@ -257,7 +250,7 @@ suspend fun intersectionPipeline(
   val rootCDFTime = TimeSource.Monotonic.markNow()
   val rootCDF = buffers.own(Shader.prefixSumGPU(rootSizes, numRoots))
   mark("prefix root cdf", rootCDFTime)
-  log("Built root CDF in ${timings["prefix root cdf"]}ms (${rootCDF.size}B)")
+  log("Built root CDF in ${timings["prefix root cdf"]}ms")
 
   val langSizeT = TimeSource.Monotonic.markNow()
   suspend fun langIntSize(): Long {
@@ -292,7 +285,7 @@ suspend fun intersectionPipeline(
   timings["enumerate"] = timedGPUIsolated("Enumerate") {
     enum_words_wor(bijection, idxUniBuf, outBuf).dispatchFlat(toDecode)
   }
-  log("Enumerated $toDecode samples in ${timings["enumerate"]}ms (${outBuf.size}B)")
+  log("Enumerated $toDecode samples in ${timings["enumerate"]}ms (${outBuf.sizeMB()} MB)")
   buffers.release(bijection, idxUniBuf)
 
   val decodeT = TimeSource.Monotonic.markNow()
@@ -383,8 +376,7 @@ private fun IntArray.isPreferredTo(other: IntArray): Boolean {
     if (priority != otherPriority) return priority < otherPriority
   }
 
-  return if (edits.size != otherEdits.size) edits.size < otherEdits.size
-  else this[1].toUInt() < other[1].toUInt()
+  return if (edits.size != otherEdits.size) edits.size < otherEdits.size else this[1].toUInt() < other[1].toUInt()
 }
 
 // Copies one valid packet into a compact integer row, omitting the zero terminator and unused capacity.
@@ -410,8 +402,7 @@ internal fun JSIntArray.decodePacket(idx: Int, terminalCount: Int, pktLen: Int):
     }
   }
 
-  return if (rowSize == PKT_HDR_LEN || encodedEdits > distance) null
-  else IntArray(rowSize) { this[base + it] }
+  return if (rowSize == PKT_HDR_LEN || encodedEdits > distance) null else IntArray(rowSize) { this[base + it] }
 }
 
 fun decodePackets(
@@ -486,9 +477,6 @@ val CFG.termBuf: GPUBuffer by cache {
   /** Memory layout: [TERM_STRUCT] */ packStruct(emptyList(), nt_tm_lens, nt_tm_offsets, all_tm)
 //    .also { log("Packing time: ${packTime.elapsedNow()}") }
 }
-
-private val pcfgBuffers = js("new WeakMap()") // Symbol IDs belong to this grammar instance.
-internal val CFG.pcfgBuf: GPUBuffer? get() = pcfgBuffers.get(this).unsafeCast<GPUBuffer?>()
 
 /** Load CNF productions of the form `A -> B C [numerator/denominator]` (or `A -> token [...]`). */
 fun CFG.loadPCFG(text: String) {
@@ -1793,14 +1781,8 @@ class Shader constructor(val src: String) {
 // result      = [constants | (off0,len0) (off1,len1)… | payload_0 … payload_k ]
 //                ^ headerInts.size * 4  bytes
 fun packStruct(constants: List<Int> = emptyList(), vararg buffers: GPUBuffer): GPUBuffer =
-  packStructInternal(constants, true, buffers)
-
-private fun packStructInternal(
-  constants: List<Int> = emptyList(),
-  destroyInputs: Boolean,
-  buffers: Array<out GPUBuffer>
-): GPUBuffer = GPUBufferScope().use { owned ->
-  if (destroyInputs) owned.own(*buffers)
+   GPUBufferScope().use { bufferScope ->
+  bufferScope.own(*buffers)
   if (buffers.isEmpty()) error("At least one payload buffer required")
 
   // ── lengths & offsets (in *ints*, not bytes) ──────────────────────────────
@@ -1818,7 +1800,7 @@ private fun packStructInternal(
   val totalBytes   = headerBytes + payloadBytes
 
   // ── allocate destination buffer ───────────────────────────────────────────
-  val metaBuf = owned.newBuffer(totalBytes)
+  val metaBuf = bufferScope.newBuffer(totalBytes)
 
   // ── upload header (one writeBuffer) ───────────────────────────────────────
   gpu.queue.writeBuffer(metaBuf, 0.0, JSIntArray(headerInts.size).apply { set(headerInts.toTypedArray(), 0) })
@@ -1832,7 +1814,7 @@ private fun packStructInternal(
 
   gpu.queue.submit(arrayOf(enc.finish()))
 
-  owned.detach(metaBuf)
+  bufferScope.detach(metaBuf)
 }
 
 // Owns temporary GPU buffers until the surrounding use block exits.
